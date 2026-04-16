@@ -9,6 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/chetan/locutus/internal/executor"
 	"github.com/chetan/locutus/internal/specio"
 )
 
@@ -51,31 +52,13 @@ type RoundResult struct {
 	Err     error
 }
 
-// WorkflowExecutor runs the council workflow using a typed PlanningState
-// blackboard. The orchestrator goroutine owns the state exclusively; parallel
-// agents receive read-only snapshots and return results via channels.
+// WorkflowExecutor runs the council workflow using the generic DAG executor
+// with a typed PlanningState blackboard.
 type WorkflowExecutor struct {
 	LLM       LLM
 	AgentDefs map[string]AgentDef
 	Workflow  *Workflow
 	Events    chan WorkflowEvent // optional; nil disables progress reporting
-}
-
-// emit sends a workflow event if the Events channel is set.
-func (e *WorkflowExecutor) emit(stepID, agentID, status, message string) {
-	if e.Events != nil {
-		select {
-		case e.Events <- WorkflowEvent{
-			StepID:    stepID,
-			AgentID:   agentID,
-			Status:    status,
-			Message:   message,
-			Timestamp: time.Now(),
-		}:
-		default:
-			// Non-blocking: drop event if channel is full.
-		}
-	}
 }
 
 // executionRetryConfig returns a retry config for workflow agent calls.
@@ -87,64 +70,55 @@ func executionRetryConfig() RetryConfig {
 	}
 }
 
-// executeAgent runs a single agent against a state snapshot and returns the result.
-// This is safe to call from multiple goroutines — it reads only from the snapshot
-// and the immutable AgentDef, and writes only to its own local RoundResult.
+// emitEvent sends a workflow event non-blocking. Safe for concurrent use.
+func (e *WorkflowExecutor) emitEvent(stepID, agentID, status, message string) {
+	if e.Events != nil {
+		select {
+		case e.Events <- WorkflowEvent{
+			StepID:    stepID,
+			AgentID:   agentID,
+			Status:    status,
+			Message:   message,
+			Timestamp: time.Now(),
+		}:
+		default:
+		}
+	}
+}
+
+// executeAgent runs a single agent against a state snapshot. Safe for
+// concurrent use — reads only from the snapshot and immutable AgentDef.
 func (e *WorkflowExecutor) executeAgent(ctx context.Context, stepID, agentID string, snap StateSnapshot) RoundResult {
 	def, ok := e.AgentDefs[agentID]
 	if !ok {
 		return RoundResult{StepID: stepID, AgentID: agentID, Err: fmt.Errorf("agent %q not found", agentID)}
 	}
 
-	e.emit(stepID, agentID, "started", "")
+	e.emitEvent(stepID, agentID, "started", "")
 
-	// Project state to agent-relevant messages, then build the full request.
 	messages := ProjectState(stepID, snap)
 	req := BuildGenerateRequest(def, messages)
 
 	resp, err := GenerateWithRetry(ctx, e.LLM, req, executionRetryConfig())
 	if err != nil {
-		e.emit(stepID, agentID, "error", err.Error())
+		e.emitEvent(stepID, agentID, "error", err.Error())
 		return RoundResult{StepID: stepID, AgentID: agentID, Err: err}
 	}
 
-	e.emit(stepID, agentID, "completed", "")
+	e.emitEvent(stepID, agentID, "completed", "")
 	return RoundResult{StepID: stepID, AgentID: agentID, Output: resp.Content}
 }
 
-// shouldRunConditional checks whether a conditional step should execute.
-// It scans the state for the conditional keyword.
-func shouldRunConditional(cond string, state *PlanningState) bool {
-	lower := strings.ToLower(cond)
-
-	// Check in proposed spec, revisions, and concerns.
-	if strings.Contains(strings.ToLower(state.ProposedSpec), lower) {
-		return true
-	}
-	if strings.Contains(strings.ToLower(state.Revisions), lower) {
-		return true
-	}
-	for _, c := range state.Concerns {
-		if strings.Contains(strings.ToLower(c.Text), lower) {
-			return true
-		}
-	}
-	return false
-}
-
-// ExecuteRound runs a single workflow step against the current state.
-// For parallel steps, agents receive read-only snapshots and execute
-// concurrently; results are collected and returned to the caller for merging.
+// ExecuteRound runs a single workflow step against the current state. For
+// parallel multi-agent steps, agents run concurrently with the same snapshot.
 func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, state *PlanningState) ([]RoundResult, error) {
 	// Check conditional.
 	if step.Conditional != "" {
 		if !shouldRunConditional(step.Conditional, state) {
-			e.emit(step.ID, "", "skipped", fmt.Sprintf("conditional %q not met", step.Conditional))
 			return nil, nil
 		}
 	}
 
-	// Determine agents to run.
 	agents := step.Agents
 	if len(agents) == 0 && step.Agent != "" {
 		agents = []string{step.Agent}
@@ -153,10 +127,9 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 		return nil, nil
 	}
 
-	// Take a snapshot — this is the read-only view agents will use.
 	snap := state.Snapshot()
 
-	// Parallel execution: goroutines per agent, results collected via slice.
+	// Parallel multi-agent execution.
 	if step.Parallel && len(agents) > 1 {
 		results := make([]RoundResult, len(agents))
 		var wg sync.WaitGroup
@@ -177,7 +150,7 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 		return results, nil
 	}
 
-	// Sequential execution.
+	// Sequential.
 	var results []RoundResult
 	for _, agentID := range agents {
 		r := e.executeAgent(ctx, step.ID, agentID, snap)
@@ -189,9 +162,27 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 	return results, nil
 }
 
-// mergeResults applies round results back into the planning state based on
-// the step ID. This is the only place state is mutated, and it runs
-// sequentially in the orchestrator goroutine — no concurrent access.
+// shouldRunConditional checks whether a conditional step should execute by
+// scanning the state for the keyword.
+func shouldRunConditional(cond string, state *PlanningState) bool {
+	lower := strings.ToLower(cond)
+
+	if strings.Contains(strings.ToLower(state.ProposedSpec), lower) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(state.Revisions), lower) {
+		return true
+	}
+	for _, c := range state.Concerns {
+		if strings.Contains(strings.ToLower(c.Text), lower) {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeResults applies round results back into the planning state. Called
+// sequentially by the DAG executor — never concurrently.
 func mergeResults(state *PlanningState, stepID string, results []RoundResult) {
 	for _, r := range results {
 		if r.Err != nil || r.Output == "" {
@@ -203,7 +194,7 @@ func mergeResults(state *PlanningState, stepID string, results []RoundResult) {
 		case "challenge":
 			state.Concerns = append(state.Concerns, Concern{
 				AgentID:  r.AgentID,
-				Severity: "medium", // TODO: parse from structured output
+				Severity: "medium",
 				Text:     r.Output,
 			})
 		case "research":
@@ -219,15 +210,9 @@ func mergeResults(state *PlanningState, stepID string, results []RoundResult) {
 	}
 }
 
-// Run executes the full workflow as an iterative convergence loop. Each
-// iteration runs the workflow rounds (propose → challenge → research → revise
-// → record), then the convergence monitor decides whether to loop or stop.
-// After convergence, a readiness gate (critic + stakeholder approval) must
-// pass. Max iterations is Workflow.MaxRounds; forced after 3 rounds on the
-// same concern.
-//
-// The orchestrator owns PlanningState exclusively — parallel agents receive
-// snapshots, and results are merged back sequentially.
+// Run executes the full council workflow using the generic DAG executor.
+// The outer convergence loop and readiness gate are handled here; the inner
+// DAG execution (dependency ordering, parallelism) is delegated to executor.Executor.
 func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]RoundResult, error) {
 	state := &PlanningState{
 		Prompt: initialPrompt,
@@ -239,27 +224,92 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 		maxRounds = 5
 	}
 
+	// Build executor.Steps from WorkflowSteps.
+	dagSteps := make([]executor.Step, len(e.Workflow.Rounds))
+	stepLookup := make(map[string]WorkflowStep, len(e.Workflow.Rounds))
+	for i, ws := range e.Workflow.Rounds {
+		stepLookup[ws.ID] = ws
+		ds := executor.Step{
+			ID:        ws.ID,
+			DependsOn: ws.DependsOn,
+			Parallel:  false, // parallelism is within a step (multi-agent), not between steps
+		}
+		if ws.Conditional != "" {
+			cond := ws.Conditional // capture for closure
+			ds.Conditional = func(s any) bool {
+				return shouldRunConditional(cond, s.(*PlanningState))
+			}
+		}
+		dagSteps[i] = ds
+	}
+
+	// Accumulate results across convergence iterations.
 	var allResults []RoundResult
 
-	for iteration := 0; iteration < maxRounds; iteration++ {
-		e.emit("", "", "started", fmt.Sprintf("iteration %d/%d", iteration+1, maxRounds))
-
-		// Execute all workflow rounds for this iteration.
-		for _, step := range e.Workflow.Rounds {
-			results, err := e.ExecuteRound(ctx, step, state)
-			if err != nil {
-				return allResults, err
+	// Bridge DAG events to WorkflowEvents.
+	var dagEvents chan executor.Event
+	var bridgeDone chan struct{}
+	if e.Events != nil {
+		dagEvents = make(chan executor.Event, 50)
+		bridgeDone = make(chan struct{})
+		go func() {
+			defer close(bridgeDone)
+			for evt := range dagEvents {
+				select {
+				case e.Events <- WorkflowEvent{
+					StepID:    evt.StepID,
+					Status:    evt.Status,
+					Message:   evt.Message,
+					Timestamp: evt.Timestamp,
+				}:
+				default:
+				}
 			}
+		}()
+	}
 
-			mergeResults(state, step.ID, results)
-			allResults = append(allResults, results...)
+	for iteration := 0; iteration < maxRounds; iteration++ {
+		if e.Events != nil {
+			e.Events <- WorkflowEvent{
+				Status:    "started",
+				Message:   fmt.Sprintf("iteration %d/%d", iteration+1, maxRounds),
+				Timestamp: time.Now(),
+			}
+		}
+
+		cfg := executor.Config[PlanningState]{
+			Steps: dagSteps,
+			RunStep: func(ctx context.Context, step executor.Step, snap PlanningState) (executor.StepResult, error) {
+				ws := stepLookup[step.ID]
+				results, err := e.ExecuteRound(ctx, ws, &snap)
+				return executor.StepResult{Output: results}, err
+			},
+			Merge: func(s *PlanningState, r executor.StepResult) {
+				if results, ok := r.Output.([]RoundResult); ok {
+					mergeResults(s, r.StepID, results)
+				}
+			},
+			Snapshot: func(s *PlanningState) PlanningState { return *s },
+			Events:   dagEvents,
+		}
+
+		executor := executor.NewExecutor(cfg)
+		dagResults, err := executor.Run(ctx, state)
+		if err != nil {
+			return allResults, err
+		}
+
+		// Flatten dag results into RoundResults.
+		for _, dr := range dagResults {
+			if results, ok := dr.Output.([]RoundResult); ok {
+				allResults = append(allResults, results...)
+			}
 		}
 		state.Round++
 
-		// Convergence check — requires the "convergence" agent def.
+		// Convergence check.
 		monitorDef, hasMonitor := e.AgentDefs["convergence"]
 		if !hasMonitor {
-			// No convergence monitor configured — single pass, done.
 			break
 		}
 
@@ -268,10 +318,17 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 			return allResults, fmt.Errorf("convergence check: %w", err)
 		}
 
-		e.emit("convergence", "convergence", "completed", verdict.Reasoning)
+		if e.Events != nil {
+			e.Events <- WorkflowEvent{
+				StepID:  "convergence",
+				AgentID: "convergence",
+				Status:  "completed",
+				Message: verdict.Reasoning,
+				Timestamp: time.Now(),
+			}
+		}
 
 		if verdict.Converged {
-			// Readiness gate: critic + stakeholder approve.
 			ready, err := CheckReadiness(ctx, e.LLM, e.AgentDefs, state)
 			if err != nil {
 				return allResults, fmt.Errorf("readiness gate: %w", err)
@@ -279,23 +336,22 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 			if ready {
 				break
 			}
-			// Blocked — carry open issues into next iteration.
-			e.emit("readiness", "", "blocked", "readiness gate rejected; looping")
 			continue
 		}
 
-		// Not converged — carry open issues forward.
 		state.OpenConcerns = verdict.OpenIssues
 
-		// Force decision after MaxRounds-2 rounds on the same concern (plan: 3 rounds).
 		if iteration >= maxRounds-2 {
-			e.emit("convergence", "convergence", "forced", "forcing decision after repeated rounds")
 			break
 		}
 
-		// Clear per-round state for next iteration (keep cumulative state).
 		state.Concerns = nil
 		state.ResearchResults = nil
+	}
+
+	if dagEvents != nil {
+		close(dagEvents)
+		<-bridgeDone // wait for bridge goroutine to drain
 	}
 
 	return allResults, nil
