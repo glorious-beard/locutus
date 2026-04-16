@@ -83,3 +83,16 @@ const (
 	AssertionKindLintClean       AssertionKind = "lint_clean"
 	AssertionKindLLMReview       AssertionKind = "llm_review"
 )
+
+// NodeKind identifies the type of a spec graph node.
+type NodeKind string
+
+const (
+	KindGoals    NodeKind = "goals"
+	KindFeature  NodeKind = "feature"
+	KindBug      NodeKind = "bug"
+	KindDecision NodeKind = "decision"
+	KindStrategy NodeKind = "strategy"
+	KindEntity   NodeKind = "entity"
+	KindFile     NodeKind = "file"
+)

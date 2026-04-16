@@ -1,0 +1,278 @@
+package spec
+
+import (
+	"fmt"
+
+	dgraph "github.com/dominikbraun/graph"
+)
+
+// RootID is the well-known ID for the GOALS.md root node.
+const RootID = "GOALS.md"
+
+// GraphNode represents a vertex in the spec dependency graph.
+type GraphNode struct {
+	ID   string
+	Kind NodeKind
+	Name string
+}
+
+// SpecGraph holds the spec dependency graph: GOALS.md → Feature/Bug → Decision → Strategy → Files.
+type SpecGraph struct {
+	dag        dgraph.Graph[string, GraphNode]
+	features   map[string]*Feature
+	bugs       map[string]*Bug
+	decisions  map[string]*Decision
+	strategies map[string]*Strategy
+}
+
+// Feature returns the Feature for the given ID, or nil.
+func (g *SpecGraph) Feature(id string) *Feature { return g.features[id] }
+
+// Bug returns the Bug for the given ID, or nil.
+func (g *SpecGraph) Bug(id string) *Bug { return g.bugs[id] }
+
+// Decision returns the Decision for the given ID, or nil.
+func (g *SpecGraph) Decision(id string) *Decision { return g.decisions[id] }
+
+// Strategy returns the Strategy for the given ID, or nil.
+func (g *SpecGraph) Strategy(id string) *Strategy { return g.strategies[id] }
+
+// Nodes returns a map of all graph nodes, keyed by ID.
+func (g *SpecGraph) Nodes() map[string]GraphNode {
+	adj, _ := g.dag.AdjacencyMap()
+	nodes := make(map[string]GraphNode, len(adj))
+	for id := range adj {
+		n, _ := g.dag.Vertex(id)
+		nodes[id] = n
+	}
+	return nodes
+}
+
+// EdgeCount returns the number of edges in the graph.
+func (g *SpecGraph) EdgeCount() int {
+	edges, _ := g.dag.Edges()
+	return len(edges)
+}
+
+// BlastRadius describes the downstream impact of changing a spec node.
+type BlastRadius struct {
+	Root       GraphNode
+	Features   []GraphNode
+	Bugs       []GraphNode
+	Decisions  []GraphNode
+	Strategies []GraphNode
+	Files      []GraphNode
+}
+
+// BuildGraph constructs a SpecGraph from spec data and traceability index.
+func BuildGraph(
+	features []Feature,
+	bugs []Bug,
+	decisions []Decision,
+	strategies []Strategy,
+	traces TraceabilityIndex,
+) *SpecGraph {
+	g := &SpecGraph{
+		dag:        dgraph.New(func(n GraphNode) string { return n.ID }, dgraph.Directed()),
+		features:   make(map[string]*Feature),
+		bugs:       make(map[string]*Bug),
+		decisions:  make(map[string]*Decision),
+		strategies: make(map[string]*Strategy),
+	}
+
+	add := func(id string, kind NodeKind, name string) {
+		_ = g.dag.AddVertex(GraphNode{ID: id, Kind: kind, Name: name})
+	}
+
+	edge := func(from, to string) {
+		_ = g.dag.AddEdge(from, to)
+	}
+
+	// Single root — every feature and bug connects to GOALS.md.
+	add(RootID, KindGoals, "GOALS.md")
+
+	for i := range features {
+		f := &features[i]
+		add(f.ID, KindFeature, f.Title)
+		g.features[f.ID] = f
+	}
+	for i := range bugs {
+		b := &bugs[i]
+		add(b.ID, KindBug, b.Title)
+		g.bugs[b.ID] = b
+	}
+	for i := range decisions {
+		d := &decisions[i]
+		add(d.ID, KindDecision, d.Title)
+		g.decisions[d.ID] = d
+	}
+	for i := range strategies {
+		s := &strategies[i]
+		add(s.ID, KindStrategy, s.Title)
+		g.strategies[s.ID] = s
+	}
+	for filePath := range traces.Entries {
+		add(filePath, KindFile, filePath)
+	}
+
+	// GOALS.md → Feature and GOALS.md → Bug edges.
+	for _, f := range features {
+		edge(RootID, f.ID)
+	}
+	for _, b := range bugs {
+		edge(RootID, b.ID)
+	}
+
+	// Feature → Decision edges.
+	for _, f := range features {
+		for _, decID := range f.Decisions {
+			edge(f.ID, decID)
+		}
+	}
+	// Bug → Feature edges.
+	for _, b := range bugs {
+		if b.FeatureID != "" {
+			edge(b.ID, b.FeatureID)
+		}
+	}
+	for _, s := range strategies {
+		edge(s.DecisionID, s.ID)
+	}
+	for filePath, entry := range traces.Entries {
+		if entry.StrategyID != "" {
+			edge(entry.StrategyID, filePath)
+		}
+	}
+
+	return g
+}
+
+// ForwardWalk returns all nodes reachable from the given ID (including the node
+// itself) by following edges forward via BFS. Returns nil if id is not found.
+func (g *SpecGraph) ForwardWalk(startID string) []GraphNode {
+	if _, err := g.dag.Vertex(startID); err != nil {
+		return nil
+	}
+
+	var result []GraphNode
+	_ = dgraph.BFS(g.dag, startID, func(id string) bool {
+		n, _ := g.dag.Vertex(id)
+		result = append(result, n)
+		return false
+	})
+
+	return result
+}
+
+// BlastRadius computes the downstream impact of the given node, categorized
+// by kind. The root node is excluded from the category slices.
+func (g *SpecGraph) BlastRadius(id string) *BlastRadius {
+	nodes := g.ForwardWalk(id)
+	if len(nodes) == 0 {
+		return &BlastRadius{}
+	}
+
+	root, _ := g.dag.Vertex(id)
+	br := &BlastRadius{Root: root}
+
+	for _, n := range nodes {
+		if n.ID == id {
+			continue
+		}
+		switch n.Kind {
+		case KindFeature:
+			br.Features = append(br.Features, n)
+		case KindBug:
+			br.Bugs = append(br.Bugs, n)
+		case KindDecision:
+			br.Decisions = append(br.Decisions, n)
+		case KindStrategy:
+			br.Strategies = append(br.Strategies, n)
+		case KindFile:
+			br.Files = append(br.Files, n)
+		}
+	}
+
+	return br
+}
+
+// ComputeBlastRadius computes the blast radius for the given ID.
+// Returns an error if the graph is nil or the ID is not found.
+func ComputeBlastRadius(g *SpecGraph, id string) (*BlastRadius, error) {
+	if g == nil {
+		return nil, fmt.Errorf("graph is nil")
+	}
+	if _, err := g.dag.Vertex(id); err != nil {
+		return nil, fmt.Errorf("node %q not found in graph", id)
+	}
+	return g.BlastRadius(id), nil
+}
+
+// DetectCycles returns any cycles found in the graph.
+func (g *SpecGraph) DetectCycles() [][]string {
+	_, err := dgraph.TopologicalSort(g.dag)
+	if err == nil {
+		return nil
+	}
+
+	adj, _ := g.dag.AdjacencyMap()
+
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+
+	color := make(map[string]int)
+	parent := make(map[string]string)
+	var cycles [][]string
+
+	var dfs func(u string)
+	dfs = func(u string) {
+		color[u] = gray
+		for v := range adj[u] {
+			switch color[v] {
+			case gray:
+				cycle := []string{v}
+				curr := u
+				for curr != v {
+					cycle = append(cycle, curr)
+					curr = parent[curr]
+				}
+				cycles = append(cycles, cycle)
+			case white:
+				parent[v] = u
+				dfs(v)
+			}
+		}
+		color[u] = black
+	}
+
+	for id := range adj {
+		if color[id] == white {
+			dfs(id)
+		}
+	}
+
+	return cycles
+}
+
+// NewTestGraph creates a SpecGraph from explicit nodes and edges, for testing
+// scenarios like cycle detection that can't be expressed via BuildGraph.
+func NewTestGraph(nodes []GraphNode, edges [][2]string) *SpecGraph {
+	g := &SpecGraph{
+		dag:        dgraph.New(func(n GraphNode) string { return n.ID }, dgraph.Directed()),
+		features:   make(map[string]*Feature),
+		bugs:       make(map[string]*Bug),
+		decisions:  make(map[string]*Decision),
+		strategies: make(map[string]*Strategy),
+	}
+
+	for _, n := range nodes {
+		_ = g.dag.AddVertex(n)
+	}
+	for _, e := range edges {
+		_ = g.dag.AddEdge(e[0], e[1])
+	}
+	return g
+}
