@@ -127,9 +127,8 @@ func isIgnored(filePath string, patterns []gitignorePattern) bool {
 
 // Analyze runs the full brownfield pipeline using the brownfield council workflow.
 func Analyze(ctx context.Context, llm LLM, fsys specio.FS, req BrownfieldRequest) (*BrownfieldResult, error) {
-	const councilDir = ".borg/council/brownfield"
-	const agentsDir = councilDir + "/agents"
-	const workflowPath = councilDir + "/workflow.yaml"
+	const agentsDir = ".borg/agents"
+	const workflowPath = ".borg/workflows/assimilation.yaml"
 
 	// Load agent definitions.
 	agentList, err := LoadAgentDefs(fsys, agentsDir)

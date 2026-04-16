@@ -23,6 +23,7 @@ type Step struct {
 	ID          string
 	DependsOn   []string // IDs of steps that must complete before this one
 	Parallel    bool     // if true, can run concurrently with other ready steps
+	Type        string   // optional; used with Config.TypeLimits for per-type concurrency
 	Conditional func(state any) bool // optional; if non-nil and returns false, step is skipped
 }
 
@@ -70,6 +71,12 @@ type Config[S any] struct {
 	// MaxConcurrency limits how many parallel steps run simultaneously.
 	// 0 or negative means unlimited.
 	MaxConcurrency int
+
+	// TypeLimits constrains per-type concurrency. If a step has a Type that
+	// appears in this map, at most TypeLimits[type] steps of that type run
+	// concurrently. Steps without a Type are unaffected. Both TypeLimits and
+	// MaxConcurrency are enforced simultaneously.
+	TypeLimits map[string]int
 
 	// Events receives progress notifications. Nil disables events.
 	Events chan Event
@@ -245,6 +252,14 @@ func (e *Executor[S]) runParallel(ctx context.Context, state *S, steps []Step) (
 	// Semaphore for bounded concurrency.
 	sem := make(chan struct{}, e.concurrencyLimit(len(toRun)))
 
+	// Per-type semaphores for type-level concurrency limits.
+	typeSems := make(map[string]chan struct{})
+	for typ, limit := range e.cfg.TypeLimits {
+		if limit > 0 {
+			typeSems[typ] = make(chan struct{}, limit)
+		}
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(len(toRun))
 
@@ -252,9 +267,17 @@ func (e *Executor[S]) runParallel(ctx context.Context, state *S, steps []Step) (
 		go func(idx int, step Step) {
 			defer wg.Done()
 
-			// Acquire semaphore slot.
+			// Acquire global semaphore slot.
 			sem <- struct{}{}
 			defer func() { <-sem }()
+
+			// Acquire per-type semaphore slot if applicable.
+			if step.Type != "" {
+				if tsem, ok := typeSems[step.Type]; ok {
+					tsem <- struct{}{}
+					defer func() { <-tsem }()
+				}
+			}
 
 			e.emit(step.ID, "started", "")
 

@@ -23,7 +23,7 @@ func TestScaffoldCreatesDirectories(t *testing.T) {
 		".borg/spec/strategies",
 		".borg/spec/entities",
 		".borg/history",
-		".borg/council/agents",
+		".borg/agents",
 		".agents/skills",
 	}
 	for _, dir := range dirs {
@@ -79,18 +79,28 @@ func TestScaffoldCreatesGoals(t *testing.T) {
 	assert.Contains(t, string(data), "my-app")
 }
 
-func TestScaffoldCreatesCouncilAgents(t *testing.T) {
+func TestScaffoldCreatesAgents(t *testing.T) {
 	fsys := specio.NewMemFS()
 	err := scaffold.Scaffold(fsys, "test-project")
 	assert.NoError(t, err)
 
+	// All 15 agent definition files should exist under .borg/agents/.
 	agents := []string{
-		".borg/council/agents/planner.md",
-		".borg/council/agents/critic.md",
-		".borg/council/agents/researcher.md",
-		".borg/council/agents/stakeholder.md",
-		".borg/council/agents/historian.md",
-		".borg/council/agents/convergence.md",
+		".borg/agents/planner.md",
+		".borg/agents/critic.md",
+		".borg/agents/researcher.md",
+		".borg/agents/stakeholder.md",
+		".borg/agents/historian.md",
+		".borg/agents/convergence.md",
+		".borg/agents/scout.md",
+		".borg/agents/backend_analyzer.md",
+		".borg/agents/frontend_analyzer.md",
+		".borg/agents/infra_analyzer.md",
+		".borg/agents/gap_analyst.md",
+		".borg/agents/remediator.md",
+		".borg/agents/validator.md",
+		".borg/agents/guide.md",
+		".borg/agents/reviewer.md",
 	}
 	for _, agent := range agents {
 		_, statErr := fsys.Stat(agent)
@@ -98,14 +108,18 @@ func TestScaffoldCreatesCouncilAgents(t *testing.T) {
 	}
 }
 
-func TestScaffoldCreatesWorkflow(t *testing.T) {
+func TestScaffoldCreatesWorkflows(t *testing.T) {
 	fsys := specio.NewMemFS()
 	err := scaffold.Scaffold(fsys, "test-project")
 	assert.NoError(t, err)
 
-	data, err := fsys.ReadFile(".borg/council/workflow.yaml")
+	planning, err := fsys.ReadFile(".borg/workflows/planning.yaml")
 	assert.NoError(t, err)
-	assert.NotEmpty(t, data, "workflow.yaml should be non-empty")
+	assert.NotEmpty(t, planning, "planning.yaml should be non-empty")
+
+	assimilation, err := fsys.ReadFile(".borg/workflows/assimilation.yaml")
+	assert.NoError(t, err)
+	assert.NotEmpty(t, assimilation, "assimilation.yaml should be non-empty")
 }
 
 func TestScaffoldIdempotent(t *testing.T) {

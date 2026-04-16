@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-const agentDir = ".borg/council/agents"
+const agentDir = ".borg/agents"
 
 func setupAgentFS(t *testing.T) *specio.MemFS {
 	t.Helper()
@@ -101,7 +101,7 @@ func TestLoadAgentDefsEmpty(t *testing.T) {
 func TestLoadAgentDefsMissingDir(t *testing.T) {
 	fsys := specio.NewMemFS()
 
-	_, err := LoadAgentDefs(fsys, ".borg/council/agents")
+	_, err := LoadAgentDefs(fsys, ".borg/agents")
 
 	assert.Error(t, err)
 }

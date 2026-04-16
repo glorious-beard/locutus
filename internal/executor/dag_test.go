@@ -488,3 +488,130 @@ func TestMergeCalledInDependencyOrder(t *testing.T) {
 	assert.Equal(t, "D", mergeOrder[3])
 	assert.ElementsMatch(t, []string{"B", "C"}, mergeOrder[1:3])
 }
+
+// --- Per-type concurrency limit tests ---
+
+func TestPerTypeConcurrencyLimit(t *testing.T) {
+	// 5 parallel steps: 3 claude-code, 2 codex.
+	// TypeLimits: claude-code=1, codex=2. MaxConcurrency=5 (effectively unlimited).
+	// Peak concurrent claude-code steps must never exceed 1.
+
+	var ccRunning atomic.Int32
+	var ccMaxSeen atomic.Int32
+	var cxRunning atomic.Int32
+	var cxMaxSeen atomic.Int32
+
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{ID: "cc1", Parallel: true, Type: "claude-code"},
+			{ID: "cc2", Parallel: true, Type: "claude-code"},
+			{ID: "cc3", Parallel: true, Type: "claude-code"},
+			{ID: "cx1", Parallel: true, Type: "codex"},
+			{ID: "cx2", Parallel: true, Type: "codex"},
+		},
+		RunStep: func(_ context.Context, step executor.Step, _ testState) (executor.StepResult, error) {
+			switch step.Type {
+			case "claude-code":
+				cur := ccRunning.Add(1)
+				for {
+					old := ccMaxSeen.Load()
+					if cur <= old || ccMaxSeen.CompareAndSwap(old, cur) {
+						break
+					}
+				}
+				time.Sleep(20 * time.Millisecond)
+				ccRunning.Add(-1)
+			case "codex":
+				cur := cxRunning.Add(1)
+				for {
+					old := cxMaxSeen.Load()
+					if cur <= old || cxMaxSeen.CompareAndSwap(old, cur) {
+						break
+					}
+				}
+				time.Sleep(20 * time.Millisecond)
+				cxRunning.Add(-1)
+			}
+			return executor.StepResult{Output: step.ID + " done"}, nil
+		},
+		Merge:          merge,
+		Snapshot:       snapshot,
+		MaxConcurrency: 5,
+		TypeLimits:     map[string]int{"claude-code": 1, "codex": 2},
+	}
+
+	state := &testState{}
+	results, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+
+	assert.NoError(t, err)
+	assert.Len(t, results, 5, "all 5 steps should complete")
+	assert.LessOrEqual(t, int(ccMaxSeen.Load()), 1, "at most 1 claude-code step should run concurrently")
+	assert.LessOrEqual(t, int(cxMaxSeen.Load()), 2, "at most 2 codex steps should run concurrently")
+}
+
+func TestPerTypeLimitCombinedWithGlobalLimit(t *testing.T) {
+	// 4 parallel steps all Type="claude-code".
+	// TypeLimits: claude-code=3. MaxConcurrency=2.
+	// Global limit is stricter, so peak concurrency should be 2.
+
+	var running atomic.Int32
+	var maxSeen atomic.Int32
+
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{ID: "A", Parallel: true, Type: "claude-code"},
+			{ID: "B", Parallel: true, Type: "claude-code"},
+			{ID: "C", Parallel: true, Type: "claude-code"},
+			{ID: "D", Parallel: true, Type: "claude-code"},
+		},
+		RunStep: func(_ context.Context, step executor.Step, _ testState) (executor.StepResult, error) {
+			cur := running.Add(1)
+			for {
+				old := maxSeen.Load()
+				if cur <= old || maxSeen.CompareAndSwap(old, cur) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			running.Add(-1)
+			return executor.StepResult{Output: step.ID + " done"}, nil
+		},
+		Merge:          merge,
+		Snapshot:       snapshot,
+		MaxConcurrency: 2,
+		TypeLimits:     map[string]int{"claude-code": 3},
+	}
+
+	state := &testState{}
+	results, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+
+	assert.NoError(t, err)
+	assert.Len(t, results, 4, "all 4 steps should complete")
+	assert.LessOrEqual(t, int(maxSeen.Load()), 2, "global limit should cap concurrency at 2")
+}
+
+func TestStepTypeFieldOptional(t *testing.T) {
+	// Steps without a Type field should work normally and not be affected by TypeLimits.
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{ID: "A", Parallel: true},
+			{ID: "B", Parallel: true},
+			{ID: "C", Parallel: true},
+		},
+		RunStep:    runStep,
+		Merge:      merge,
+		Snapshot:   snapshot,
+		TypeLimits: map[string]int{"claude-code": 1},
+	}
+
+	state := &testState{}
+	results, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+
+	assert.NoError(t, err)
+	assert.Len(t, results, 3, "all steps should complete even with TypeLimits set")
+	assert.ElementsMatch(t,
+		[]string{"A done", "B done", "C done"},
+		state.Log,
+		"all step outputs should be merged",
+	)
+}

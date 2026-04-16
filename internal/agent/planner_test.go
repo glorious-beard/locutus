@@ -53,16 +53,16 @@ func sampleMasterPlanJSON(t *testing.T) string {
 	return string(data)
 }
 
-// setupPlannerFS creates a MemFS pre-populated with council agent definitions
-// and a standard workflow.yaml, matching the scaffold layout under .borg/.
+// setupPlannerFS creates a MemFS pre-populated with agent definitions
+// and a standard planning-workflow.yaml, matching the scaffold layout under .borg/.
 func setupPlannerFS(t *testing.T) *specio.MemFS {
 	t.Helper()
 
 	fs := specio.NewMemFS()
 
 	// Create directory structure.
-	assert.NoError(t, fs.MkdirAll(".borg/council/agents", 0o755))
-	assert.NoError(t, fs.MkdirAll(".borg/council", 0o755))
+	assert.NoError(t, fs.MkdirAll(".borg/agents", 0o755))
+	assert.NoError(t, fs.MkdirAll(".borg/workflows", 0o755))
 	assert.NoError(t, fs.MkdirAll(".borg/history", 0o755))
 
 	// Council agent definitions (YAML frontmatter + markdown body).
@@ -109,10 +109,10 @@ and rationale for the decision journal.
 `,
 	}
 	for name, content := range agents {
-		assert.NoError(t, fs.WriteFile(".borg/council/agents/"+name, []byte(content), 0o644))
+		assert.NoError(t, fs.WriteFile(".borg/agents/"+name, []byte(content), 0o644))
 	}
 
-	// Standard council workflow.
+	// Standard planning workflow.
 	wfYAML := `rounds:
   - id: propose
     agent: planner
@@ -136,7 +136,7 @@ and rationale for the decision journal.
     depends_on: [revise]
 max_rounds: 5
 `
-	assert.NoError(t, fs.WriteFile(".borg/council/workflow.yaml", []byte(wfYAML), 0o644))
+	assert.NoError(t, fs.WriteFile(".borg/workflows/planning.yaml", []byte(wfYAML), 0o644))
 
 	return fs
 }
@@ -168,7 +168,7 @@ interface types that enable parallel workstreams.
 `,
 	}
 	for name, content := range specialists {
-		assert.NoError(t, fs.WriteFile(".borg/council/agents/"+name, []byte(content), 0o644))
+		assert.NoError(t, fs.WriteFile(".borg/agents/"+name, []byte(content), 0o644))
 	}
 
 	// Workflow with specialist steps. Specialists run conditionally when the
@@ -206,7 +206,7 @@ interface types that enable parallel workstreams.
     depends_on: [revise]
 max_rounds: 5
 `
-	assert.NoError(t, fs.WriteFile(".borg/council/workflow.yaml", []byte(wfYAML), 0o644))
+	assert.NoError(t, fs.WriteFile(".borg/workflows/planning.yaml", []byte(wfYAML), 0o644))
 
 	return fs
 }

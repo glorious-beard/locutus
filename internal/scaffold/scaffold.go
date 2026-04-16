@@ -14,8 +14,14 @@ import (
 	"github.com/chetan/locutus/internal/specio"
 )
 
-//go:embed council
-var councilFS embed.FS
+//go:embed agents
+var agentsFS embed.FS
+
+//go:embed workflows/planning.yaml
+var planningWorkflow []byte
+
+//go:embed workflows/assimilation.yaml
+var assimilationWorkflow []byte
 
 // directories is the set of directories created by Scaffold.
 var directories = []string{
@@ -26,8 +32,8 @@ var directories = []string{
 	".borg/spec/strategies",
 	".borg/spec/entities",
 	".borg/history",
-	".borg/council/agents",
-	".borg/council/brownfield/agents",
+	".borg/agents",
+	".borg/workflows",
 	".agents/skills",
 }
 
@@ -71,9 +77,21 @@ func Scaffold(fsys specio.FS, projectName string) error {
 		return err
 	}
 
-	// 5. Copy embedded council files (workflow.yaml + agent definitions).
-	if err := copyEmbedded(fsys, councilFS, "council", ".borg/council"); err != nil {
-		return fmt.Errorf("copy council files: %w", err)
+	// 5. Copy embedded agent definitions.
+	if err := copyEmbedded(fsys, agentsFS, "agents", ".borg/agents"); err != nil {
+		return fmt.Errorf("copy agent files: %w", err)
+	}
+
+	// 6. Write workflow files.
+	if err := writeIfMissing(fsys, ".borg/workflows/planning.yaml", func() ([]byte, error) {
+		return planningWorkflow, nil
+	}); err != nil {
+		return err
+	}
+	if err := writeIfMissing(fsys, ".borg/workflows/assimilation.yaml", func() ([]byte, error) {
+		return assimilationWorkflow, nil
+	}); err != nil {
+		return err
 	}
 
 	return nil
@@ -87,7 +105,6 @@ func copyEmbedded(fsys specio.FS, embedded embed.FS, root, targetPrefix string) 
 			return err
 		}
 
-		// Compute the target path by replacing the embed root with the target prefix.
 		relPath := path[len(root):]
 		targetPath := targetPrefix + relPath
 
@@ -104,7 +121,7 @@ func copyEmbedded(fsys specio.FS, embedded embed.FS, root, targetPrefix string) 
 // writeIfMissing writes a file only if it does not already exist (idempotency).
 func writeIfMissing(fsys specio.FS, path string, generate func() ([]byte, error)) error {
 	if _, err := fsys.Stat(path); err == nil {
-		return nil // already exists, skip
+		return nil
 	}
 	data, err := generate()
 	if err != nil {

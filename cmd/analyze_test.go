@@ -21,16 +21,17 @@ func setupAnalyzeFS(t *testing.T) *specio.MemFS {
 	fs.MkdirAll(".borg/spec/strategies", 0o755)
 	fs.WriteFile(".borg/spec/traces.json", []byte(`{"entries":{}}`), 0o644)
 
-	// Brownfield council agents.
-	fs.MkdirAll(".borg/council/brownfield/agents", 0o755)
+	// Brownfield agents and workflows.
+	fs.MkdirAll(".borg/agents", 0o755)
+	fs.MkdirAll(".borg/workflows", 0o755)
 	agents := []string{"scout", "backend_analyzer", "frontend_analyzer", "infra_analyzer", "gap_analyst", "remediator"}
 	for _, id := range agents {
 		content := "---\nid: " + id + "\nrole: " + id + "\n---\nYou are the " + id + ".\n"
-		fs.WriteFile(".borg/council/brownfield/agents/"+id+".md", []byte(content), 0o644)
+		fs.WriteFile(".borg/agents/"+id+".md", []byte(content), 0o644)
 	}
 
 	// Brownfield workflow matching embedded workflow.yaml.
-	fs.WriteFile(".borg/council/brownfield/workflow.yaml", []byte(`rounds:
+	fs.WriteFile(".borg/workflows/assimilation.yaml", []byte(`rounds:
   - id: scan
     agent: scout
     parallel: false

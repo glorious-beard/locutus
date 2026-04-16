@@ -10,15 +10,16 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// setupBrownfieldFS creates a MemFS with brownfield council config (agents + workflow)
+// setupBrownfieldFS creates a MemFS with brownfield agent config (agents + workflow)
 // and a synthetic codebase for testing.
 func setupBrownfieldFS(t *testing.T) *specio.MemFS {
 	t.Helper()
 
 	fs := specio.NewMemFS()
 
-	// Create brownfield agent directory structure.
-	assert.NoError(t, fs.MkdirAll(".borg/council/brownfield/agents", 0o755))
+	// Create agent directory structure.
+	assert.NoError(t, fs.MkdirAll(".borg/agents", 0o755))
+	assert.NoError(t, fs.MkdirAll(".borg/workflows", 0o755))
 
 	// Agent definitions — minimal frontmatter with id + role.
 	agents := map[string]string{
@@ -60,7 +61,7 @@ You are a remediator. Propose assumed decisions and features to close detected g
 	}
 
 	for name, content := range agents {
-		path := ".borg/council/brownfield/agents/" + name + ".md"
+		path := ".borg/agents/" + name + ".md"
 		assert.NoError(t, fs.WriteFile(path, []byte(content), 0o644))
 	}
 
@@ -83,7 +84,7 @@ You are a remediator. Propose assumed decisions and features to close detected g
     depends_on: [gaps]
 max_rounds: 1
 `
-	assert.NoError(t, fs.WriteFile(".borg/council/brownfield/workflow.yaml", []byte(workflowContent), 0o644))
+	assert.NoError(t, fs.WriteFile(".borg/workflows/assimilation.yaml", []byte(workflowContent), 0o644))
 
 	// Synthetic codebase files.
 	assert.NoError(t, fs.MkdirAll("internal/auth", 0o755))
