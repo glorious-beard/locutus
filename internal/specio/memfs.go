@@ -99,6 +99,16 @@ func (m *MemFS) Stat(name string) (os.FileInfo, error) {
 	return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
 }
 
+// AllFiles returns all file paths stored in the MemFS, sorted alphabetically.
+func (m *MemFS) AllFiles() []string {
+	result := make([]string, 0, len(m.files))
+	for name := range m.files {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
+}
+
 // ListDir returns sorted file names under the given directory (non-recursive).
 func (m *MemFS) ListDir(dir string) []string {
 	dir = cleanPath(dir)

@@ -1,0 +1,17 @@
+rounds:
+  - id: scan
+    agent: scout
+    parallel: false
+  - id: analyze
+    agents: [backend_analyzer, frontend_analyzer, infra_analyzer]
+    parallel: true
+    depends_on: [scan]
+  - id: gaps
+    agent: gap_analyst
+    parallel: false
+    depends_on: [analyze]
+  - id: remediate
+    agent: remediator
+    parallel: false
+    depends_on: [gaps]
+max_rounds: 1

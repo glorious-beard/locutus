@@ -27,6 +27,7 @@ var directories = []string{
 	".borg/spec/entities",
 	".borg/history",
 	".borg/council/agents",
+	".borg/council/brownfield/agents",
 	".agents/skills",
 }
 
