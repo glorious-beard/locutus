@@ -1,0 +1,22 @@
+rounds:
+  - id: propose
+    agent: planner
+    parallel: false
+  - id: challenge
+    agents: [critic, stakeholder]
+    parallel: true
+    depends_on: [propose]
+  - id: research
+    agent: researcher
+    parallel: false
+    depends_on: [challenge]
+    conditional: open_questions
+  - id: revise
+    agent: planner
+    parallel: false
+    depends_on: [research]
+  - id: record
+    agent: historian
+    parallel: false
+    depends_on: [revise]
+max_rounds: 5
