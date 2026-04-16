@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/chetan/locutus/internal/spec"
@@ -42,12 +44,31 @@ type Gap struct {
 
 // WalkInventory produces a file inventory from the given FS, respecting .gitignore.
 func WalkInventory(fsys specio.FS) ([]FileEntry, error) {
-	mfs, ok := fsys.(*specio.MemFS)
-	if !ok {
+	// Collect all file paths.
+	var allFiles []string
+	if mfs, ok := fsys.(*specio.MemFS); ok {
+		allFiles = mfs.AllFiles()
+	} else if osfs, ok := fsys.(*specio.OSFS); ok {
+		err := filepath.WalkDir(osfs.Base(), func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() && (d.Name() == ".git" || d.Name() == ".borg") {
+				return filepath.SkipDir
+			}
+			if !d.IsDir() {
+				rel, _ := filepath.Rel(osfs.Base(), p)
+				allFiles = append(allFiles, rel)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("walking directory: %w", err)
+		}
+	} else {
 		return nil, fmt.Errorf("WalkInventory: unsupported FS type %T", fsys)
 	}
 
-	allFiles := mfs.AllFiles()
 	if len(allFiles) == 0 {
 		return nil, nil
 	}

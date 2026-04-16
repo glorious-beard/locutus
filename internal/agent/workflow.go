@@ -20,7 +20,8 @@ type WorkflowStep struct {
 	Agents      []string `yaml:"agents,omitempty"`
 	Parallel    bool     `yaml:"parallel"`
 	DependsOn   []string `yaml:"depends_on,omitempty"`
-	Conditional string   `yaml:"conditional,omitempty"`
+	Conditional string   `yaml:"conditional,omitempty"` // condition tag: "has_concerns", "has_open_questions", or custom keyword
+	MergeAs     string   `yaml:"merge_as,omitempty"`    // state field to merge into: "proposed_spec", "concerns", "research", "revisions", "record"
 }
 
 // Workflow defines the full council workflow DAG.
@@ -162,11 +163,23 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 	return results, nil
 }
 
-// shouldRunConditional checks whether a conditional step should execute by
-// scanning the state for the keyword.
+// shouldRunConditional checks whether a conditional step should execute.
+// Supports typed condition tags and falls back to keyword presence in state.
 func shouldRunConditional(cond string, state *PlanningState) bool {
-	lower := strings.ToLower(cond)
+	// Typed conditions checked first.
+	switch cond {
+	case "has_concerns":
+		return len(state.Concerns) > 0
+	case "has_open_questions":
+		return state.HasOpenConcerns()
+	case "has_proposed_spec":
+		return state.ProposedSpec != ""
+	case "has_revisions":
+		return state.Revisions != ""
+	}
 
+	// Fallback: keyword presence scan for custom/legacy conditionals.
+	lower := strings.ToLower(cond)
 	if strings.Contains(strings.ToLower(state.ProposedSpec), lower) {
 		return true
 	}
@@ -181,17 +194,23 @@ func shouldRunConditional(cond string, state *PlanningState) bool {
 	return false
 }
 
-// mergeResults applies round results back into the planning state. Called
-// sequentially by the DAG executor — never concurrently.
-func mergeResults(state *PlanningState, stepID string, results []RoundResult) {
+// mergeResults applies round results back into the planning state using the
+// step's MergeAs field. Falls back to stepID-based matching for backward
+// compatibility with workflows that don't declare merge_as.
+func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult) {
+	mergeKey := step.MergeAs
+	if mergeKey == "" {
+		mergeKey = step.ID // fallback: use step ID
+	}
+
 	for _, r := range results {
 		if r.Err != nil || r.Output == "" {
 			continue
 		}
-		switch stepID {
-		case "propose":
+		switch mergeKey {
+		case "proposed_spec", "propose":
 			state.ProposedSpec = r.Output
-		case "challenge":
+		case "concerns", "challenge":
 			state.Concerns = append(state.Concerns, Concern{
 				AgentID:  r.AgentID,
 				Severity: "medium",
@@ -199,10 +218,10 @@ func mergeResults(state *PlanningState, stepID string, results []RoundResult) {
 			})
 		case "research":
 			state.ResearchResults = append(state.ResearchResults, Finding{
-				Query:  "council concern investigation",
+				Query:  "investigation",
 				Result: r.Output,
 			})
-		case "revise":
+		case "revisions", "revise":
 			state.Revisions = r.Output
 		case "record":
 			state.Record = r.Output
@@ -232,7 +251,16 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 		ds := executor.Step{
 			ID:        ws.ID,
 			DependsOn: ws.DependsOn,
-			Parallel:  false, // parallelism is within a step (multi-agent), not between steps
+			// Steps are sequential at the DAG level — the executor resolves
+			// dependency ordering. Multi-agent parallelism (e.g. critic +
+			// stakeholder running concurrently) is handled inside ExecuteRound,
+			// which fans out goroutines per agent within a single step.
+			// These are distinct concerns: step ordering vs. agent fan-out.
+			//
+			// TODO: if step-level parallelism is needed (e.g. two independent
+			// council rounds running in parallel), set Parallel based on the
+			// workflow step and ensure ExecuteRound is reentrant-safe.
+			Parallel: false,
 		}
 		if ws.Conditional != "" {
 			cond := ws.Conditional // capture for closure
@@ -286,7 +314,8 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 			},
 			Merge: func(s *PlanningState, r executor.StepResult) {
 				if results, ok := r.Output.([]RoundResult); ok {
-					mergeResults(s, r.StepID, results)
+					ws := stepLookup[r.StepID]
+					mergeResults(s, ws, results)
 				}
 			},
 			Snapshot: func(s *PlanningState) PlanningState { return *s },

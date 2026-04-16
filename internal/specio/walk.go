@@ -1,7 +1,6 @@
 package specio
 
 import (
-	"os"
 	"path"
 	"sort"
 	"strings"
@@ -81,26 +80,5 @@ func FindOrphans(fsys FS, dir string) (jsonOnly []string, mdOnly []string, err e
 
 // listFiles returns all file paths in a directory (non-recursive), sorted.
 func listFiles(fsys FS, dir string) ([]string, error) {
-	// Fast path for MemFS.
-	if mfs, ok := fsys.(*MemFS); ok {
-		return mfs.ListDir(dir), nil
-	}
-
-	// Standard path via OSFS.
-	if osfs, ok := fsys.(*OSFS); ok {
-		entries, err := os.ReadDir(osfs.resolve(dir))
-		if err != nil {
-			return nil, err
-		}
-		var result []string
-		for _, e := range entries {
-			if !e.IsDir() {
-				result = append(result, path.Join(dir, e.Name()))
-			}
-		}
-		sort.Strings(result)
-		return result, nil
-	}
-
-	return nil, nil
+	return fsys.ListDir(dir)
 }

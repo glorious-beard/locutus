@@ -205,13 +205,13 @@ func TestMergeResults(t *testing.T) {
 	state := &PlanningState{Prompt: "Design feature X."}
 
 	// Propose → sets ProposedSpec.
-	mergeResults(state, "propose", []RoundResult{
+	mergeResults(state, WorkflowStep{ID: "propose"}, []RoundResult{
 		{StepID: "propose", AgentID: "planner", Output: "my proposal"},
 	})
 	assert.Equal(t, "my proposal", state.ProposedSpec)
 
 	// Challenge → appends Concerns.
-	mergeResults(state, "challenge", []RoundResult{
+	mergeResults(state, WorkflowStep{ID: "challenge"}, []RoundResult{
 		{StepID: "challenge", AgentID: "critic", Output: "concern 1"},
 		{StepID: "challenge", AgentID: "stakeholder", Output: "concern 2"},
 	})
@@ -220,22 +220,29 @@ func TestMergeResults(t *testing.T) {
 	assert.Equal(t, "stakeholder", state.Concerns[1].AgentID)
 
 	// Research → appends Findings.
-	mergeResults(state, "research", []RoundResult{
+	mergeResults(state, WorkflowStep{ID: "research"}, []RoundResult{
 		{StepID: "research", AgentID: "researcher", Output: "finding"},
 	})
 	assert.Len(t, state.ResearchResults, 1)
 
 	// Revise → sets Revisions.
-	mergeResults(state, "revise", []RoundResult{
+	mergeResults(state, WorkflowStep{ID: "revise"}, []RoundResult{
 		{StepID: "revise", AgentID: "planner", Output: "revised proposal"},
 	})
 	assert.Equal(t, "revised proposal", state.Revisions)
 
 	// Record → sets Record.
-	mergeResults(state, "record", []RoundResult{
+	mergeResults(state, WorkflowStep{ID: "record"}, []RoundResult{
 		{StepID: "record", AgentID: "historian", Output: "decision journal entry"},
 	})
 	assert.Equal(t, "decision journal entry", state.Record)
+
+	// Test MergeAs override.
+	state2 := &PlanningState{Prompt: "Test merge_as."}
+	mergeResults(state2, WorkflowStep{ID: "custom-step", MergeAs: "proposed_spec"}, []RoundResult{
+		{StepID: "custom-step", AgentID: "planner", Output: "merged via merge_as"},
+	})
+	assert.Equal(t, "merged via merge_as", state2.ProposedSpec)
 }
 
 func TestWorkflowRunFullSequence(t *testing.T) {

@@ -23,7 +23,7 @@ func TestClaudeCodeBuildCommand(t *testing.T) {
 
 	// The command should invoke "claude" with "-p", "--output-format", "json",
 	// and include the step description somewhere in the args.
-	assert.Equal(t, "claude", cmd.Path)
+	assert.Equal(t, "claude", cmd.Args[0])
 	assert.Contains(t, cmd.Args, "claude")
 	assert.Contains(t, cmd.Args, "-p")
 	assert.Contains(t, cmd.Args, "--output-format")
@@ -54,7 +54,7 @@ func TestClaudeCodeBuildRetryCommand(t *testing.T) {
 
 	assert.IsType(t, &exec.Cmd{}, cmd)
 	assert.Equal(t, workDir, cmd.Dir)
-	assert.Equal(t, "claude", cmd.Path)
+	assert.Equal(t, "claude", cmd.Args[0])
 	assert.Contains(t, cmd.Args, "--resume")
 	assert.Contains(t, cmd.Args, sessionID)
 	assert.Contains(t, cmd.Args, "-p")
@@ -115,7 +115,7 @@ func TestCodexBuildCommand(t *testing.T) {
 
 	assert.IsType(t, &exec.Cmd{}, cmd)
 	assert.Equal(t, workDir, cmd.Dir)
-	assert.Equal(t, "codex", cmd.Path)
+	assert.Equal(t, "codex", cmd.Args[0])
 	assert.Contains(t, cmd.Args, "codex")
 	assert.Contains(t, cmd.Args, "exec")
 

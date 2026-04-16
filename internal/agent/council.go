@@ -34,13 +34,10 @@ func LoadAgentDefs(fsys specio.FS, dir string) ([]AgentDef, error) {
 		return nil, fmt.Errorf("agent dir %q: not a directory", dir)
 	}
 
-	// List files in the directory. Use MemFS.ListDir if available, otherwise
-	// fall back to os.ReadDir for OSFS.
-	var paths []string
-	if mem, ok := fsys.(*specio.MemFS); ok {
-		paths = mem.ListDir(dir)
-	} else {
-		return nil, fmt.Errorf("unsupported FS type for listing directory")
+	// List files in the directory.
+	paths, err := fsys.ListDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("listing agent dir %q: %w", dir, err)
 	}
 
 	var defs []AgentDef

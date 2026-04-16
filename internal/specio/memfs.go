@@ -109,8 +109,8 @@ func (m *MemFS) AllFiles() []string {
 	return result
 }
 
-// ListDir returns sorted file names under the given directory (non-recursive).
-func (m *MemFS) ListDir(dir string) []string {
+// ListDir returns sorted file paths under the given directory (non-recursive).
+func (m *MemFS) ListDir(dir string) ([]string, error) {
 	dir = cleanPath(dir)
 	var result []string
 	for name := range m.files {
@@ -119,7 +119,7 @@ func (m *MemFS) ListDir(dir string) []string {
 		}
 	}
 	sort.Strings(result)
-	return result
+	return result, nil
 }
 
 func cleanPath(name string) string {

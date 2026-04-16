@@ -3,7 +3,6 @@ package history
 import (
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"path"
 	"sort"
 	"time"
@@ -104,21 +103,5 @@ func (h *Historian) Alternatives(targetID string) ([]string, error) {
 
 // listFiles returns all file paths in a directory (non-recursive), sorted.
 func listFiles(fsys specio.FS, dir string) ([]string, error) {
-	if mfs, ok := fsys.(*specio.MemFS); ok {
-		return mfs.ListDir(dir), nil
-	}
-
-	// Fallback: use fs.ReadDir via the embedded fs.FS interface.
-	entries, err := fs.ReadDir(fsys, dir)
-	if err != nil {
-		return nil, err
-	}
-	var result []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			result = append(result, path.Join(dir, e.Name()))
-		}
-	}
-	sort.Strings(result)
-	return result, nil
+	return fsys.ListDir(dir)
 }

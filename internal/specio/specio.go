@@ -18,6 +18,7 @@ type FS interface {
 	MkdirAll(path string, perm os.FileMode) error
 	Remove(name string) error
 	Stat(name string) (os.FileInfo, error)
+	ListDir(dir string) ([]string, error)
 }
 
 // OSFS implements FS using the real OS filesystem, rooted at a given base
@@ -63,6 +64,21 @@ func (o *OSFS) Remove(name string) error {
 // Stat returns file info for a path relative to the base directory.
 func (o *OSFS) Stat(name string) (os.FileInfo, error) {
 	return os.Stat(o.resolve(name))
+}
+
+// ListDir returns sorted file paths under the given directory (non-recursive).
+func (o *OSFS) ListDir(dir string) ([]string, error) {
+	entries, err := os.ReadDir(o.resolve(dir))
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			result = append(result, filepath.Join(dir, e.Name()))
+		}
+	}
+	return result, nil
 }
 
 // Base returns the root directory of this OSFS.

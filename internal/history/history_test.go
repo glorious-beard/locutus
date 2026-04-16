@@ -149,7 +149,8 @@ func TestRecordCreatesFile(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify a .json file exists in the history directory.
-	files := mfs.ListDir(histDir)
+	files, listErr := mfs.ListDir(histDir)
+	assert.NoError(t, listErr)
 	assert.Len(t, files, 1)
 	assert.Contains(t, files[0], ".json")
 }

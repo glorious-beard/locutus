@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/chetan/locutus/internal/history"
@@ -47,8 +48,11 @@ func Plan(ctx context.Context, llm LLM, fsys specio.FS, req PlanRequest) (*spec.
 		Workflow:  wf,
 	}
 
-	// 5. Run the workflow.
-	results, err := executor.Run(ctx, req.Prompt)
+	// 5. Build a contextualized prompt that includes spec state.
+	prompt := buildPlanPrompt(req)
+
+	// 6. Run the workflow.
+	results, err := executor.Run(ctx, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("workflow execution: %w", err)
 	}
@@ -91,4 +95,50 @@ func Plan(ctx context.Context, llm LLM, fsys specio.FS, req PlanRequest) (*spec.
 	}
 
 	return &plan, nil
+}
+
+// buildPlanPrompt constructs a rich prompt that includes all PlanRequest context
+// so the council agents have full visibility into the spec state.
+//
+// Scaling limit: this concatenates everything into a single string. For projects
+// with many features/decisions, this will exceed the model's useful context window.
+// The v2 approach is to pass spec as structured context (separate messages, or a
+// tool the agents can call to query the graph: get_decision(id), list_features).
+func buildPlanPrompt(req PlanRequest) string {
+	var b strings.Builder
+
+	b.WriteString(req.Prompt)
+	b.WriteString("\n")
+
+	if req.GoalsBody != "" {
+		b.WriteString("\n## GOALS.md\n")
+		b.WriteString(req.GoalsBody)
+		b.WriteString("\n")
+	}
+
+	if len(req.Features) > 0 {
+		b.WriteString("\n## Existing Features\n")
+		for _, f := range req.Features {
+			fmt.Fprintf(&b, "- %s: %s (status: %s)\n", f.ID, f.Title, f.Status)
+		}
+	}
+
+	if len(req.Decisions) > 0 {
+		b.WriteString("\n## Existing Decisions\n")
+		for _, d := range req.Decisions {
+			fmt.Fprintf(&b, "- %s: %s (status: %s, confidence: %.2f)\n", d.ID, d.Title, d.Status, d.Confidence)
+			if d.Rationale != "" {
+				fmt.Fprintf(&b, "  Rationale: %s\n", d.Rationale)
+			}
+		}
+	}
+
+	if len(req.Strategies) > 0 {
+		b.WriteString("\n## Existing Strategies\n")
+		for _, s := range req.Strategies {
+			fmt.Fprintf(&b, "- %s: %s (kind: %s, decision: %s)\n", s.ID, s.Title, s.Kind, s.DecisionID)
+		}
+	}
+
+	return b.String()
 }

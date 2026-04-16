@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 
@@ -202,16 +201,5 @@ func errorResult(msg string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
 		IsError: true,
-	}
-}
-
-// jsonResult creates a CallToolResult with JSON-encoded content.
-func jsonResult(v any) *mcp.CallToolResult {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return errorResult(fmt.Sprintf("json marshal failed: %v", err))
-	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: string(data)}},
 	}
 }

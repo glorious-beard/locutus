@@ -32,12 +32,10 @@ type CommandRunner func(cmd *exec.Cmd) ([]byte, error)
 // EscalationAction represents a supervisor escalation level.
 type EscalationAction string
 
+// Only RefineStep is currently implemented. Additional levels will be added
+// when the supervisor gains multi-level escalation (guide → replan → abort).
 const (
-	EscalateRefineStep    EscalationAction = "refine_step"
-	EscalateExplicitGuide EscalationAction = "explicit_guide"
-	EscalateReplan        EscalationAction = "replan"
-	EscalateUserInput     EscalationAction = "user_input"
-	EscalateAbort         EscalationAction = "abort"
+	EscalateRefineStep EscalationAction = "refine_step"
 )
 
 // SupervisorConfig configures the supervision loop.
