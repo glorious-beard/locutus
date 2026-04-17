@@ -20,13 +20,13 @@ type FileEntry struct {
 	IsDir bool   `json:"is_dir"`
 }
 
-// BrownfieldRequest holds inputs for the brownfield analysis pipeline.
-type BrownfieldRequest struct {
+// AssimilationRequest holds inputs for the assimilation analysis pipeline.
+type AssimilationRequest struct {
 	Inventory []FileEntry
 }
 
-// BrownfieldResult holds the full output of brownfield analysis.
-type BrownfieldResult struct {
+// AssimilationResult holds the full output of assimilation analysis.
+type AssimilationResult struct {
 	Features   []spec.Feature
 	Decisions  []spec.Decision
 	Strategies []spec.Strategy
@@ -146,15 +146,15 @@ func isIgnored(filePath string, patterns []gitignorePattern) bool {
 	return false
 }
 
-// Analyze runs the full brownfield pipeline using the brownfield council workflow.
-func Analyze(ctx context.Context, llm LLM, fsys specio.FS, req BrownfieldRequest) (*BrownfieldResult, error) {
+// Analyze runs the full assimilation pipeline using the assimilation council workflow.
+func Analyze(ctx context.Context, llm LLM, fsys specio.FS, req AssimilationRequest) (*AssimilationResult, error) {
 	const agentsDir = ".borg/agents"
 	const workflowPath = ".borg/workflows/assimilation.yaml"
 
 	// Load agent definitions.
 	agentList, err := LoadAgentDefs(fsys, agentsDir)
 	if err != nil {
-		return nil, fmt.Errorf("loading brownfield agents: %w", err)
+		return nil, fmt.Errorf("loading assimilation agents: %w", err)
 	}
 
 	agentDefs := make(map[string]AgentDef, len(agentList))
@@ -165,7 +165,7 @@ func Analyze(ctx context.Context, llm LLM, fsys specio.FS, req BrownfieldRequest
 	// Load workflow.
 	wf, err := LoadWorkflow(fsys, workflowPath)
 	if err != nil {
-		return nil, fmt.Errorf("loading brownfield workflow: %w", err)
+		return nil, fmt.Errorf("loading assimilation workflow: %w", err)
 	}
 
 	// Build the initial prompt with inventory context.
@@ -185,16 +185,16 @@ func Analyze(ctx context.Context, llm LLM, fsys specio.FS, req BrownfieldRequest
 
 	results, err := exec.Run(ctx, prompt)
 	if err != nil {
-		return nil, fmt.Errorf("brownfield workflow execution: %w", err)
+		return nil, fmt.Errorf("assimilation workflow execution: %w", err)
 	}
 
-	// Parse results into BrownfieldResult.
-	return parseBrownfieldResults(results)
+	// Parse results into AssimilationResult.
+	return parseAssimilationResults(results)
 }
 
-// parseBrownfieldResults aggregates all round results into a single BrownfieldResult.
-func parseBrownfieldResults(results []RoundResult) (*BrownfieldResult, error) {
-	br := &BrownfieldResult{}
+// parseAssimilationResults aggregates all round results into a single AssimilationResult.
+func parseAssimilationResults(results []RoundResult) (*AssimilationResult, error) {
+	br := &AssimilationResult{}
 
 	for _, r := range results {
 		if r.Err != nil || r.Output == "" {

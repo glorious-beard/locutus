@@ -37,11 +37,11 @@ func CheckConvergence(ctx context.Context, llm LLM, monitorDef AgentDef, state *
 func buildConvergencePrompt(snap StateSnapshot) string {
 	var b strings.Builder
 
-	b.WriteString("Assess whether the planning council has converged.\n\n")
-
+	// Data sections only — the convergence agent's system prompt (convergence.md)
+	// contains the evaluation criteria and response format instructions.
 	if snap.ProposedSpec != "" {
 		b.WriteString("## Current Proposal\n")
-		b.WriteString(snap.ProposedSpec)
+		b.WriteString(compactContext(snap.ProposedSpec, defaultMaxChars))
 		b.WriteString("\n\n")
 	}
 
@@ -63,14 +63,9 @@ func buildConvergencePrompt(snap StateSnapshot) string {
 
 	if snap.Revisions != "" {
 		b.WriteString("## Revised Proposal\n")
-		b.WriteString(snap.Revisions)
+		b.WriteString(compactContext(snap.Revisions, defaultMaxChars))
 		b.WriteString("\n\n")
 	}
-
-	b.WriteString("Respond with:\n")
-	b.WriteString("- CONVERGED if the proposal adequately addresses all concerns\n")
-	b.WriteString("- NOT_CONVERGED if there are unresolved issues, followed by a list of open issues\n")
-	b.WriteString("- CYCLING if the same concerns keep repeating without progress\n")
 
 	return b.String()
 }

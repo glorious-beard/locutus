@@ -20,7 +20,7 @@ type CLI struct {
 	Revisit  RevisitCmd  `cmd:"" help:"Update a decision or strategy."`
 	Triage   TriageCmd   `cmd:"" help:"Evaluate an issue against GOALS.md."`
 	Import   ImportCmd   `cmd:"" help:"Create a feature or bug from an issue."`
-	Analyze  AnalyzeCmd  `cmd:"" help:"Analyze an existing codebase (brownfield)."`
+	Analyze  AnalyzeCmd  `cmd:"" help:"Analyze an existing codebase (assimilation)."`
 	Mcp      McpCmd      `cmd:"" help:"Start the MCP server."`
 }
 

@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// setupBrownfieldFS creates a MemFS with brownfield agent config (agents + workflow)
+// setupAssimilationFS creates a MemFS with assimilation agent config (agents + workflow)
 // and a synthetic codebase for testing.
-func setupBrownfieldFS(t *testing.T) *specio.MemFS {
+func setupAssimilationFS(t *testing.T) *specio.MemFS {
 	t.Helper()
 
 	fs := specio.NewMemFS()
@@ -65,7 +65,7 @@ You are a remediator. Propose assumed decisions and features to close detected g
 		assert.NoError(t, fs.WriteFile(path, []byte(content), 0o644))
 	}
 
-	// Brownfield workflow.
+	// Assimilation workflow.
 	workflowContent := `rounds:
   - id: scan
     agent: scout
@@ -155,7 +155,7 @@ func TestWalkInventoryEmpty(t *testing.T) {
 }
 
 func TestAnalyzeProducesSpec(t *testing.T) {
-	fs := setupBrownfieldFS(t)
+	fs := setupAssimilationFS(t)
 
 	// Build the file inventory from the synthetic codebase.
 	inventory, err := WalkInventory(fs)
@@ -254,7 +254,7 @@ func TestAnalyzeProducesSpec(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	result, err := Analyze(ctx, mock, fs, BrownfieldRequest{Inventory: inventory})
+	result, err := Analyze(ctx, mock, fs, AssimilationRequest{Inventory: inventory})
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 
@@ -271,8 +271,8 @@ func TestAnalyzeProducesSpec(t *testing.T) {
 	assert.GreaterOrEqual(t, len(result.Features), 1, "expected at least 1 feature")
 }
 
-func TestAnalyzeMissingBrownfieldConfig(t *testing.T) {
-	// MemFS with no brownfield agents directory.
+func TestAnalyzeMissingAssimilationConfig(t *testing.T) {
+	// MemFS with no assimilation agents directory.
 	fs := specio.NewMemFS()
 	assert.NoError(t, fs.WriteFile("go.mod", []byte("module example.com/app\n"), 0o644))
 
@@ -281,15 +281,15 @@ func TestAnalyzeMissingBrownfieldConfig(t *testing.T) {
 	mock := NewMockLLM() // no responses needed — should fail before LLM call
 
 	ctx := context.Background()
-	result, err := Analyze(ctx, mock, fs, BrownfieldRequest{Inventory: inventory})
-	assert.Error(t, err, "expected error when brownfield config is missing")
+	result, err := Analyze(ctx, mock, fs, AssimilationRequest{Inventory: inventory})
+	assert.Error(t, err, "expected error when assimilation config is missing")
 	assert.Nil(t, result)
 }
 
 func TestAnalyzeEmptyCodebase(t *testing.T) {
-	fs := setupBrownfieldFS(t)
+	fs := setupAssimilationFS(t)
 
-	// Remove the synthetic codebase files — keep only brownfield config.
+	// Remove the synthetic codebase files — keep only assimilation config.
 	_ = fs.Remove("go.mod")
 	_ = fs.Remove("main.go")
 	_ = fs.Remove("internal/auth/handler.go")
@@ -330,7 +330,7 @@ func TestAnalyzeEmptyCodebase(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	result, err := Analyze(ctx, mock, fs, BrownfieldRequest{Inventory: inventory})
+	result, err := Analyze(ctx, mock, fs, AssimilationRequest{Inventory: inventory})
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 
@@ -350,8 +350,8 @@ func mustJSON(t *testing.T, v any) string {
 // Verify the types compile — these are compile-time checks only.
 var (
 	_ = FileEntry{}
-	_ = BrownfieldRequest{}
-	_ = BrownfieldResult{
+	_ = AssimilationRequest{}
+	_ = AssimilationResult{
 		Features:   []spec.Feature{},
 		Decisions:  []spec.Decision{},
 		Strategies: []spec.Strategy{},

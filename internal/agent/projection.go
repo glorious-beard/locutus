@@ -46,11 +46,11 @@ func projectChallenge(snap StateSnapshot) []Message {
 	if snap.ProposedSpec != "" {
 		msgs = append(msgs, Message{
 			Role:    "assistant",
-			Content: snap.ProposedSpec,
+			Content: compactContext(snap.ProposedSpec, defaultMaxChars),
 		})
 		msgs = append(msgs, Message{
 			Role:    "user",
-			Content: "Review the proposal above. Identify risks, over-engineering, unnecessary complexity, and simpler alternatives. Rate each concern as high/medium/low severity.",
+			Content: "Review the proposal above.",
 		})
 	}
 	return msgs
@@ -110,7 +110,7 @@ func projectRevise(snap StateSnapshot) []Message {
 
 	msgs = append(msgs, Message{
 		Role:    "user",
-		Content: "Revise the proposal to address the concerns and incorporate research findings.",
+		Content: "Address the concerns and findings above.",
 	})
 	return msgs
 }
@@ -144,7 +144,7 @@ func projectRecord(snap StateSnapshot) []Message {
 	}
 	msgs = append(msgs, Message{
 		Role:    "user",
-		Content: "Record the decisions made, alternatives considered, and rationale.",
+		Content: "Record the council session above.",
 	})
 	return msgs
 }

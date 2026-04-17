@@ -57,7 +57,7 @@ const (
 	PlanActionInit       PlanAction = "init"
 	PlanActionRevisit    PlanAction = "revisit"
 	PlanActionRegen      PlanAction = "regen"
-	PlanActionBrownfield PlanAction = "brownfield"
+	PlanActionAssimilation PlanAction = "assimilation"
 )
 
 // DetailLevel represents the granularity of a workstream's plan.

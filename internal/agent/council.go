@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
@@ -9,23 +10,40 @@ import (
 	"github.com/chetan/locutus/internal/specio"
 )
 
-// DefaultModel is the model used when an AgentDef has no explicit model.
+// CapabilityTier represents the model capability level an agent requires.
+type CapabilityTier string
+
+const (
+	CapabilityFast     CapabilityTier = "fast"     // cheap, fast — convergence, historian, classification
+	CapabilityBalanced CapabilityTier = "balanced"  // default — planning, critique, analysis
+	CapabilityStrong   CapabilityTier = "strong"    // expensive, powerful — complex architecture, stuck agents
+)
+
+// DefaultModels maps capability tiers to default model strings.
+// These are used when no explicit model is set and no provider-specific
+// overrides are configured. Users can override per-project in the manifest.
+var DefaultModels = map[CapabilityTier]string{
+	CapabilityFast:     "anthropic/claude-haiku-4-20250514",
+	CapabilityBalanced: "anthropic/claude-sonnet-4-20250514",
+	CapabilityStrong:   "anthropic/claude-opus-4-20250514",
+}
+
+// DefaultModel is the fallback model when no capability tier is specified.
 const DefaultModel = "anthropic/claude-sonnet-4-20250514"
 
-// AgentDef is a council agent definition loaded from a .md file.
+// AgentDef is an agent definition loaded from a .md file.
 type AgentDef struct {
-	ID           string  `yaml:"id"`
-	Role         string  `yaml:"role"`
-	Model        string  `yaml:"model,omitempty"`
-	Temperature  float64 `yaml:"temperature,omitempty"`
-	SystemPrompt string  // the markdown body (not from YAML)
+	ID           string         `yaml:"id"`
+	Role         string         `yaml:"role"`
+	Model        string         `yaml:"model,omitempty"`
+	Capability   CapabilityTier `yaml:"capability,omitempty"`
+	Temperature  float64        `yaml:"temperature,omitempty"`
+	OutputSchema string         `yaml:"output_schema,omitempty"` // type name for JSON schema injection
+	SystemPrompt string         // the markdown body (not from YAML)
 }
 
 // LoadAgentDefs reads all .md files from the given directory on the FS.
-// Each file has YAML frontmatter (id, role, model, temperature) and a
-// markdown body which becomes the SystemPrompt.
 func LoadAgentDefs(fsys specio.FS, dir string) ([]AgentDef, error) {
-	// Check that the directory exists.
 	info, err := fsys.Stat(dir)
 	if err != nil {
 		return nil, fmt.Errorf("agent dir %q: %w", dir, err)
@@ -34,7 +52,6 @@ func LoadAgentDefs(fsys specio.FS, dir string) ([]AgentDef, error) {
 		return nil, fmt.Errorf("agent dir %q: not a directory", dir)
 	}
 
-	// List files in the directory.
 	paths, err := fsys.ListDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("listing agent dir %q: %w", dir, err)
@@ -66,14 +83,25 @@ func LoadAgentDefs(fsys specio.FS, dir string) ([]AgentDef, error) {
 
 // BuildGenerateRequest constructs a GenerateRequest from an AgentDef and
 // user messages. The system prompt is prepended as a system-role message.
+// If the agent has a Capability tier, the model is resolved from DefaultModels.
+// If the agent has an OutputSchema, the JSON schema is appended to the system prompt.
 func BuildGenerateRequest(def AgentDef, messages []Message) GenerateRequest {
-	model := def.Model
-	if model == "" {
-		model = DefaultModel
+	model := resolveModel(def)
+
+	systemPrompt := def.SystemPrompt
+
+	// Append JSON schema if output_schema is specified.
+	if def.OutputSchema != "" {
+		if schema, ok := schemaRegistry[def.OutputSchema]; ok {
+			schemaJSON, err := json.MarshalIndent(schema, "", "  ")
+			if err == nil {
+				systemPrompt += "\n\n## Output JSON Schema\n\n```json\n" + string(schemaJSON) + "\n```\n"
+			}
+		}
 	}
 
 	msgs := make([]Message, 0, len(messages)+1)
-	msgs = append(msgs, Message{Role: "system", Content: def.SystemPrompt})
+	msgs = append(msgs, Message{Role: "system", Content: systemPrompt})
 	msgs = append(msgs, messages...)
 
 	return GenerateRequest{
@@ -81,4 +109,31 @@ func BuildGenerateRequest(def AgentDef, messages []Message) GenerateRequest {
 		Messages:    msgs,
 		Temperature: def.Temperature,
 	}
+}
+
+// resolveModel determines the model string for an agent.
+// Priority: explicit Model field > Capability tier > DefaultModel.
+func resolveModel(def AgentDef) string {
+	if def.Model != "" {
+		return def.Model
+	}
+	if def.Capability != "" {
+		if model, ok := DefaultModels[def.Capability]; ok {
+			return model
+		}
+	}
+	return DefaultModel
+}
+
+// schemaRegistry maps output_schema type names to example struct instances
+// for JSON schema generation. The struct is marshaled to JSON to produce
+// the schema the LLM should conform to.
+//
+// TODO: Replace with jsonschema-go reflection once description tags are added
+// to spec types. For now, use JSON examples as schema documentation.
+var schemaRegistry = map[string]any{}
+
+// RegisterSchema adds a type to the schema registry for output_schema injection.
+func RegisterSchema(name string, example any) {
+	schemaRegistry[name] = example
 }

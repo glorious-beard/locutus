@@ -181,7 +181,7 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 	// --- analyze ---
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "analyze",
-		Description: "Analyze an existing codebase (brownfield) to infer spec, detect gaps, and propose remediation.",
+		Description: "Analyze an existing codebase to infer spec, detect gaps, and propose remediation.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input analyzeInput) (*mcp.CallToolResult, any, error) {
 		return errorResult("LLM not configured — analyze requires an LLM provider"), nil, nil
 	})

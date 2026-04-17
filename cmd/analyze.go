@@ -8,7 +8,7 @@ import (
 	"github.com/chetan/locutus/internal/specio"
 )
 
-// AnalyzeCmd analyzes an existing codebase (brownfield).
+// AnalyzeCmd analyzes an existing codebase (assimilation).
 type AnalyzeCmd struct{}
 
 func (c *AnalyzeCmd) Run(cli *CLI) error {
@@ -17,22 +17,22 @@ func (c *AnalyzeCmd) Run(cli *CLI) error {
 	return fmt.Errorf("LLM not configured — analyze requires an LLM provider")
 }
 
-// RunAnalyze executes the brownfield analysis pipeline. It walks the file
-// inventory, builds a BrownfieldRequest, and delegates to agent.Analyze.
-func RunAnalyze(ctx context.Context, llm agent.LLM, fsys specio.FS) (*agent.BrownfieldResult, error) {
+// RunAnalyze executes the assimilation analysis pipeline. It walks the file
+// inventory, builds an AssimilationRequest, and delegates to agent.Analyze.
+func RunAnalyze(ctx context.Context, llm agent.LLM, fsys specio.FS) (*agent.AssimilationResult, error) {
 	// 1. Walk inventory.
 	inventory, err := agent.WalkInventory(fsys)
 	if err != nil {
 		return nil, fmt.Errorf("walking inventory: %w", err)
 	}
 
-	// 2. Create BrownfieldRequest with the inventory.
-	req := agent.BrownfieldRequest{Inventory: inventory}
+	// 2. Create AssimilationRequest with the inventory.
+	req := agent.AssimilationRequest{Inventory: inventory}
 
-	// 3. Run the brownfield analysis pipeline.
+	// 3. Run the assimilation analysis pipeline.
 	result, err := agent.Analyze(ctx, llm, fsys, req)
 	if err != nil {
-		return nil, fmt.Errorf("brownfield analysis: %w", err)
+		return nil, fmt.Errorf("assimilation analysis: %w", err)
 	}
 
 	return result, nil

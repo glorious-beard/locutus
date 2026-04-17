@@ -21,7 +21,7 @@ func setupAnalyzeFS(t *testing.T) *specio.MemFS {
 	fs.MkdirAll(".borg/spec/strategies", 0o755)
 	fs.WriteFile(".borg/spec/traces.json", []byte(`{"entries":{}}`), 0o644)
 
-	// Brownfield agents and workflows.
+	// Assimilation agents and workflows.
 	fs.MkdirAll(".borg/agents", 0o755)
 	fs.MkdirAll(".borg/workflows", 0o755)
 	agents := []string{"scout", "backend_analyzer", "frontend_analyzer", "infra_analyzer", "gap_analyst", "remediator"}
@@ -30,7 +30,7 @@ func setupAnalyzeFS(t *testing.T) *specio.MemFS {
 		fs.WriteFile(".borg/agents/"+id+".md", []byte(content), 0o644)
 	}
 
-	// Brownfield workflow matching embedded workflow.yaml.
+	// Assimilation workflow matching embedded workflow.yaml.
 	fs.WriteFile(".borg/workflows/assimilation.yaml", []byte(`rounds:
   - id: scan
     agent: scout
@@ -57,7 +57,7 @@ max_rounds: 1
 	return fs
 }
 
-func mockBrownfieldLLM() *agent.MockLLM {
+func mockAssimilationLLM() *agent.MockLLM {
 	return agent.NewMockLLM(
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"languages":["go"],"frameworks":[],"structure":"single-binary"}`}},
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[{"id":"d-go","title":"Go backend","status":"inferred","confidence":0.95}],"entities":[]}`}},
@@ -70,7 +70,7 @@ func mockBrownfieldLLM() *agent.MockLLM {
 
 func TestRunAnalyzeProducesSpec(t *testing.T) {
 	fs := setupAnalyzeFS(t)
-	llm := mockBrownfieldLLM()
+	llm := mockAssimilationLLM()
 
 	result, err := RunAnalyze(context.Background(), llm, fs)
 	assert.NoError(t, err)

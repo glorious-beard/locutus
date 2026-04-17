@@ -170,7 +170,7 @@ func (s *Supervisor) validate(ctx context.Context, step spec.PlanStep, output Dr
 	}
 
 	userPrompt := fmt.Sprintf(
-		"Step: %s\n\nAcceptance criteria:\n%s\nAgent output:\n%s\n\nDoes this output satisfy the acceptance criteria? Respond PASS or FAIL with explanation.",
+		"Step: %s\n\nAcceptance criteria:\n%s\nAgent output:\n%s\n\nEvaluate this output.",
 		step.Description,
 		assertions.String(),
 		output.Output,
