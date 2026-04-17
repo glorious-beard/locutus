@@ -38,9 +38,7 @@ func (m *MockDriver) ParseOutput(out []byte) (DriverOutput, error) {
 
 // mockRunner returns a CommandRunner that always succeeds with empty output.
 func mockRunner() CommandRunner {
-	return func(cmd *exec.Cmd) ([]byte, error) {
-		return []byte(`{}`), nil
-	}
+	return batchRunner([]byte(`{}`))
 }
 
 // mockLLMPass creates a MockLLM that always responds with "PASS".

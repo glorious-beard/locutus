@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -25,9 +26,6 @@ type AgentDriver interface {
 	BuildRetryCommand(step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd
 	ParseOutput(output []byte) (DriverOutput, error)
 }
-
-// CommandRunner executes a command and returns its output.
-type CommandRunner func(cmd *exec.Cmd) ([]byte, error)
 
 // EscalationAction represents a supervisor escalation level.
 type EscalationAction string
@@ -94,10 +92,22 @@ func (s *Supervisor) Supervise(ctx context.Context, step spec.PlanStep, driver A
 			cmd = driver.BuildRetryCommand(step, workDir, lastOutput.SessionID, feedback)
 		}
 
-		// Run command.
-		raw, err := s.runner(cmd)
+		// Run command and drain its stream.
+		// Part 5 will replace this batch read with an event-driven loop;
+		// for now we preserve the existing ParseOutput-based flow by reading
+		// the full stream into memory.
+		stream, err := s.runner(cmd)
 		if err != nil {
 			return nil, fmt.Errorf("command execution failed on attempt %d: %w", attempt, err)
+		}
+		raw, readErr := io.ReadAll(stream)
+		if closeErr := stream.Close(); closeErr != nil && readErr == nil {
+			// Non-zero exit or signal; surface only if we got bytes successfully
+			// above — let ParseOutput decide whether the output is still usable.
+			readErr = closeErr
+		}
+		if readErr != nil && len(raw) == 0 {
+			return nil, fmt.Errorf("reading command output on attempt %d: %w", attempt, readErr)
 		}
 
 		// Parse output.

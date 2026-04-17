@@ -1,7 +1,9 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,9 +32,7 @@ func setupDispatchRepo(t *testing.T) string {
 
 // alwaysPassRunner returns a runner that always returns an empty success output.
 func alwaysPassRunner() CommandRunner {
-	return func(cmd *exec.Cmd) ([]byte, error) {
-		return []byte(`{}`), nil
-	}
+	return batchRunner([]byte(`{}`))
 }
 
 // alwaysPassDriver is a mock driver whose ParseOutput returns success.
@@ -149,7 +149,7 @@ func TestDispatchRespectsDependencies(t *testing.T) {
 
 	// Track start times to verify ordering.
 	var aStarted, bStarted atomic.Int64
-	orderRunner := func(cmd *exec.Cmd) ([]byte, error) {
+	orderRunner := func(cmd *exec.Cmd) (io.ReadCloser, error) {
 		now := time.Now().UnixNano()
 		// Peek at the command args to determine which workstream.
 		args := cmd.Args
@@ -164,7 +164,7 @@ func TestDispatchRespectsDependencies(t *testing.T) {
 				break
 			}
 		}
-		return []byte(`{}`), nil
+		return io.NopCloser(bytes.NewReader([]byte(`{}`))), nil
 	}
 
 	d := &Dispatcher{
@@ -195,7 +195,7 @@ func TestDispatchPerAgentConcurrencyLimit(t *testing.T) {
 	}
 
 	var running, peak atomic.Int32
-	trackingRunner := func(cmd *exec.Cmd) ([]byte, error) {
+	trackingRunner := func(cmd *exec.Cmd) (io.ReadCloser, error) {
 		cur := running.Add(1)
 		for {
 			old := peak.Load()
@@ -205,7 +205,7 @@ func TestDispatchPerAgentConcurrencyLimit(t *testing.T) {
 		}
 		time.Sleep(15 * time.Millisecond)
 		running.Add(-1)
-		return []byte(`{}`), nil
+		return io.NopCloser(bytes.NewReader([]byte(`{}`))), nil
 	}
 
 	d := &Dispatcher{
