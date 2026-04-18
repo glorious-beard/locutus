@@ -44,6 +44,10 @@ type SupervisorConfig struct {
 	// Loaded from .borg/agents/ via agent.LoadAgentDefs.
 	// If nil, a default system prompt is used for validation.
 	AgentDefs map[string]agent.AgentDef
+	// ProgressNotifier receives human-readable updates as the supervisor
+	// observes the coding agent's event stream. Optional; a nil notifier
+	// disables progress emission.
+	ProgressNotifier ProgressNotifier
 }
 
 // StepOutcome is the result of supervising a step.

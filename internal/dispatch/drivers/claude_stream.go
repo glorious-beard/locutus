@@ -13,17 +13,6 @@ import (
 	"github.com/chetan/locutus/internal/dispatch"
 )
 
-// StreamingDriver composes AgentDriver with the streaming/interaction surface
-// used by the supervisor's event-driven loop. Drivers that don't yet support
-// streaming (e.g., Codex until fixtures are captured) implement only
-// AgentDriver; the supervisor type-asserts to StreamingDriver to pick the
-// streaming path.
-type StreamingDriver interface {
-	AgentDriver
-	ParseStream(r io.Reader) dispatch.StreamParser
-	RespondToAgent(sessionID, response string) (*exec.Cmd, error)
-}
-
 // ParseStream returns a streaming parser for Claude Code's NDJSON output
 // emitted by `claude --print --output-format stream-json --verbose
 // --include-partial-messages`.
@@ -68,10 +57,11 @@ func (d CodexDriver) RespondToAgent(sessionID, response string) (*exec.Cmd, erro
 	return nil, fmt.Errorf("codex RespondToAgent not yet implemented; pending fixtures + auth")
 }
 
-// Compile-time check that both drivers implement StreamingDriver.
+// Compile-time check that both drivers implement the supervisor-facing
+// streaming contract.
 var (
-	_ StreamingDriver = ClaudeCodeDriver{}
-	_ StreamingDriver = CodexDriver{}
+	_ dispatch.StreamingDriver = ClaudeCodeDriver{}
+	_ dispatch.StreamingDriver = CodexDriver{}
 )
 
 // notImplementedParser yields a single error on first Next, then io.EOF.

@@ -558,13 +558,14 @@ Fixtures captured from real claude CLI on 2026-04-17 (hand-saved, sanitized to s
 
 Codex and Gemini parser tests are deferred to a follow-up part (separate plan) — see Deferred list in Scope. No stubs or skipped tests are introduced for those in this plan.
 
-### Part 5 — supervisor event loop (`internal/dispatch/supervisor_stream_test.go`)
+### Part 5 — supervisor event loop (`internal/dispatch/supervisor_stream_test.go`) — done
 
 - `TestRunAttempt_Happy` — scripted parser emits init → text → tool_call → tool_result → result → EOF; `runAttempt` returns `nil` error and `attemptResult` accumulates the tool call plus final text.
 - `TestRunAttempt_ParserErrorPropagates` — parser returns a non-EOF error mid-stream; `runAttempt` returns that error and closes the parser.
 - `TestRunAttempt_CtxCancel` — cancelling ctx mid-stream aborts the loop; parser.Close + stream.Close both called.
 - `TestRunAttempt_EmitsProgressForToolCalls` — mock `ProgressNotifier` receives a Notify for a `ToolCall` event with `FilePaths` set.
-- `TestRunAttempt_MergesBridgeEvents` — a fake bridge injects `EventPermissionRequest` mid-stream; `runAttempt` routes to `handleInteraction` and continues consuming stream events afterward (no resume).
+
+The bridge-merge test originally drafted here (`TestRunAttempt_MergesBridgeEvents`) depends on `handleInteraction` + the MCP bridge, both Part 7 concerns. The equivalent assertion lives in Part 7 as `TestRunAttempt_PermissionEventMergedMidStream`. Monitor integration (`mon.Observe`, `mon.ShouldCheck`, `monitorCycle`) is added to `runAttempt` in Part 6.
 
 ### Part 6 — monitor + LLM judge (`internal/dispatch/monitor_test.go`, `judge_test.go`)
 
