@@ -595,7 +595,7 @@ The bridge-merge test originally drafted here (`TestRunAttempt_MergesBridgeEvent
 - `TestSupervise_PermissionDuringAttempt_DoesNotSplitAttempt` — a permission interaction is handled mid-attempt; the attempt counter does not advance; validation of the completed attempt still runs at the end.
 - `TestSupervise_ValidationFailNoChurn_Retries` — attempt returns normally, validation fails → attempt counter advances, churn window unchanged.
 
-### Part 9 — MCP progress forwarding (`internal/dispatch/progress_test.go`, `cmd/mcp_test.go`)
+### Part 9 — MCP progress forwarding (`internal/dispatch/progress_test.go`, `cmd/progress_test.go`) — done
 
 - `TestProgressNotifier_ForwardsToolCallsWithFiles` — mock notifier captures `Notify`; a `ToolCall` event with `FilePaths=["cmd/auth.go"]` produces a message containing `"cmd/auth.go"`.
 - `TestProgressNotifier_ForwardsPermissionEvents` — `EventPermissionRequest` produces a message mentioning the requested tool/command.

@@ -15,20 +15,33 @@ import (
 // workstream runs in its own git worktree; the supervisor handles the retry/
 // validate loop for each step within a workstream.
 type Dispatcher struct {
-	// LLM is used by the supervisor for output validation.
+	// LLM is used by the supervisor for output validation and the
+	// permission guardian. Must be non-nil in production.
 	LLM agent.LLM
+
+	// FastLLM is the fast-tier client the cycle-detection monitor uses.
+	// Optional — if nil, monitors that require an LLM are silently
+	// disabled with a one-time INFO log from the supervisor.
+	FastLLM agent.LLM
 
 	// Drivers maps agent ID ("claude-code", "codex") to the StreamingDriver
 	// that builds commands and parses the NDJSON event stream for that CLI.
 	Drivers map[string]StreamingDriver
 
-	// Runner executes agent commands. Typically exec.CombinedOutput in prod;
-	// mocked in tests.
+	// Runner executes agent commands. ProductionRunner in prod; mocked
+	// in tests.
 	Runner CommandRunner
 
-	// AgentDefs are the supervision agents (validator, guide, reviewer) loaded
-	// from .borg/agents/. Optional — if nil, supervisor uses default prompts.
+	// AgentDefs are the supervision agents (validator, monitor, etc.)
+	// loaded from .borg/agents/. Optional — if nil, the supervisor uses
+	// default prompts and disables monitors that rely on a def.
 	AgentDefs map[string]agent.AgentDef
+
+	// ProgressNotifier receives human-readable updates from every
+	// supervised step. Wire it to the MCP session's progress callback
+	// (see cmd/progress.go) so Claude-the-client can show live status
+	// while the dispatched agents work. Optional.
+	ProgressNotifier ProgressNotifier
 
 	// MaxTotal caps the total number of workstreams running concurrently.
 	// 0 or negative means unlimited.
@@ -154,9 +167,11 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 
 	// Supervise each step in sequence.
 	sup := NewSupervisor(SupervisorConfig{
-		LLM:        d.LLM,
-		MaxRetries: maxRetries,
-		AgentDefs:  d.AgentDefs,
+		LLM:              d.LLM,
+		FastLLM:          d.FastLLM,
+		MaxRetries:       maxRetries,
+		AgentDefs:        d.AgentDefs,
+		ProgressNotifier: d.ProgressNotifier,
 	}, d.Runner)
 
 	allPassed := true
