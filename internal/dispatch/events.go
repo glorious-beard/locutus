@@ -1,12 +1,25 @@
 package dispatch
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 )
+
+// StreamParser reads provider-specific NDJSON and yields normalized
+// AgentEvents one at a time. Implementations are pull-based so the
+// supervisor controls lifecycle — no goroutine leak on cancellation.
+//
+// Next returns io.EOF when the stream is exhausted, or ctx.Err() if the
+// context is canceled between reads. Callers must Close the parser when
+// done to release the underlying reader.
+type StreamParser interface {
+	Next(ctx context.Context) (AgentEvent, error)
+	Close() error
+}
 
 // EventKind is a provider-agnostic classification of a single event emitted
 // by a coding-agent stream.

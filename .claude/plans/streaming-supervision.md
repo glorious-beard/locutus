@@ -53,7 +53,7 @@ Go code handles **structural, unambiguous decisions** — things that are true b
 - Parsing NDJSON into `AgentEvent`s (schema-driven)
 - Tracking the event window (ring buffer bookkeeping)
 - Enforcing cooldown between monitor invocations (counter math)
-- Recognizing structural event types (`EventPermissionRequest`, `EventClarifyQuestion`) — these are marked as such by the provider, not inferred by us
+- Routing events from an in-process MCP tool handler (our `locutus_permission` bridge) into the supervisor's event channel — not inferred from text, emitted directly by the handler
 
 Everything judgment-based goes to the LLM.
 
@@ -61,15 +61,16 @@ Everything judgment-based goes to the LLM.
 
 - Normalized `AgentEvent` type shared across provider drivers
 - Streaming `CommandRunner` returning `io.ReadCloser`
-- Per-driver NDJSON parsers: Claude Code, Codex, Gemini CLI
-- Event reassembler (delta → complete logical event)
+- **Claude Code** NDJSON parser + reassembler (other coding-agent drivers deferred; see below)
 - **Watchdog + LLM judge pattern** for fuzzy supervision decisions
-- Permission/question handler (structural events, not text heuristics)
+- Permission handler via an in-process MCP bridge (`locutus mcp-perm-bridge`) — not by parsing the agent's stdout stream
 - Integration with existing `Supervisor.Supervise` retry loop (one implementation, not two)
 - MCP progress notifications emitted from supervisor event loop
 
 Deferred (future plans):
 
+- **Codex and Gemini CLI drivers.** Codex captured partial start+error events on 2026-04-17 but requires `OPENAI_API_KEY` for a full happy-path fixture. Gemini not yet attempted. Land the claude driver end-to-end first; add other drivers in a follow-up part once fixtures and auth are available.
+- `AskUserQuestion` equivalent routing — verify whether Claude Code exposes a question-prompt mechanism we can bridge; if so, handle via the same MCP-bridge pattern as permission. Otherwise drop from scope.
 - Multi-provider LLM routing (fast/balanced/strong → specific model via LLM pick)
 - Rate limiting per provider (tokens per minute)
 - Cost budget enforcement
@@ -103,7 +104,7 @@ const (
     EventResult     EventKind = "result"         // final response
     EventError      EventKind = "error"
 
-    // Identified by tool name lookup (see below) — recognized, not inferred:
+    // Emitted by the Part 7 MCP bridge (not by the stream parser):
     EventPermissionRequest EventKind = "permission_request"
     EventClarifyQuestion   EventKind = "clarify_question"
 )
@@ -111,28 +112,11 @@ const (
 
 ### How `EventPermissionRequest` and `EventClarifyQuestion` get set
 
-These aren't Go heuristics pattern-matching on command text. They're identified by tool name via provider-specific convention:
+These events do **not** come from parsing the coding agent's public stream. Verified against real Claude Code output on 2026-04-17: `--permission-prompt-tool <name>` causes claude to invoke the permission tool as a **separate MCP RPC**, not as a tool_use in the stream. The stream only shows the original restricted tool's tool_use (e.g., `Bash`) followed by a tool_result reflecting our allow/deny.
 
-- **Permission tool name is *configured***. Claude Code's `--permission-prompt-tool` flag takes a tool name we register (e.g., `locutus_permission`). When the parser sees `tool_name == "locutus_permission"`, it emits `EventPermissionRequest` because we *defined* that convention. If the driver isn't configured with a permission prompt tool, there's no permission interception — the agent runs subject to its own `--allowedTools` rules, no detection gap claimed.
-- **Question tool name is *documented***. Claude's Agent SDK has a built-in `AskUserQuestion` tool with a fixed, documented name. When the parser sees `tool_name == "AskUserQuestion"`, it's a question — this is documented SDK behavior, not our inference.
+So permission detection happens inside **our own MCP tool handler**, not in the stream parser. See Part 7 for the full MCP-bridge architecture.
 
-Each driver has a small tool-name registry:
-
-```go
-type driverConfig struct {
-    PermissionToolName string // "" means driver doesn't support permission interception
-    QuestionToolName   string // "" means driver has no built-in question mechanism
-}
-
-var claudeCodeConfig = driverConfig{
-    PermissionToolName: "locutus_permission",  // we register this via --permission-prompt-tool
-    QuestionToolName:   "AskUserQuestion",      // documented SDK tool
-}
-```
-
-When parsing a `tool_use` event, the driver checks the tool name against this registry. Match → set the appropriate `EventKind`. No match → plain `EventToolCall`.
-
-Providers without equivalent mechanisms don't get permission/question routing. Acknowledged limitation, not pretended heuristic.
+`ClassifyToolName` remains defined and tested in Part 1 as a utility: drivers whose providers *do* surface permission/question routing as tool names (hypothetical — none known today) can use it. It is not wired into the claude stream parser in Part 3+4, because for claude the stream never contains a permission/question tool_use.
 
 ### What the LLM monitor handles
 
@@ -149,8 +133,8 @@ The monitor sees `EventToolCall` events and makes these determinations via its p
 
 | Signal | Source | Latency |
 |---|---|---|
-| Permission needed | Tool name match (registry lookup) | Immediate — routed on event arrival |
-| Clarifying question | Tool name match (registry lookup) | Immediate — routed on event arrival |
+| Permission needed | MCP bridge tool handler (Part 7) emits event | Immediate — the agent is blocked waiting |
+| Clarifying question | Same bridge, different tool (TBD in Part 7) | Immediate — the agent is blocked waiting |
 | Cycle / drift / stall / scope creep | LLM monitor with sliding window | Periodic (every K events or T seconds) |
 
 Permission and question routing is immediate because the coding agent is *blocked* waiting for a response — we can't wait K events. Cycle/drift/stall are observations over time, not blocking calls, so periodic LLM checks are acceptable.
@@ -187,9 +171,9 @@ type AgentDriver interface {
 
 Each driver implements `ParseStream` with its provider's NDJSON schema. The parser owns a delta reassembler internally (content_block_start → delta accumulator → content_block_stop emits complete `AgentEvent`).
 
-### Permission events: structural, not text-pattern
+### The claude stream parser has no permission detection
 
-Claude Code surfaces permission requests via specific JSON messages when a tool call requires approval (configured via `--permission-prompt-tool`). The driver recognizes these by message type, not by scanning bash commands for `rm -rf`. If a provider doesn't expose a structural permission signal, it's not a supervision target — we can't catch what the provider doesn't tell us.
+Claude Code's permission-prompt tool is not visible as a public stream event — confirmed against real output. The parser therefore has no permission or question classification logic. It recognizes: `system/init`, `stream_event` (message/content lifecycle and deltas), `user` (tool_result), `result`, `error`, `api_retry`, `rate_limit_event`. Assistant-level full-message events are ignored when `--include-partial-messages` is set (we rely on the stream_event reassembly instead, to avoid double-emitting).
 
 ### `RespondToAgent` is a resume invocation, not a live write
 
@@ -199,8 +183,10 @@ Returning `*exec.Cmd` makes it explicit: responding to the agent means invoking 
 
 The stream emits deltas; we need complete logical events. Reassembler lives inside each driver's parser:
 
-- Track current content block type (text vs tool_use)
+- Track current content block type (text vs tool_use vs thinking)
 - Accumulate `input_json_delta` chunks until `content_block_stop`
+- Accumulate `text_delta` chunks until `content_block_stop`
+- Drop `signature_delta` (thinking-block signature — not useful to the supervisor)
 - Parse accumulated JSON into `ToolInput` map
 - Emit the complete event on block stop
 
@@ -223,22 +209,26 @@ func (s *Supervisor) runAttempt(ctx, step, driver, workDir, sessionID, feedback)
     var result attemptResult
     mon := newMonitor()
 
-    for {
-        evt, err := parser.Next(ctx)
-        if errors.Is(err, io.EOF) { break }
-        if err != nil { return &result, err }
+    // events comes from two sources: the claude stream parser and the MCP
+    // permission bridge (Part 7). Both funnel into one channel so runAttempt
+    // sees one unified event stream.
+    events := s.mergeParserAndBridge(ctx, parser)
 
+    for evt := range events {
         s.emitProgress(evt)
         result.accumulate(evt)
         mon.Observe(evt)
 
-        // Structural signals (not heuristic): the provider marked this event
-        // as a permission request or clarifying question.
+        // Structural signals emitted by the MCP bridge (not by the stream parser).
         switch evt.Kind {
         case EventPermissionRequest, EventClarifyQuestion:
             response, err := s.handleInteraction(ctx, step, evt)
             if err != nil { return &result, err }
-            return &result, &interactionContinue{cmd: response, sessionID: evt.SessionID}
+            // For permission, the bridge is waiting on a socket for the decision;
+            // handleInteraction returns the response which the caller forwards
+            // back to the bridge. No claude resume needed — claude resumes when
+            // the MCP tool returns.
+            continue
         }
 
         // Periodic LLM monitor check — no heuristics, just cooldown.
@@ -353,23 +343,59 @@ Each has its own sliding window and cooldown, invoked on the same event stream. 
 
 Each gets its own `judge*` method on the supervisor. Each uses a dedicated agent def if available, falling back to a generic watchdog. Triggering signals are cheap; judgments are LLM-driven.
 
-## Part 7: Permission/question handler
+## Part 7: Permission handler via MCP bridge
 
-Structural events (`EventPermissionRequest`, `EventClarifyQuestion`) route to a handler that calls the LLM for a decision, then produces a resume command:
+Verified experimentally: Claude Code's `--permission-prompt-tool` invokes the configured MCP tool as a **separate RPC**, not as a tool_use in the public stream. So the permission flow has to happen inside our own MCP tool handler — out-of-band of the claude stdout stream, then re-merged into the supervisor's event channel.
+
+Locutus is already an MCP server (Tier 8). We extend it with a `mcp-perm-bridge` subcommand whose sole job is to be the MCP endpoint claude talks to for permission prompts, and to forward each request over a Unix socket to the supervisor that spawned claude.
+
+### Wiring
+
+1. The supervisor picks a fresh socket path (e.g., `/tmp/locutus-perm-<uuid>.sock`) and starts listening on it before spawning claude.
+2. The supervisor writes an `--mcp-config` JSON configuring one MCP server whose `command` is `locutus mcp-perm-bridge` and `args` include `--socket <path>`.
+3. The supervisor invokes claude with `--permission-prompt-tool mcp__<bridge-name>__locutus_permission --mcp-config <path> --strict-mcp-config`.
+4. When claude wants to run a restricted tool, it spawns `locutus mcp-perm-bridge` via stdio MCP, which dials the Unix socket and authenticates (e.g., shared secret passed via arg).
+5. Bridge forwards `{tool_name, input, tool_use_id}` to the supervisor over the socket.
+6. Supervisor constructs `AgentEvent{Kind: EventPermissionRequest, ToolName: <requested>, ToolInput: <input>, ...}` and puts it on the unified event channel consumed by `runAttempt`.
+7. `runAttempt` routes to `handleInteraction`, which calls the validator (or dedicated "guardian") agent, gets a verdict, and sends the decision back over the socket.
+8. Bridge returns the decision to claude via MCP; claude either runs the tool or skips it.
+
+### Decision protocol
+
+Over the socket, requests and responses are single-line JSON:
+
+```json
+// request (bridge → supervisor)
+{"id":"<tool_use_id>","tool":"Bash","input":{"command":"rm /tmp/x"}}
+
+// response (supervisor → bridge)
+{"id":"<tool_use_id>","behavior":"allow"}
+// or
+{"id":"<tool_use_id>","behavior":"deny","message":"unsafe: writes outside workdir"}
+```
+
+Bridge translates `{behavior,message}` into the MCP content-block shape Claude Code expects.
+
+### Handler shape
 
 ```go
-func (s *Supervisor) handleInteraction(ctx, step, evt) (*exec.Cmd, error) {
+// Supervisor-side interaction handler: consumes an EventPermissionRequest from
+// the MCP bridge, asks the validator/guardian agent, returns the decision to
+// the bridge over the socket. No claude resume needed — claude resumes
+// automatically when the MCP tool call returns.
+func (s *Supervisor) handleInteraction(ctx context.Context, step spec.PlanStep, evt AgentEvent) error {
     def := s.cfg.AgentDefs["validator"] // or a dedicated "guardian" agent
-    prompt := buildInteractionPrompt(step, evt) // includes step description, plan context, question/permission details
+    prompt := buildInteractionPrompt(step, evt) // step desc + tool + input
     req := agent.BuildGenerateRequest(def, []agent.Message{{Role: "user", Content: prompt}})
     resp, err := agent.GenerateWithRetry(ctx, s.cfg.LLM, req, fastRetry)
-    if err != nil { return nil, err }
-
-    return driver.RespondToAgent(evt.SessionID, resp.Content)
+    if err != nil { return err }
+    return s.permBridge.Respond(evt.ToolInput["__tool_use_id__"].(string), parseVerdict(resp.Content))
 }
 ```
 
-The attempt loop sees the returned `*exec.Cmd`, closes the current stream, invokes the new command, and resumes parsing events — now with the resumed session.
+### What about clarifying questions?
+
+To be verified in Part 7: does Claude Code expose a question-prompt mechanism we can bridge analogously? Possible candidates are the `AskUserQuestion` tool (Anthropic Agent SDK), stop-reason `tool_use` with a specific name, or nothing at all. If nothing exists, `EventClarifyQuestion` is dead code and can be dropped; if a mechanism exists, it plugs into the same bridge architecture with a second tool name.
 
 ## Part 8: How churn short-circuits attempts (separate from retry)
 
@@ -404,14 +430,6 @@ func (s *Supervisor) Supervise(ctx, step, driver, workDir) (*StepOutcome, error)
             continue
         }
 
-        if cont, ok := err.(*interactionContinue); ok {
-            // Resumed from a permission/question response. Not a failure; the
-            // current attempt continues in a new process. Do not record an
-            // attempt outcome — this is still the same attempt.
-            sessionID = cont.sessionID
-            continue
-        }
-
         if err != nil {
             // Other error: treat as attempt failure, feedback from error.
             attemptOutcomes = append(attemptOutcomes, outcomeError)
@@ -439,6 +457,7 @@ Key distinctions captured in the code:
 - **Retry is triggered by a failed attempt** — any reason (validation failed, churn aborted, timeout, error). The outer loop runs another attempt.
 - **The sliding window over `attemptOutcomes` tracks churn across the last N=3 attempts.** Repeated churn suggests the *step* is wrong (escalate to `RefineStep`); validation failures suggest the *implementation* is wrong (retry with feedback). The window approach catches alternating churn → validation-fail → churn patterns that a simple consecutive-churn counter would miss.
 - **Non-churn outcomes stay in the window.** They don't clear prior churn entries; they just occupy a slot that pushes old churn out once the window fills up.
+- **Permission/question interactions do NOT split the attempt.** They're handled in-band via the MCP bridge while claude is still running; no resume command, no attempt counter increment.
 
 ## Part 9: MCP progress forwarding
 
@@ -475,55 +494,69 @@ Events that don't get forwarded: individual `content_block_delta`s (too noisy), 
 
 New files:
 
-- `internal/dispatch/events.go` — `AgentEvent`, `EventKind` types, `summarizeEvents` helper
+- `internal/dispatch/events.go` — `AgentEvent`, `EventKind` types, `summarizeEvents` helper **(Part 1 — done)**
+- `internal/dispatch/runner.go` — streaming `CommandRunner`, `ProductionRunner`, `batchRunner` **(Part 2 — done)**
 - `internal/dispatch/monitor.go` — sliding-window monitor (ring buffer + cooldown; no pattern detection)
 - `internal/dispatch/judge.go` — LLM monitor invocations (cycle, drift, stall)
 - `internal/dispatch/drivers/claude_stream.go` — Claude Code NDJSON parser + reassembler
-- `internal/dispatch/drivers/codex_stream.go` — Codex NDJSON parser + reassembler
+- `internal/dispatch/bridge.go` — supervisor-side permission bridge (socket listener + request/response protocol)
+- `cmd/mcp_perm_bridge.go` — `locutus mcp-perm-bridge` subcommand (MCP server exposing `locutus_permission`, forwards over socket)
 - `internal/scaffold/agents/monitor.md` — cycle-detection monitor agent (fast tier)
 
 Modify:
 
-- `internal/dispatch/supervisor.go` — streaming event loop (replace batch version), `CommandRunner` signature, add `ProgressNotifier` to config, integrate monitor + LLM judgment
+- `internal/dispatch/supervisor.go` — streaming event loop (replace batch version), `CommandRunner` signature, add `ProgressNotifier` + `FastLLM` to config, integrate monitor + LLM judgment, merge bridge events
 - `internal/dispatch/drivers/driver.go` — `AgentDriver` gains `ParseStream` and `RespondToAgent`
-- `internal/dispatch/supervisor_test.go` — wrap byte buffers with `batchRunner()` helper
+- `internal/dispatch/supervisor_test.go` — wrap byte buffers with `batchRunner()` helper **(Part 2 — done)**
 - `internal/dispatch/dispatcher.go` — plumb `ProgressNotifier` through to supervisors
 - `cmd/mcp.go` — wrap MCP session's progress notifier for dispatch tool handlers
+
+Deferred (separate follow-up plan):
+
+- `internal/dispatch/drivers/codex_stream.go` + `gemini_stream.go` — need real fixtures once auth is configured
 
 ## Test strategy (test-first, per-part acceptance gates)
 
 Discipline: for each part, acceptance tests below are **written and committed first**. The part is not complete until every listed test passes with real assertions — no `t.Skip`, no `// TODO`, no stub bodies. We progress to the next part only after the current part's tests are green.
 
-### Part 1 — `AgentEvent` & helpers (`internal/dispatch/events_test.go`)
+### Part 1 — `AgentEvent` & helpers (`internal/dispatch/events_test.go`) — done
 
 - `TestEventKind_String` — every declared `EventKind` stringifies to its declared constant value.
-- `TestClassifyToolName_Permission` — tool name `"locutus_permission"` against Claude driver config yields `EventPermissionRequest`.
+- `TestClassifyToolName_Permission` — tool name `"locutus_permission"` against Claude driver config yields `EventPermissionRequest` (utility is tested even though the claude parser doesn't currently consult it).
 - `TestClassifyToolName_Question` — tool name `"AskUserQuestion"` yields `EventClarifyQuestion`.
 - `TestClassifyToolName_Unregistered` — any other tool name yields `EventToolCall`.
-- `TestSummarizeEvents_Compact` — golden-file assertion: a fixed 12-event slice produces a stable string under ~1KB, including tool names and file paths but excluding full `Raw` bodies.
+- `TestClassifyToolName_EmptyConfigFallsBackToToolCall` — empty registry → EventToolCall.
+- `TestSummarizeEvents_Compact` — a fixed 12-event slice produces a stable string under ~1KB, including tool names and file paths but excluding full `Raw` bodies.
 
-### Part 2 — streaming `CommandRunner` (`internal/dispatch/runner_test.go`)
+### Part 2 — streaming `CommandRunner` (`internal/dispatch/runner_test.go`) — done
 
 - `TestProductionRunner_StreamsStdout` — runs `/bin/sh -c 'printf "a\nb\n"'`; ReadCloser yields exactly `"a\nb\n"`.
-- `TestProductionRunner_CloseWaits` — Close blocks until process exits; non-zero exit code surfaces as error on Close.
+- `TestProductionRunner_CloseWaits` — Close blocks until process exits; non-zero exit code surfaces as `*exec.ExitError`.
 - `TestProductionRunner_CtxCancelKills` — cancelling ctx terminates child process; Close returns without hang.
 - `TestBatchRunner_WrapsBytes` — `batchRunner([]byte("x"))` returns ReadCloser yielding exactly `"x"` then EOF.
+- `TestBatchRunner_EmptyBytes` — nil input yields an empty ReadCloser.
 
-### Part 3 & Part 4 — driver stream parsers + reassembler
+### Part 3 & Part 4 — claude stream parser + reassembler
 
-Fixtures captured from real CLIs (hand-saved, not generated): `testdata/claude_simple.ndjson`, `testdata/claude_with_tool_use.ndjson`, `testdata/claude_with_permission.ndjson`, `testdata/codex_simple.ndjson`.
+Fixtures captured from real claude CLI on 2026-04-17 (hand-saved, sanitized to strip user-specific tool/MCP lists from init events):
+
+- `testdata/claude_simple.ndjson` — init + short text + result
+- `testdata/claude_with_tool_use.ndjson` — init + tool_use reassembly (9 input_json_deltas) + user/tool_result + text reassembly (8 text_deltas) + result
 
 `internal/dispatch/drivers/claude_stream_test.go`:
 
 - `TestClaudeStream_InitEvent` — first event from `claude_simple.ndjson` is `EventInit` with non-empty `SessionID`.
-- `TestClaudeStream_TextReassembly` — multi-delta text chunks collapse into one `EventText` with full accumulated content.
-- `TestClaudeStream_ToolCallReassembly` — `claude_with_tool_use.ndjson` yields one `EventToolCall` with `ToolName=="Edit"` and `ToolInput` matching the recorded JSON map (deep-equal, not substring).
-- `TestClaudeStream_PermissionEvent` — `claude_with_permission.ndjson` yields `EventPermissionRequest` with the permission tool's input preserved.
+- `TestClaudeStream_TextReassembly` — multi-delta text chunks collapse into one `EventText` with full accumulated content (~470 chars across 8 deltas in the tool-use fixture).
+- `TestClaudeStream_ToolCallReassembly` — `claude_with_tool_use.ndjson` yields one `EventToolCall` with `ToolName=="Read"` and `ToolInput` matching the recorded JSON map (deep-equal, not substring).
+- `TestClaudeStream_ToolResult` — the `user`-typed event after the tool call yields `EventToolResult` with the recorded content.
+- `TestClaudeStream_ResultEvent` — the final `result` event yields `EventResult` with the final text.
+- `TestClaudeStream_IgnoresRateLimitAndAssistantDuplicates` — `rate_limit_event` and full-message `assistant` events do not produce duplicate events when `stream_event` deltas cover the same content.
+- `TestClaudeStream_IgnoresThinkingSignatureDeltas` — thinking-block signature deltas are consumed without producing events.
 - `TestClaudeStream_EOFTerminates` — after last fixture event, `Next` returns `io.EOF`.
 - `TestClaudeStream_CtxCancelMidStream` — cancelling ctx before EOF returns `ctx.Err()`.
-- `TestClaudeDriver_RespondToAgent` — returns an `*exec.Cmd` whose args include `--resume <sessionID>` and whose stdin carries the response text.
+- `TestClaudeDriver_RespondToAgent` — returns an `*exec.Cmd` whose args include `--resume <sessionID>` and whose stdin or final arg carries the response text.
 
-`internal/dispatch/drivers/codex_stream_test.go` — matching matrix for Codex fixture (Init, Tool call reassembly, EOF, ctx cancel, RespondToAgent shape).
+Codex and Gemini parser tests are deferred to a follow-up part (separate plan) — see Deferred list in Scope. No stubs or skipped tests are introduced for those in this plan.
 
 ### Part 5 — supervisor event loop (`internal/dispatch/supervisor_stream_test.go`)
 
@@ -531,6 +564,7 @@ Fixtures captured from real CLIs (hand-saved, not generated): `testdata/claude_s
 - `TestRunAttempt_ParserErrorPropagates` — parser returns a non-EOF error mid-stream; `runAttempt` returns that error and closes the parser.
 - `TestRunAttempt_CtxCancel` — cancelling ctx mid-stream aborts the loop; parser.Close + stream.Close both called.
 - `TestRunAttempt_EmitsProgressForToolCalls` — mock `ProgressNotifier` receives a Notify for a `ToolCall` event with `FilePaths` set.
+- `TestRunAttempt_MergesBridgeEvents` — a fake bridge injects `EventPermissionRequest` mid-stream; `runAttempt` routes to `handleInteraction` and continues consuming stream events afterward (no resume).
 
 ### Part 6 — monitor + LLM judge (`internal/dispatch/monitor_test.go`, `judge_test.go`)
 
@@ -543,19 +577,21 @@ Fixtures captured from real CLIs (hand-saved, not generated): `testdata/claude_s
 - `TestMonitorCycle_MalformedJSON_ReturnsError` — mock `FastLLM` returns `"not json"`; `monitorCycle` returns a non-nil error and does not panic.
 - `TestMonitorCycle_UsesFastLLMNotStrong` — with distinct mock clients for `cfg.LLM` and `cfg.FastLLM`, only the fast client is invoked.
 
-### Part 7 — permission/question handler (`internal/dispatch/interaction_test.go`)
+### Part 7 — permission bridge (`internal/dispatch/bridge_test.go`, `cmd/mcp_perm_bridge_test.go`)
 
-- `TestHandleInteraction_PermissionAllow` — `EventPermissionRequest` → validator LLM returns `"allow"` → `RespondToAgent` invoked with the session ID and `"allow"`; returned `*exec.Cmd` has `--resume <sid>`.
-- `TestHandleInteraction_PermissionDeny` — validator returns `"deny: reason"` → resume cmd carries the deny payload verbatim.
-- `TestHandleInteraction_ClarifyQuestion` — question event → validator answer → resume cmd carries the answer.
-- `TestRunAttempt_ReturnsInteractionContinue` — when parser emits a permission event, `runAttempt` returns an `*interactionContinue` whose `cmd` matches what `RespondToAgent` produced and whose `sessionID` equals the event's.
+- `TestPermBridge_SocketRoundtrip` — spawn bridge-as-subprocess, send it an MCP `tools/call` for `locutus_permission`, assert it forwards the tool_name+input over the socket to a fake supervisor, and returns the supervisor's decision to the MCP caller.
+- `TestPermBridge_AllowResponseShape` — supervisor responds `{behavior:"allow"}`; bridge returns a valid MCP tool_result content block that claude Code accepts.
+- `TestPermBridge_DenyResponseShape` — supervisor responds `{behavior:"deny",message:"reason"}`; bridge returns a denial content block with the message.
+- `TestHandleInteraction_PermissionAllow` — `EventPermissionRequest` arrives on the supervisor event channel → validator LLM returns `"allow"` → bridge receives `{behavior:"allow"}` via the fake socket.
+- `TestHandleInteraction_PermissionDeny` — validator returns `"deny: unsafe"` → bridge receives the deny payload with message verbatim.
+- `TestRunAttempt_PermissionEventMergedMidStream` — end-to-end: stream parser is emitting claude events; a bridge-originated `EventPermissionRequest` appears mid-stream; `runAttempt` calls `handleInteraction`, response goes out via the bridge, stream continues; no new `*exec.Cmd` is returned and no attempt counter change.
 
 ### Part 8 — churn ↔ retry integration (`internal/dispatch/supervise_test.go`)
 
 - `TestSupervise_ChurnOnceThenPass` — attempt 1 aborts with `churnDetected`; attempt 2 passes validation. Outcome: `Success=true`, `Attempts=2`. Attempt 2's `feedback` arg contains the churn pattern string.
 - `TestSupervise_TwoChurnsInWindowEscalates` — attempts 1 and 2 both churn → outcome `Success=false`, `Escalation=EscalateRefineStep`, `Attempts=2` (sliding window: ≥2/last-3).
 - `TestSupervise_AlternatingChurnFailChurn_Escalates` — churn → validation-fail → churn. Under sliding-window rule, the second churn is 2 of the last 3 → `Escalation=EscalateRefineStep`. Regression guard for the sliding-window rule.
-- `TestSupervise_InteractionContinueKeepsAttempt` — `interactionContinue` returned from `runAttempt` does not increment the attempt counter; next iteration invokes the resume cmd with the carried `sessionID`.
+- `TestSupervise_PermissionDuringAttempt_DoesNotSplitAttempt` — a permission interaction is handled mid-attempt; the attempt counter does not advance; validation of the completed attempt still runs at the end.
 - `TestSupervise_ValidationFailNoChurn_Retries` — attempt returns normally, validation fails → attempt counter advances, churn window unchanged.
 
 ### Part 9 — MCP progress forwarding (`internal/dispatch/progress_test.go`, `cmd/mcp_test.go`)
@@ -568,7 +604,7 @@ Fixtures captured from real CLIs (hand-saved, not generated): `testdata/claude_s
 ### Cross-part
 
 - Fixtures directory: `internal/dispatch/drivers/testdata/*.ndjson` — hand-captured, not generated; each fixture committed with the test that consumes it.
-- Opt-in live integration: `LOCUTUS_INTEGRATION_TEST=1 go test -run TestClaudeCodeLive` — runs `claude -p --output-format stream-json` on a trivial task, verifies the full event pipeline.
+- Opt-in live integration: `LOCUTUS_INTEGRATION_TEST=1 go test -run TestClaudeCodeLive` — runs `claude -p --output-format stream-json --include-partial-messages` on a trivial task, verifies the full event pipeline including a real MCP permission bridge.
 - No test may use `t.Skip` to defer work; if a test can't be written, the part isn't ready.
 
 Note: we don't hand-craft "churning" fixtures because cycle detection is the LLM's job, not heuristic. The LLM monitor is tested via mocked responses (supervisor tests) and via live integration against real coding agents.
@@ -578,4 +614,4 @@ Note: we don't hand-craft "churning" fixtures because cycle detection is the LLM
 1. `go build ./...` — no compilation errors
 2. `go test ./... -race -count=1` — all tests pass including new streaming tests
 3. Supervisor tests: mock LLM returns cycle verdict → attempt aborts; mock LLM returns healthy → attempt continues
-4. Manual test: run MCP server, invoke a streaming tool from Claude Code, verify progress notifications appear in the host UI
+4. Manual test: run MCP server, invoke a streaming tool from Claude Code, verify progress notifications appear in the host UI and that a permission prompt routes through `locutus mcp-perm-bridge` and surfaces as an `EventPermissionRequest` in the supervisor's logs
