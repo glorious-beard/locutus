@@ -22,6 +22,10 @@ type CLI struct {
 	Import   ImportCmd   `cmd:"" help:"Create a feature or bug from an issue."`
 	Analyze  AnalyzeCmd  `cmd:"" help:"Analyze an existing codebase (assimilation)."`
 	Mcp      McpCmd      `cmd:"" help:"Start the MCP server."`
+
+	// Invoked by Claude Code as an MCP subprocess; end users don't run this
+	// directly. Hidden to keep it out of --help.
+	McpPermBridge McpPermBridgeCmd `cmd:"mcp-perm-bridge" hidden:"" help:"Internal: permission-prompt-tool bridge for streaming supervision."`
 }
 
 // AfterApply configures logging based on --verbose.
