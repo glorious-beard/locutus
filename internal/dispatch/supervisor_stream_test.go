@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -209,4 +211,131 @@ func TestRunAttempt_EmitsProgressForToolCalls(t *testing.T) {
 	for _, m := range toolCallMsgs {
 		assert.NotContains(t, m, "edited", "EventText chunks should be suppressed")
 	}
+}
+
+// ---------- Part 6 integration: runAttempt <-> monitor coupling ----------
+
+// manyToolCalls returns n scripted EventToolCall events — enough to trip
+// the monitor's checkEveryEvents=15 cooldown gate.
+func manyToolCalls(n int) []AgentEvent {
+	events := make([]AgentEvent, n)
+	for i := range events {
+		events[i] = AgentEvent{
+			Kind:      EventToolCall,
+			ToolName:  "Read",
+			ToolInput: map[string]any{"file_path": "/a.go"},
+			FilePaths: []string{"/a.go"},
+			SessionID: "sess-mon",
+		}
+	}
+	return events
+}
+
+// newTestSupervisorWithMonitor wires a streaming supervisor with a scripted
+// FastLLM (for monitorCycle) and a monitor agent def so ShouldCheck+judge
+// actually exercise the integrated path.
+func newTestSupervisorWithMonitor(t *testing.T, parser StreamParser, fastLLM agent.LLM, logger *slog.Logger) (*Supervisor, *fakeStreamingDriver) {
+	t.Helper()
+	rc := &trackingReadCloser{}
+	runner := func(cmd *exec.Cmd) (io.ReadCloser, error) { return rc, nil }
+	sup := NewSupervisor(SupervisorConfig{
+		MaxRetries: 1,
+		FastLLM:    fastLLM,
+		AgentDefs: map[string]agent.AgentDef{
+			"monitor": {ID: "monitor", SystemPrompt: "detect cycles"},
+		},
+		Logger: logger,
+	}, runner)
+	return sup, &fakeStreamingDriver{parser: parser}
+}
+
+func TestRunAttempt_MonitorAbortsOnChurn(t *testing.T) {
+	fast := agent.NewMockLLM(agent.MockResponse{
+		Response: &agent.GenerateResponse{
+			Content: `{"is_cycle":true,"confidence":0.9,"pattern":"file_thrashing","reasoning":"same file edited twice"}`,
+		},
+	})
+	parser := &fakeStreamParser{events: manyToolCalls(20)}
+	sup, driver := newTestSupervisorWithMonitor(t, parser, fast, nil)
+
+	result, err := sup.runAttempt(context.Background(), newTestStep(), driver, "/tmp/work", "", "")
+	require.Error(t, err)
+
+	var churn *churnDetected
+	require.ErrorAs(t, err, &churn, "runAttempt should abort with *churnDetected")
+	assert.Equal(t, "file_thrashing", churn.pattern)
+	assert.Contains(t, churn.reasoning, "same file")
+
+	require.NotNil(t, result)
+	// Monitor triggers once checkEveryEvents=15 is hit, so we should have
+	// seen at least 15 but fewer than all 20 events before aborting.
+	assert.GreaterOrEqual(t, len(result.events), 15, "should have observed at least 15 events before check fired")
+	assert.Less(t, len(result.events), 20, "attempt should have aborted before draining the stream")
+
+	assert.Equal(t, 1, fast.CallCount(), "monitor LLM invoked exactly once")
+}
+
+func TestRunAttempt_MonitorContinuesOnHealthy(t *testing.T) {
+	fast := agent.NewMockLLM(agent.MockResponse{
+		Response: &agent.GenerateResponse{
+			Content: `{"is_cycle":false,"confidence":0.1,"reasoning":"healthy iteration"}`,
+		},
+	})
+	parser := &fakeStreamParser{events: manyToolCalls(20)}
+	sup, driver := newTestSupervisorWithMonitor(t, parser, fast, nil)
+
+	result, err := sup.runAttempt(context.Background(), newTestStep(), driver, "/tmp/work", "", "")
+	require.NoError(t, err, "healthy verdict must not abort the attempt")
+	require.NotNil(t, result)
+	assert.Len(t, result.events, 20, "all scripted events should flow through to completion")
+	assert.Equal(t, 1, fast.CallCount(), "monitor invoked once during the attempt")
+}
+
+func TestRunAttempt_MonitorLowConfidenceDoesNotAbort(t *testing.T) {
+	// IsCycle=true with confidence below the 0.7 threshold must NOT abort.
+	fast := agent.NewMockLLM(agent.MockResponse{
+		Response: &agent.GenerateResponse{
+			Content: `{"is_cycle":true,"confidence":0.5,"pattern":"file_thrashing","reasoning":"maybe cycling but unclear"}`,
+		},
+	})
+	parser := &fakeStreamParser{events: manyToolCalls(20)}
+	sup, driver := newTestSupervisorWithMonitor(t, parser, fast, nil)
+
+	result, err := sup.runAttempt(context.Background(), newTestStep(), driver, "/tmp/work", "", "")
+	require.NoError(t, err, "low-confidence cycle verdict should not abort the attempt")
+	require.NotNil(t, result)
+	assert.Len(t, result.events, 20)
+}
+
+func TestRunAttempt_MonitorMissingAgentCompletes(t *testing.T) {
+	// With no "monitor" agent in AgentDefs, monitorCycle short-circuits to
+	// IsCycle=false and logs once. runAttempt must still complete cleanly.
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&stringBuilderWriter{&buf}, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	rc := &trackingReadCloser{}
+	runner := func(cmd *exec.Cmd) (io.ReadCloser, error) { return rc, nil }
+	sup := NewSupervisor(SupervisorConfig{
+		MaxRetries: 1,
+		FastLLM:    nil, // intentionally nil — monitor agent isn't configured
+		AgentDefs:  map[string]agent.AgentDef{},
+		Logger:     logger,
+	}, runner)
+
+	parser := &fakeStreamParser{events: manyToolCalls(20)}
+	driver := &fakeStreamingDriver{parser: parser}
+
+	result, err := sup.runAttempt(context.Background(), newTestStep(), driver, "/tmp/work", "", "")
+	require.NoError(t, err, "missing monitor agent must not break runAttempt")
+	require.NotNil(t, result)
+	assert.Len(t, result.events, 20, "all events observed")
+	assert.Equal(t, 1, strings.Count(buf.String(), "monitor agent not configured"),
+		"disabled-monitor INFO log should appear exactly once per supervisor")
+}
+
+// stringBuilderWriter adapts strings.Builder to io.Writer for slog handlers.
+type stringBuilderWriter struct{ b *strings.Builder }
+
+func (w *stringBuilderWriter) Write(p []byte) (int, error) {
+	return w.b.Write(p)
 }
