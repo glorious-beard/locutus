@@ -19,17 +19,30 @@ const (
 	CapabilityStrong   CapabilityTier = "strong"    // expensive, powerful — complex architecture, stuck agents
 )
 
-// DefaultModels maps capability tiers to default model strings.
-// These are used when no explicit model is set and no provider-specific
-// overrides are configured. Users can override per-project in the manifest.
+// DefaultModels maps capability tiers to Anthropic model strings. Provider
+// prefix is required — Genkit routes to the registered plugin by parsing
+// the string before the slash. Users with GEMINI_API_KEY but no
+// ANTHROPIC_API_KEY will have these rewritten to googleai/... at
+// Generate time by GenKitLLM.resolveModel, so these values act as the
+// "preferred default" when both providers are available.
 var DefaultModels = map[CapabilityTier]string{
-	CapabilityFast:     "anthropic/claude-haiku-4-20250514",
-	CapabilityBalanced: "anthropic/claude-sonnet-4-20250514",
-	CapabilityStrong:   "anthropic/claude-opus-4-20250514",
+	CapabilityFast:     "anthropic/claude-haiku-4-5-20251001",
+	CapabilityBalanced: "anthropic/claude-sonnet-4-6",
+	CapabilityStrong:   "anthropic/claude-opus-4-7",
 }
 
 // DefaultModel is the fallback model when no capability tier is specified.
-const DefaultModel = "anthropic/claude-sonnet-4-20250514"
+const DefaultModel = "anthropic/claude-sonnet-4-6"
+
+// GoogleAIDefaultModels is the equivalent tier→model map for the Google AI
+// plugin, used as a fallback when Anthropic is not configured. Model
+// strings are current as of 2026; users can override via LOCUTUS_MODEL
+// or per-agent def.
+var GoogleAIDefaultModels = map[CapabilityTier]string{
+	CapabilityFast:     "googleai/gemini-2.5-flash-lite",
+	CapabilityBalanced: "googleai/gemini-2.5-flash",
+	CapabilityStrong:   "googleai/gemini-2.5-pro",
+}
 
 // AgentDef is an agent definition loaded from a .md file.
 type AgentDef struct {
