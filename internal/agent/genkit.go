@@ -135,16 +135,17 @@ func buildGenKitLLM() (*GenKitLLM, error) {
 }
 
 // pickDefaultModel chooses a sensible fallback model given which
-// providers are registered. If both are registered we prefer Anthropic —
-// it tends to produce higher-quality validator/guardian verdicts for
-// code. Callers with a cost preference can override via LOCUTUS_MODEL
-// or per-agent-def Model fields.
+// providers are registered. Delegates to ModelConfig.ResolveTier on
+// the balanced tier so the list-per-tier preference (including user
+// overrides via LOCUTUS_MODELS_CONFIG) is honored. Falls back to the
+// DefaultModel constant only when no tier entry matches any enabled
+// provider — a configuration error we want to surface at Generate
+// time rather than paper over.
 func pickDefaultModel(p DetectedProviders) string {
-	if p.Anthropic {
-		return DefaultModel
-	}
-	if p.GoogleAI {
-		return GoogleAIDefaultModels[CapabilityBalanced]
+	if cfg, err := LoadModelConfig(); err == nil {
+		if model := cfg.ResolveTier(CapabilityBalanced, p); model != "" {
+			return model
+		}
 	}
 	return DefaultModel
 }

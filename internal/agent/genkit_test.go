@@ -80,15 +80,20 @@ func TestLLMAvailable_MirrorsDetectProviders(t *testing.T) {
 }
 
 func TestPickDefaultModel(t *testing.T) {
+	// Expectations track the embedded models.yaml tier list. If you
+	// reorder tier entries there, expect to re-sync these strings.
+	// The balanced tier lists googleai/ first (cheap default when
+	// both providers are configured); the strong tier flips the
+	// order. This test covers only pickDefaultModel (balanced).
 	cases := []struct {
 		name     string
 		p        DetectedProviders
 		want     string
 		contains string
 	}{
-		{"anthropic only", DetectedProviders{Anthropic: true}, DefaultModel, "anthropic/"},
-		{"google only", DetectedProviders{GoogleAI: true}, GoogleAIDefaultModels[CapabilityBalanced], "googleai/"},
-		{"both prefers anthropic", DetectedProviders{Anthropic: true, GoogleAI: true}, DefaultModel, "anthropic/"},
+		{"anthropic only", DetectedProviders{Anthropic: true}, "anthropic/claude-sonnet-4-6", "anthropic/"},
+		{"google only", DetectedProviders{GoogleAI: true}, "googleai/gemini-2.5-flash", "googleai/"},
+		{"both prefers google for balanced tier", DetectedProviders{Anthropic: true, GoogleAI: true}, "googleai/gemini-2.5-flash", "googleai/"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

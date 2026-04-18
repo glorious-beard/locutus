@@ -19,30 +19,13 @@ const (
 	CapabilityStrong   CapabilityTier = "strong"    // expensive, powerful — complex architecture, stuck agents
 )
 
-// DefaultModels maps capability tiers to Anthropic model strings. Provider
-// prefix is required — Genkit routes to the registered plugin by parsing
-// the string before the slash. Users with GEMINI_API_KEY but no
-// ANTHROPIC_API_KEY will have these rewritten to googleai/... at
-// Generate time by GenKitLLM.resolveModel, so these values act as the
-// "preferred default" when both providers are available.
-var DefaultModels = map[CapabilityTier]string{
-	CapabilityFast:     "anthropic/claude-haiku-4-5-20251001",
-	CapabilityBalanced: "anthropic/claude-sonnet-4-6",
-	CapabilityStrong:   "anthropic/claude-opus-4-7",
-}
-
-// DefaultModel is the fallback model when no capability tier is specified.
+// DefaultModel is the last-resort fallback used when no capability
+// tier is specified on an agent def AND the tier→provider resolver
+// (ModelConfig.ResolveTier) can't find a match. Kept as a constant so
+// callers that hardcode a default (notably triage.go) have a stable
+// symbol; the preferred path is to specify a Capability tier on the
+// agent def and let the config file decide.
 const DefaultModel = "anthropic/claude-sonnet-4-6"
-
-// GoogleAIDefaultModels is the equivalent tier→model map for the Google AI
-// plugin, used as a fallback when Anthropic is not configured. Model
-// strings are current as of 2026; users can override via LOCUTUS_MODEL
-// or per-agent def.
-var GoogleAIDefaultModels = map[CapabilityTier]string{
-	CapabilityFast:     "googleai/gemini-2.5-flash-lite",
-	CapabilityBalanced: "googleai/gemini-2.5-flash",
-	CapabilityStrong:   "googleai/gemini-2.5-pro",
-}
 
 // AgentDef is an agent definition loaded from a .md file.
 type AgentDef struct {
@@ -125,14 +108,26 @@ func BuildGenerateRequest(def AgentDef, messages []Message) GenerateRequest {
 }
 
 // resolveModel determines the model string for an agent.
-// Priority: explicit Model field > Capability tier > DefaultModel.
+// Priority: explicit Model field > Capability tier resolved against
+// available providers (via ModelConfig + DetectProviders) > DefaultModel.
+//
+// Resolving via ModelConfig means the tier→model pick is runtime-aware:
+// a Gemini-only user gets a googleai/ model even when the balanced tier
+// lists an anthropic/ entry first, as long as a googleai/ entry exists
+// somewhere in the list. If neither the override file nor the embedded
+// defaults produce a match (e.g., no provider env var is set), we fall
+// back to DefaultModel so the resulting request fails with a clear
+// provider-not-configured error at Generate time rather than routing
+// silently through an unintended provider.
 func resolveModel(def AgentDef) string {
 	if def.Model != "" {
 		return def.Model
 	}
 	if def.Capability != "" {
-		if model, ok := DefaultModels[def.Capability]; ok {
-			return model
+		if cfg, err := LoadModelConfig(); err == nil {
+			if model := cfg.ResolveTier(def.Capability, DetectProviders()); model != "" {
+				return model
+			}
 		}
 	}
 	return DefaultModel

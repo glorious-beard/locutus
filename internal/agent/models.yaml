@@ -1,0 +1,38 @@
+# Model tier configuration: maps a CapabilityTier to an ordered list of
+# candidate models. At Generate time, the resolver walks the list for
+# the requested tier and returns the first entry whose provider prefix
+# is enabled in the environment (ANTHROPIC_API_KEY / GEMINI_API_KEY /
+# GOOGLE_API_KEY). List position reflects preference when multiple
+# providers are configured.
+#
+# This file is embedded in the locutus binary; locutus update refreshes
+# it when the SDK pulls in new model names. Users who want to override
+# per-project can set LOCUTUS_MODELS_CONFIG to a YAML file with the
+# same shape.
+#
+# Provider prefixes required: "anthropic/" or "googleai/". Strings
+# without a prefix are ignored — Genkit needs the prefix to route.
+
+tiers:
+  # Fast tier: cheap, low-latency. Used for the monitor (cycle
+  # detection) and similar high-frequency judgment calls. Google's
+  # flash-lite is first because Gemini free-tier covers light usage
+  # where Anthropic would burn API tokens.
+  fast:
+    - googleai/gemini-2.5-flash-lite
+    - anthropic/claude-haiku-4-5-20251001
+
+  # Balanced tier: default for planner, critic, convergence, and most
+  # council agents. Mid-latency, mid-cost.
+  balanced:
+    - googleai/gemini-2.5-flash
+    - anthropic/claude-sonnet-4-6
+
+  # Strong tier: expensive, highest-quality judgment. Used for the
+  # validator / guardian (acceptance checks, permission rulings) and
+  # gap analysis. Anthropic is listed first here because Claude tends
+  # to produce more calibrated code-judgment verdicts; flip the order
+  # via LOCUTUS_MODELS_CONFIG if you prefer Gemini Pro.
+  strong:
+    - anthropic/claude-opus-4-7
+    - googleai/gemini-2.5-pro
