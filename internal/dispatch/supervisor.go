@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chetan/locutus/internal/agent"
@@ -38,16 +40,29 @@ const (
 
 // SupervisorConfig configures the supervision loop.
 type SupervisorConfig struct {
-	LLM        agent.LLM
+	// LLM is the strong-tier client used for validation and the
+	// permission/question guardian. Must be non-nil when the supervisor is
+	// expected to validate.
+	LLM agent.LLM
+	// FastLLM is the fast-tier client used by the cycle-detection monitor
+	// (Part 6). Keeping it separate from LLM bounds monitoring cost before
+	// multi-tier routing lands. May be nil when no "monitor" agent is
+	// configured; required whenever AgentDefs["monitor"] is present.
+	FastLLM agent.LLM
+
 	MaxRetries int
-	// AgentDefs are the supervision council agents (validator, guide, reviewer).
-	// Loaded from .borg/agents/ via agent.LoadAgentDefs.
-	// If nil, a default system prompt is used for validation.
+	// AgentDefs are the supervision council agents (validator, guide, reviewer,
+	// monitor). Loaded from .borg/agents/ via agent.LoadAgentDefs. If nil,
+	// a default system prompt is used for validation.
 	AgentDefs map[string]agent.AgentDef
 	// ProgressNotifier receives human-readable updates as the supervisor
 	// observes the coding agent's event stream. Optional; a nil notifier
 	// disables progress emission.
 	ProgressNotifier ProgressNotifier
+	// Logger is used for non-fatal supervision events (e.g., the one-time
+	// INFO log when the monitor agent is unset). Nil falls back to
+	// slog.Default().
+	Logger *slog.Logger
 }
 
 // StepOutcome is the result of supervising a step.
@@ -62,6 +77,26 @@ type StepOutcome struct {
 type Supervisor struct {
 	cfg    SupervisorConfig
 	runner CommandRunner
+
+	// monitorDisabledLogged ensures the "monitor agent not configured" INFO
+	// log fires exactly once per supervisor, not once per attempt.
+	monitorDisabledLogged sync.Once
+}
+
+// logger returns the configured logger, falling back to slog.Default().
+func (s *Supervisor) logger() *slog.Logger {
+	if s.cfg.Logger != nil {
+		return s.cfg.Logger
+	}
+	return slog.Default()
+}
+
+// logMonitorDisabledOnce emits a single INFO-level notice when the monitor
+// agent is not configured. See SupervisorConfig.FastLLM and AgentDefs.
+func (s *Supervisor) logMonitorDisabledOnce() {
+	s.monitorDisabledLogged.Do(func() {
+		s.logger().Info("monitor agent not configured, cycle detection disabled")
+	})
 }
 
 // NewSupervisor creates a Supervisor with the given config and command runner.

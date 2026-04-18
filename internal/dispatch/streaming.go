@@ -96,6 +96,8 @@ func (s *Supervisor) runAttempt(
 	defer func() { _ = parser.Close() }()
 
 	result := &attemptResult{}
+	mon := newMonitor()
+
 	for {
 		evt, err := parser.Next(ctx)
 		if errors.Is(err, io.EOF) {
@@ -107,9 +109,25 @@ func (s *Supervisor) runAttempt(
 
 		result.accumulate(evt)
 		s.emitProgress(ctx, evt)
+		mon.Observe(evt)
 
-		// Monitor integration (Part 6) and permission/question handling
-		// (Part 7) will be added here in subsequent parts.
+		if mon.ShouldCheck() {
+			verdict, cerr := s.monitorCycle(ctx, step, mon.RecentEvents())
+			mon.MarkChecked(cerr)
+			if cerr != nil {
+				// Circuit breaker will suppress further checks if this
+				// keeps happening; proceed with the stream in the meantime.
+				continue
+			}
+			if verdict.IsCycle && verdict.Confidence >= 0.7 {
+				return result, &churnDetected{
+					pattern:   verdict.Pattern,
+					reasoning: verdict.Reasoning,
+				}
+			}
+		}
+
+		// Permission/question handling (Part 7) will be added here.
 	}
 }
 
