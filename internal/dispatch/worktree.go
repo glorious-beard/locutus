@@ -39,10 +39,13 @@ func gitOutput(dir string, args ...string) (string, error) {
 }
 
 // CreateWorktree creates a new git worktree for the given workstream ID.
-// The worktree is placed in a temp directory and checked out on a new branch
-// named "locutus/<workstreamID>".
+// The worktree is checked out on a scratch branch "locutus-wt/<workstreamID>",
+// distinct from the feature branch "locutus/<workstreamID>" that
+// MergeToFeatureBranch will ultimately land the work on. Using the same
+// name for both would leave the feature branch un-checkout-able in the
+// main repo (git refuses to check out a branch already used by a worktree).
 func CreateWorktree(repoDir string, workstreamID string) (*Worktree, error) {
-	branchName := "locutus/" + workstreamID
+	branchName := "locutus-wt/" + workstreamID
 	worktreeDir := filepath.Join(os.TempDir(), "locutus-wt-"+workstreamID)
 
 	err := gitCmd(repoDir, "worktree", "add", "-b", branchName, worktreeDir)

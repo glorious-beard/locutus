@@ -43,15 +43,33 @@ type rawOutput struct {
 type ClaudeCodeDriver struct{}
 
 func (d ClaudeCodeDriver) BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd {
-	cmd := exec.Command("claude", "-p", "--output-format", "json", step.Description)
-
+	// --permission-mode acceptEdits: in -p (print) mode Claude Code cannot
+	// prompt interactively, so the "default" permission mode auto-denies any
+	// tool call that would normally require approval. acceptEdits allows
+	// file edit/write tools without prompting while still gating shell and
+	// network tools. --no-session-persistence avoids polluting the user's
+	// session store with one-shot supervised runs.
+	cmd := exec.Command(
+		"claude",
+		"-p",
+		"--output-format", "json",
+		"--permission-mode", "acceptEdits",
+		"--no-session-persistence",
+		step.Description,
+	)
 	cmd.Dir = workDir
 	return cmd
 }
 
 func (d ClaudeCodeDriver) BuildRetryCommand(step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd {
-	cmd := exec.Command("claude", "-p", "--output-format", "json", "--resume", sessionID, feedback)
-
+	cmd := exec.Command(
+		"claude",
+		"-p",
+		"--output-format", "json",
+		"--permission-mode", "acceptEdits",
+		"--resume", sessionID,
+		feedback,
+	)
 	cmd.Dir = workDir
 	return cmd
 }

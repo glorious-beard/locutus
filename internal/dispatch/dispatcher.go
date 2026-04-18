@@ -146,6 +146,10 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 	}
 	defer func() { _ = wt.Cleanup() }()
 
+	// During execution, BranchName reflects the worktree's scratch branch
+	// so callers can trace in-flight work. On successful merge it's
+	// overwritten with the feature branch name below — that's where the
+	// work actually lives after Cleanup tears down the scratch branch.
 	result.BranchName = wt.BranchName
 
 	// Supervise each step in sequence.
@@ -189,6 +193,7 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 		return result
 	}
 
+	result.BranchName = featureBranch
 	result.Success = true
 	return result
 }
