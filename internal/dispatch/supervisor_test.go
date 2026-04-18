@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"io"
 	"os/exec"
 	"testing"
 
@@ -10,10 +11,12 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// MockDriver provides scripted outputs for testing the supervisor loop.
+// MockDriver is the streaming-era replacement for the old batch mock. It
+// scripts a single stream of AgentEvents per ParseStream call; consumers
+// that need multiple parsers across attempts should use
+// scriptedStreamingDriver (supervise_test.go) instead.
 type MockDriver struct {
-	outputs []DriverOutput
-	pos     int
+	events []AgentEvent
 }
 
 // BuildCommand returns a no-op command (not actually executed in tests).
@@ -22,21 +25,26 @@ func (m *MockDriver) BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd 
 }
 
 // BuildRetryCommand returns a no-op retry command.
-func (m *MockDriver) BuildRetryCommand(step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd {
-	return exec.Command("echo", "mock retry")
+func (m *MockDriver) BuildRetryCommand(step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
+	return exec.Command("echo", "mock-retry")
 }
 
-// ParseOutput returns the next scripted DriverOutput.
-func (m *MockDriver) ParseOutput(out []byte) (DriverOutput, error) {
-	if m.pos >= len(m.outputs) {
-		return DriverOutput{}, nil
-	}
-	o := m.outputs[m.pos]
-	m.pos++
-	return o, nil
+// ParseStream returns a parser that yields the scripted events once and
+// then returns io.EOF forever. Note: MockDriver yields the same scripted
+// stream on every ParseStream call, which is what the happy-path
+// Supervise tests want for single-attempt cases.
+func (m *MockDriver) ParseStream(r io.Reader) StreamParser {
+	return &fakeStreamParser{events: m.events}
+}
+
+// RespondToAgent returns a no-op resume command.
+func (m *MockDriver) RespondToAgent(sessionID, response string) (*exec.Cmd, error) {
+	return exec.Command("echo", "mock-resume"), nil
 }
 
 // mockRunner returns a CommandRunner that always succeeds with empty output.
+// The bytes are ignored by MockDriver.ParseStream, but runAttempt's
+// ReadCloser lifecycle still needs a closable stream.
 func mockRunner() CommandRunner {
 	return batchRunner([]byte(`{}`))
 }
@@ -45,11 +53,7 @@ func mockRunner() CommandRunner {
 func mockLLMPass(count int) *agent.MockLLM {
 	responses := make([]agent.MockResponse, count)
 	for i := range responses {
-		responses[i] = agent.MockResponse{
-			Response: &agent.GenerateResponse{
-				Content: "PASS",
-			},
-		}
+		responses[i] = agent.MockResponse{Response: &agent.GenerateResponse{Content: "PASS"}}
 	}
 	return agent.NewMockLLM(responses...)
 }
@@ -58,17 +62,9 @@ func mockLLMPass(count int) *agent.MockLLM {
 func mockLLMFailThenPass(failures int) *agent.MockLLM {
 	responses := make([]agent.MockResponse, failures+1)
 	for i := 0; i < failures; i++ {
-		responses[i] = agent.MockResponse{
-			Response: &agent.GenerateResponse{
-				Content: "FAIL: missing error handling",
-			},
-		}
+		responses[i] = agent.MockResponse{Response: &agent.GenerateResponse{Content: "FAIL: missing error handling"}}
 	}
-	responses[failures] = agent.MockResponse{
-		Response: &agent.GenerateResponse{
-			Content: "PASS",
-		},
-	}
+	responses[failures] = agent.MockResponse{Response: &agent.GenerateResponse{Content: "PASS"}}
 	return agent.NewMockLLM(responses...)
 }
 
@@ -76,11 +72,7 @@ func mockLLMFailThenPass(failures int) *agent.MockLLM {
 func mockLLMAlwaysFail(count int) *agent.MockLLM {
 	responses := make([]agent.MockResponse, count)
 	for i := range responses {
-		responses[i] = agent.MockResponse{
-			Response: &agent.GenerateResponse{
-				Content: "FAIL: tests do not pass",
-			},
-		}
+		responses[i] = agent.MockResponse{Response: &agent.GenerateResponse{Content: "FAIL: tests do not pass"}}
 	}
 	return agent.NewMockLLM(responses...)
 }
@@ -102,19 +94,24 @@ func newTestStep() spec.PlanStep {
 	}
 }
 
+// happyPathEvents returns a compact event sequence representing a clean
+// claude run: init, tool call, tool result, final result. Few enough
+// events that the monitor never triggers (default checkEveryEvents=15).
+func happyPathEvents(sessionID, file, finalText string) []AgentEvent {
+	return []AgentEvent{
+		{Kind: EventInit, SessionID: sessionID},
+		{Kind: EventToolCall, ToolName: "Write", ToolInput: map[string]any{"file_path": file}, FilePaths: []string{file}},
+		{Kind: EventToolResult, Text: "ok"},
+		{Kind: EventResult, Text: finalText, SessionID: sessionID},
+	}
+}
+
 func TestSupervisePassesFirstAttempt(t *testing.T) {
 	llm := mockLLMPass(1)
-	cfg := SupervisorConfig{
-		LLM:        llm,
-		MaxRetries: 3,
-	}
+	cfg := SupervisorConfig{LLM: llm, MaxRetries: 3}
 	sup := NewSupervisor(cfg, mockRunner())
 
-	driver := &MockDriver{
-		outputs: []DriverOutput{
-			{Success: true, Files: []string{"internal/auth/middleware.go"}, SessionID: "sess-1", Output: "done"},
-		},
-	}
+	driver := &MockDriver{events: happyPathEvents("sess-1", "internal/auth/middleware.go", "done")}
 
 	outcome, err := sup.Supervise(context.Background(), newTestStep(), driver, "/tmp/work")
 	assert.NoError(t, err)
@@ -122,23 +119,17 @@ func TestSupervisePassesFirstAttempt(t *testing.T) {
 	assert.True(t, outcome.Success, "should pass on first attempt")
 	assert.Equal(t, 1, outcome.Attempts)
 	assert.Empty(t, outcome.Escalation, "no escalation on success")
+	assert.Contains(t, outcome.Files, "internal/auth/middleware.go")
 }
 
 func TestSuperviseRetriesOnFailure(t *testing.T) {
-	// First validation fails, second passes.
+	// First validation fails, second passes. Both attempts stream a clean
+	// happy-path sequence; the retry is driven by validator verdict.
 	llm := mockLLMFailThenPass(1)
-	cfg := SupervisorConfig{
-		LLM:        llm,
-		MaxRetries: 3,
-	}
+	cfg := SupervisorConfig{LLM: llm, MaxRetries: 3}
 	sup := NewSupervisor(cfg, mockRunner())
 
-	driver := &MockDriver{
-		outputs: []DriverOutput{
-			{Success: true, Files: []string{"auth.go"}, SessionID: "sess-1", Output: "attempt 1"},
-			{Success: true, Files: []string{"auth.go"}, SessionID: "sess-1", Output: "attempt 2"},
-		},
-	}
+	driver := &MockDriver{events: happyPathEvents("sess-1", "auth.go", "attempt output")}
 
 	outcome, err := sup.Supervise(context.Background(), newTestStep(), driver, "/tmp/work")
 	assert.NoError(t, err)
@@ -149,78 +140,19 @@ func TestSuperviseRetriesOnFailure(t *testing.T) {
 }
 
 func TestSuperviseExhaustsRetries(t *testing.T) {
-	// All 3 attempts fail validation.
+	// All 3 attempts validate as FAIL → no success, no escalation (no churn
+	// detected; just repeated validation failures).
 	llm := mockLLMAlwaysFail(3)
-	cfg := SupervisorConfig{
-		LLM:        llm,
-		MaxRetries: 3,
-	}
+	cfg := SupervisorConfig{LLM: llm, MaxRetries: 3}
 	sup := NewSupervisor(cfg, mockRunner())
 
-	driver := &MockDriver{
-		outputs: []DriverOutput{
-			{Success: true, Files: []string{"auth.go"}, SessionID: "sess-1", Output: "attempt 1"},
-			{Success: true, Files: []string{"auth.go"}, SessionID: "sess-1", Output: "attempt 2"},
-			{Success: true, Files: []string{"auth.go"}, SessionID: "sess-1", Output: "attempt 3"},
-		},
-	}
+	driver := &MockDriver{events: happyPathEvents("sess-1", "auth.go", "output")}
 
 	outcome, err := sup.Supervise(context.Background(), newTestStep(), driver, "/tmp/work")
 	assert.NoError(t, err)
 	assert.NotNil(t, outcome)
 	assert.False(t, outcome.Success, "should fail after exhausting retries")
 	assert.Equal(t, 3, outcome.Attempts)
-}
-
-func TestSuperviseDetectsStuck(t *testing.T) {
-	// Two identical failure outputs should trigger stuck detection.
-	llm := mockLLMAlwaysFail(3)
-	cfg := SupervisorConfig{
-		LLM:        llm,
-		MaxRetries: 3,
-	}
-	sup := NewSupervisor(cfg, mockRunner())
-
-	// Return identical output on every attempt to trigger stuck detection.
-	identicalOutput := DriverOutput{
-		Success:   true,
-		Files:     []string{"auth.go"},
-		SessionID: "sess-1",
-		Output:    "identical output each time",
-	}
-	driver := &MockDriver{
-		outputs: []DriverOutput{identicalOutput, identicalOutput, identicalOutput},
-	}
-
-	outcome, err := sup.Supervise(context.Background(), newTestStep(), driver, "/tmp/work")
-	assert.NoError(t, err)
-	assert.NotNil(t, outcome)
-	assert.False(t, outcome.Success, "stuck loop should not be marked as success")
-	assert.NotEmpty(t, outcome.Escalation, "escalation should be triggered when stuck")
-}
-
-func TestSuperviseEscalationCascade(t *testing.T) {
-	// After stuck detection, the first escalation level should be "refine_step".
-	llm := mockLLMAlwaysFail(3)
-	cfg := SupervisorConfig{
-		LLM:        llm,
-		MaxRetries: 3,
-	}
-	sup := NewSupervisor(cfg, mockRunner())
-
-	identicalOutput := DriverOutput{
-		Success:   true,
-		Files:     []string{"auth.go"},
-		SessionID: "sess-1",
-		Output:    "same output verbatim",
-	}
-	driver := &MockDriver{
-		outputs: []DriverOutput{identicalOutput, identicalOutput, identicalOutput},
-	}
-
-	outcome, err := sup.Supervise(context.Background(), newTestStep(), driver, "/tmp/work")
-	assert.NoError(t, err)
-	assert.NotNil(t, outcome)
-	assert.Equal(t, string(EscalateRefineStep), outcome.Escalation,
-		"first escalation level should be refine_step")
+	assert.Empty(t, outcome.Escalation,
+		"validation-only failures do not escalate; only sliding-window churn does")
 }

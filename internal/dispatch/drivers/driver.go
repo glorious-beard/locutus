@@ -43,16 +43,19 @@ type rawOutput struct {
 type ClaudeCodeDriver struct{}
 
 func (d ClaudeCodeDriver) BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd {
-	// --permission-mode acceptEdits: in -p (print) mode Claude Code cannot
-	// prompt interactively, so the "default" permission mode auto-denies any
-	// tool call that would normally require approval. acceptEdits allows
-	// file edit/write tools without prompting while still gating shell and
-	// network tools. --no-session-persistence avoids polluting the user's
-	// session store with one-shot supervised runs.
+	// stream-json + --verbose + --include-partial-messages produce the
+	// NDJSON event stream our parser consumes (see
+	// internal/dispatch/drivers/claude_stream.go). --permission-mode
+	// acceptEdits is the safe default for -p mode (no permission prompt
+	// possible; acceptEdits allows file edit/write tools but not shell
+	// or network). --no-session-persistence keeps one-shot supervised
+	// runs out of the user's session store.
 	cmd := exec.Command(
 		"claude",
 		"-p",
-		"--output-format", "json",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--include-partial-messages",
 		"--permission-mode", "acceptEdits",
 		"--no-session-persistence",
 		step.Description,
@@ -65,7 +68,9 @@ func (d ClaudeCodeDriver) BuildRetryCommand(step spec.PlanStep, workDir string, 
 	cmd := exec.Command(
 		"claude",
 		"-p",
-		"--output-format", "json",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--include-partial-messages",
 		"--permission-mode", "acceptEdits",
 		"--resume", sessionID,
 		feedback,

@@ -587,7 +587,7 @@ The bridge-merge test originally drafted here (`TestRunAttempt_MergesBridgeEvent
 - `TestHandleInteraction_PermissionDeny` — validator returns `"deny: unsafe"` → bridge receives the deny payload with message verbatim.
 - `TestRunAttempt_PermissionEventMergedMidStream` — end-to-end: stream parser is emitting claude events; a bridge-originated `EventPermissionRequest` appears mid-stream; `runAttempt` calls `handleInteraction`, response goes out via the bridge, stream continues; no new `*exec.Cmd` is returned and no attempt counter change.
 
-### Part 8 — churn ↔ retry integration (`internal/dispatch/supervise_test.go`)
+### Part 8 — churn ↔ retry integration (`internal/dispatch/supervise_test.go`) — done
 
 - `TestSupervise_ChurnOnceThenPass` — attempt 1 aborts with `churnDetected`; attempt 2 passes validation. Outcome: `Success=true`, `Attempts=2`. Attempt 2's `feedback` arg contains the churn pattern string.
 - `TestSupervise_TwoChurnsInWindowEscalates` — attempts 1 and 2 both churn → outcome `Success=false`, `Escalation=EscalateRefineStep`, `Attempts=2` (sliding window: ≥2/last-3).

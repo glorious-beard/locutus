@@ -18,9 +18,9 @@ type Dispatcher struct {
 	// LLM is used by the supervisor for output validation.
 	LLM agent.LLM
 
-	// Drivers maps agent ID ("claude-code", "codex") to the AgentDriver that
-	// builds commands and parses output for that CLI.
-	Drivers map[string]AgentDriver
+	// Drivers maps agent ID ("claude-code", "codex") to the StreamingDriver
+	// that builds commands and parses the NDJSON event stream for that CLI.
+	Drivers map[string]StreamingDriver
 
 	// Runner executes agent commands. Typically exec.CombinedOutput in prod;
 	// mocked in tests.

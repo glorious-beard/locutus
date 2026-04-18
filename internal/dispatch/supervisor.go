@@ -3,9 +3,7 @@ package dispatch
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -13,21 +11,6 @@ import (
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/spec"
 )
-
-// DriverOutput holds the result of running a coding agent.
-type DriverOutput struct {
-	Success   bool
-	Files     []string
-	SessionID string
-	Output    string
-}
-
-// AgentDriver builds commands for a coding agent.
-type AgentDriver interface {
-	BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd
-	BuildRetryCommand(step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd
-	ParseOutput(output []byte) (DriverOutput, error)
-}
 
 // EscalationAction represents a supervisor escalation level.
 type EscalationAction string
@@ -117,91 +100,96 @@ func NewSupervisor(cfg SupervisorConfig, runner CommandRunner) *Supervisor {
 	}
 }
 
-// Supervise runs the full supervision loop for a plan step.
-func (s *Supervisor) Supervise(ctx context.Context, step spec.PlanStep, driver AgentDriver, workDir string) (*StepOutcome, error) {
-	var (
-		prevOutput string
-		lastOutput DriverOutput
-		feedback   string
-		stuck      bool
-	)
-
+// Supervise runs the retry-and-validate loop for a plan step. Each
+// attempt invokes runAttempt (the streaming event loop) and then
+// validates the agent's output via the validator LLM. Intra-attempt
+// *churnDetected errors short-circuit the attempt and feed into a
+// sliding-window escalation rule: if ≥2 of the last 3 attempts ended
+// in churn, the step is escalated to RefineStep — repeated cycling
+// suggests the step itself is ill-posed, not the implementation.
+func (s *Supervisor) Supervise(ctx context.Context, step spec.PlanStep, driver StreamingDriver, workDir string) (*StepOutcome, error) {
 	fastRetry := agent.RetryConfig{
 		MaxAttempts: 2,
 		BaseDelay:   500 * time.Millisecond,
 		MaxDelay:    2 * time.Second,
 	}
 
+	var (
+		sessionID string
+		feedback  string
+		outcomes  []outcomeKind
+		lastFiles []string
+	)
+
 	for attempt := 1; attempt <= s.cfg.MaxRetries; attempt++ {
-		// Build command.
-		var cmd *exec.Cmd
-		if attempt == 1 {
-			cmd = driver.BuildCommand(step, workDir)
-		} else {
-			cmd = driver.BuildRetryCommand(step, workDir, lastOutput.SessionID, feedback)
+		result, err := s.runAttempt(ctx, step, driver, workDir, sessionID, feedback)
+
+		// Preserve anything the attempt produced so we can surface files
+		// and resume context in subsequent attempts, even if this one
+		// aborted.
+		if result != nil {
+			if result.sessionID != "" {
+				sessionID = result.sessionID
+			}
+			if len(result.files) > 0 {
+				lastFiles = result.files
+			}
 		}
 
-		// Run command and drain its stream.
-		// Part 5 will replace this batch read with an event-driven loop;
-		// for now we preserve the existing ParseOutput-based flow by reading
-		// the full stream into memory.
-		stream, err := s.runner(cmd)
+		// --- Intra-attempt abort signals ---
+
+		if churnErr, ok := err.(*churnDetected); ok {
+			outcomes = append(outcomes, outcomeChurn)
+			if churnCountInLastN(outcomes, 3) >= 2 {
+				return &StepOutcome{
+					Success:    false,
+					Attempts:   attempt,
+					Files:      lastFiles,
+					Escalation: string(EscalateRefineStep),
+				}, nil
+			}
+			feedback = fmt.Sprintf(
+				"Previous attempt cycled (%s): %s. Do not repeat the same approach.",
+				churnErr.pattern, churnErr.reasoning,
+			)
+			continue
+		}
+
 		if err != nil {
-			return nil, fmt.Errorf("command execution failed on attempt %d: %w", attempt, err)
-		}
-		raw, readErr := io.ReadAll(stream)
-		if closeErr := stream.Close(); closeErr != nil && readErr == nil {
-			// Non-zero exit or signal; surface only if we got bytes successfully
-			// above — let ParseOutput decide whether the output is still usable.
-			readErr = closeErr
-		}
-		if readErr != nil && len(raw) == 0 {
-			return nil, fmt.Errorf("reading command output on attempt %d: %w", attempt, readErr)
+			// Stream parse or runner errors: treat as attempt failure,
+			// surface the error as feedback for the next attempt.
+			outcomes = append(outcomes, outcomeError)
+			feedback = err.Error()
+			continue
 		}
 
-		// Parse output.
-		parsed, err := driver.ParseOutput(raw)
-		if err != nil {
-			return nil, fmt.Errorf("parsing driver output on attempt %d: %w", attempt, err)
-		}
-		lastOutput = parsed
+		// --- Normal validation path ---
 
-		// Stuck detection: identical output to previous attempt.
-		if attempt > 1 && parsed.Output == prevOutput {
-			stuck = true
-		}
-		prevOutput = parsed.Output
-
-		// Validate via LLM.
-		validationResp, err := s.validate(ctx, step, parsed, fastRetry)
-		if err != nil {
-			return nil, fmt.Errorf("LLM validation on attempt %d: %w", attempt, err)
+		validationResp, verr := s.validate(ctx, step, result.finalText, fastRetry)
+		if verr != nil {
+			return nil, fmt.Errorf("LLM validation on attempt %d: %w", attempt, verr)
 		}
 
 		if isPass(validationResp.Content) {
 			return &StepOutcome{
 				Success:  true,
 				Attempts: attempt,
-				Files:    parsed.Files,
+				Files:    result.files,
 			}, nil
 		}
 
-		// Extract feedback from the LLM response for the next retry.
+		outcomes = append(outcomes, outcomeValidationFail)
 		feedback = validationResp.Content
 	}
 
-	// All retries exhausted.
-	outcome := &StepOutcome{
+	// Retries exhausted without a passing attempt. No escalation unless
+	// the churn sliding window already triggered above (which would have
+	// returned before now).
+	return &StepOutcome{
 		Success:  false,
 		Attempts: s.cfg.MaxRetries,
-		Files:    lastOutput.Files,
-	}
-
-	if stuck {
-		outcome.Escalation = string(EscalateRefineStep)
-	}
-
-	return outcome, nil
+		Files:    lastFiles,
+	}, nil
 }
 
 // isPass checks whether the LLM validation response indicates a pass.
@@ -215,7 +203,9 @@ func isPass(content string) bool {
 
 // validate asks the LLM whether the agent output satisfies the step's acceptance criteria.
 // Uses the "validator" agent def if available; otherwise falls back to a default prompt.
-func (s *Supervisor) validate(ctx context.Context, step spec.PlanStep, output DriverOutput, retryCfg agent.RetryConfig) (*agent.GenerateResponse, error) {
+// agentOutput is the final text the agent produced (typically the accumulated
+// EventResult text from runAttempt).
+func (s *Supervisor) validate(ctx context.Context, step spec.PlanStep, agentOutput string, retryCfg agent.RetryConfig) (*agent.GenerateResponse, error) {
 	var assertions strings.Builder
 	for _, a := range step.Assertions {
 		assertions.WriteString(fmt.Sprintf("- %s", string(a.Kind)))
@@ -232,7 +222,7 @@ func (s *Supervisor) validate(ctx context.Context, step spec.PlanStep, output Dr
 		"Step: %s\n\nAcceptance criteria:\n%s\nAgent output:\n%s\n\nEvaluate this output.",
 		step.Description,
 		assertions.String(),
-		output.Output,
+		agentOutput,
 	)
 
 	messages := []agent.Message{{Role: "user", Content: userPrompt}}

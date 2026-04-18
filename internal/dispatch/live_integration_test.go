@@ -1,18 +1,14 @@
 package dispatch_test
 
-// Opt-in end-to-end smoke test for the batch supervisor against a real
-// Claude Code subprocess. Gated behind LOCUTUS_INTEGRATION_TEST=1 so it
-// never runs during `go test ./...`.
+// Opt-in end-to-end smoke test for the streaming supervisor against a
+// real Claude Code subprocess. Gated behind LOCUTUS_INTEGRATION_TEST=1
+// so it never runs during `go test ./...`.
 //
-// This validates the existing non-streaming pipeline:
+// Validates the full streaming pipeline:
 //   Dispatcher.Dispatch → CreateWorktree → ClaudeCodeDriver.BuildCommand
-//   → ProductionRunner → batch Supervise → driver.ParseOutput
-//   → worktree.Commit → worktree.MergeToFeatureBranch
-//
-// Parts 1–6 (streaming supervision) are NOT exercised here — runAttempt
-// has no CLI entry point yet. This test validates that the layer beneath
-// our new streaming work actually works end-to-end before we stack more
-// on top.
+//   (stream-json) → ProductionRunner → Supervise → runAttempt →
+//   driver.ParseStream + event loop + monitor/validate → worktree.Commit
+//   → worktree.MergeToFeatureBranch
 //
 // Prereqs:
 //   - `claude` in PATH (tested against 2.1.x)
@@ -33,25 +29,6 @@ import (
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/stretchr/testify/require"
 )
-
-// driverAdapter wraps drivers.ClaudeCodeDriver to bridge the duplicate
-// DriverOutput types in the dispatch vs drivers packages. This adapter
-// exists only in the integration test; consolidating those types is a
-// separate refactor tracked for later cleanup.
-type driverAdapter struct{ drivers.ClaudeCodeDriver }
-
-func (d driverAdapter) ParseOutput(out []byte) (dispatch.DriverOutput, error) {
-	o, err := d.ClaudeCodeDriver.ParseOutput(out)
-	if err != nil {
-		return dispatch.DriverOutput{}, err
-	}
-	return dispatch.DriverOutput{
-		Success:   o.Success,
-		Files:     o.Files,
-		SessionID: o.SessionID,
-		Output:    o.Output,
-	}, nil
-}
 
 func TestClaudeCodeLive(t *testing.T) {
 	if os.Getenv("LOCUTUS_INTEGRATION_TEST") != "1" {
@@ -86,7 +63,7 @@ func TestClaudeCodeLive(t *testing.T) {
 
 	d := &dispatch.Dispatcher{
 		LLM:               validator,
-		Drivers:           map[string]dispatch.AgentDriver{"claude-code": driverAdapter{}},
+		Drivers:           map[string]dispatch.StreamingDriver{"claude-code": drivers.ClaudeCodeDriver{}},
 		Runner:            dispatch.ProductionRunner,
 		MaxRetriesPerStep: 1,
 	}

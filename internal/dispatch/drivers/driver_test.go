@@ -21,13 +21,15 @@ func TestClaudeCodeBuildCommand(t *testing.T) {
 	assert.IsType(t, &exec.Cmd{}, cmd)
 	assert.Equal(t, workDir, cmd.Dir)
 
-	// The command should invoke "claude" with "-p", "--output-format", "json",
-	// and include the step description somewhere in the args.
+	// Streaming-mode flags the supervisor's NDJSON parser depends on.
 	assert.Equal(t, "claude", cmd.Args[0])
-	assert.Contains(t, cmd.Args, "claude")
 	assert.Contains(t, cmd.Args, "-p")
 	assert.Contains(t, cmd.Args, "--output-format")
-	assert.Contains(t, cmd.Args, "json")
+	assert.Contains(t, cmd.Args, "stream-json")
+	assert.Contains(t, cmd.Args, "--verbose")
+	assert.Contains(t, cmd.Args, "--include-partial-messages")
+	assert.Contains(t, cmd.Args, "--permission-mode")
+	assert.Contains(t, cmd.Args, "acceptEdits")
 
 	// Step description must appear in the arguments.
 	found := false

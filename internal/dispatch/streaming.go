@@ -79,6 +79,34 @@ type streamResult struct {
 	err error
 }
 
+// outcomeKind tags each attempt's outcome for the sliding-window churn
+// rule in Supervise. See churnCountInLastN.
+type outcomeKind int
+
+const (
+	outcomeValidationFail outcomeKind = iota
+	outcomeChurn
+	outcomeError
+)
+
+// churnCountInLastN counts how many of the last n elements of outcomes
+// are outcomeChurn. Shorter slices count what's there. Used to decide
+// whether to escalate to RefineStep: ≥2 of the last 3 attempts churning
+// means the step itself is likely the problem, not the implementation.
+func churnCountInLastN(outcomes []outcomeKind, n int) int {
+	start := len(outcomes) - n
+	if start < 0 {
+		start = 0
+	}
+	count := 0
+	for _, o := range outcomes[start:] {
+		if o == outcomeChurn {
+			count++
+		}
+	}
+	return count
+}
+
 // runAttempt runs one event-streamed invocation of the coding agent and
 // returns the accumulated result. The event loop merges two sources:
 // the stream parser (driver output on stdout) and the permission bridge

@@ -35,7 +35,9 @@ func alwaysPassRunner() CommandRunner {
 	return batchRunner([]byte(`{}`))
 }
 
-// alwaysPassDriver is a mock driver whose ParseOutput returns success.
+// alwaysPassDriver is a mock StreamingDriver that yields a single-event
+// successful stream on every attempt: init, one tool call touching a
+// fake file, and a final result.
 type alwaysPassDriver struct {
 	id string
 }
@@ -46,8 +48,15 @@ func (m *alwaysPassDriver) BuildCommand(step spec.PlanStep, workDir string) *exe
 func (m *alwaysPassDriver) BuildRetryCommand(step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd {
 	return exec.Command("echo", "mock-retry:"+m.id)
 }
-func (m *alwaysPassDriver) ParseOutput(output []byte) (DriverOutput, error) {
-	return DriverOutput{Success: true, Files: []string{"noop.go"}, SessionID: "sess-" + m.id, Output: string(output)}, nil
+func (m *alwaysPassDriver) ParseStream(r io.Reader) StreamParser {
+	return &fakeStreamParser{events: []AgentEvent{
+		{Kind: EventInit, SessionID: "sess-" + m.id},
+		{Kind: EventToolCall, ToolName: "Write", ToolInput: map[string]any{"file_path": "noop.go"}, FilePaths: []string{"noop.go"}},
+		{Kind: EventResult, Text: "done", SessionID: "sess-" + m.id},
+	}}
+}
+func (m *alwaysPassDriver) RespondToAgent(sessionID, response string) (*exec.Cmd, error) {
+	return exec.Command("echo", "mock-resume:"+m.id), nil
 }
 
 // mockLLMAllPass returns a MockLLM that validates every call as PASS.
@@ -97,7 +106,7 @@ func TestDispatchSingleWorkstream(t *testing.T) {
 
 	d := &Dispatcher{
 		LLM:     mockLLMAllPass(2),
-		Drivers: map[string]AgentDriver{"claude-code": &alwaysPassDriver{id: "claude-code"}},
+		Drivers: map[string]StreamingDriver{"claude-code": &alwaysPassDriver{id: "claude-code"}},
 		Runner:  alwaysPassRunner(),
 	}
 
@@ -122,7 +131,7 @@ func TestDispatchMultipleWorkstreamsParallel(t *testing.T) {
 
 	d := &Dispatcher{
 		LLM:         mockLLMAllPass(2),
-		Drivers:     map[string]AgentDriver{"claude-code": &alwaysPassDriver{id: "claude-code"}},
+		Drivers:     map[string]StreamingDriver{"claude-code": &alwaysPassDriver{id: "claude-code"}},
 		Runner:      alwaysPassRunner(),
 		MaxTotal:    10,
 	}
@@ -169,7 +178,7 @@ func TestDispatchRespectsDependencies(t *testing.T) {
 
 	d := &Dispatcher{
 		LLM:     mockLLMAllPass(2),
-		Drivers: map[string]AgentDriver{"claude-code": &alwaysPassDriver{id: "claude-code"}},
+		Drivers: map[string]StreamingDriver{"claude-code": &alwaysPassDriver{id: "claude-code"}},
 		Runner:  orderRunner,
 	}
 
@@ -210,7 +219,7 @@ func TestDispatchPerAgentConcurrencyLimit(t *testing.T) {
 
 	d := &Dispatcher{
 		LLM:         mockLLMAllPass(3),
-		Drivers:     map[string]AgentDriver{"claude-code": &alwaysPassDriver{id: "claude-code"}},
+		Drivers:     map[string]StreamingDriver{"claude-code": &alwaysPassDriver{id: "claude-code"}},
 		Runner:      trackingRunner,
 		MaxPerAgent: map[string]int{"claude-code": 1},
 	}
@@ -233,7 +242,7 @@ func TestDispatchMissingDriver(t *testing.T) {
 
 	d := &Dispatcher{
 		LLM:     mockLLMAllPass(1),
-		Drivers: map[string]AgentDriver{}, // no drivers registered
+		Drivers: map[string]StreamingDriver{}, // no drivers registered
 		Runner:  alwaysPassRunner(),
 	}
 
