@@ -578,7 +578,7 @@ The bridge-merge test originally drafted here (`TestRunAttempt_MergesBridgeEvent
 - `TestMonitorCycle_MalformedJSON_ReturnsError` — mock `FastLLM` returns `"not json"`; `monitorCycle` returns a non-nil error and does not panic.
 - `TestMonitorCycle_UsesFastLLMNotStrong` — with distinct mock clients for `cfg.LLM` and `cfg.FastLLM`, only the fast client is invoked.
 
-### Part 7 — permission bridge (`internal/dispatch/bridge_test.go`, `cmd/mcp_perm_bridge_test.go`)
+### Part 7 — permission bridge (`internal/dispatch/bridge_test.go`, `cmd/mcp_perm_bridge_test.go`) — done
 
 - `TestPermBridge_SocketRoundtrip` — spawn bridge-as-subprocess, send it an MCP `tools/call` for `locutus_permission`, assert it forwards the tool_name+input over the socket to a fake supervisor, and returns the supervisor's decision to the MCP caller.
 - `TestPermBridge_AllowResponseShape` — supervisor responds `{behavior:"allow"}`; bridge returns a valid MCP tool_result content block that claude Code accepts.

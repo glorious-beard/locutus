@@ -73,17 +73,29 @@ func containsString(xs []string, x string) bool {
 	return false
 }
 
+// streamResult carries one pull from parser.Next to the main event loop.
+type streamResult struct {
+	evt AgentEvent
+	err error
+}
+
 // runAttempt runs one event-streamed invocation of the coding agent and
-// returns the accumulated result. It is a pure event loop — monitor
-// integration (Part 6) and permission-bridge merging (Part 7) hook in
-// later. For now, Next errors and ctx cancellation propagate directly;
-// io.EOF ends the loop cleanly.
+// returns the accumulated result. The event loop merges two sources:
+// the stream parser (driver output on stdout) and the permission bridge
+// (out-of-band, via Unix socket from a subprocess Claude spawns for
+// --permission-prompt-tool). When no bridge is attached the merge is
+// a no-op (a nil channel never fires in select).
 func (s *Supervisor) runAttempt(
 	ctx context.Context,
 	step spec.PlanStep,
 	driver StreamingDriver,
 	workDir, sessionID, feedback string,
 ) (*attemptResult, error) {
+	// Inner cancelable ctx so that an early return from this function also
+	// tears down the parser pump goroutine.
+	attemptCtx, cancelAttempt := context.WithCancel(ctx)
+	defer cancelAttempt()
+
 	cmd := s.buildAttemptCommand(driver, step, workDir, sessionID, feedback)
 
 	stream, err := s.runner(cmd)
@@ -95,28 +107,55 @@ func (s *Supervisor) runAttempt(
 	parser := driver.ParseStream(stream)
 	defer func() { _ = parser.Close() }()
 
+	parserEvents := pumpParser(attemptCtx, parser)
+
 	result := &attemptResult{}
 	mon := newMonitor()
 
 	for {
-		evt, err := parser.Next(ctx)
-		if errors.Is(err, io.EOF) {
-			return result, nil
-		}
-		if err != nil {
-			return result, err
+		var evt AgentEvent
+		select {
+		case r, ok := <-parserEvents:
+			if !ok {
+				// Parser goroutine exited without sending a terminal
+				// result — shouldn't happen, but treat as clean end.
+				return result, nil
+			}
+			if errors.Is(r.err, io.EOF) {
+				return result, nil
+			}
+			if r.err != nil {
+				return result, r.err
+			}
+			evt = r.evt
+		case bevt, ok := <-s.bridgeEvents():
+			if !ok {
+				// Bridge closed; continue with just the parser stream.
+				continue
+			}
+			evt = bevt
+		case <-ctx.Done():
+			return result, ctx.Err()
 		}
 
 		result.accumulate(evt)
 		s.emitProgress(ctx, evt)
 		mon.Observe(evt)
 
+		switch evt.Kind {
+		case EventPermissionRequest, EventClarifyQuestion:
+			if err := s.handleInteraction(ctx, step, evt); err != nil {
+				return result, err
+			}
+			// No resume needed — the bridge lets Claude continue once it
+			// receives the decision. Move on to the next event.
+			continue
+		}
+
 		if mon.ShouldCheck() {
 			verdict, cerr := s.monitorCycle(ctx, step, mon.RecentEvents())
 			mon.MarkChecked(cerr)
 			if cerr != nil {
-				// Circuit breaker will suppress further checks if this
-				// keeps happening; proceed with the stream in the meantime.
 				continue
 			}
 			if verdict.IsCycle && verdict.Confidence >= 0.7 {
@@ -126,9 +165,40 @@ func (s *Supervisor) runAttempt(
 				}
 			}
 		}
-
-		// Permission/question handling (Part 7) will be added here.
 	}
+}
+
+// pumpParser drains parser.Next on a goroutine so the main event loop can
+// select between parser events and bridge events. The goroutine exits
+// when parser returns any error (including io.EOF) or when ctx is
+// canceled. The returned channel closes when the goroutine exits.
+func pumpParser(ctx context.Context, parser StreamParser) <-chan streamResult {
+	out := make(chan streamResult, 1)
+	go func() {
+		defer close(out)
+		for {
+			evt, err := parser.Next(ctx)
+			select {
+			case out <- streamResult{evt: evt, err: err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return out
+}
+
+// bridgeEvents returns the bridge events channel if a bridge is attached,
+// or nil otherwise. A nil channel blocks forever in select, which is
+// exactly the "no bridge" behavior we want.
+func (s *Supervisor) bridgeEvents() <-chan AgentEvent {
+	if s.permBridge == nil {
+		return nil
+	}
+	return s.permBridge.Events
 }
 
 func (s *Supervisor) buildAttemptCommand(driver StreamingDriver, step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {

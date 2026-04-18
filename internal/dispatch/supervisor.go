@@ -78,6 +78,16 @@ type Supervisor struct {
 	cfg    SupervisorConfig
 	runner CommandRunner
 
+	// permBridge is the permission bridge for the active streaming attempt.
+	// When non-nil, runAttempt merges bridge.Events into its event loop and
+	// routes EventPermissionRequest to handleInteraction. When nil, the
+	// supervisor does not intercept permissions — Claude runs with
+	// whatever permission-mode the driver configured (see
+	// ClaudeCodeDriver.BuildCommand, which defaults to acceptEdits).
+	// Production wire-up creates one bridge per attempt; tests can set
+	// this field directly.
+	permBridge *PermBridge
+
 	// monitorDisabledLogged ensures the "monitor agent not configured" INFO
 	// log fires exactly once per supervisor, not once per attempt.
 	monitorDisabledLogged sync.Once
