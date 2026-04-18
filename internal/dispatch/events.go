@@ -38,7 +38,9 @@ const (
 )
 
 // AgentEvent is a normalized event from a coding-agent stream. Driver
-// parsers translate provider-specific NDJSON into this shape.
+// parsers translate provider-specific NDJSON into this shape; the
+// permission bridge (Part 7) produces EventPermissionRequest events
+// outside the parser path.
 type AgentEvent struct {
 	Kind      EventKind
 	Timestamp time.Time
@@ -48,6 +50,11 @@ type AgentEvent struct {
 	Text      string
 	FilePaths []string
 	Raw       json.RawMessage
+	// InteractionID is set only for events emitted by the permission
+	// bridge (EventPermissionRequest, EventClarifyQuestion). It matches
+	// Claude's tool_use_id so the supervisor's handleInteraction can
+	// route the decision back to the originating bridge request.
+	InteractionID string
 }
 
 // DriverConfig declares provider-level tool-name conventions used for
