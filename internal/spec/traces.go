@@ -7,7 +7,7 @@ type TraceabilityIndex struct {
 
 // TraceEntry records which spec elements govern a single file.
 type TraceEntry struct {
-	StrategyID  string   `json:"strategy_id" yaml:"strategy_id"`
+	ApproachID  string   `json:"approach_id" yaml:"approach_id"`
 	DecisionIDs []string `json:"decision_ids,omitempty" yaml:"decision_ids,omitempty"`
 	FeatureIDs  []string `json:"feature_ids,omitempty" yaml:"feature_ids,omitempty"`
 }

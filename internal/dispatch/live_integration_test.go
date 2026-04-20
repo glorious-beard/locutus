@@ -47,7 +47,7 @@ func TestClaudeCodeLive(t *testing.T) {
 			Steps: []spec.PlanStep{{
 				ID:            "step-1",
 				Order:         1,
-				StrategyID:    "direct",
+				ApproachID:    "direct",
 				Description:   "Create a file called hello.txt in the current working directory. Its contents must be exactly the word 'pong' followed by a single newline, and nothing else. Do not create any other files. Do not modify any existing files.",
 				ExpectedFiles: []string{"hello.txt"},
 			}},

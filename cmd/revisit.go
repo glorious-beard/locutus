@@ -34,6 +34,7 @@ func RunRevisit(ctx context.Context, llm agent.LLM, fsys specio.FS, targetID str
 	features, _ := collectObjects[spec.Feature](fsys, ".borg/spec/features")
 	decisions, _ := collectObjects[spec.Decision](fsys, ".borg/spec/decisions")
 	strategies, _ := collectObjects[spec.Strategy](fsys, ".borg/spec/strategies")
+	approaches, _ := collectMarkdown[spec.Approach](fsys, ".borg/spec/approaches")
 
 	// Compute blast radius for the target.
 	var traces spec.TraceabilityIndex
@@ -41,7 +42,7 @@ func RunRevisit(ctx context.Context, llm agent.LLM, fsys specio.FS, targetID str
 		_ = json.Unmarshal(data, &traces)
 	}
 
-	g := spec.BuildGraph(features, nil, decisions, strategies, traces)
+	g := spec.BuildGraph(features, nil, decisions, strategies, approaches, traces)
 	br, err := spec.ComputeBlastRadius(g, targetID)
 	if err != nil {
 		return nil, fmt.Errorf("blast radius for %s: %w", targetID, err)
@@ -49,8 +50,8 @@ func RunRevisit(ctx context.Context, llm agent.LLM, fsys specio.FS, targetID str
 
 	// Build a revisit prompt with context.
 	prompt := fmt.Sprintf(
-		"Revisit decision/strategy %q. Blast radius: %d decisions, %d strategies, %d files affected.",
-		targetID, len(br.Decisions), len(br.Strategies), len(br.Files),
+		"Revisit decision/strategy %q. Blast radius: %d decisions, %d strategies, %d approaches affected.",
+		targetID, len(br.Decisions), len(br.Strategies), len(br.Approaches),
 	)
 	if len(alternatives) > 0 {
 		prompt += fmt.Sprintf(" Previously considered alternatives: %v.", alternatives)

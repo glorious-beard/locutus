@@ -30,11 +30,13 @@ var directories = []string{
 	".borg/spec/bugs",
 	".borg/spec/decisions",
 	".borg/spec/strategies",
+	".borg/spec/approaches",
 	".borg/spec/entities",
 	".borg/history",
 	".borg/agents",
 	".borg/workflows",
 	".agents/skills",
+	".locutus/state",
 }
 
 // Scaffold creates the full project scaffold on the given FS. It is idempotent:

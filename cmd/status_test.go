@@ -82,7 +82,7 @@ func TestStatusPopulatedSpec(t *testing.T) {
 	assert.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-db", dec1, "PostgreSQL for persistence.\n"))
 
 	// Save 1 strategy via SavePair.
-	strat1 := spec.Strategy{ID: "strat-orm", Title: "Use GORM", Kind: spec.StrategyKindFoundational, DecisionID: "dec-db", Status: "active"}
+	strat1 := spec.Strategy{ID: "strat-orm", Title: "Use GORM", Kind: spec.StrategyKindFoundational, Decisions: []string{"dec-db"}, Status: "active"}
 	assert.NoError(t, specio.SavePair(fs, ".borg/spec/strategies/strat-orm", strat1, "GORM as ORM layer.\n"))
 
 	sd := GatherStatus(fs)

@@ -17,7 +17,7 @@ func init() {
 			Steps: []spec.PlanStep{{
 				ID:          "step-1",
 				Order:       1,
-				StrategyID:  "strat-XXX",
+				ApproachID:  "strat-XXX",
 				Description: "description of what to do",
 				Assertions: []spec.Assertion{{
 					Kind:    spec.AssertionKindTestPass,

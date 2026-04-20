@@ -29,13 +29,13 @@ func sampleMasterPlan() spec.MasterPlan {
 					{
 						ID:          "step-1",
 						Order:       1,
-						StrategyID:  "strat-go",
+						ApproachID:  "strat-go",
 						Description: "Set up Go project structure",
 					},
 					{
 						ID:          "step-2",
 						Order:       2,
-						StrategyID:  "strat-go",
+						ApproachID:  "strat-go",
 						Description: "Implement auth handlers",
 					},
 				},
@@ -281,7 +281,7 @@ func TestPlanProducesValidMasterPlan(t *testing.T) {
 	assert.Len(t, ws.Steps, 2)
 	assert.Equal(t, "step-1", ws.Steps[0].ID)
 	assert.Equal(t, 1, ws.Steps[0].Order)
-	assert.Equal(t, "strat-go", ws.Steps[0].StrategyID)
+	assert.Equal(t, "strat-go", ws.Steps[0].ApproachID)
 	assert.Equal(t, "Set up Go project structure", ws.Steps[0].Description)
 
 	assert.Equal(t, "step-2", ws.Steps[1].ID)

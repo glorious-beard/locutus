@@ -7,7 +7,6 @@ type Decision struct {
 	ID           string         `json:"id" yaml:"id"`
 	Title        string         `json:"title" yaml:"title"`
 	Status       DecisionStatus `json:"status" yaml:"status"`
-	Feature      string         `json:"feature,omitempty" yaml:"feature,omitempty"`
 	Confidence   float64        `json:"confidence" yaml:"confidence"`
 	Alternatives []Alternative  `json:"alternatives,omitempty" yaml:"alternatives,omitempty"`
 	Rationale    string         `json:"rationale" yaml:"rationale"`
@@ -23,17 +22,18 @@ type Alternative struct {
 	RejectedBecause string `json:"rejected_because" yaml:"rejected_because"`
 }
 
-// Strategy represents an execution approach tied to a decision.
+// Strategy represents a high-level engineering approach (architecture, quality, etc.).
+// Decisions and Approaches are parent→children references — no child→parent back-refs.
 type Strategy struct {
 	ID            string            `json:"id" yaml:"id"`
 	Title         string            `json:"title" yaml:"title"`
 	Kind          StrategyKind      `json:"kind" yaml:"kind"`
-	DecisionID    string            `json:"decision_id" yaml:"decision_id"`
+	Decisions     []string          `json:"decisions,omitempty" yaml:"decisions,omitempty"`
+	Approaches    []string          `json:"approaches,omitempty" yaml:"approaches,omitempty"`
 	Status        string            `json:"status" yaml:"status"`
 	Prerequisites []string          `json:"prerequisites,omitempty" yaml:"prerequisites,omitempty"`
 	Commands      map[string]string `json:"commands,omitempty" yaml:"commands,omitempty"`
 	Skills        []string          `json:"skills,omitempty" yaml:"skills,omitempty"`
-	Governs       []string          `json:"governs,omitempty" yaml:"governs,omitempty"`
 	InfluencedBy  []string          `json:"influenced_by,omitempty" yaml:"influenced_by,omitempty"`
 }
 
@@ -70,6 +70,7 @@ type Feature struct {
 	Description        string        `json:"description,omitempty" yaml:"description,omitempty"`
 	AcceptanceCriteria []string      `json:"acceptance_criteria,omitempty" yaml:"acceptance_criteria,omitempty"`
 	Decisions          []string      `json:"decisions,omitempty" yaml:"decisions,omitempty"`
+	Approaches         []string      `json:"approaches,omitempty" yaml:"approaches,omitempty"`
 	CreatedAt          time.Time     `json:"created_at" yaml:"created_at"`
 	UpdatedAt          time.Time     `json:"updated_at" yaml:"updated_at"`
 }

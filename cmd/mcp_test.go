@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/chetan/locutus/internal/scaffold"
 	"github.com/chetan/locutus/internal/spec"
@@ -123,36 +124,46 @@ func TestMCPToolDiff(t *testing.T) {
 	err := scaffold.Scaffold(fsys, "test-project")
 	assert.NoError(t, err)
 
-	// Add a feature, decision, strategy, and traces.
+	// Add a feature, decision, strategy, approach, and traces.
 	feat := spec.Feature{
 		ID:        "feat-auth",
 		Title:     "User Authentication",
 		Status:    spec.FeatureStatusActive,
 		Decisions: []string{"dec-lang"},
+		Approaches: []string{"app-auth"},
 	}
 	assert.NoError(t, specio.SavePair(fsys, ".borg/spec/features/feat-auth", feat, "Auth feature body."))
 
 	dec := spec.Decision{
-		ID:      "dec-lang",
-		Title:   "Language Choice",
-		Status:  spec.DecisionStatusActive,
-		Feature: "feat-auth",
+		ID:     "dec-lang",
+		Title:  "Language Choice",
+		Status: spec.DecisionStatusActive,
 	}
 	assert.NoError(t, specio.SavePair(fsys, ".borg/spec/decisions/dec-lang", dec, "We chose Go."))
 
 	strat := spec.Strategy{
-		ID:         "strat-go",
-		Title:      "Use Go",
-		Kind:       spec.StrategyKindFoundational,
-		DecisionID: "dec-lang",
-		Status:     "active",
+		ID:       "strat-go",
+		Title:    "Use Go",
+		Kind:     spec.StrategyKindFoundational,
+		Decisions: []string{"dec-lang"},
+		Status:   "active",
 	}
 	assert.NoError(t, specio.SavePair(fsys, ".borg/spec/strategies/strat-go", strat, "Go strategy body."))
+
+	app := spec.Approach{
+		ID:       "app-auth",
+		Title:    "Auth Implementation",
+		ParentID: "feat-auth",
+		ArtifactPaths: []string{"cmd/main.go"},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	assert.NoError(t, specio.SaveMarkdown(fsys, ".borg/spec/approaches/app-auth.md", app, "## Auth\n\nImplement OAuth.\n"))
 
 	traces := spec.TraceabilityIndex{
 		Entries: map[string]spec.TraceEntry{
 			"cmd/main.go": {
-				StrategyID:  "strat-go",
+				ApproachID:  "app-auth",
 				DecisionIDs: []string{"dec-lang"},
 				FeatureIDs:  []string{"feat-auth"},
 			},

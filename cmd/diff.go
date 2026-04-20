@@ -39,10 +39,10 @@ func (c *DiffCmd) Run(cli *CLI) error {
 			fmt.Printf("    - %s\n", s.ID)
 		}
 	}
-	if len(br.Files) > 0 {
-		fmt.Println("  Files:")
-		for _, f := range br.Files {
-			fmt.Printf("    - %s\n", f.ID)
+	if len(br.Approaches) > 0 {
+		fmt.Println("  Approaches:")
+		for _, a := range br.Approaches {
+			fmt.Printf("    - %s\n", a.ID)
 		}
 	}
 	return nil
@@ -55,13 +55,14 @@ func RunDiff(fsys specio.FS, id string) (*spec.BlastRadius, error) {
 	decisions, _ := collectObjects[spec.Decision](fsys, ".borg/spec/decisions")
 	strategies, _ := collectObjects[spec.Strategy](fsys, ".borg/spec/strategies")
 	bugs, _ := collectObjects[spec.Bug](fsys, ".borg/spec/bugs")
+	approaches, _ := collectMarkdown[spec.Approach](fsys, ".borg/spec/approaches")
 
 	var traces spec.TraceabilityIndex
 	if data, err := fsys.ReadFile(".borg/spec/traces.json"); err == nil {
 		_ = json.Unmarshal(data, &traces)
 	}
 
-	g := spec.BuildGraph(features, bugs, decisions, strategies, traces)
+	g := spec.BuildGraph(features, bugs, decisions, strategies, approaches, traces)
 	return spec.ComputeBlastRadius(g, id)
 }
 
@@ -75,6 +76,25 @@ func collectObjects[T any](fsys specio.FS, dir string) ([]T, error) {
 	for _, r := range results {
 		if r.Err == nil {
 			out = append(out, r.Object)
+		}
+	}
+	return out, nil
+}
+
+// collectMarkdown walks a directory of .md files and returns successfully loaded objects.
+func collectMarkdown[T any](fsys specio.FS, dir string) ([]T, error) {
+	paths, err := fsys.ListDir(dir)
+	if err != nil {
+		return nil, nil
+	}
+	var out []T
+	for _, p := range paths {
+		if len(p) < 3 || p[len(p)-3:] != ".md" {
+			continue
+		}
+		obj, _, err := specio.LoadMarkdown[T](fsys, p)
+		if err == nil {
+			out = append(out, obj)
 		}
 	}
 	return out, nil

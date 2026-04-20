@@ -16,13 +16,15 @@ type GraphNode struct {
 	Name string
 }
 
-// SpecGraph holds the spec dependency graph: GOALS.md → Feature/Bug → Decision → Strategy → Files.
+// SpecGraph holds the spec dependency graph.
+// Edge direction: root → (Feature | Bug | Strategy) → Decision/Approach
 type SpecGraph struct {
 	dag        dgraph.Graph[string, GraphNode]
 	features   map[string]*Feature
 	bugs       map[string]*Bug
 	decisions  map[string]*Decision
 	strategies map[string]*Strategy
+	approaches map[string]*Approach
 }
 
 // Feature returns the Feature for the given ID, or nil.
@@ -36,6 +38,9 @@ func (g *SpecGraph) Decision(id string) *Decision { return g.decisions[id] }
 
 // Strategy returns the Strategy for the given ID, or nil.
 func (g *SpecGraph) Strategy(id string) *Strategy { return g.strategies[id] }
+
+// Approach returns the Approach for the given ID, or nil.
+func (g *SpecGraph) Approach(id string) *Approach { return g.approaches[id] }
 
 // Nodes returns a map of all graph nodes, keyed by ID.
 func (g *SpecGraph) Nodes() map[string]GraphNode {
@@ -61,15 +66,24 @@ type BlastRadius struct {
 	Bugs       []GraphNode
 	Decisions  []GraphNode
 	Strategies []GraphNode
-	Files      []GraphNode
+	Approaches []GraphNode
 }
 
-// BuildGraph constructs a SpecGraph from spec data and traceability index.
+// BuildGraph constructs a SpecGraph from spec data.
+// Edge direction (parent → children):
+//
+//	root → Feature, root → Bug, root → Strategy
+//	Feature → Decision (via Feature.Decisions)
+//	Feature → Approach (via Feature.Approaches)
+//	Strategy → Decision (via Strategy.Decisions)
+//	Strategy → Approach (via Strategy.Approaches)
+//	Bug → Feature (via Bug.FeatureID)
 func BuildGraph(
 	features []Feature,
 	bugs []Bug,
 	decisions []Decision,
 	strategies []Strategy,
+	approaches []Approach,
 	traces TraceabilityIndex,
 ) *SpecGraph {
 	g := &SpecGraph{
@@ -78,6 +92,7 @@ func BuildGraph(
 		bugs:       make(map[string]*Bug),
 		decisions:  make(map[string]*Decision),
 		strategies: make(map[string]*Strategy),
+		approaches: make(map[string]*Approach),
 	}
 
 	add := func(id string, kind NodeKind, name string) {
@@ -88,9 +103,10 @@ func BuildGraph(
 		_ = g.dag.AddEdge(from, to)
 	}
 
-	// Single root — every feature and bug connects to GOALS.md.
+	// Register root.
 	add(RootID, KindGoals, "GOALS.md")
 
+	// Register all node types.
 	for i := range features {
 		f := &features[i]
 		add(f.ID, KindFeature, f.Title)
@@ -111,36 +127,47 @@ func BuildGraph(
 		add(s.ID, KindStrategy, s.Title)
 		g.strategies[s.ID] = s
 	}
-	for filePath := range traces.Entries {
-		add(filePath, KindFile, filePath)
+	for i := range approaches {
+		a := &approaches[i]
+		add(a.ID, KindApproach, a.Title)
+		g.approaches[a.ID] = a
 	}
 
-	// GOALS.md → Feature and GOALS.md → Bug edges.
+	// root → Feature, root → Bug, root → Strategy.
 	for _, f := range features {
 		edge(RootID, f.ID)
 	}
 	for _, b := range bugs {
 		edge(RootID, b.ID)
 	}
+	for _, s := range strategies {
+		edge(RootID, s.ID)
+	}
 
-	// Feature → Decision edges.
+	// Feature → Decision and Feature → Approach.
 	for _, f := range features {
 		for _, decID := range f.Decisions {
 			edge(f.ID, decID)
 		}
+		for _, appID := range f.Approaches {
+			edge(f.ID, appID)
+		}
 	}
-	// Bug → Feature edges.
+
+	// Bug → Feature.
 	for _, b := range bugs {
 		if b.FeatureID != "" {
 			edge(b.ID, b.FeatureID)
 		}
 	}
+
+	// Strategy → Decision and Strategy → Approach.
 	for _, s := range strategies {
-		edge(s.DecisionID, s.ID)
-	}
-	for filePath, entry := range traces.Entries {
-		if entry.StrategyID != "" {
-			edge(entry.StrategyID, filePath)
+		for _, decID := range s.Decisions {
+			edge(s.ID, decID)
+		}
+		for _, appID := range s.Approaches {
+			edge(s.ID, appID)
 		}
 	}
 
@@ -164,8 +191,7 @@ func (g *SpecGraph) ForwardWalk(startID string) []GraphNode {
 	return result
 }
 
-// BlastRadius computes the downstream impact of the given node, categorized
-// by kind. The root node is excluded from the category slices.
+// BlastRadius computes the downstream impact of the given node, categorized by kind.
 func (g *SpecGraph) BlastRadius(id string) *BlastRadius {
 	nodes := g.ForwardWalk(id)
 	if len(nodes) == 0 {
@@ -188,8 +214,8 @@ func (g *SpecGraph) BlastRadius(id string) *BlastRadius {
 			br.Decisions = append(br.Decisions, n)
 		case KindStrategy:
 			br.Strategies = append(br.Strategies, n)
-		case KindFile:
-			br.Files = append(br.Files, n)
+		case KindApproach:
+			br.Approaches = append(br.Approaches, n)
 		}
 	}
 
@@ -266,6 +292,7 @@ func NewTestGraph(nodes []GraphNode, edges [][2]string) *SpecGraph {
 		bugs:       make(map[string]*Bug),
 		decisions:  make(map[string]*Decision),
 		strategies: make(map[string]*Strategy),
+		approaches: make(map[string]*Approach),
 	}
 
 	for _, n := range nodes {

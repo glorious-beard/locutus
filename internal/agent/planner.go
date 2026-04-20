@@ -136,7 +136,7 @@ func buildPlanPrompt(req PlanRequest) string {
 	if len(req.Strategies) > 0 {
 		b.WriteString("\n## Existing Strategies\n")
 		for _, s := range req.Strategies {
-			fmt.Fprintf(&b, "- %s: %s (kind: %s, decision: %s)\n", s.ID, s.Title, s.Kind, s.DecisionID)
+			fmt.Fprintf(&b, "- %s: %s (kind: %s, decisions: [%s])\n", s.ID, s.Title, s.Kind, strings.Join(s.Decisions, ", "))
 		}
 	}
 

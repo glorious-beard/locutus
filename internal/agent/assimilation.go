@@ -30,6 +30,7 @@ type AssimilationResult struct {
 	Features   []spec.Feature
 	Decisions  []spec.Decision
 	Strategies []spec.Strategy
+	Approaches []spec.Approach
 	Entities   []spec.Entity
 	Gaps       []Gap
 }
@@ -226,6 +227,13 @@ func parseAssimilationResults(results []RoundResult) (*AssimilationResult, error
 			var strategies []spec.Strategy
 			if err := json.Unmarshal(data, &strategies); err == nil {
 				br.Strategies = append(br.Strategies, strategies...)
+			}
+		}
+
+		if data, ok := raw["approaches"]; ok {
+			var approaches []spec.Approach
+			if err := json.Unmarshal(data, &approaches); err == nil {
+				br.Approaches = append(br.Approaches, approaches...)
 			}
 		}
 

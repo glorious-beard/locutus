@@ -13,6 +13,7 @@ type MasterPlan struct {
 	Features             []FeatureRef        `json:"features,omitempty" yaml:"features,omitempty"`
 	Decisions            []DecisionRef       `json:"decisions,omitempty" yaml:"decisions,omitempty"`
 	Strategies           []StrategyRef       `json:"strategies,omitempty" yaml:"strategies,omitempty"`
+	Approaches           []ApproachRef       `json:"approaches,omitempty" yaml:"approaches,omitempty"`
 	InterfaceContracts   []InterfaceContract `json:"interface_contracts,omitempty" yaml:"interface_contracts,omitempty"`
 	Workstreams          []Workstream        `json:"workstreams,omitempty" yaml:"workstreams,omitempty"`
 	GlobalAssertions     []Assertion         `json:"global_assertions,omitempty" yaml:"global_assertions,omitempty"`
@@ -39,6 +40,13 @@ type StrategyRef struct {
 	ID    string `json:"id" yaml:"id"`
 	Title string `json:"title" yaml:"title"`
 	Kind  string `json:"kind" yaml:"kind"`
+}
+
+// ApproachRef is a lightweight snapshot of an approach within a plan.
+type ApproachRef struct {
+	ID       string `json:"id" yaml:"id"`
+	Title    string `json:"title" yaml:"title"`
+	ParentID string `json:"parent_id" yaml:"parent_id"`
 }
 
 // InterfaceContract defines shared types or API shapes that enable parallel workstreams.
@@ -71,7 +79,7 @@ type WorkstreamDependency struct {
 type PlanStep struct {
 	ID            string            `json:"id" yaml:"id"`
 	Order         int               `json:"order" yaml:"order"`
-	StrategyID    string            `json:"strategy_id" yaml:"strategy_id"`
+	ApproachID    string            `json:"approach_id" yaml:"approach_id"`
 	Description   string            `json:"description" yaml:"description"`
 	Skills        []SkillRef        `json:"skills,omitempty" yaml:"skills,omitempty"`
 	ExpectedFiles []string          `json:"expected_files,omitempty" yaml:"expected_files,omitempty"`

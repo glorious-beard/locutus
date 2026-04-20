@@ -81,7 +81,7 @@ func newTestStep() spec.PlanStep {
 	return spec.PlanStep{
 		ID:          "step-1",
 		Order:       1,
-		StrategyID:  "strat-auth",
+		ApproachID:  "strat-auth",
 		Description: "Implement auth middleware",
 		ExpectedFiles: []string{
 			"internal/auth/middleware.go",

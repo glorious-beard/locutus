@@ -4,12 +4,10 @@ package spec
 type DecisionStatus string
 
 const (
-	DecisionStatusProposed   DecisionStatus = "proposed"
-	DecisionStatusAssumed    DecisionStatus = "assumed"
-	DecisionStatusInferred   DecisionStatus = "inferred"
-	DecisionStatusActive     DecisionStatus = "active"
-	DecisionStatusSuperseded DecisionStatus = "superseded"
-	DecisionStatusRejected   DecisionStatus = "rejected"
+	DecisionStatusProposed DecisionStatus = "proposed"
+	DecisionStatusAssumed  DecisionStatus = "assumed"
+	DecisionStatusInferred DecisionStatus = "inferred"
+	DecisionStatusActive   DecisionStatus = "active"
 )
 
 // StrategyKind represents the category of a strategy.
@@ -94,5 +92,5 @@ const (
 	KindDecision NodeKind = "decision"
 	KindStrategy NodeKind = "strategy"
 	KindEntity   NodeKind = "entity"
-	KindFile     NodeKind = "file"
+	KindApproach NodeKind = "approach"
 )

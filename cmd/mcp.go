@@ -132,10 +132,10 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 				result += fmt.Sprintf("    - %s\n", s.ID)
 			}
 		}
-		if len(br.Files) > 0 {
-			result += fmt.Sprintf("  Files: %d\n", len(br.Files))
-			for _, f := range br.Files {
-				result += fmt.Sprintf("    - %s\n", f.ID)
+		if len(br.Approaches) > 0 {
+			result += fmt.Sprintf("  Approaches: %d\n", len(br.Approaches))
+			for _, a := range br.Approaches {
+				result += fmt.Sprintf("    - %s\n", a.ID)
 			}
 		}
 		return textResult(result), nil, nil

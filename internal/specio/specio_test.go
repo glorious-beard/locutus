@@ -7,6 +7,7 @@ import (
 
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMemFSReadWriteFile(t *testing.T) {
@@ -156,4 +157,43 @@ func TestFindOrphans(t *testing.T) {
 
 	assert.Equal(t, []string{"decisions/d-002.json"}, jsonOnly)
 	assert.Equal(t, []string{"decisions/d-003.md"}, mdOnly)
+}
+
+func TestSaveLoadMarkdown(t *testing.T) {
+	mfs := NewMemFS()
+	require.NoError(t, mfs.MkdirAll(".borg/spec/approaches", 0o755))
+
+	orig := spec.Approach{
+		ID:            "app-oauth",
+		Title:         "OAuth via PKCE",
+		ParentID:      "feat-auth",
+		ArtifactPaths: []string{"src/auth/oauth.go"},
+		Decisions:     []string{"dec-use-oauth"},
+		Skills:        []string{"go-testing"},
+		Prerequisites: []string{"buf"},
+		CreatedAt:     time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC),
+		UpdatedAt:     time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC),
+	}
+	body := "## What to build\n\nImplement OAuth2 PKCE flow.\n"
+
+	require.NoError(t, SaveMarkdown(mfs, ".borg/spec/approaches/app-oauth.md", orig, body))
+
+	gotObj, gotBody, err := LoadMarkdown[spec.Approach](mfs, ".borg/spec/approaches/app-oauth.md")
+	require.NoError(t, err)
+
+	assert.Equal(t, orig.ID, gotObj.ID)
+	assert.Equal(t, orig.Title, gotObj.Title)
+	assert.Equal(t, orig.ParentID, gotObj.ParentID)
+	assert.Equal(t, orig.ArtifactPaths, gotObj.ArtifactPaths)
+	assert.Equal(t, orig.Decisions, gotObj.Decisions)
+	assert.Equal(t, orig.Skills, gotObj.Skills)
+	assert.Equal(t, orig.Prerequisites, gotObj.Prerequisites)
+	assert.Equal(t, orig.CreatedAt.UTC(), gotObj.CreatedAt.UTC())
+	assert.Equal(t, body, gotBody)
+}
+
+func TestLoadMarkdownMissingFile(t *testing.T) {
+	mfs := NewMemFS()
+	_, _, err := LoadMarkdown[spec.Approach](mfs, "nonexistent.md")
+	assert.Error(t, err)
 }
