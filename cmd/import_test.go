@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"testing"
 
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestImportFeature verifies that ImportFeature parses markdown with YAML
@@ -108,4 +110,73 @@ It should not be importable as a feature.
 	feat, err := ImportFeature(fs, input)
 	assert.Error(t, err, "should return error for input without frontmatter")
 	assert.Nil(t, feat)
+}
+
+// TestRunImportSkipTriageWritesFeature checks the Phase B admission path with
+// triage bypassed: no LLM call, feature is written to the spec dir.
+func TestRunImportSkipTriageWritesFeature(t *testing.T) {
+	fs := specio.NewMemFS()
+	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
+
+	input := []byte(`---
+id: feat-admit
+title: Direct Admit
+type: feature
+---
+Body.
+`)
+
+	result, err := RunImport(context.Background(), fs, input, "feature", true, false)
+	require.NoError(t, err)
+	require.True(t, result.Accepted)
+	assert.Equal(t, "feat-admit", result.FeatureID)
+	assert.Equal(t, ".borg/spec/features/feat-admit", result.Destination)
+
+	// Verify the pair actually landed.
+	_, err = fs.ReadFile(".borg/spec/features/feat-admit.json")
+	assert.NoError(t, err)
+}
+
+// TestRunImportDryRunSkipsWrite confirms --dry-run previews without touching
+// the spec dir.
+func TestRunImportDryRunSkipsWrite(t *testing.T) {
+	fs := specio.NewMemFS()
+	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
+
+	input := []byte(`---
+id: feat-dry
+title: Dry-run
+---
+Body.
+`)
+
+	result, err := RunImport(context.Background(), fs, input, "feature", true, true)
+	require.NoError(t, err)
+	require.True(t, result.Accepted)
+	assert.True(t, result.DryRun)
+	assert.Equal(t, "feat-dry", result.FeatureID)
+
+	// No file should have been written.
+	_, err = fs.ReadFile(".borg/spec/features/feat-dry.json")
+	assert.Error(t, err)
+}
+
+// TestRunImportNoGoalsAdmits confirms that when GOALS.md is absent, admission
+// proceeds without triage (we log a warning but don't gate).
+func TestRunImportNoGoalsAdmits(t *testing.T) {
+	fs := specio.NewMemFS()
+	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
+
+	input := []byte(`---
+id: feat-nogoals
+title: No GOALS
+---
+Body.
+`)
+
+	// skipTriage=false, no GOALS.md present. Should still admit.
+	result, err := RunImport(context.Background(), fs, input, "feature", false, false)
+	require.NoError(t, err)
+	require.True(t, result.Accepted)
+	assert.Nil(t, result.Verdict, "no triage should have run")
 }

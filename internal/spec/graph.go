@@ -174,6 +174,31 @@ func BuildGraph(
 	return g
 }
 
+// ApproachesUnder returns every Approach reachable from startID by forward
+// traversal — i.e. every Approach in the subtree of the given spec node.
+// Used by `adopt` to scope reconciliation to a node and its descendants.
+// An empty startID or RootID returns every Approach in the graph.
+func (g *SpecGraph) ApproachesUnder(startID string) []Approach {
+	seed := startID
+	if seed == "" {
+		seed = RootID
+	}
+	nodes := g.ForwardWalk(seed)
+	if len(nodes) == 0 {
+		return nil
+	}
+	var out []Approach
+	for _, n := range nodes {
+		if n.Kind != KindApproach {
+			continue
+		}
+		if a := g.Approach(n.ID); a != nil {
+			out = append(out, *a)
+		}
+	}
+	return out
+}
+
 // ForwardWalk returns all nodes reachable from the given ID (including the node
 // itself) by following edges forward via BFS. Returns nil if id is not found.
 func (g *SpecGraph) ForwardWalk(startID string) []GraphNode {

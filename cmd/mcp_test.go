@@ -39,8 +39,8 @@ func connectMCPClient(t *testing.T, dir string) *mcp.ClientSession {
 }
 
 // TestMCPServerInitializes verifies that the MCP server starts, accepts a
-// client connection, and reports at least 7 registered tools including the
-// core tool names "init", "status", and "diff".
+// client connection, and reports the Phase B tool set including the core
+// names "init", "status", "refine", and "history".
 func TestMCPServerInitializes(t *testing.T) {
 	dir := t.TempDir()
 	session := connectMCPClient(t, dir)
@@ -49,7 +49,8 @@ func TestMCPServerInitializes(t *testing.T) {
 	result, err := session.ListTools(ctx, nil)
 	assert.NoError(t, err)
 
-	// At least 7 tools: init, status, check, diff, triage, import, analyze.
+	// Phase B: init, status, check, import, assimilate (+analyze alias),
+	// refine (+revisit alias), history. At least 7 canonical tools.
 	assert.GreaterOrEqual(t, len(result.Tools), 7, "server should register at least 7 tools")
 
 	names := make([]string, len(result.Tools))
@@ -58,9 +59,13 @@ func TestMCPServerInitializes(t *testing.T) {
 	}
 	sort.Strings(names)
 
-	assert.Contains(t, names, "init", "tools should include 'init'")
-	assert.Contains(t, names, "status", "tools should include 'status'")
-	assert.Contains(t, names, "diff", "tools should include 'diff'")
+	assert.Contains(t, names, "init")
+	assert.Contains(t, names, "status")
+	assert.Contains(t, names, "refine")
+	assert.Contains(t, names, "history")
+	assert.Contains(t, names, "assimilate")
+	assert.NotContains(t, names, "diff", "diff was folded into refine --dry-run in Phase B")
+	assert.NotContains(t, names, "triage", "triage was folded into import in Phase B")
 }
 
 // TestMCPToolInit calls the "init" tool to scaffold a project in a temp
@@ -113,10 +118,10 @@ func TestMCPToolStatus(t *testing.T) {
 	assert.NotEmpty(t, text, "status result should contain text content")
 }
 
-// TestMCPToolDiff scaffolds a project with spec data (a feature, decision,
-// strategy, and trace), then calls "diff" and verifies the result includes
-// blast radius information.
-func TestMCPToolDiff(t *testing.T) {
+// TestMCPToolRefineDryRun scaffolds a project with spec data, then calls
+// "refine" with dry_run=true and verifies the result includes cascade preview
+// information. Phase B folded the old `diff` tool into `refine --dry-run`.
+func TestMCPToolRefineDryRun(t *testing.T) {
 	dir := t.TempDir()
 
 	// Set up a real project with spec data on disk.
@@ -176,19 +181,19 @@ func TestMCPToolDiff(t *testing.T) {
 
 	ctx := context.Background()
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "diff",
-		Arguments: map[string]any{"id": "feat-auth"},
+		Name:      "refine",
+		Arguments: map[string]any{"id": "feat-auth", "dry_run": true},
 	})
 	assert.NoError(t, err)
-	assert.False(t, result.IsError, "diff tool should not return an error for a known ID")
+	assert.False(t, result.IsError, "refine --dry-run should not error for a known ID")
 
 	text := extractText(result)
-	assert.Contains(t, text, "feat-auth", "diff result should reference the queried feature ID")
+	assert.Contains(t, text, "feat-auth", "result should reference the queried feature ID")
 }
 
-// TestMCPToolDiffUnknownID calls "diff" with an ID that does not exist in the
-// spec graph and verifies the result reports an error.
-func TestMCPToolDiffUnknownID(t *testing.T) {
+// TestMCPToolRefineUnknownID calls "refine" with an ID that does not exist in
+// the spec graph and verifies the result reports an error.
+func TestMCPToolRefineUnknownID(t *testing.T) {
 	dir := t.TempDir()
 
 	// Scaffold a minimal project with no spec data.
@@ -200,13 +205,11 @@ func TestMCPToolDiffUnknownID(t *testing.T) {
 
 	ctx := context.Background()
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "diff",
-		Arguments: map[string]any{"id": "nonexistent"},
+		Name:      "refine",
+		Arguments: map[string]any{"id": "nonexistent", "dry_run": true},
 	})
-	// The call itself should succeed (MCP protocol level), but the tool should
-	// signal an error via IsError or the content should indicate failure.
 	assert.NoError(t, err, "MCP protocol call should succeed even for tool-level errors")
-	assert.True(t, result.IsError, "diff tool should signal error for unknown ID")
+	assert.True(t, result.IsError, "refine tool should signal error for unknown ID")
 }
 
 // TestMCPToolListTools verifies that all expected tools are listed and each has
@@ -219,7 +222,7 @@ func TestMCPToolListTools(t *testing.T) {
 	result, err := session.ListTools(ctx, nil)
 	assert.NoError(t, err)
 
-	expected := []string{"init", "status", "check", "diff", "triage", "import", "analyze"}
+	expected := []string{"init", "status", "import", "assimilate", "refine", "adopt", "history"}
 	names := make(map[string]string) // name -> description
 	for _, tool := range result.Tools {
 		names[tool.Name] = tool.Description

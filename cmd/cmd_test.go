@@ -22,36 +22,31 @@ func captureStdout(fn func()) string {
 	return string(out)
 }
 
-func TestCLIParsesVersion(t *testing.T) {
+// TestCLIParsesStatus checks the Kong parser recognises one of the
+// canonical verbs. Phase A dropped the `version` subcommand in favour of
+// the `--version` flag, so we assert against `status` instead.
+func TestCLIParsesStatus(t *testing.T) {
 	var cli CLI
-	parser, err := kong.New(&cli, kong.Name("locutus"), kong.Exit(func(int) {}))
+	parser, err := kong.New(&cli,
+		kong.Name("locutus"),
+		kong.Vars{"version": "test"},
+		kong.Exit(func(int) {}),
+	)
 	assert.NoError(t, err)
 
-	ctx, err := parser.Parse([]string{"version"})
+	ctx, err := parser.Parse([]string{"status"})
 	assert.NoError(t, err)
-	assert.Equal(t, "version", ctx.Command())
+	assert.Equal(t, "status", ctx.Command())
 }
 
-func TestVersionRunPlain(t *testing.T) {
-	cli := CLI{JSON: false}
-	cmd := VersionCmd{Version: "1.0.0"}
+// TestSetVersion exercises the buildVersion helper used by `update`.
+func TestSetVersion(t *testing.T) {
+	orig := buildVersion
+	defer func() { buildVersion = orig }()
 
-	out := captureStdout(func() {
-		err := cmd.Run(&cli)
-		assert.NoError(t, err)
-	})
+	SetVersion("1.2.3")
+	assert.Equal(t, "1.2.3", buildVersion)
 
-	assert.Contains(t, out, "locutus 1.0.0")
-}
-
-func TestVersionRunJSON(t *testing.T) {
-	cli := CLI{JSON: true}
-	cmd := VersionCmd{Version: "1.0.0"}
-
-	out := captureStdout(func() {
-		err := cmd.Run(&cli)
-		assert.NoError(t, err)
-	})
-
-	assert.Contains(t, out, `"version":"1.0.0"`)
+	SetVersion("") // empty input is ignored
+	assert.Equal(t, "1.2.3", buildVersion)
 }

@@ -3,25 +3,27 @@ package cmd
 import (
 	"log/slog"
 	"os"
+
+	"github.com/alecthomas/kong"
 )
 
 // CLI is the root command struct for the locutus CLI.
 type CLI struct {
-	JSON    bool `help:"Output results as JSON." short:"j"`
-	Verbose bool `help:"Enable verbose (debug) logging." short:"v"`
+	JSON    bool             `help:"Output results as JSON." short:"j"`
+	Verbose bool             `help:"Enable verbose (debug) logging." short:"v"`
+	Version kong.VersionFlag `help:"Print version and exit." short:"V"`
 
-	Version  VersionCmd  `cmd:"" help:"Print version information."`
-	Init     InitCmd     `cmd:"" help:"Initialize a new spec-driven project."`
-	Check    CheckCmd    `cmd:"" help:"Validate strategy prerequisites."`
-	Status   StatusCmd   `cmd:"" help:"Show spec summary."`
-	Update   UpdateCmd   `cmd:"" help:"Self-update to the latest release."`
-	Diff     DiffCmd     `cmd:"" help:"Preview blast radius of a spec change."`
-	Regen    RegenCmd    `cmd:"" help:"Regenerate stale modules."`
-	Revisit  RevisitCmd  `cmd:"" help:"Update a decision or strategy."`
-	Triage   TriageCmd   `cmd:"" help:"Evaluate an issue against GOALS.md."`
-	Import   ImportCmd   `cmd:"" help:"Create a feature or bug from an issue."`
-	Analyze  AnalyzeCmd  `cmd:"" help:"Analyze an existing codebase (assimilation)."`
-	Mcp      McpCmd      `cmd:"" help:"Start the MCP server."`
+	// Canonical 8-verb set.
+	Init       InitCmd       `cmd:"" help:"Initialize a new spec-driven project."`
+	Update     UpdateCmd     `cmd:"" help:"Self-update to the latest release."`
+	Import     ImportCmd     `cmd:"" help:"Admit a new feature or bug from an issue."`
+	Refine     RefineCmd     `cmd:"" help:"Council-driven deliberation on any spec node."`
+	Assimilate AssimilateCmd `cmd:"" help:"Infer or update spec from an existing codebase."`
+	Adopt      AdoptCmd      `cmd:"" help:"Bring code into alignment with spec (the reconcile loop)."`
+	Status     StatusCmd     `cmd:"" help:"Show spec summary: state, drift, validation errors."`
+	History    HistoryCmd    `cmd:"" help:"Query the past-tense record of spec changes."`
+
+	Mcp McpCmd `cmd:"" help:"Start the MCP server."`
 
 	// Invoked by Claude Code as an MCP subprocess; end users don't run this
 	// directly. Hidden to keep it out of --help.

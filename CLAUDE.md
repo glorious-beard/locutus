@@ -8,19 +8,33 @@ Locutus — a Go CLI and MCP server that acts as an autonomous project manager f
 
 ## Sources of Truth
 
-- `docs/IMPLEMENTATION_PLAN.md` — full architecture, package layout, type definitions, detailed designs, and 8-tier build order. This is the implementation reference.
-- `docs/DECISION_JOURNAL.md` — 71 architectural decisions with rationale, alternatives considered, and reversals. Consult when a design choice seems ambiguous.
+- `docs/DECISION_JOURNAL.md` — architectural decisions with rationale, alternatives considered, and reversals. Authoritative design record.
+- `.claude/plans/` — active implementation plans (current consolidation work is in `verb-set-phase-{a,b,c,d}.md`). Copy to `docs/plans/` once a phase stabilises.
 
-When these two documents conflict with any other file in the repo (README, PLAN.md, etc.), the docs/ files win.
+When these documents conflict with any other file in the repo, `docs/` and `.claude/plans/` win.
+
+## Command Surface (8 verbs)
+
+1. `locutus init` — Bootstrap `.borg/` scaffold.
+2. `locutus update` — Refresh binary and embedded defaults.
+3. `locutus import <source>` — Admit a new feature/bug with GOALS.md triage.
+4. `locutus refine <node>` — Council-driven deliberation on any spec node.
+5. `locutus assimilate` — Infer or update spec from code.
+6. `locutus adopt` — Bring code into alignment with spec (reconcile loop).
+7. `locutus status` — Show state, drift, and validation errors.
+8. `locutus history` — Query the past-tense record.
+
+Every mutating verb supports `--dry-run`. `locutus mcp` starts the MCP server; `locutus mcp-perm-bridge` is a hidden internal subprocess.
 
 ## Build & Test
 
 ```bash
 go build ./...
 go test ./...
-go test ./path/to/pkg          # single package
-go test ./path/to/pkg -run TestName  # single test
+go test ./path/to/pkg                  # single package
+go test ./path/to/pkg -run TestName    # single test
 go vet ./...
+go test ./... -race                    # race detector
 ```
 
 ## Libraries
@@ -30,3 +44,4 @@ go vet ./...
 - **Testing**: `github.com/stretchr/testify/assert`
 - **Console output**: `github.com/pterm/pterm`
 - **Logging**: `log/slog` (stdlib)
+- **LLM**: `github.com/firebase/genkit/go` (Anthropic + Google GenAI providers)

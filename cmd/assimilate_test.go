@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func setupAnalyzeFS(t *testing.T) *specio.MemFS {
+func setupAssimilateFS(t *testing.T) *specio.MemFS {
 	t.Helper()
 
 	fs := specio.NewMemFS()
@@ -68,11 +68,11 @@ func mockAssimilationLLM() *agent.MockLLM {
 	)
 }
 
-func TestRunAnalyzeProducesSpec(t *testing.T) {
-	fs := setupAnalyzeFS(t)
+func TestRunAssimilateProducesSpec(t *testing.T) {
+	fs := setupAssimilateFS(t)
 	llm := mockAssimilationLLM()
 
-	result, err := RunAnalyze(context.Background(), llm, fs)
+	result, err := RunAssimilate(context.Background(), llm, fs)
 	assert.NoError(t, err)
 	if !assert.NotNil(t, result) {
 		return
@@ -80,11 +80,11 @@ func TestRunAnalyzeProducesSpec(t *testing.T) {
 	assert.NotEmpty(t, result.Decisions, "should produce decisions")
 }
 
-func TestRunAnalyzeMissingConfig(t *testing.T) {
+func TestRunAssimilateMissingConfig(t *testing.T) {
 	fs := specio.NewMemFS()
 	llm := agent.NewMockLLM()
 
-	result, err := RunAnalyze(context.Background(), llm, fs)
+	result, err := RunAssimilate(context.Background(), llm, fs)
 	assert.Error(t, err)
 	assert.Nil(t, result)
 }

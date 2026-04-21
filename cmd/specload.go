@@ -2,54 +2,15 @@ package cmd
 
 import (
 	"encoding/json"
-	"fmt"
-	"os"
 
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 )
 
-// DiffCmd previews blast radius of a spec change.
-type DiffCmd struct {
-	ID string `arg:"" help:"Feature, decision, or strategy ID."`
-}
-
-func (c *DiffCmd) Run(cli *CLI) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
-	}
-	fsys := specio.NewOSFS(cwd)
-
-	br, err := RunDiff(fsys, c.ID)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("Blast radius for %s (%s):\n", br.Root.ID, br.Root.Kind)
-	if len(br.Decisions) > 0 {
-		fmt.Println("  Decisions:")
-		for _, d := range br.Decisions {
-			fmt.Printf("    - %s\n", d.ID)
-		}
-	}
-	if len(br.Strategies) > 0 {
-		fmt.Println("  Strategies:")
-		for _, s := range br.Strategies {
-			fmt.Printf("    - %s\n", s.ID)
-		}
-	}
-	if len(br.Approaches) > 0 {
-		fmt.Println("  Approaches:")
-		for _, a := range br.Approaches {
-			fmt.Printf("    - %s\n", a.ID)
-		}
-	}
-	return nil
-}
-
-// RunDiff loads the spec graph from fsys and computes the blast radius for the
-// given spec node ID.
+// RunDiff loads the spec graph from fsys and computes the blast radius for
+// the given spec node ID. This is the internal helper used by `refine
+// --dry-run` and the MCP `refine` tool; the standalone `diff` command was
+// folded into `refine` in Phase B.
 func RunDiff(fsys specio.FS, id string) (*spec.BlastRadius, error) {
 	features, _ := collectObjects[spec.Feature](fsys, ".borg/spec/features")
 	decisions, _ := collectObjects[spec.Decision](fsys, ".borg/spec/decisions")
@@ -66,7 +27,9 @@ func RunDiff(fsys specio.FS, id string) (*spec.BlastRadius, error) {
 	return spec.ComputeBlastRadius(g, id)
 }
 
-// collectObjects walks a spec directory and returns successfully loaded objects.
+// collectObjects walks a spec directory and returns successfully loaded
+// objects. Errors on individual pairs are skipped; use WalkPairs directly
+// for error reporting.
 func collectObjects[T any](fsys specio.FS, dir string) ([]T, error) {
 	results, err := specio.WalkPairs[T](fsys, dir)
 	if err != nil {
@@ -81,7 +44,9 @@ func collectObjects[T any](fsys specio.FS, dir string) ([]T, error) {
 	return out, nil
 }
 
-// collectMarkdown walks a directory of .md files and returns successfully loaded objects.
+// collectMarkdown walks a directory of .md files and returns successfully
+// loaded objects. Used for Approach nodes whose canonical representation is
+// YAML frontmatter + markdown body (not a JSON+MD pair).
 func collectMarkdown[T any](fsys specio.FS, dir string) ([]T, error) {
 	paths, err := fsys.ListDir(dir)
 	if err != nil {

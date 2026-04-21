@@ -40,22 +40,33 @@ type initInput struct {
 
 type statusInput struct{}
 
-type checkInput struct{}
-
-type diffInput struct {
-	ID string `json:"id"`
-}
-
-type triageInput struct {
-	Input string `json:"input"`
-}
-
 type importInput struct {
-	Content string `json:"content"`
-	Type    string `json:"type"`
+	Content    string `json:"content"`
+	Type       string `json:"type,omitempty"`
+	SkipTriage bool   `json:"skip_triage,omitempty"`
+	DryRun     bool   `json:"dry_run,omitempty"`
 }
 
-type analyzeInput struct{}
+type assimilateInput struct {
+	DryRun bool `json:"dry_run,omitempty"`
+}
+
+type refineInput struct {
+	ID     string `json:"id"`
+	DryRun bool   `json:"dry_run,omitempty"`
+}
+
+type adoptInput struct {
+	Scope  string `json:"scope,omitempty"`
+	DryRun bool   `json:"dry_run,omitempty"`
+}
+
+type historyInput struct {
+	ID           string `json:"id,omitempty"`
+	Narrative    bool   `json:"narrative,omitempty"`
+	Alternatives bool   `json:"alternatives,omitempty"`
+	Limit        int    `json:"limit,omitempty"`
+}
 
 // NewMCPServerWithDir creates a configured MCP server with all Locutus tools
 // registered, operating on the given base directory.
@@ -92,98 +103,121 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		return textResult(summary), nil, nil
 	})
 
-	// --- check ---
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "check",
-		Description: "Validate strategy prerequisites for all active strategies.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, input checkInput) (*mcp.CallToolResult, any, error) {
-		// Load strategies and check prerequisites.
-		strategies, _ := collectObjects[spec.Strategy](fsys, ".borg/spec/strategies")
-		if len(strategies) == 0 {
-			return textResult("No strategies found."), nil, nil
-		}
-		return textResult(fmt.Sprintf("Found %d strategies. Prerequisites check requires command execution.", len(strategies))), nil, nil
-	})
-
-	// --- diff ---
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "diff",
-		Description: "Preview the blast radius of a spec change: affected decisions, strategies, and files.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, input diffInput) (*mcp.CallToolResult, any, error) {
-		if input.ID == "" {
-			return errorResult("id is required"), nil, nil
-		}
-		br, err := RunDiff(fsys, input.ID)
-		if err != nil {
-			return errorResult(fmt.Sprintf("diff failed: %v", err)), nil, nil
-		}
-
-		var result string
-		result = fmt.Sprintf("Blast radius for %s (%s):\n", br.Root.ID, br.Root.Kind)
-		if len(br.Decisions) > 0 {
-			result += fmt.Sprintf("  Decisions: %d\n", len(br.Decisions))
-			for _, d := range br.Decisions {
-				result += fmt.Sprintf("    - %s\n", d.ID)
-			}
-		}
-		if len(br.Strategies) > 0 {
-			result += fmt.Sprintf("  Strategies: %d\n", len(br.Strategies))
-			for _, s := range br.Strategies {
-				result += fmt.Sprintf("    - %s\n", s.ID)
-			}
-		}
-		if len(br.Approaches) > 0 {
-			result += fmt.Sprintf("  Approaches: %d\n", len(br.Approaches))
-			for _, a := range br.Approaches {
-				result += fmt.Sprintf("    - %s\n", a.ID)
-			}
-		}
-		return textResult(result), nil, nil
-	})
-
-	// --- triage ---
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "triage",
-		Description: "Evaluate an issue or feature description against GOALS.md for scope alignment.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, input triageInput) (*mcp.CallToolResult, any, error) {
-		if input.Input == "" {
-			return errorResult("input is required"), nil, nil
-		}
-		return errorResult("LLM not configured — triage requires an LLM provider"), nil, nil
-	})
-
-	// --- import ---
+	// --- import (admits with built-in triage gate; Phase B folded the
+	// standalone `triage` tool in here) ---
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "import",
-		Description: "Create a feature or bug from markdown with YAML frontmatter.",
+		Description: "Admit a feature or bug. Evaluates against GOALS.md unless skip_triage=true.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input importInput) (*mcp.CallToolResult, any, error) {
 		if input.Content == "" {
 			return errorResult("content is required"), nil, nil
 		}
-		data := []byte(input.Content)
-
-		switch input.Type {
-		case "bug":
-			bug, err := ImportBug(fsys, data)
-			if err != nil {
-				return errorResult(fmt.Sprintf("import bug failed: %v", err)), nil, nil
-			}
-			return textResult(fmt.Sprintf("Created bug %q (%s)", bug.Title, bug.ID)), nil, nil
-		default:
-			feat, err := ImportFeature(fsys, data)
-			if err != nil {
-				return errorResult(fmt.Sprintf("import feature failed: %v", err)), nil, nil
-			}
-			return textResult(fmt.Sprintf("Created feature %q (%s)", feat.Title, feat.ID)), nil, nil
+		kind := input.Type
+		if kind == "" {
+			kind = "feature"
 		}
+		result, err := RunImport(ctx, fsys, []byte(input.Content), kind, input.SkipTriage, input.DryRun)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		if !result.Accepted {
+			reason := "triage rejected"
+			if result.Verdict != nil && result.Verdict.Reason != "" {
+				reason = result.Verdict.Reason
+			}
+			return errorResult(fmt.Sprintf("not admitted: %s", reason)), nil, nil
+		}
+		verb := "Imported"
+		if result.DryRun {
+			verb = "Dry-run: would import"
+		}
+		id := result.FeatureID
+		if id == "" {
+			id = result.BugID
+		}
+		return textResult(fmt.Sprintf("%s %s (%s) at %s.", verb, kind, id, result.Destination)), nil, nil
 	})
 
-	// --- analyze ---
+	// --- assimilate ---
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "analyze",
-		Description: "Analyze an existing codebase to infer spec, detect gaps, and propose remediation.",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, input analyzeInput) (*mcp.CallToolResult, any, error) {
-		return errorResult("LLM not configured — analyze requires an LLM provider"), nil, nil
+		Name:        "assimilate",
+		Description: "Infer or update spec from an existing codebase.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input assimilateInput) (*mcp.CallToolResult, any, error) {
+		llm, err := getLLM()
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		result, err := RunAssimilate(ctx, llm, fsys)
+		if err != nil {
+			return errorResult(fmt.Sprintf("assimilate failed: %v", err)), nil, nil
+		}
+		msg := fmt.Sprintf("Assimilation complete: %d decisions, %d entities, %d features, %d gaps.",
+			len(result.Decisions), len(result.Entities), len(result.Features), len(result.Gaps))
+		return textResult(msg), nil, nil
+	})
+
+	// --- refine ---
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "refine",
+		Description: "Council-driven deliberation on any spec node.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input refineInput) (*mcp.CallToolResult, any, error) {
+		if input.ID == "" {
+			return errorResult("id is required"), nil, nil
+		}
+		kind, err := resolveNodeKind(fsys, input.ID)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		if input.DryRun {
+			br, err := RunDiff(fsys, input.ID)
+			if err != nil {
+				return errorResult(err.Error()), nil, nil
+			}
+			msg := fmt.Sprintf("Refining %s %s (dry-run) — cascade preview: %d decisions, %d strategies, %d approaches affected.",
+				kind, input.ID, len(br.Decisions), len(br.Strategies), len(br.Approaches))
+			return textResult(msg), nil, nil
+		}
+		if kind != spec.KindDecision {
+			return errorResult(fmt.Sprintf("refine for %s not yet implemented (Phase B/C)", kind)), nil, nil
+		}
+		llm, err := getLLM()
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		plan, err := RunRefine(ctx, llm, fsys, input.ID)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		return textResult(fmt.Sprintf("Refined %s: %d workstreams planned.", input.ID, len(plan.Workstreams))), nil, nil
+	})
+
+	// --- adopt ---
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "adopt",
+		Description: "Bring code into alignment with spec. Classifies every Approach (live/drifted/out_of_spec/unplanned/failed), runs prereq checks, and returns a plan. Use dry_run=true to preview.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input adoptInput) (*mcp.CallToolResult, any, error) {
+		report, err := RunAdopt(ctx, fsys, input.Scope, input.DryRun)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		msg := fmt.Sprintf("Adoption: %d live, %d drifted, %d out_of_spec, %d unplanned. %d candidate(s). Prereqs: %t.",
+			report.Summary.Live, report.Summary.Drifted, report.Summary.OutOfSpec,
+			report.Summary.Unplanned, report.Summary.Candidates, report.PrereqsOK)
+		if !report.PrereqsOK {
+			return errorResult("prereqs failed: " + msg), nil, nil
+		}
+		if report.Summary.OutOfSpec > 0 && !report.DryRun {
+			return errorResult("out_of_spec drift present: " + msg), nil, nil
+		}
+		return textResult(msg), nil, nil
+	})
+
+	// --- history ---
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "history",
+		Description: "Query the past-tense record of spec changes.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input historyInput) (*mcp.CallToolResult, any, error) {
+		return runHistoryMCP(fsys, input)
 	})
 
 	return server

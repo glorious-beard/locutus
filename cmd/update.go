@@ -14,7 +14,7 @@ const updateRepo = "glorious-beard/locutus"
 type UpdateCmd struct{}
 
 func (c *UpdateCmd) Run(cli *CLI) error {
-	if cli.Version.Version == "dev" {
+	if buildVersion == "dev" {
 		fmt.Println("Self-update is not available in dev builds. Install a release build to enable.")
 		return nil
 	}
@@ -40,12 +40,12 @@ func (c *UpdateCmd) Run(cli *CLI) error {
 		return nil
 	}
 
-	if latest.LessOrEqual(cli.Version.Version) {
-		fmt.Printf("Already up to date (v%s).\n", cli.Version.Version)
+	if latest.LessOrEqual(buildVersion) {
+		fmt.Printf("Already up to date (v%s).\n", buildVersion)
 		return nil
 	}
 
-	slog.Info("updating", "from", cli.Version.Version, "to", latest.Version())
+	slog.Info("updating", "from", buildVersion, "to", latest.Version())
 
 	exe, err := selfupdate.ExecutablePath()
 	if err != nil {

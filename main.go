@@ -16,13 +16,14 @@ func main() {
 	// file is not an error.
 	_ = godotenv.Load()
 
+	cmd.SetVersion(version)
+
 	var cli cmd.CLI
 	ctx := kong.Parse(&cli,
 		kong.Name("locutus"),
 		kong.Description("Autonomous project manager for spec-driven software"),
 		kong.Vars{"version": version},
 	)
-	cli.Version.Version = version
 	err := ctx.Run(&cli)
 	ctx.FatalIfErrorf(err)
 }
