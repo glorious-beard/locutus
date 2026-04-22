@@ -1045,3 +1045,34 @@ Orphaned workstream records (Approaches removed from the graph while a record st
 - Post-completion MasterPlan archival. The `PlanRecord` exists only while a plan is in flight; once every Approach reaches `live`, the subdirectory is deleted. If we later want historical plan archival (for post-hoc "how did we build this" analysis), that's a separate decision — either pipe plan summaries through the historian or add a committed `docs/plans/archive/` location.
 - Cross-machine resume. Everything here assumes single-machine execution; distributed resume is a future problem.
 - Concurrent plans. Nothing forbids two overlapping plans in the layout (subdirectories don't collide), but `adopt` doesn't today take a write-lock against another in-flight `adopt`. If that becomes a concern, a lockfile under `.locutus/` is the natural next step.
+
+## DJ-074: True `--resume` for Interrupted Adoption (Proposed, Not Implemented)
+
+**Status:** Proposal. The current `adopt` invalidates any leftover plan subdirectory from `.locutus/workstreams/` and replans from scratch, even when nothing has drifted. DJ-073's resume-path contract explicitly specifies per-session resume ("Restart the coding agent with `--resume <AgentSessionID>`, skipping PlanSteps already marked complete") but landing that cleanly requires two pieces of plumbing the Phase C MVP skipped. This DJ captures the design so future work can execute it without re-deriving the shape.
+
+**Decision:** Implement true resume for the DJ-073 "no drift detected" branch with the following components:
+
+1. **Session-ID capture at dispatch.** `dispatch.WorkstreamResult` gains an `AgentSessionID string` field; the supervisor already observes session IDs in the streaming event feed (cf. `internal/dispatch/streaming.go::attemptResult.sessionID`) and just needs to surface the final one. `cmd/adopt.go` then writes `AgentSessionID` onto the `ActiveWorkstream` record so it persists alongside `StepStatus`.
+
+2. **Skip-to-step mode in the dispatcher.** `runWorkstream` currently iterates `ws.Steps` from index 0 unconditionally. Add an input shape — either a `resumeFrom` parameter or an overload — that accepts the step ID (or index) to start from and a session ID to pass through to the driver. The worktree must be derived from the existing `locutus/<ws-id>` feature branch so the already-completed steps' merged work forms the starting state, not a fresh `main`.
+
+3. **Driver `--resume` support.** `StreamingDriver.BuildCommand` gains a `SessionID string` field on its request struct; `ClaudeCodeDriver` translates it to `--resume <id>` on the `claude -p` invocation, and `CodexDriver` to `codex exec --session <id>`. Drivers without `--resume` capability reject with a clear error — the caller then falls back to invalidate-and-replan.
+
+4. **`adopt` resume branch fleshed out.** Replace the current `resumeOrInvalidateActivePlans` (which always wipes) with a classifier-driven dispatcher:
+   - **All covered Approaches unchanged:** for each `ActiveWorkstream`, find the first `StepProgress` whose Status is not `complete`. Dispatch with `resumeFrom=<step-id>` and `AgentSessionID=<rec.AgentSessionID>`. Steps already complete are skipped.
+   - **Any covered Approach drifted:** invalidate as today.
+   - **All covered Approaches live:** archive (`DeletePlan`) as today.
+
+5. **User flag shape.** Default behaviour becomes *auto-resume when possible*, matching DJ-073's spec. An explicit `adopt --discard-in-flight` flag forces invalidation for the "I know this plan is wrong, start over" case. No `--resume <session-id>` argument — the ID is always read from persisted state, per the user's observation that a human-supplied session ID is an anti-pattern (the record is the source of truth).
+
+**Why separated from DJ-073:** DJ-073's Phase C MVP shipped correct persistence and correct invalidate-and-replan. Shipping a half-finished resume (session-id captured but dispatcher can't skip steps; or skip-to-step works but no session-id reuse so a fresh conversation restarts and re-does prior agent work) would burn tokens and create spurious file churn. The clean increment is either *all three* plumbing pieces (capture + skip + driver flag) or none. DJ-074 gates the feature on that.
+
+**Discovery in the meantime:** `locutus status --in-flight` lists every leftover plan with its `AgentSessionID`, per-workstream step progress, and next-pending step. That's enough to decide whether a run should be resumed (nothing drifted, sessions valid) or discarded (new spec coming, sessions stale) before invoking `adopt`.
+
+**Alternatives considered:**
+
+- **Fresh-session replay.** Skip driver `--resume` support; use a new session each resume, but still skip already-complete steps. Rejected: the agent loses conversation context from the original session, and the MVP can't reliably model "this step is already done" to a fresh agent without re-writing prompts. Partial credit for the tokens saved on skipped steps, but the agent-context loss dominates.
+- **Prompt-driven checkpoint.** Rather than driver `--resume`, serialize the conversation state into the Approach body and re-inject it on replay. Rejected as brittle — the conversation state is the agent's private model; trying to externalize it via prose reliably has failed in practice (see DJ-025's "council rounds are the conversation" note).
+- **Interactive prompt on leftover detection.** When `adopt` detects a leftover plan, stop and ask the user `[r]esume, [d]iscard?`. Rejected: `adopt` must remain scriptable. Flags (`--discard-in-flight`) carry the same signal without blocking automation.
+
+**Dependencies & next steps:** Implementing DJ-074 touches `internal/dispatch/supervisor.go` (session-id surfacing), `internal/dispatch/dispatcher.go` (resume-from-step mode), `internal/dispatch/drivers/*` (driver flag), and `cmd/adopt.go` (branching replace). Estimated one focused session if the driver flag work is scoped to Claude Code first and Codex lands as a follow-up.

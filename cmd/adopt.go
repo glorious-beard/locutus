@@ -775,7 +775,10 @@ func renderAdoptReport(r *AdoptReport) {
 
 	if len(r.ResumedInvalidated) > 0 {
 		fmt.Println()
-		fmt.Printf("Invalidated %d prior in-flight plan(s): %v\n", len(r.ResumedInvalidated), r.ResumedInvalidated)
+		fmt.Printf("Discarded %d prior in-flight plan(s) and replanned: %v\n",
+			len(r.ResumedInvalidated), r.ResumedInvalidated)
+		fmt.Println("  (True per-session resume is not yet implemented — see DJ-074.")
+		fmt.Println("   To inspect in-flight plans before running adopt, use `locutus status --in-flight`.)")
 	}
 
 	if r.PlanID != "" {

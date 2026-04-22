@@ -7,7 +7,9 @@ import (
 	"github.com/chetan/locutus/internal/render"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
+	"github.com/chetan/locutus/internal/workstream"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestStatusEmptySpec verifies that GatherStatus returns zero counts and
@@ -92,4 +94,77 @@ func TestStatusPopulatedSpec(t *testing.T) {
 	assert.Equal(t, 1, sd.DecisionCount, "should count 1 decision")
 	assert.Equal(t, 1, sd.StrategyCount, "should count 1 strategy")
 	assert.Equal(t, 0, sd.BugCount, "should count 0 bugs when none exist")
+}
+
+func TestGatherInFlightEmptyStore(t *testing.T) {
+	fs := specio.NewMemFS()
+	report, err := GatherInFlight(fs)
+	require.NoError(t, err)
+	assert.Empty(t, report.Plans)
+	assert.Equal(t, ".locutus/workstreams", report.BaseDir)
+}
+
+// TestGatherInFlightPopulated writes a plan+workstream record and verifies
+// the discovery report correctly surfaces step progress, next-step routing,
+// and session-id / preflight metadata.
+func TestGatherInFlightPopulated(t *testing.T) {
+	fs := specio.NewMemFS()
+	store := workstream.NewFileStore(fs, ".locutus/workstreams", "plan-demo")
+
+	require.NoError(t, store.SavePlan(spec.MasterPlan{
+		ID:     "plan-demo",
+		Prompt: "Bring OAuth to life",
+	}))
+
+	require.NoError(t, store.Save(workstream.ActiveWorkstream{
+		WorkstreamID:   "ws-auth",
+		PlanID:         "plan-demo",
+		AgentSessionID: "claude-session-42",
+		PreFlightDone:  true,
+		ApproachIDs:    []string{"app-oauth"},
+		Plan: spec.Workstream{
+			ID:      "ws-auth",
+			AgentID: "claude-code",
+			Steps: []spec.PlanStep{
+				{ID: "step-1", Order: 1, ApproachID: "app-oauth"},
+				{ID: "step-2", Order: 2, ApproachID: "app-oauth"},
+				{ID: "step-3", Order: 3, ApproachID: "app-oauth"},
+			},
+		},
+		StepStatus: []workstream.StepProgress{
+			{StepID: "step-1", Status: workstream.StepComplete},
+			{StepID: "step-2", Status: workstream.StepFailed},
+		},
+	}))
+
+	report, err := GatherInFlight(fs)
+	require.NoError(t, err)
+	require.Len(t, report.Plans, 1)
+
+	p := report.Plans[0]
+	assert.Equal(t, "plan-demo", p.PlanID)
+	assert.Equal(t, "Bring OAuth to life", p.PlanPrompt)
+	require.Len(t, p.Workstreams, 1)
+
+	ws := p.Workstreams[0]
+	assert.Equal(t, "ws-auth", ws.WorkstreamID)
+	assert.Equal(t, "claude-code", ws.AgentID)
+	assert.Equal(t, "claude-session-42", ws.AgentSessionID)
+	assert.True(t, ws.PreFlightDone)
+	assert.Equal(t, []string{"app-oauth"}, ws.ApproachIDs)
+	assert.Equal(t, 3, ws.StepTotal)
+	assert.Equal(t, 1, ws.StepsComplete)
+	assert.Equal(t, 1, ws.StepsFailed)
+	assert.Equal(t, 1, ws.StepsPending)
+	assert.Equal(t, "step-3", ws.NextStepID, "NextStepID must be the first non-complete step in plan order")
+}
+
+func TestGatherInFlightSkipsSubdirsWithoutPlanYAML(t *testing.T) {
+	fs := specio.NewMemFS()
+	// Create an orphan subdir with no plan.yaml — must not appear.
+	require.NoError(t, fs.MkdirAll(".locutus/workstreams/orphan", 0o755))
+
+	report, err := GatherInFlight(fs)
+	require.NoError(t, err)
+	assert.Empty(t, report.Plans)
 }
