@@ -8,6 +8,9 @@
 *.so
 *.dylib
 
+# Local `go build .` output at module root (no extension on Unix).
+/locutus
+
 # Test binary, built with `go test -c`
 *.test
 
