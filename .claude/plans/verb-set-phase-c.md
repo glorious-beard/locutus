@@ -40,6 +40,7 @@ In scope for Phase C:
 - **Cascade write-back** — Decision change → parent rewrite + child drift
 - **Transitive dep walk** in planner — expand from a seed node to full plan set
 - **Pre-flight protocol** — clarify-only agent call, assumed Decisions
+- **Active plan + workstream persistence (DJ-073)** — MasterPlan and ActiveWorkstream records under `.locutus/workstreams/<plan-id>/`; resume protocol before classification; deletion on terminal transition or drift-invalidation
 - **`adopt` CLI + MCP command** — wires everything together
 - **Prereq gate** inside `adopt`
 - **State store write-back** after dispatch/verify
@@ -49,6 +50,7 @@ Out of scope (Phase D or later):
 - Deleting `check` command (Phase D; this phase moves the logic but keeps the CLI surface)
 - Rich UI for reconcile progress (streaming MCP progress works today via the supervisor)
 - Concurrency-limit refinement (the existing scheduler is used as-is; tuning is a separate concern)
+- Post-completion plan archival — `PlanRecord` lives only while a plan is in flight (DJ-073)
 
 ## Principle: The reconciler is a function, not a long-lived process
 
@@ -237,6 +239,39 @@ C7a. `out_of_spec` Approaches need human choice (DJ-068 lists three paths). `ado
 
 C7b. No auto-resolution. This is deliberately a human gate.
 
+## Part C8: Active Plan + Workstream Persistence (DJ-073)
+
+**Landed in this session** as scaffolding — dispatch integration consumes it.
+
+C8a. `internal/workstream` package provides:
+
+- `PlanRecord` (wraps `spec.MasterPlan` + timestamps) — persists the plan's `InterfaceContracts`, `GlobalAssertions`, and workstream dependency graph so they survive a Locutus crash.
+- `ActiveWorkstream` (embeds `spec.Workstream` + `PlanID`, `ApproachIDs`, `AgentSessionID`, `PreFlightDone`, `[]StepProgress`, timestamps).
+- `FileStore` — constructed per plan; offers `SavePlan` / `LoadPlan` / `Save` / `Load` / `Walk` / `Delete` / `DeletePlan`.
+- `ListActivePlans(fsys, baseDir)` — enumerates plan IDs with a `plan.yaml` marker under `.locutus/workstreams/`.
+- Storage layout: `.locutus/workstreams/<plan-id>/plan.yaml` + `.locutus/workstreams/<plan-id>/<workstream-id>.yaml`.
+- Gitignored; transient coordination state, not part of the committed audit trail.
+
+C8b. New FS primitive: `specio.FS.ListSubdirs(dir)` (implemented for OSFS + MemFS) so resume can discover plan subdirectories without relying on file-naming conventions.
+
+C8c. Resume protocol (runs before classification inside `adopt`, once dispatch is wired):
+
+1. `ListActivePlans` enumerates in-flight plans.
+2. For each, load `PlanRecord` + all `ActiveWorkstream` records.
+3. Classify every covered Approach.
+4. Branch:
+   - **No drift** → resume each workstream via agent `--resume <AgentSessionID>`, skipping PlanSteps marked `complete`.
+   - **Any drift** → `FileStore.DeletePlan` on the whole subdirectory; classifications proceed as fresh plan run; planner mints new PlanID + WorkstreamIDs.
+   - **All covered Approaches `live`** → `DeletePlan` (archive); state entries keep their historical WorkstreamID.
+
+C8d. Dispatcher write points:
+
+1. **On dispatch:** planner mints `PlanID` and per-workstream `WorkstreamID`; `SavePlan` writes the MasterPlan once, `Save` writes each `ActiveWorkstream` as it's handed off.
+2. **On PlanStep completion:** `Save` with updated `StepStatus`.
+3. **On terminal transition:** `DeletePlan`.
+
+C8e. Tests already cover: round-trip persistence for both record kinds; `Walk` skipping `plan.yaml`; `DeletePlan` clearing the whole subdirectory; `ListActivePlans` enumerating only plans with a marker; `ListSubdirs` on MemFS and OSFS.
+
 ## Final Verification
 
 ```bash
@@ -256,19 +291,24 @@ ANTHROPIC_API_KEY=$KEY ./locutus adopt  # dispatches, runs tests, updates state
 ## Files Touched (expected)
 
 **New:**
-- `internal/spec/hash.go` — spec_hash, artifact_hashes
-- `internal/reconcile/classify.go` — classification
+
+- `internal/spec/hash.go` — spec_hash, artifact_hashes *(landed this session)*
+- `internal/reconcile/classify.go` — classification *(landed this session)*
+- `internal/workstream/record.go` — DJ-073 plan + workstream persistence *(landed this session)*
 - `internal/cascade/cascade.go` — Decision change propagation
 - `internal/preflight/preflight.go` — clarify-only protocol
-- `cmd/adopt.go` — command
+- `cmd/adopt.go` — command *(landed this session; resume path annotated, dispatch deferred)*
 - `internal/scaffold/agents/rewriter.md` — new agent prompt for present-tense rewriting
 - `internal/scaffold/agents/preflight.md` — new agent prompt for ambiguity extraction
 
 **Modified:**
-- `internal/spec/graph.go` — add `TransitiveDeps`
+
+- `internal/spec/graph.go` — `ApproachesUnder` *(landed this session)*; future: `TransitiveDeps` for dep walking
+- `internal/specio/{specio,memfs}.go` — add `ListSubdirs` *(landed this session)*
 - `internal/agent/planner.go` — consume dep-filtered seed set; call critic for file-overlap
-- `cmd/cli.go` — register `AdoptCmd`
-- `cmd/mcp.go` — register `adopt` tool
+- `cmd/cli.go` — register `AdoptCmd` *(landed this session)*
+- `cmd/mcp.go` — register `adopt` tool *(landed this session)*
+- `.gitignore` — exclude `/.locutus/workstreams/` *(landed this session)*
 - `internal/state/state.go` — verify `pre_flight` status enum present (if not, add)
 
 ## Dependencies

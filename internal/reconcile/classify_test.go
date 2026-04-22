@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func setupReconcileFixture(t *testing.T) (specio.FS, *spec.SpecGraph, *state.FileStateStore, map[string]spec.Decision) {
+func setupReconcileFixture(t *testing.T) (specio.FS, *spec.SpecGraph, *state.FileStateStore) {
 	t.Helper()
 	fs := specio.NewMemFS()
 	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
@@ -43,13 +43,12 @@ func setupReconcileFixture(t *testing.T) (specio.FS, *spec.SpecGraph, *state.Fil
 	)
 
 	store := state.NewFileStateStore(fs, ".locutus/state")
-	decMap := map[string]spec.Decision{"dec-lang": dec}
-	return fs, g, store, decMap
+	return fs, g, store
 }
 
 func TestClassifyUnplannedWhenNoState(t *testing.T) {
-	fs, g, store, decMap := setupReconcileFixture(t)
-	results, err := reconcile.Classify(fs, g, store, decMap)
+	fs, g, store := setupReconcileFixture(t)
+	results, err := reconcile.Classify(fs, g, store)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, state.StatusUnplanned, results[0].Status)
@@ -58,10 +57,10 @@ func TestClassifyUnplannedWhenNoState(t *testing.T) {
 }
 
 func TestClassifyLiveWhenHashesMatch(t *testing.T) {
-	fs, g, store, decMap := setupReconcileFixture(t)
+	fs, g, store := setupReconcileFixture(t)
 
 	// First pass: compute current state, save as "live".
-	results, err := reconcile.Classify(fs, g, store, decMap)
+	results, err := reconcile.Classify(fs, g, store)
 	require.NoError(t, err)
 	require.NoError(t, store.Save(state.ReconciliationState{
 		ApproachID:     "app-oauth",
@@ -72,15 +71,21 @@ func TestClassifyLiveWhenHashesMatch(t *testing.T) {
 	}))
 
 	// Re-classify: stored hashes match current — status should stay live.
-	results, err = reconcile.Classify(fs, g, store, decMap)
+	results, err = reconcile.Classify(fs, g, store)
 	require.NoError(t, err)
 	assert.Equal(t, state.StatusLive, results[0].Status)
 }
 
-func TestClassifyDriftedWhenSpecChanges(t *testing.T) {
-	fs, g, store, decMap := setupReconcileFixture(t)
+// TestClassifyDriftedWhenApproachBodyRewritten exercises the DJ-069 cascade
+// path: when an upstream Decision change triggers re-synthesis, the
+// Approach Body is rewritten, the hash changes, and the classifier must
+// flag drift. Decision contents are NOT hashed directly (per DJ-069);
+// drift surfaces via the Body change the cascade produced.
+func TestClassifyDriftedWhenApproachBodyRewritten(t *testing.T) {
+	fs, g, store := setupReconcileFixture(t)
 
-	// Save a stale spec_hash to simulate spec having changed since last reconcile.
+	// Save a stale spec_hash to simulate that the Approach was re-synthesized
+	// (e.g. after a cascade) and the store hasn't caught up.
 	require.NoError(t, store.Save(state.ReconciliationState{
 		ApproachID: "app-oauth",
 		SpecHash:   "sha256:stale",
@@ -88,19 +93,19 @@ func TestClassifyDriftedWhenSpecChanges(t *testing.T) {
 		Status:     state.StatusLive,
 	}))
 
-	results, err := reconcile.Classify(fs, g, store, decMap)
+	results, err := reconcile.Classify(fs, g, store)
 	require.NoError(t, err)
 	assert.Equal(t, state.StatusDrifted, results[0].Status)
 	assert.True(t, results[0].DriftedSpec())
 }
 
 func TestClassifyOutOfSpecWhenArtifactChanges(t *testing.T) {
-	fs, g, store, decMap := setupReconcileFixture(t)
+	fs, g, store := setupReconcileFixture(t)
 
 	// Save current spec_hash + current artifact hashes so the only
 	// observable change afterward is an artifact edit.
 	app := g.Approach("app-oauth")
-	liveHash := spec.ComputeSpecHash(*app, []spec.Decision{decMap["dec-lang"]})
+	liveHash := spec.ComputeSpecHash(*app)
 	artifacts := spec.ComputeArtifactHashes(fs.ReadFile, *app)
 	require.NoError(t, store.Save(state.ReconciliationState{
 		ApproachID: "app-oauth",
@@ -112,7 +117,7 @@ func TestClassifyOutOfSpecWhenArtifactChanges(t *testing.T) {
 	// Edit the artifact outside Locutus.
 	require.NoError(t, fs.WriteFile("auth.go", []byte("package main\n// edited"), 0o644))
 
-	results, err := reconcile.Classify(fs, g, store, decMap)
+	results, err := reconcile.Classify(fs, g, store)
 	require.NoError(t, err)
 	assert.Equal(t, state.StatusOutOfSpec, results[0].Status)
 	assert.True(t, results[0].DriftedArtifacts())

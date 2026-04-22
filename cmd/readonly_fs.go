@@ -20,6 +20,7 @@ func (r *readOnlyFS) Open(name string) (fs.File, error)        { return r.inner.
 func (r *readOnlyFS) ReadFile(name string) ([]byte, error)     { return r.inner.ReadFile(name) }
 func (r *readOnlyFS) Stat(name string) (os.FileInfo, error)    { return r.inner.Stat(name) }
 func (r *readOnlyFS) ListDir(dir string) ([]string, error)     { return r.inner.ListDir(dir) }
+func (r *readOnlyFS) ListSubdirs(dir string) ([]string, error) { return r.inner.ListSubdirs(dir) }
 func (r *readOnlyFS) WriteFile(string, []byte, os.FileMode) error { return nil }
 func (r *readOnlyFS) MkdirAll(string, os.FileMode) error       { return nil }
 func (r *readOnlyFS) Remove(string) error                      { return nil }

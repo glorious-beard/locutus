@@ -27,6 +27,12 @@ go.work.sum
 # env file
 .env
 
+# Locutus runtime — transient dispatch coordination records (DJ-073).
+# Durable reconciliation state under .locutus/state/ IS git-tracked per DJ-068;
+# only in-flight workstreams are excluded. A record exists while an adopt run
+# is mid-dispatch and is deleted on terminal transition or drift-invalidation.
+/.locutus/workstreams/
+
 # Editor/IDE
 # .idea/
 # .vscode/

@@ -11,42 +11,63 @@ import (
 
 func TestComputeSpecHashStable(t *testing.T) {
 	a := spec.Approach{ID: "app-a", Title: "A", ParentID: "feat-x", Body: "body"}
-	d := spec.Decision{ID: "dec-1", Title: "D1", Status: spec.DecisionStatusActive, Confidence: 0.9}
 
-	h1 := spec.ComputeSpecHash(a, []spec.Decision{d})
-	h2 := spec.ComputeSpecHash(a, []spec.Decision{d})
+	h1 := spec.ComputeSpecHash(a)
+	h2 := spec.ComputeSpecHash(a)
 	assert.Equal(t, h1, h2, "same inputs must produce same hash")
 }
 
-func TestComputeSpecHashChangesOnBody(t *testing.T) {
-	a := spec.Approach{ID: "app-a", Body: "original"}
-	h1 := spec.ComputeSpecHash(a, nil)
+// TestComputeSpecHashReflectsBody verifies the central invariant from DJ-069:
+// since Approaches are denormalized, an upstream Decision or parent change
+// must manifest as a Body change after re-synthesis — and the hash follows.
+func TestComputeSpecHashReflectsBody(t *testing.T) {
+	a := spec.Approach{ID: "app-a", Body: "original synthesis"}
+	h1 := spec.ComputeSpecHash(a)
 
-	a.Body = "revised"
-	h2 := spec.ComputeSpecHash(a, nil)
+	a.Body = "re-synthesized after decision revised"
+	h2 := spec.ComputeSpecHash(a)
 
-	assert.NotEqual(t, h1, h2, "body change must produce a different hash")
+	assert.NotEqual(t, h1, h2, "Body change after re-synthesis must produce a different hash")
 }
 
-func TestComputeSpecHashChangesOnDecision(t *testing.T) {
-	a := spec.Approach{ID: "app-a", Body: "same"}
-	d1 := spec.Decision{ID: "dec", Title: "First", Status: spec.DecisionStatusActive}
-	d2 := spec.Decision{ID: "dec", Title: "Revised", Status: spec.DecisionStatusActive}
+// TestComputeSpecHashIgnoresDecisionContent verifies the inverse invariant:
+// per DJ-069, Decision contents are NOT directly hashed. A Decision can
+// change in-place (rationale edited, confidence adjusted) without altering
+// an Approach — and until cascade re-synthesizes the Approach Body, the
+// hash must NOT change. A cascade bug is not drift.
+func TestComputeSpecHashIgnoresDecisionContent(t *testing.T) {
+	// Two Approaches identical in all fields; whatever a Decision node's
+	// current contents are, they don't appear in this hash.
+	a1 := spec.Approach{ID: "app-a", Body: "same", Decisions: []string{"dec-1"}}
+	a2 := spec.Approach{ID: "app-a", Body: "same", Decisions: []string{"dec-1"}}
 
-	h1 := spec.ComputeSpecHash(a, []spec.Decision{d1})
-	h2 := spec.ComputeSpecHash(a, []spec.Decision{d2})
-	assert.NotEqual(t, h1, h2)
+	assert.Equal(t, spec.ComputeSpecHash(a1), spec.ComputeSpecHash(a2))
 }
 
-func TestComputeSpecHashOrderInsensitive(t *testing.T) {
+func TestComputeSpecHashChangesOnDecisionSet(t *testing.T) {
+	// The *set* of decisions consulted IS Approach-owned metadata; adding
+	// or removing entries from Approach.Decisions changes the hash even if
+	// Body is held constant. This lets the hash catch cases where synthesis
+	// should have re-run against a new applicable set.
+	a := spec.Approach{ID: "app-a", Body: "same", Decisions: []string{"a"}}
+	b := spec.Approach{ID: "app-a", Body: "same", Decisions: []string{"a", "b"}}
+
+	assert.NotEqual(t, spec.ComputeSpecHash(a), spec.ComputeSpecHash(b))
+}
+
+func TestComputeSpecHashDecisionOrderInsensitive(t *testing.T) {
 	a := spec.Approach{ID: "app-a", Body: "same", Decisions: []string{"b", "a"}}
 	aSwap := spec.Approach{ID: "app-a", Body: "same", Decisions: []string{"a", "b"}}
-	d1 := spec.Decision{ID: "a", Title: "A"}
-	d2 := spec.Decision{ID: "b", Title: "B"}
 
-	h1 := spec.ComputeSpecHash(a, []spec.Decision{d1, d2})
-	h2 := spec.ComputeSpecHash(aSwap, []spec.Decision{d2, d1})
-	assert.Equal(t, h1, h2, "hash must be order-insensitive on decisions")
+	assert.Equal(t, spec.ComputeSpecHash(a), spec.ComputeSpecHash(aSwap),
+		"hash must be order-insensitive on Decisions audit list")
+}
+
+func TestComputeSpecHashChangesOnArtifactPaths(t *testing.T) {
+	a := spec.Approach{ID: "app-a", Body: "same", ArtifactPaths: []string{"a.go"}}
+	b := spec.Approach{ID: "app-a", Body: "same", ArtifactPaths: []string{"a.go", "b.go"}}
+
+	assert.NotEqual(t, spec.ComputeSpecHash(a), spec.ComputeSpecHash(b))
 }
 
 func TestComputeArtifactHashes(t *testing.T) {

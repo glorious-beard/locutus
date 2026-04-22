@@ -122,6 +122,40 @@ func (m *MemFS) ListDir(dir string) ([]string, error) {
 	return result, nil
 }
 
+// ListSubdirs returns sorted subdirectory paths whose parent matches dir.
+// A subdirectory exists in MemFS either because it was explicitly created
+// via MkdirAll or because at least one file lives beneath it; both cases
+// are surfaced here so callers see the same behaviour as the OS-backed FS.
+func (m *MemFS) ListSubdirs(dir string) ([]string, error) {
+	dir = cleanPath(dir)
+	seen := make(map[string]struct{})
+
+	for d := range m.dirs {
+		if path.Dir(d) == dir && d != dir {
+			seen[d] = struct{}{}
+		}
+	}
+	for name := range m.files {
+		// Walk up the parent chain until we either reach `dir` (meaning
+		// there's a subdir of `dir` on the path) or the filesystem root.
+		parent := path.Dir(name)
+		for parent != "." && parent != "/" && parent != "" {
+			if path.Dir(parent) == dir {
+				seen[parent] = struct{}{}
+				break
+			}
+			parent = path.Dir(parent)
+		}
+	}
+
+	result := make([]string, 0, len(seen))
+	for d := range seen {
+		result = append(result, d)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
 func cleanPath(name string) string {
 	name = path.Clean(name)
 	name = strings.TrimPrefix(name, "/")

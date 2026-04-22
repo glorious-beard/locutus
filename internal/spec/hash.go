@@ -8,23 +8,25 @@ import (
 )
 
 // ComputeSpecHash returns a stable SHA-256 over the canonical representation
-// of an Approach plus the slice of decisions it was synthesized against.
-// Parent metadata (the Feature or Strategy) is captured implicitly via the
-// Approach's Body field, which is the LLM-synthesized brief.
-//
-// The hash is stored in the state store at reconcile time; a subsequent
-// reconciliation compares the freshly computed hash to the stored one to
-// detect forward drift (spec changed, artifacts have not).
+// of an Approach. Per DJ-069, Approaches are denormalized by design: the
+// Body field holds the full synthesis against parent Feature/Strategy and
+// applicable Decisions at synthesis time. When an upstream Decision or
+// parent changes, the cascade rewrites the parent's present-tense statement
+// and re-synthesizes the Approach, producing a new Body — which is what
+// changes the hash. Hashing Decision contents alongside the Approach would
+// duplicate the cascade signal and conflate spec-integrity bugs (broken
+// cascade) with drift (stale artifacts). The `Decisions []string` field is
+// kept in the hash because the *set* of decisions consulted is Approach-
+// owned metadata; the Decision node contents are not.
 //
 // Canonicalisation rules:
-//   - Decisions are sorted by ID before hashing so ordering of the
-//     `decisions:` slice in the Approach frontmatter does not change the
+//   - String slices are sorted so frontmatter ordering doesn't affect the
 //     hash.
-//   - Timestamps are excluded (CreatedAt / UpdatedAt) — they change on every
-//     save and would produce spurious drift signals.
-//   - Skills and Prerequisites are included (they affect what the coding
-//     agent will do).
-func ComputeSpecHash(a Approach, applicable []Decision) string {
+//   - Timestamps are excluded — they change on every save and would produce
+//     spurious drift signals.
+//   - Skills, Prerequisites, and Assertions are included — they affect what
+//     the coding agent does.
+func ComputeSpecHash(a Approach) string {
 	type canonicalApproach struct {
 		ID            string      `json:"id"`
 		Title         string      `json:"title"`
@@ -36,19 +38,7 @@ func ComputeSpecHash(a Approach, applicable []Decision) string {
 		Prerequisites []string    `json:"prerequisites"`
 		Assertions    []Assertion `json:"assertions"`
 	}
-	type canonicalDecision struct {
-		ID       string  `json:"id"`
-		Title    string  `json:"title"`
-		Status   string  `json:"status"`
-		Rationale string `json:"rationale,omitempty"`
-		Confidence float64 `json:"confidence,omitempty"`
-	}
-	type payload struct {
-		Approach canonicalApproach    `json:"approach"`
-		Decisions []canonicalDecision `json:"decisions"`
-	}
 
-	// Copy + sort decision refs on the approach itself for stable encoding.
 	decRefs := append([]string(nil), a.Decisions...)
 	sort.Strings(decRefs)
 	artifacts := append([]string(nil), a.ArtifactPaths...)
@@ -58,29 +48,17 @@ func ComputeSpecHash(a Approach, applicable []Decision) string {
 	prereqs := append([]string(nil), a.Prerequisites...)
 	sort.Strings(prereqs)
 
-	// Sort supplied decisions by ID.
-	sortedDecs := append([]Decision(nil), applicable...)
-	sort.Slice(sortedDecs, func(i, j int) bool { return sortedDecs[i].ID < sortedDecs[j].ID })
-
-	p := payload{
-		Approach: canonicalApproach{
-			ID:            a.ID,
-			Title:         a.Title,
-			ParentID:      a.ParentID,
-			Body:          a.Body,
-			ArtifactPaths: artifacts,
-			Decisions:     decRefs,
-			Skills:        skills,
-			Prerequisites: prereqs,
-			Assertions:    a.Assertions,
-		},
+	p := canonicalApproach{
+		ID:            a.ID,
+		Title:         a.Title,
+		ParentID:      a.ParentID,
+		Body:          a.Body,
+		ArtifactPaths: artifacts,
+		Decisions:     decRefs,
+		Skills:        skills,
+		Prerequisites: prereqs,
+		Assertions:    a.Assertions,
 	}
-	for _, d := range sortedDecs {
-		p.Decisions = append(p.Decisions, canonicalDecision{
-			ID: d.ID, Title: d.Title, Status: string(d.Status), Rationale: d.Rationale, Confidence: d.Confidence,
-		})
-	}
-
 	data, _ := json.Marshal(p)
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])

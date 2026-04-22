@@ -88,13 +88,20 @@ func TestRunAdoptScopeFilter(t *testing.T) {
 func TestRunAdoptSkipsLiveOnWrite(t *testing.T) {
 	fs := setupAdoptFixture(t)
 
-	// Pre-populate state with a live entry so we don't overwrite it.
+	// Pre-populate state with a live entry so we don't overwrite it. Attach
+	// stale WorkstreamID + AssertionResults — per DJ-069 these refer to a
+	// plan built against a different Approach body, so they must be cleared
+	// when the Approach is re-queued as `planned` after drift detection.
 	store := state.NewFileStateStore(fs, ".locutus/state")
 	liveHash := "sha256:preseed" // deliberately wrong so re-classification would mark it drifted
 	require.NoError(t, store.Save(state.ReconciliationState{
-		ApproachID: "app-oauth",
-		SpecHash:   liveHash,
-		Status:     state.StatusLive,
+		ApproachID:   "app-oauth",
+		SpecHash:     liveHash,
+		Status:       state.StatusLive,
+		WorkstreamID: "ws-stale",
+		AssertionResults: []state.AssertionResult{
+			{Passed: true, Output: "from a previous run against a stale Approach body"},
+		},
 	}))
 
 	// Now run adopt — app-oauth will classify as drifted (stored hash stale).
@@ -107,4 +114,6 @@ func TestRunAdoptSkipsLiveOnWrite(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, state.StatusPlanned, entries[0].Status, "drifted should be re-queued as planned")
 	assert.NotEqual(t, liveHash, entries[0].SpecHash, "spec hash should be refreshed")
+	assert.Empty(t, entries[0].WorkstreamID, "stale WorkstreamID must be cleared on drift re-queue")
+	assert.Empty(t, entries[0].AssertionResults, "stale AssertionResults must be cleared on drift re-queue")
 }

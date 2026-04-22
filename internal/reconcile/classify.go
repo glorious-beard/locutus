@@ -52,11 +52,14 @@ func (c Classification) DriftedArtifacts() bool {
 // Note: forward drift (spec changed) takes priority over backward drift so
 // that a simultaneous spec+artifact change surfaces as `drifted` — the
 // reconciler will regenerate from spec, which is authoritative.
+//
+// Per DJ-069, Decision node contents are not inputs to classification: the
+// cascade re-synthesizes the Approach's Body when upstream Decisions or
+// parents change, so the Approach hash alone captures forward drift.
 func Classify(
 	fsys specio.FS,
 	graph *spec.SpecGraph,
 	store *state.FileStateStore,
-	decisionsByID map[string]spec.Decision,
 ) ([]Classification, error) {
 	entries, err := store.Walk()
 	if err != nil {
@@ -76,7 +79,7 @@ func Classify(
 		if a == nil {
 			continue
 		}
-		c := classifyOne(fsys, *a, byApproach, decisionsByID)
+		c := classifyOne(fsys, *a, byApproach)
 		out = append(out, c)
 	}
 	return out, nil
@@ -86,10 +89,8 @@ func classifyOne(
 	fsys specio.FS,
 	a spec.Approach,
 	store map[string]state.ReconciliationState,
-	decisionsByID map[string]spec.Decision,
 ) Classification {
-	applicable := applicableDecisions(a, decisionsByID)
-	currentSpec := spec.ComputeSpecHash(a, applicable)
+	currentSpec := spec.ComputeSpecHash(a)
 	currentFiles := spec.ComputeArtifactHashes(fsys.ReadFile, a)
 
 	c := Classification{
@@ -128,22 +129,6 @@ func classifyOne(
 		c.Status = state.StatusUnplanned
 	}
 	return c
-}
-
-// applicableDecisions looks up decisions referenced by an Approach. Missing
-// IDs are silently skipped — they'd already be caught by validation
-// elsewhere and the hash should still be stable against what exists now.
-func applicableDecisions(a spec.Approach, byID map[string]spec.Decision) []spec.Decision {
-	if len(a.Decisions) == 0 {
-		return nil
-	}
-	out := make([]spec.Decision, 0, len(a.Decisions))
-	for _, id := range a.Decisions {
-		if d, ok := byID[id]; ok {
-			out = append(out, d)
-		}
-	}
-	return out
 }
 
 // PlanCandidates returns classifications whose status indicates the

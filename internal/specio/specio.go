@@ -19,6 +19,7 @@ type FS interface {
 	Remove(name string) error
 	Stat(name string) (os.FileInfo, error)
 	ListDir(dir string) ([]string, error)
+	ListSubdirs(dir string) ([]string, error)
 }
 
 // OSFS implements FS using the real OS filesystem, rooted at a given base
@@ -75,6 +76,24 @@ func (o *OSFS) ListDir(dir string) ([]string, error) {
 	var result []string
 	for _, e := range entries {
 		if !e.IsDir() {
+			result = append(result, filepath.Join(dir, e.Name()))
+		}
+	}
+	return result, nil
+}
+
+// ListSubdirs returns sorted paths to subdirectories under the given
+// directory (non-recursive). Used by callers that need to enumerate
+// grouped state (e.g. per-plan subdirectories under .locutus/workstreams/
+// per DJ-073).
+func (o *OSFS) ListSubdirs(dir string) ([]string, error) {
+	entries, err := os.ReadDir(o.resolve(dir))
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, e := range entries {
+		if e.IsDir() {
 			result = append(result, filepath.Join(dir, e.Name()))
 		}
 	}

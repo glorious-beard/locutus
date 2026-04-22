@@ -22,6 +22,24 @@ import (
 // Phase C minimum viable: classification + plan preview + prereq gate +
 // state store writes. Dispatch integration and cascade/pre-flight land in
 // later Phase C rounds.
+//
+// When dispatch is wired, the resume protocol from DJ-073 runs *before*
+// the classification pass below:
+//
+//  1. workstream.ListActivePlans enumerates any in-flight plans.
+//  2. For each, load the PlanRecord + ActiveWorkstreams; classify their
+//     covered Approaches via reconcile.Classify.
+//  3. If all covered Approaches are unchanged → resume each workstream via
+//     `--resume <AgentSessionID>`, skipping PlanSteps marked complete.
+//  4. If any covered Approach has drifted → call FileStore.DeletePlan to
+//     wipe the subdirectory and fall through to fresh planning (the
+//     clear-on-drift invariant in the current code already prepared the
+//     state entries by zeroing WorkstreamID).
+//  5. If all covered Approaches reached `live` → archive via DeletePlan.
+//
+// The planner writes a fresh PlanRecord at dispatch time for any
+// Approaches still needing work; the dispatcher updates per-step status
+// as the agent progresses.
 type AdoptCmd struct {
 	Scope  string `arg:"" optional:"" help:"Limit adoption to spec nodes under this ID (default: all)."`
 	DryRun bool   `help:"Classify and plan without dispatching."`
@@ -99,14 +117,9 @@ func RunAdopt(ctx context.Context, fsys specio.FS, scope string, dryRun bool) (*
 
 	graph := spec.BuildGraph(features, bugs, decisions, strategies, approaches, traces)
 
-	decMap := make(map[string]spec.Decision, len(decisions))
-	for _, d := range decisions {
-		decMap[d.ID] = d
-	}
-
 	store := state.NewFileStateStore(fsys, ".locutus/state")
 
-	classifications, err := reconcile.Classify(fsys, graph, store, decMap)
+	classifications, err := reconcile.Classify(fsys, graph, store)
 	if err != nil {
 		return nil, fmt.Errorf("classify: %w", err)
 	}
@@ -150,6 +163,15 @@ func RunAdopt(ctx context.Context, fsys specio.FS, scope string, dryRun bool) (*
 	// so the state store reflects that we observed them. Actual dispatch
 	// comes next round (Phase C2). Live and out_of_spec entries are left
 	// untouched.
+	//
+	// Per DJ-069 PlanSteps are ephemeral (regenerated each plan run) and
+	// per DJ-068 WorkstreamID is "the last workstream that planned this
+	// Approach." When we re-queue a drifted or failed Approach as `planned`,
+	// any prior WorkstreamID + AssertionResults refer to a plan that was
+	// built against a different Approach body. Clear them here so nothing
+	// downstream dereferences stale plan output — the next planner run
+	// mints a fresh WorkstreamID, the next dispatch run writes fresh
+	// AssertionResults.
 	for _, c := range classifications {
 		if c.Status == state.StatusLive || c.Status == state.StatusOutOfSpec {
 			continue
@@ -161,10 +183,8 @@ func RunAdopt(ctx context.Context, fsys specio.FS, scope string, dryRun bool) (*
 			Status:         state.StatusPlanned,
 			Message:        "queued for adoption",
 			LastReconciled: time.Now(),
-		}
-		if c.StateEntry != nil {
-			entry.WorkstreamID = c.StateEntry.WorkstreamID
-			entry.AssertionResults = c.StateEntry.AssertionResults
+			// WorkstreamID and AssertionResults deliberately left zero:
+			// stale-by-construction after drift.
 		}
 		if err := store.Save(entry); err != nil {
 			return report, fmt.Errorf("saving state for %s: %w", c.Approach.ID, err)
