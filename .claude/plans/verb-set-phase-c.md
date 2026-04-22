@@ -6,6 +6,8 @@
 
 This phase is the biggest and most architectural work in the consolidation. It is worth its own plan.
 
+**Status (2026-04-22): Phase C is complete.** C1 (hash), C2 (classification), C3 (cascade), C4 (transitive deps), C5 (pre-flight), C6 (adopt + dispatch integration), C7 (out_of_spec surfacing), and C8 (workstream persistence) have all landed. The remaining deferred work is the true `--resume <session-id>` pathway, which requires coding-agent driver changes and is out of scope for this phase.
+
 ## The reconcile loop (target behavior)
 
 ```
