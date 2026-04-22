@@ -184,11 +184,18 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
-		plan, err := RunRefine(ctx, llm, fsys, input.ID)
+		result, err := RunRefine(ctx, llm, fsys, input.ID)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
-		return textResult(fmt.Sprintf("Refined %s: %d workstreams planned.", input.ID, len(plan.Workstreams))), nil, nil
+		c := result.Cascade
+		if c == nil {
+			return textResult(fmt.Sprintf("Refined %s: no changes.", input.ID)), nil, nil
+		}
+		return textResult(fmt.Sprintf(
+			"Refined decision %s: %d feature(s) rewritten, %d strategy(ies) rewritten, %d approach(es) drifted, %d parent(s) already accurate.",
+			input.ID, len(c.UpdatedFeatures), len(c.UpdatedStrategies), len(c.DriftedApproaches), len(c.Skipped),
+		)), nil, nil
 	})
 
 	// --- adopt ---

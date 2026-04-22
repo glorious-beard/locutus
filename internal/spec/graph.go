@@ -174,6 +174,50 @@ func BuildGraph(
 	return g
 }
 
+// TransitiveDeps returns every node reachable from any seed ID by forward
+// traversal, filtered by the predicate, sorted in topological order so that
+// dependencies precede the seeds that pulled them in. Per DJ-068, the
+// planner uses this to expand a set of drifted Approaches into the full
+// non-`live` reachable subgraph when assembling a workstream.
+//
+// Unknown seed IDs are silently skipped (the caller's set can mix IDs that
+// exist in the graph with ones that don't, e.g. during a partial import).
+// A nil predicate means "keep everything."
+func (g *SpecGraph) TransitiveDeps(seeds []string, predicate func(GraphNode) bool) ([]GraphNode, error) {
+	// Union the forward walks from every seed, deduping by ID.
+	reachable := make(map[string]GraphNode)
+	for _, seed := range seeds {
+		for _, n := range g.ForwardWalk(seed) {
+			if _, ok := reachable[n.ID]; ok {
+				continue
+			}
+			if predicate != nil && !predicate(n) {
+				continue
+			}
+			reachable[n.ID] = n
+		}
+	}
+	if len(reachable) == 0 {
+		return nil, nil
+	}
+
+	// Topologically sort the whole graph, then keep only members of the
+	// reachable set in that order. This is simpler than extracting a
+	// subgraph and handles cycles uniformly (TopologicalSort surfaces the
+	// cycle error up to the caller).
+	order, err := dgraph.TopologicalSort(g.dag)
+	if err != nil {
+		return nil, fmt.Errorf("transitive deps topological sort: %w", err)
+	}
+	out := make([]GraphNode, 0, len(reachable))
+	for _, id := range order {
+		if n, ok := reachable[id]; ok {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
 // ApproachesUnder returns every Approach reachable from startID by forward
 // traversal — i.e. every Approach in the subtree of the given spec node.
 // Used by `adopt` to scope reconciliation to a node and its descendants.

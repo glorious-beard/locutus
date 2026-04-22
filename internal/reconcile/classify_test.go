@@ -99,6 +99,26 @@ func TestClassifyDriftedWhenApproachBodyRewritten(t *testing.T) {
 	assert.True(t, results[0].DriftedSpec())
 }
 
+// TestClassifyDriftedWhenStoredHashZeroed verifies the cascade path: when
+// DJ-069 cascade zeros an entry's SpecHash to flag it for re-planning, the
+// classifier must surface that as drift even though the "empty string"
+// looks benign at a glance.
+func TestClassifyDriftedWhenStoredHashZeroed(t *testing.T) {
+	fs, g, store := setupReconcileFixture(t)
+
+	require.NoError(t, store.Save(state.ReconciliationState{
+		ApproachID: "app-oauth",
+		SpecHash:   "", // cleared by cascade
+		Artifacts:  spec.ComputeArtifactHashes(fs.ReadFile, *g.Approach("app-oauth")),
+		Status:     state.StatusLive,
+	}))
+
+	results, err := reconcile.Classify(fs, g, store)
+	require.NoError(t, err)
+	assert.Equal(t, state.StatusDrifted, results[0].Status)
+	assert.True(t, results[0].DriftedSpec())
+}
+
 func TestClassifyOutOfSpecWhenArtifactChanges(t *testing.T) {
 	fs, g, store := setupReconcileFixture(t)
 

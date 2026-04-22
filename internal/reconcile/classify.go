@@ -28,9 +28,14 @@ type Classification struct {
 }
 
 // DriftedSpec returns true when the spec has changed since the last
-// reconcile (forward drift).
+// reconcile (forward drift). Cascade may deliberately zero the stored hash
+// to force the Approach back onto the planning queue after an upstream
+// Decision change (DJ-069); that empty-vs-non-empty mismatch is treated as
+// drift exactly like any other hash mismatch. The "no state entry" case is
+// classified earlier as `unplanned`, so reaching this check implies an
+// entry exists.
 func (c Classification) DriftedSpec() bool {
-	return c.StoredHash != "" && c.StoredHash != c.CurrentHash
+	return c.StateEntry != nil && c.StoredHash != c.CurrentHash
 }
 
 // DriftedArtifacts returns true when at least one artifact file has changed

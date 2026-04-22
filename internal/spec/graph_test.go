@@ -222,3 +222,70 @@ func TestForwardWalkUnknownID(t *testing.T) {
 	g := buildTestGraph()
 	assert.Empty(t, g.ForwardWalk("nonexistent-id"))
 }
+
+func TestTransitiveDepsSingleSeed(t *testing.T) {
+	g := buildTestGraph()
+	nodes, err := g.TransitiveDeps([]string{"feat-auth"}, nil)
+	assert.NoError(t, err)
+	// feat-auth reaches itself + dec-x + app-oauth. Three nodes total.
+	assert.Equal(t, []string{"app-oauth", "dec-x", "feat-auth"}, graphNodeIDs(nodes))
+}
+
+func TestTransitiveDepsMultipleSeedsUnioned(t *testing.T) {
+	g := buildTestGraph()
+	nodes, err := g.TransitiveDeps([]string{"feat-auth", "strat-go"}, nil)
+	assert.NoError(t, err)
+	// feat-auth: itself + dec-x + app-oauth
+	// strat-go : itself + dec-y + app-go
+	assert.Equal(t, []string{"app-go", "app-oauth", "dec-x", "dec-y", "feat-auth", "strat-go"},
+		graphNodeIDs(nodes))
+}
+
+func TestTransitiveDepsPredicateFilter(t *testing.T) {
+	g := buildTestGraph()
+	onlyApproaches := func(n spec.GraphNode) bool { return n.Kind == spec.KindApproach }
+	nodes, err := g.TransitiveDeps([]string{"feat-auth", "strat-go"}, onlyApproaches)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"app-go", "app-oauth"}, graphNodeIDs(nodes))
+}
+
+// TestTransitiveDepsTopoOrder pins the DJ-068 invariant: dependencies come
+// first, so the planner can dispatch in declaration order without having to
+// sort again. feat-auth must appear before its downstream dec-x / app-oauth.
+func TestTransitiveDepsTopoOrder(t *testing.T) {
+	g := buildTestGraph()
+	nodes, err := g.TransitiveDeps([]string{"feat-auth"}, nil)
+	assert.NoError(t, err)
+
+	posByID := map[string]int{}
+	for i, n := range nodes {
+		posByID[n.ID] = i
+	}
+	assert.Less(t, posByID["feat-auth"], posByID["dec-x"],
+		"feat-auth must precede its child dec-x")
+	assert.Less(t, posByID["feat-auth"], posByID["app-oauth"],
+		"feat-auth must precede its child app-oauth")
+}
+
+func TestTransitiveDepsSkipsUnknownSeeds(t *testing.T) {
+	g := buildTestGraph()
+	// One good seed, one bad — the bad one must be silently skipped, not
+	// error out the whole walk.
+	nodes, err := g.TransitiveDeps([]string{"nonexistent", "feat-auth"}, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"app-oauth", "dec-x", "feat-auth"}, graphNodeIDs(nodes))
+}
+
+func TestTransitiveDepsEmptySeeds(t *testing.T) {
+	g := buildTestGraph()
+	nodes, err := g.TransitiveDeps(nil, nil)
+	assert.NoError(t, err)
+	assert.Empty(t, nodes)
+}
+
+func TestTransitiveDepsAllUnknownReturnsEmpty(t *testing.T) {
+	g := buildTestGraph()
+	nodes, err := g.TransitiveDeps([]string{"nope-1", "nope-2"}, nil)
+	assert.NoError(t, err)
+	assert.Empty(t, nodes)
+}
