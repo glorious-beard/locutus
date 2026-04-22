@@ -11,6 +11,13 @@
 # Local `go build .` output at module root (no extension on Unix).
 /locutus
 
+# Claude Code per-machine state — settings.json accumulates absolute paths
+# from Bash/Read allow entries that are specific to whoever ran the session,
+# so we keep it local rather than shared. .claude/plans/ IS tracked (it's
+# the implementation-plan source of truth per CLAUDE.md).
+/.claude/settings.json
+/.claude/settings.local.json
+
 # Test binary, built with `go test -c`
 *.test
 
