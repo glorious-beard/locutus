@@ -53,19 +53,34 @@ func (c *AssimilateCmd) Run(cli *CLI) error {
 	return nil
 }
 
-// RunAssimilate executes the assimilation analysis pipeline. It walks the
-// file inventory, builds an AssimilationRequest, and delegates to
-// agent.Analyze.
+// RunAssimilate executes the assimilation analysis pipeline: walks the
+// file inventory, loads the current spec snapshot so the LLM can
+// distinguish new from existing nodes, delegates inference to
+// agent.Analyze, and finally writes the inferred spec back to
+// `.borg/spec/` via a per-file atomic pass. A crash-safety sentinel at
+// `.borg/spec/.assimilating` is present for the duration of the write
+// loop so a crashed prior run is visible to the next invocation.
+//
+// Dry-run is handled by the caller wrapping fsys with readOnlyFS — all
+// writes (including the sentinel) are silently dropped by the wrapper,
+// which preserves the preview semantics without extra branching here.
 func RunAssimilate(ctx context.Context, llm agent.LLM, fsys specio.FS) (*agent.AssimilationResult, error) {
 	inventory, err := agent.WalkInventory(fsys)
 	if err != nil {
 		return nil, fmt.Errorf("walking inventory: %w", err)
 	}
 
-	req := agent.AssimilationRequest{Inventory: inventory}
+	req := agent.AssimilationRequest{
+		Inventory:    inventory,
+		ExistingSpec: loadExistingSpec(fsys),
+	}
 	result, err := agent.Analyze(ctx, llm, fsys, req)
 	if err != nil {
 		return nil, fmt.Errorf("assimilation analysis: %w", err)
+	}
+
+	if err := persistAssimilationResult(fsys, result); err != nil {
+		return result, fmt.Errorf("persist assimilation result: %w", err)
 	}
 
 	return result, nil

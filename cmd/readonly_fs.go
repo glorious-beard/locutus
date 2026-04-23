@@ -16,6 +16,12 @@ type readOnlyFS struct {
 
 func newReadOnlyFS(inner specio.FS) specio.FS { return &readOnlyFS{inner: inner} }
 
+// Unwrap returns the underlying FS the wrapper forwards reads to. Used by
+// callers that need to reach a concrete FS type (e.g. agent.WalkInventory
+// type-asserts to MemFS/OSFS) but should still see writes dropped — those
+// callers only read, so forwarding through is safe.
+func (r *readOnlyFS) Unwrap() specio.FS { return r.inner }
+
 func (r *readOnlyFS) Open(name string) (fs.File, error)        { return r.inner.Open(name) }
 func (r *readOnlyFS) ReadFile(name string) ([]byte, error)     { return r.inner.ReadFile(name) }
 func (r *readOnlyFS) Stat(name string) (os.FileInfo, error)    { return r.inner.Stat(name) }

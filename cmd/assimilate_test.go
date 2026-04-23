@@ -2,11 +2,15 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/chetan/locutus/internal/agent"
+	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func setupAssimilateFS(t *testing.T) *specio.MemFS {
@@ -87,4 +91,177 @@ func TestRunAssimilateMissingConfig(t *testing.T) {
 	result, err := RunAssimilate(context.Background(), llm, fs)
 	assert.Error(t, err)
 	assert.Nil(t, result)
+}
+
+// --- Round 1 acceptance tests ---
+
+// mockPersistenceLLM returns scripted responses that exercise the full
+// scout → analyze → gap → remediate flow with persistable content (one
+// feature + one decision). Used by the persistence tests below; kept
+// separate from mockAssimilationLLM so the assertions are explicit.
+func mockPersistenceLLM() *agent.MockLLM {
+	return agent.NewMockLLM(
+		// scout
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"languages":["go"]}`}},
+		// analyze × 3 (backend, frontend, infra) — put the payload in the first one.
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{
+  "features":[{"id":"feat-admin","title":"Admin console","status":"inferred","description":"Observed admin routes in handlers."}],
+  "decisions":[{"id":"dec-go","title":"Go backend","status":"inferred","confidence":0.95,"rationale":"go.mod present"}]
+}`}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
+		// gap
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"gaps":[]}`}},
+		// remediate
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
+	)
+}
+
+// TestRunAssimilatePersistsInferredSpec is the core Round 1 acceptance
+// test: the pipeline's output must land on disk under .borg/spec/ after
+// a non-dry-run invocation.
+func TestRunAssimilatePersistsInferredSpec(t *testing.T) {
+	fs := setupAssimilateFS(t)
+	llm := mockPersistenceLLM()
+
+	result, err := RunAssimilate(context.Background(), llm, fs)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Feature file landed.
+	featData, err := fs.ReadFile(".borg/spec/features/feat-admin.json")
+	require.NoError(t, err, "feature JSON must be written to .borg/spec/features/")
+	assert.Contains(t, string(featData), "feat-admin")
+
+	// Decision file landed.
+	decData, err := fs.ReadFile(".borg/spec/decisions/dec-go.json")
+	require.NoError(t, err, "decision JSON must be written to .borg/spec/decisions/")
+	assert.Contains(t, string(decData), "dec-go")
+}
+
+// TestRunAssimilateDryRunDoesNotWrite confirms the readOnlyFS wrapper
+// still discards writes once Round 1 adds real persistence — the
+// existing dry-run semantic must not regress.
+func TestRunAssimilateDryRunDoesNotWrite(t *testing.T) {
+	fs := setupAssimilateFS(t)
+	llm := mockPersistenceLLM()
+
+	ro := newReadOnlyFS(fs)
+	_, err := RunAssimilate(context.Background(), llm, ro)
+	require.NoError(t, err)
+
+	// Reads go to the underlying fs; but writes should have been dropped.
+	_, err = fs.ReadFile(".borg/spec/features/feat-admin.json")
+	assert.Error(t, err, "dry-run must not create new feature file")
+	_, err = fs.ReadFile(".borg/spec/decisions/dec-go.json")
+	assert.Error(t, err, "dry-run must not create new decision file")
+}
+
+// TestRunAssimilateRespectsExistingSpec verifies the pre-load invariant:
+// the pipeline receives existing spec as context so the LLM can
+// distinguish "new" from "enhancement of existing". We pin this by
+// pre-seeding a feature and asserting the scout agent's prompt mentions
+// the existing feature ID.
+func TestRunAssimilateRespectsExistingSpec(t *testing.T) {
+	fs := setupAssimilateFS(t)
+
+	// Pre-seed an existing feature the assimilator should be told about.
+	existing := spec.Feature{
+		ID: "feat-auth", Title: "Auth", Status: spec.FeatureStatusActive,
+		Description: "Existing authentication feature, hand-authored.",
+	}
+	require.NoError(t, specio.SavePair(fs, ".borg/spec/features/feat-auth", existing, existing.Description))
+
+	llm := mockPersistenceLLM()
+	_, err := RunAssimilate(context.Background(), llm, fs)
+	require.NoError(t, err)
+
+	// Inspect the first prompt sent to the LLM (scout round). Must mention
+	// the existing feature so the scout knows what's already in scope.
+	calls := llm.Calls()
+	require.NotEmpty(t, calls, "LLM must have been invoked")
+	firstPrompt := callToPromptString(calls[0].Request)
+	assert.Contains(t, firstPrompt, "feat-auth",
+		"scout agent prompt must include existing spec context (feat-auth)")
+}
+
+// TestRunAssimilateUpdatesExistingNode confirms that when the LLM
+// output matches an existing spec node's ID, the file is rewritten
+// (not duplicated under a new name).
+func TestRunAssimilateUpdatesExistingNode(t *testing.T) {
+	fs := setupAssimilateFS(t)
+
+	// Pre-seed with an intentionally stale title so we can tell whether
+	// the update landed.
+	stale := spec.Decision{
+		ID: "dec-go", Title: "OLD title", Status: spec.DecisionStatusActive, Confidence: 0.5,
+		Rationale: "stale",
+	}
+	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-go", stale, "stale body"))
+
+	llm := mockPersistenceLLM()
+	_, err := RunAssimilate(context.Background(), llm, fs)
+	require.NoError(t, err)
+
+	data, err := fs.ReadFile(".borg/spec/decisions/dec-go.json")
+	require.NoError(t, err)
+	var updated spec.Decision
+	require.NoError(t, json.Unmarshal(data, &updated))
+	assert.Equal(t, "Go backend", updated.Title, "existing decision title must be updated by assimilate")
+	assert.NotContains(t, strings.ToLower(string(data)), "old title",
+		"stale content must be gone after assimilate rewrites the file")
+}
+
+// TestRunAssimilateSentinelCleanup verifies the .assimilating sentinel
+// is written at start and removed on success. If a future crash leaves
+// it in place, a later run can detect unfinished prior work.
+func TestRunAssimilateSentinelCleanup(t *testing.T) {
+	fs := setupAssimilateFS(t)
+	llm := mockPersistenceLLM()
+
+	_, err := RunAssimilate(context.Background(), llm, fs)
+	require.NoError(t, err)
+
+	_, err = fs.ReadFile(".borg/spec/.assimilating")
+	assert.Error(t, err, "sentinel must be cleaned up after successful run")
+}
+
+// TestRunAssimilateInferredStatusDefault confirms that any LLM output
+// missing a status field defaults to `inferred` for Features and
+// Decisions landed via assimilate (DJ-019 posture: heuristic-derived
+// starts as `inferred`).
+func TestRunAssimilateInferredStatusDefault(t *testing.T) {
+	fs := setupAssimilateFS(t)
+
+	// LLM returns a Feature without a status field.
+	llm := agent.NewMockLLM(
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"features":[{"id":"feat-nostatus","title":"Mystery"}]}`}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"gaps":[]}`}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
+	)
+
+	_, err := RunAssimilate(context.Background(), llm, fs)
+	require.NoError(t, err)
+
+	data, err := fs.ReadFile(".borg/spec/features/feat-nostatus.json")
+	require.NoError(t, err)
+	var got spec.Feature
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, spec.FeatureStatusInferred, got.Status,
+		"Features landed via assimilate without explicit status must default to inferred")
+}
+
+// callToPromptString flattens a GenerateRequest into a single string so
+// tests can assert on prompt contents regardless of how the orchestrator
+// split the content across messages.
+func callToPromptString(req agent.GenerateRequest) string {
+	var b strings.Builder
+	for _, m := range req.Messages {
+		b.WriteString(m.Content)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }

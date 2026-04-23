@@ -21,8 +21,36 @@ type FileEntry struct {
 }
 
 // AssimilationRequest holds inputs for the assimilation analysis pipeline.
+// ExistingSpec, when non-nil, is surfaced to the scout agent as "here is
+// what the spec already covers" context so the LLM can distinguish new
+// nodes from enhancements of existing ones per the Round-1 ambiguity 2
+// resolution. Leaving ExistingSpec nil preserves the greenfield shape.
 type AssimilationRequest struct {
-	Inventory []FileEntry
+	Inventory    []FileEntry
+	ExistingSpec *ExistingSpec
+}
+
+// ExistingSpec is a snapshot of what the spec store already contains. The
+// assimilation pipeline reads this before inference and includes it in
+// the scout prompt so the LLM can output updates to existing nodes
+// (matching IDs) as well as new nodes.
+type ExistingSpec struct {
+	Features   []spec.Feature
+	Decisions  []spec.Decision
+	Strategies []spec.Strategy
+	Approaches []spec.Approach
+	Entities   []spec.Entity
+}
+
+// IsEmpty reports whether the snapshot has any nodes at all. Greenfield
+// runs will find an empty snapshot on first invocation; the pipeline
+// should still report that truthfully rather than fabricate a non-empty
+// context.
+func (e *ExistingSpec) IsEmpty() bool {
+	if e == nil {
+		return true
+	}
+	return len(e.Features)+len(e.Decisions)+len(e.Strategies)+len(e.Approaches)+len(e.Entities) == 0
 }
 
 // AssimilationResult holds the full output of assimilation analysis.
@@ -45,6 +73,13 @@ type Gap struct {
 
 // WalkInventory produces a file inventory from the given FS, respecting .gitignore.
 func WalkInventory(fsys specio.FS) ([]FileEntry, error) {
+	// readOnlyFS (used by --dry-run) wraps an underlying MemFS/OSFS; unwrap
+	// so the type switch below recognises the concrete type. Writes through
+	// the wrapper are still dropped upstream.
+	if u, ok := fsys.(interface{ Unwrap() specio.FS }); ok {
+		fsys = u.Unwrap()
+	}
+
 	// Collect all file paths.
 	var allFiles []string
 	if mfs, ok := fsys.(*specio.MemFS); ok {
@@ -169,13 +204,39 @@ func Analyze(ctx context.Context, llm LLM, fsys specio.FS, req AssimilationReque
 		return nil, fmt.Errorf("loading assimilation workflow: %w", err)
 	}
 
-	// Build the initial prompt with inventory context.
+	// Build the initial prompt with inventory context and, when present,
+	// a summary of what the spec already covers so the pipeline can emit
+	// updates (matching IDs) alongside new nodes.
 	inventoryJSON, err := json.Marshal(req.Inventory)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling inventory: %w", err)
 	}
 
-	prompt := fmt.Sprintf("Analyze this codebase. File inventory:\n%s", string(inventoryJSON))
+	var promptBuilder strings.Builder
+	promptBuilder.WriteString("Analyze this codebase. File inventory:\n")
+	promptBuilder.Write(inventoryJSON)
+	promptBuilder.WriteString("\n")
+
+	if !req.ExistingSpec.IsEmpty() {
+		promptBuilder.WriteString("\n## Existing spec — update these nodes in place (match IDs) rather than duplicate them; emit new nodes only for genuinely new concepts:\n")
+		for _, f := range req.ExistingSpec.Features {
+			fmt.Fprintf(&promptBuilder, "- feature %s (%s): %s\n", f.ID, f.Status, f.Title)
+		}
+		for _, d := range req.ExistingSpec.Decisions {
+			fmt.Fprintf(&promptBuilder, "- decision %s (%s): %s — %s\n", d.ID, d.Status, d.Title, d.Rationale)
+		}
+		for _, s := range req.ExistingSpec.Strategies {
+			fmt.Fprintf(&promptBuilder, "- strategy %s (%s): %s\n", s.ID, s.Status, s.Title)
+		}
+		for _, a := range req.ExistingSpec.Approaches {
+			fmt.Fprintf(&promptBuilder, "- approach %s: %s (parent %s)\n", a.ID, a.Title, a.ParentID)
+		}
+		for _, e := range req.ExistingSpec.Entities {
+			fmt.Fprintf(&promptBuilder, "- entity %s: %s\n", e.ID, e.Name)
+		}
+	}
+
+	prompt := promptBuilder.String()
 
 	// Execute the workflow.
 	exec := &WorkflowExecutor{

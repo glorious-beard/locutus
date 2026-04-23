@@ -24,6 +24,7 @@ type FeatureStatus string
 
 const (
 	FeatureStatusProposed FeatureStatus = "proposed"
+	FeatureStatusInferred FeatureStatus = "inferred"
 	FeatureStatusActive   FeatureStatus = "active"
 	FeatureStatusRemoved  FeatureStatus = "removed"
 )
