@@ -1,24 +1,33 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/history"
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // HistoryCmd queries the historian's past-tense record of spec changes.
-// Three modes: list all events (default), filter to a target ID (via arg),
-// or render the LLM-authored narrative summary (via --narrative).
+// Default mode prints events; flags switch to narrative read or narrative
+// regeneration (DJ-026 layer 2).
 type HistoryCmd struct {
-	ID           string `arg:"" optional:"" help:"Filter events to a specific target node ID."`
-	Narrative    bool   `help:"Print the narrative summary from .borg/history/summary.md."`
-	Alternatives bool   `help:"List alternatives considered for the target ID (requires <id>)."`
-	Limit        int    `help:"Limit the number of events shown." default:"50"`
+	ID                   string `arg:"" optional:"" help:"Filter events to a specific target node ID."`
+	Narrative            bool   `help:"Print the narrative summary from .borg/history/summary.md."`
+	RegenerateNarrative  bool   `name:"regenerate-narrative" help:"Regenerate the narrative summary + detail files via the archivist/analyst agents (DJ-026)."`
+	Force                bool   `help:"With --regenerate-narrative, bypass the change-hash debounce and rewrite even when events are unchanged."`
+	Since                string `help:"Narrow --regenerate-narrative to events on or after this date (YYYY-MM-DD)."`
+	Until                string `help:"Narrow --regenerate-narrative to events on or before this date (YYYY-MM-DD)."`
+	MinEventsForDetail   int    `name:"min-events-for-detail" help:"Minimum events a target needs before a detail file is generated for it." default:"2"`
+	Alternatives         bool   `help:"List alternatives considered for the target ID (requires <id>)."`
+	Limit                int    `help:"Limit the number of events shown." default:"50"`
 }
+
 
 func (c *HistoryCmd) Run(cli *CLI) error {
 	cwd, err := os.Getwd()
@@ -27,16 +36,20 @@ func (c *HistoryCmd) Run(cli *CLI) error {
 	}
 	fsys := specio.NewOSFS(cwd)
 
+	hist := history.NewHistorian(fsys, ".borg/history")
+
+	if c.RegenerateNarrative {
+		return c.runRegenerateNarrative(hist, cli)
+	}
+
 	if c.Narrative {
 		data, err := fsys.ReadFile(".borg/history/summary.md")
 		if err != nil {
-			return fmt.Errorf("no narrative summary at .borg/history/summary.md: %w", err)
+			return fmt.Errorf("no narrative summary at .borg/history/summary.md — run `locutus history --regenerate-narrative` to create it")
 		}
 		fmt.Print(string(data))
 		return nil
 	}
-
-	hist := history.NewHistorian(fsys, ".borg/history")
 
 	if c.Alternatives {
 		if c.ID == "" {
@@ -97,6 +110,83 @@ func (c *HistoryCmd) Run(cli *CLI) error {
 		)
 	}
 	return nil
+}
+
+// runRegenerateNarrative runs the DJ-026 layer-2 pipeline. --since /
+// --until narrow the event window; --force bypasses the change-hash
+// debounce; --min-events-for-detail tunes the per-target threshold.
+// Archivist and analyst are loaded as separate agent defs per DJ-036 —
+// their system prompts (role, behavioural rules) live in
+// `.borg/agents/{archivist,analyst}.md`, not hard-coded here.
+func (c *HistoryCmd) runRegenerateNarrative(hist *history.Historian, cli *CLI) error {
+	llm, err := getLLM()
+	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getwd: %w", err)
+	}
+	fsys := specio.NewOSFS(cwd)
+
+	archivistRaw, err := agent.NamedAgentFn(fsys, llm, "archivist")
+	if err != nil {
+		return fmt.Errorf("archivist agent: %w", err)
+	}
+	analystRaw, err := agent.NamedAgentFn(fsys, llm, "analyst")
+	if err != nil {
+		return fmt.Errorf("analyst agent: %w", err)
+	}
+
+	cfg := history.NarrativeConfig{
+		ArchivistFn:        history.GenerateFn(archivistRaw),
+		AnalystFn:          history.GenerateFn(analystRaw),
+		Force:              c.Force,
+		MinEventsForDetail: c.MinEventsForDetail,
+	}
+	if c.Since != "" {
+		t, err := parseHistoryDate(c.Since, "--since")
+		if err != nil {
+			return err
+		}
+		cfg.Since = &t
+	}
+	if c.Until != "" {
+		t, err := parseHistoryDate(c.Until, "--until")
+		if err != nil {
+			return err
+		}
+		cfg.Until = &t
+	}
+
+	report, err := hist.GenerateNarrative(context.Background(), cfg)
+	if err != nil {
+		return fmt.Errorf("regenerate narrative: %w", err)
+	}
+
+	if cli.JSON {
+		return json.NewEncoder(os.Stdout).Encode(report)
+	}
+	if report.Skipped {
+		fmt.Println("Narrative is up to date — no regeneration needed. Use --force to regenerate anyway.")
+		return nil
+	}
+	fmt.Printf("Narrative regenerated: archivist calls=%d, analyst calls=%d.\n", report.ArchivistCalls, report.AnalystCalls)
+	if len(report.DetailsRegenerated) > 0 {
+		fmt.Printf("  Updated details: %v\n", report.DetailsRegenerated)
+	}
+	if len(report.DetailsSkipped) > 0 {
+		fmt.Printf("  Unchanged details (skipped): %v\n", report.DetailsSkipped)
+	}
+	return nil
+}
+
+func parseHistoryDate(raw, flag string) (time.Time, error) {
+	t, err := time.Parse("2006-01-02", raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%s: %q is not a YYYY-MM-DD date", flag, raw)
+	}
+	return t, nil
 }
 
 // runHistoryMCP is the shared implementation used by the MCP handler. It
