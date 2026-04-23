@@ -1342,3 +1342,45 @@ In short: formal extraction earns its keep as agent context; formal persistence 
 **Forward-looking note — the extraction itself is provisional.** The persistence decision ("never write entities to `.borg/spec/`") is firm, because the argument against it is purely mechanical (the code is the source of truth; a serialised file is always a drifting cache). The *extraction* decision — keeping `AssimilationResult.Entities` as in-memory context for downstream agents — is conditional. We're carrying the cost of parsing and emitting entity structure on every assimilate run as an open bet that feeding structured domain data to the planner / supervisor / remediator produces better Approaches than reconstructing that structure from code in each prompt. Whether that bet pays off isn't decidable in the abstract; it will be answered by operational history once enough real adopt-and-refine cycles accumulate.
 
 Until then, the framing holds: **usage and motivation are the valuable outputs of assimilation; structure reconstruction is a provisional helper.** When an Entity shows up in agent context, it should be in service of guiding what the agent should DO with the data (a Feature's behaviour, a Decision's rationale, a Strategy's pattern) — not re-explaining what a struct looks like when the agent can just read the file. If a later audit shows the formal extraction is burning tokens without measurably improving agent output, dropping the extraction entirely is the next step and this DJ gets superseded.
+
+## DJ-077: Selective Adoption from Google ADK, Not Wholesale (Narrows DJ-029)
+
+**Status:** settled
+
+**Decision:** DJ-029 rejected wholesale adoption of `LangGraphGo` / `LangChainGo` on maturity and pattern-fit grounds and adopted a "custom orchestration" posture. That posture holds today but has narrowed: Locutus's custom orchestration has grown past the "~350 LOC" footprint cited in DJ-029 to roughly 2k+ LOC, and Google's Agent Development Kit ([adk-python](https://github.com/google/adk-python), [adk-go](https://github.com/google/adk-go)) shipped with first-party maintenance, active releases, and abstractions that map onto real gaps in Locutus (memory, evaluation). DJ-077 permits **selective, attribution-preserving adoption of ADK patterns and code at specific integration points**, while preserving DJ-029's rejection of wholesale adoption.
+
+**Why not wholesale adoption:**
+
+1. **adk-go is Gemini/Apigee-only at the model layer.** `model/gemini/` and `model/apigee/` are the only implementations; the `LLM` interface uses `genai.Content` as the content type, which is Gemini-flavored. Adopting wholesale would require a Genkit-adk-go adapter that translates Anthropic/OpenAI content into `genai.Content` shape — non-trivial, ongoing maintenance cost, lossy in places (tool-use formats, thinking blocks).
+2. **adk-python is the canonical surface.** adk-go has a ~70% port: missing `evaluation/`, `code_executors/`, standalone `planners/`, `a2a/`. Anything beyond adk-go's current surface would require porting from Python. Wholesale adoption means committing to that ongoing port or depending on abstractions we only half-have.
+3. **Session/runtime models don't map cleanly.** adk-go's `session.Service` is conversation + user-scoped. Locutus's "session" is an `adopt` or `refine` invocation — not chat turns. Forcing the fit would complicate, not clarify.
+
+**Where selective adoption IS appropriate:**
+
+1. **Memory abstraction.** `memory.Service` is a tiny interface (two methods: `AddSessionToMemory`, `SearchMemory`), and the shape maps onto the agent-memory gap audited on 2026-04-23. Adapted (Content → plain string; user/app scoping → project scoping), it becomes our shared memory primitive. Copy-with-attribution.
+2. **MCP toolset pattern.** `tool/mcptoolset/` demonstrates a clean way to expose MCP-server tools as agent tools with filter + confirmation. We already have MCP plumbing; this is pattern inspiration for when the planner or supervisor wants to invoke external MCP tools. Reference, not code copy.
+3. **Evaluation framework (from adk-python).** Not present in adk-go. Port from adk-python as the basis for Round 4's `llm_review` assertion — rubric + LLM-as-judge shape beats writing a reviewer agent from scratch. Translation effort is real (~2 sessions) but delivers more than what we'd build.
+4. **Workflow agents (sequential / parallel / loop) as reference.** `agent/workflowagents/` formalizes patterns our council executor does ad-hoc. Not code-copy today (our executor works), but good reference for future executor refactors.
+
+**Licensing posture:**
+
+- APL v2 → MIT is compatible. Derived files carry a top-of-file comment: `// Portions adapted from github.com/google/adk-go, Copyright 2025 Google LLC, Licensed under the Apache License 2.0.`
+- A `NOTICE` file at repo root enumerates ADK-derived portions.
+- If we copy verbatim chunks larger than incidental, `third_party/adk/LICENSE-APACHE` holds the license text.
+- Locutus-written code remains MIT; ADK-derived portions remain APL v2. Mixed-license is standard practice.
+
+**Implications for the gap-closeout plan:**
+
+- **Pre-Round-3 increment (this session):** memory adoption lands as `internal/memory/` with the `memory.Service` shape (adapted). Closes the audit's memory gap ahead of the rounds that would benefit (cascade, preflight, planner, analyst). Tracked in `.claude/plans/gap-closeout-pre-round3-memory.md`.
+- **Round 4 reshape:** `llm_review` assertion rework targets adk-python eval framework rather than a bespoke reviewer agent. Round 4 effort grows (~1 session to ~2) but the result is reusable eval plumbing.
+- **Rounds 3, 5–8:** unchanged in scope; memory primitive becomes available to later rounds as optional input.
+
+**Supersession scope relative to DJ-029:**
+
+DJ-029 remains in force for wholesale-framework adoption of LangGraphGo/LangChainGo — those specific rejections still apply. DJ-077 narrows DJ-029's "custom orchestration" implication: *selective* adoption of individual patterns/packages from well-maintained, license-compatible external frameworks is permitted when the alternative is reinventing the same abstraction. Future decisions about adopting other parts of ADK (or alternative frameworks) re-evaluate under this posture.
+
+**Not in scope for DJ-077:**
+
+- Wholesale migration to ADK runtime (executor, runner, session).
+- Any commitment to port beyond the memory + evaluation surfaces. Each future adoption is its own decision.
+- Multi-provider translation adapter for `genai.Content`. If we ever want adk-go's runtime, that adapter is a prerequisite; today we don't.

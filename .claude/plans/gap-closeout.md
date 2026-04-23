@@ -6,6 +6,8 @@ The 2026-04-23 audit surfaced a recurring "designed but unimplemented" pattern. 
 
 This plan closes eight of those gaps, in priority order of user-visible impact per hour of work. The order was decided in the audit conversation and preserved here.
 
+**Pre-Round-3 increment (DJ-077 selective ADK adoption):** adopts the `memory.Service` shape from Google ADK as `internal/memory/`, closing the agent-memory gap ahead of the rounds that could use it. See [gap-closeout-pre-round3-memory.md](gap-closeout-pre-round3-memory.md). Reshapes Round 4 (llm_review) to port adk-python's evaluation framework rather than writing a reviewer agent from scratch — effort grows from ~0.5 to ~2 sessions but the result is reusable eval plumbing.
+
 ## Method (every round)
 
 Each round follows the same loop we used for Phase C:
