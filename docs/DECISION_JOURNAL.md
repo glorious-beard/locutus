@@ -2,9 +2,22 @@
 
 This document captures the series of architectural decisions and pivots that shaped the Locutus implementation plan. Each entry records what was decided, what alternatives were considered, and why the final choice was made. This is the "historian for the historian" — a record of how Locutus itself was designed.
 
+## Status legend
+
+Every DJ carries a **Status:** line immediately after its heading. A DJ's status is what distinguishes "we've decided to do this" from "this is observable in code today." When citing a DJ, always read the status first.
+
+- **shipped** — code matches the decision. Safe to rely on as current behavior.
+- **shipping** — partially implemented. Some aspects of the DJ are live; others are gaps. The DJ body (or a linked note) should describe what's in vs. out. Citing a shipping DJ requires naming which part you rely on.
+- **settled** — design agreed, no code yet. The DJ is a commitment, not a fact. Citing a settled DJ must flag that it isn't yet observable.
+- **superseded by DJ-N** — a later decision replaced this one. Read DJ-N for current direction; keep the original entry for historical context.
+
+Backfilled on 2026-04-23 after an audit surfaced a recurring "we keep discovering designed but unimplemented features" pattern — DJs were being read as state when they were really direction.
+
 Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-001: CLI Framework
+
+**Status:** shipped
 
 **Decision:** Use `alecthomas/kong` instead of `spf13/cobra`.
 
@@ -17,6 +30,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-002: Console Output Library
 
+**Status:** shipped
+
 **Decision:** Use `pterm` for rich terminal output.
 
 **Alternatives considered:**
@@ -27,6 +42,8 @@ Session date: 2026-04-13 to 2026-04-14
 **Why pterm:** Closest Go equivalent to Python's "rich" library. Tables, spinners, progress bars, tree views, colored text — all without building a full TUI. The user explicitly asked for rich console output comparable to Python's ecosystem.
 
 ## DJ-003: LLM Access — The Claude CLI Pivot and Reversal
+
+**Status:** shipped
 
 **Decision:** Use Genkit Go with Anthropic API keys.
 
@@ -40,6 +57,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-004: MCP Transport
 
+**Status:** shipped
+
 **Decision:** Stdio-first, optional HTTP.
 
 **Research finding:** VS Code only supports stdio for MCP servers. Claude Code supports both stdio and HTTP. Stdio is the common denominator.
@@ -47,6 +66,8 @@ Session date: 2026-04-13 to 2026-04-14
 **Pattern:** `locutus mcp` starts stdio MCP server (spawned by client). `locutus mcp --http :8080` for remote/multi-client scenarios later.
 
 ## DJ-005: No Archetype Selection at Init
+
+**Status:** shipped
 
 **Decision:** `locutus init` creates a bare spec structure with no stack assumptions. No archetype enum.
 
@@ -61,6 +82,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-006: Skills Over Templates
 
+**Status:** shipped
+
 **Decision:** No template engine. Use SKILL.md files to guide LLM generation.
 
 **Context:** The user is the author of `stamp` (github.com/glorious-beard/stamp), an MCP-based template rendering tool. They stopped development because well-written SKILL.md files provided equivalent DX without the template engine complexity.
@@ -68,6 +91,8 @@ Session date: 2026-04-13 to 2026-04-14
 **Why skills:** Templates are deterministic but rigid. Skills guide the LLM to produce correct code while allowing it to adapt to context. The skill is the expert knowledge; the LLM is the flexible executor.
 
 ## DJ-007: Everything Is a Strategy
+
+**Status:** shipped
 
 **Decision:** Build systems, test runners, linters, formatters, and deployment tools are all strategies — not hardcoded in Locutus.
 
@@ -78,6 +103,8 @@ Session date: 2026-04-13 to 2026-04-14
 **Extension — Strategy prerequisites:** Each strategy declares its prerequisites (tools, versions). `locutus check` is strategy-driven — adding/removing strategies changes what gets checked.
 
 ## DJ-008: Planner + Delegator, Not Coder
+
+**Status:** shipped
 
 **Decision:** Locutus produces execution plans for external coding agents. It does not generate application code itself.
 
@@ -91,6 +118,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-009: Autonomous Decisions During Planning
 
+**Status:** shipped
+
 **Decision:** Locutus makes all decisions autonomously during planning (status: `assumed`, with confidence score). No `input_needed` during planning.
 
 **Journey:**
@@ -102,6 +131,8 @@ Session date: 2026-04-13 to 2026-04-14
 **Why autonomous:** Simpler MCP contract. Plans are always fully resolved and self-contained. No mid-planning callbacks. Aligns with D-004 from PLAN.md (Passive Generation Model).
 
 ## DJ-010: Agent Routing and Supervision
+
+**Status:** shipped
 
 **Decision:** Locutus maintains a registry of coding agents with their strengths and supervises their output.
 
@@ -119,6 +150,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-011: Historian
 
+**Status:** shipped
+
 **Decision:** Every decision/strategy change recorded as structured JSON with rationale and rejected alternatives.
 
 **User insight:** "Git history isn't sufficient. We should have a historian agent that captures the motivations behind changes and alternatives considered."
@@ -129,6 +162,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-012: Advisory Delegation
 
+**Status:** shipped
+
 **Decision:** External agents can't be forced to use Locutus. AGENTS.md provides strong guidance but is advisory only. No drift detection infrastructure.
 
 **Context:** VS Code Copilot may not even read AGENTS.md. Claude Code generally follows it but can't be forced.
@@ -137,11 +172,15 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-013: Test-First Tier Implementation
 
+**Status:** shipped
+
 **Decision:** Each implementation tier starts with acceptance tests and ends with running them.
 
 **Why:** Locutus's own supervision loop enforces test-first discipline on external agents. We should eat our own cooking. Writing tests first also forces us to define contracts before implementation, catching design issues early.
 
 ## DJ-014: Brownfield Self-Analysis
+
+**Status:** shipped
 
 **Decision:** Don't scaffold `.borg/` for the Locutus repo during implementation. Use brownfield analysis in a later session.
 
@@ -151,6 +190,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-015: Competitive Positioning
 
+**Status:** shipped
+
 **Conclusion from landscape research:** No open-source tool combines persistent decision graphs + spec-driven planning + agent supervision + historian. Closest is GitHub Spec Kit (spec-first philosophy but no decision persistence or supervision). Decision graph concept exists in theory but has no production implementation.
 
 **User context:** Not competing with commercial offerings (Devin, Cursor). This is MIT-licensed open source. Goal is addressing what the user spends most time on when using coding agents — not building a business.
@@ -158,6 +199,8 @@ Session date: 2026-04-13 to 2026-04-14
 **Reference implementation:** User's Atlas shoe project (`/Users/chetan/projects/shoe`) is Locutus implemented manually: 13 specialized agents, historian, mandatory review gates, approach-auditor, dispatch protocol. Locutus automates this pattern.
 
 ## DJ-016: Execution Plan — One Strategy Per Step, Agent Self-Reports Files
+
+**Status:** superseded by DJ-027
 
 **Decision:** Each plan step is scoped to one strategy but can touch multiple files. The agent self-reports files modified; `git diff --name-only` is the source of truth.
 
@@ -172,17 +215,23 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-017: Locutus Writes Tests, Not the Agent
 
+**Status:** superseded by DJ-039
+
 **Decision:** Acceptance tests are generated by Locutus's own LLM (Genkit), not by the coding agent being supervised.
 
 **Why:** If the agent writes its own tests, it will write tests that pass its own implementation — defeating the purpose of test-first discipline. Locutus writes tests from the plan's acceptance criteria (which are independent of any implementation), writes them to the worktree before dispatching the agent, and the agent is told to make them pass without modifying the test files.
 
 ## DJ-018: Tier 3 Uses Synthetic Fixtures
 
+**Status:** shipped
+
 **Decision:** Tier 3 (Decision Graph) tests use hand-crafted spec files as test fixtures, not data from the planner.
 
 **Why:** Tier 3 is pure graph algorithms with no LLM dependency. The DAG construction and traversal code operates on typed structs loaded from JSON. Using synthetic fixtures keeps Tier 3 independent of Tier 4 (planner) and testable in isolation. Real data flows through the graph once Tier 4 is complete.
 
 ## DJ-019: Brownfield — Heuristic First, LLM Second
+
+**Status:** shipped
 
 **Decision:** Brownfield analysis uses heuristics for everything deterministically derivable from parseable file content. LLM is reserved for understanding intent, meaning, and context beyond syntax.
 
@@ -194,11 +243,15 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-020: Retry Uses Session Resume, Not Cold Start
 
+**Status:** shipped
+
 **Decision:** When the supervisor retries a failed agent step, it resumes the agent's existing session (`claude -p --resume <session-id>`) rather than starting a fresh conversation.
 
 **Why:** Session resume gives the agent full context of what it tried and what failed. This is far more token-efficient and produces better results than cold-starting with "here's the task again plus what went wrong." The session ID is controlled by Locutus, not the agent.
 
 ## DJ-021: Genkit Go — LLM Plumbing Only, Not Agent Orchestration
+
+**Status:** shipped
 
 **Decision:** Use Genkit Go strictly for LLM access (multi-provider Generate, tool registration, structured output). All agent orchestration, definition loading, and persistence is built by Locutus.
 
@@ -209,6 +262,8 @@ Session date: 2026-04-13 to 2026-04-14
 **What Locutus builds on top:** SKILL.md loading and injection, agent registry and routing, supervision loop, historian, brownfield analysis, memory/persistence, all file-based spec I/O.
 
 ## DJ-022: Features as Product-Level Layer Above Decisions
+
+**Status:** shipped
 
 **Decision:** Features sit above decisions in the spec graph: Feature → Decision → Strategy → Source Files. Decisions can be feature-driven or standalone (foundational/project-wide). Same for strategies.
 
@@ -224,6 +279,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-023: Agent File Generation Strategy
 
+**Status:** shipped
+
 **Decision:** Locutus generates CLAUDE.md as the primary agent instruction file and symlinks AGENTS.md to it. SKILL.md files (open standard, agentskills.io) are generated per-strategy in `.agents/skills/` and referenced from CLAUDE.md.
 
 **Research finding:** AGENTS.md is a Linux Foundation standard (60k+ repos) but Claude Code doesn't read it natively (feature request #6235). Claude Code reads CLAUDE.md and its own `.claude/` ecosystem. SKILL.md is an open standard supported by all major tools (Claude, Codex, Copilot, Cursor, Gemini).
@@ -231,6 +288,8 @@ Session date: 2026-04-13 to 2026-04-14
 **What we DON'T generate:** `.claude/agents/` definitions and `.claude/memory/` files. These are Claude Code internals for its own sub-agent orchestration and session recall. They're orthogonal to Locutus's spec management.
 
 ## DJ-024: Full Scope Validated — Supervision Is Not Incremental
+
+**Status:** shipped
 
 **Context:** Mid-planning sanity check — is the full 18-step plan justified, or could this be a simpler MCP server that just manages the decision graph?
 
@@ -253,6 +312,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-025: Planning as a Cooperative Council, Not a Single LLM Call
 
+**Status:** shipping
+
 **Decision:** The planning pipeline uses a cooperative council of agents running iterative rounds, not a single LLM call.
 
 **Insight:** The process used to design Locutus itself — proposing, challenging, researching, validating, recording over multiple rounds — IS the planning pipeline. The council replicates this process:
@@ -269,6 +330,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-026: Historian Uses LLM for Narrative, Not Just Deterministic Recording
 
+**Status:** settled
+
 **Decision:** The historian has two layers. Layer 1 (deterministic): records structured JSON events (what changed, old/new values, alternatives). Layer 2 (LLM): writes a compelling human-readable narrative connecting decisions to the broader project arc.
 
 **Why LLM for narrative:** Structured JSON events are queryable but not useful to a human reader. The shoe project's LOG.md reads as a story ("After five days attempting CT-scan-derived sock maps, the domain translator identified that the hosiery industry has standard pattern templates..."). That narrative quality — highlighting what's surprising, noting reversals, providing context — requires an LLM. A mechanical event log would never produce that.
@@ -276,6 +339,8 @@ Session date: 2026-04-13 to 2026-04-14
 **The two layers complement each other:** JSON events are the source of truth for blast radius, revisit queries, and machine consumption. The narrative summary in `.borg/history/summary.md` is a derived artifact for human reading — a rich project history that explains not just what happened but why it matters.
 
 ## DJ-027: Hierarchical Plans (Plan of Plans) with Two-Level DAG
+
+**Status:** shipped
 
 **Decision:** Plans are hierarchical. A master plan decomposes into workstreams (sub-plans), each tailored to the agent executing it. Both levels form a DAG — workstreams can depend on other workstreams, steps can depend on other steps within a workstream.
 
@@ -298,6 +363,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-028: Plan Readiness Is a Collaborative Gate, Not a Single Agent
 
+**Status:** shipping
+
 **Decision:** Plan readiness is determined by a collaborative gate: the convergence monitor triggers the check (mechanical: stable + complete), then the critic and stakeholder each do a final sign-off. Both must approve. No dedicated plan reviewer agent needed.
 
 **Why collaborative, not a single reviewer:**
@@ -309,6 +376,8 @@ Session date: 2026-04-13 to 2026-04-14
 **Why not a dedicated reviewer:** The critic and stakeholder already have the context from participating in the council rounds. A fresh-eyes reviewer would need to re-read everything, adding cost without proportional benefit. The collaborative gate reuses existing roles in a new capacity.
 
 ## DJ-029: Genkit Go + Custom Orchestration, Not LangGraphGo
+
+**Status:** shipped
 
 **Decision:** Keep Genkit Go for LLM access. Build ~350 LOC of custom orchestration for Locutus's council and supervision patterns. Do not add LangGraphGo or LangChainGo.
 
@@ -326,17 +395,23 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-030: File Conflict Prevention at Plan Time, Rebase as Fallback
 
+**Status:** settled
+
 **Decision:** The critic flags file overlaps between parallel workstreams during planning. The planner restructures to eliminate them (merge workstreams, add dependency edges, or extract shared files into a dedicated workstream). If unanticipated overlaps occur at runtime (agent touches files not in ExpectedFiles), fall back to sequential rebase with conflict resolution.
 
 **Why plan-time prevention over runtime merge:** Merge conflicts during agent execution are expensive — the agent may need to re-run steps, and automated conflict resolution is unreliable. Preventing overlaps at plan time is cheaper and more predictable. The rebase fallback handles edge cases where agents touch unexpected files.
 
 ## DJ-031: Concurrency Scheduler with Configurable Resource Limits
 
+**Status:** shipping
+
 **Decision:** A concurrency scheduler separates what CAN run in parallel (DAG topology) from what WILL run in parallel (resource availability). Configurable limits per-agent and globally.
 
 **Why:** The DAG says "4 workstreams can run in parallel" but Claude Max might only support 2 concurrent sessions. Codex might have its own limits. The user's machine might not handle 5 worktrees. The scheduler is a standard job-queue pattern (ready queue → running slots → blocked) with configurable limits that the user sets based on their subscription and hardware.
 
 ## DJ-032: PR-Per-Workstream, Auto-Merge Locally, Human Pushes
+
+**Status:** shipping
 
 **Decision:** Each workstream produces a PR. Locutus reviews and auto-merges PRs to a local feature branch (e.g., `locutus/feature-auth`) without human intervention. Locutus never pushes to remote — the human reviews the accumulated local state and pushes when satisfied.
 
@@ -354,6 +429,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-033: Features Are Human-Initiated, Council-Enriched
 
+**Status:** shipped
+
 **Decision:** The human writes the feature spec (any level of detail). The council enriches it with acceptance criteria, edge cases, entity links, and technical considerations. The human reviews the enriched spec before it drives decisions.
 
 **Why not human-only:** A one-liner prompt ("add auth") should be enough to kick off work. The council can flesh out acceptance criteria and edge cases that the human might not think of. But the human always writes the initial intent.
@@ -363,6 +440,8 @@ Session date: 2026-04-13 to 2026-04-14
 **The enrichment flow:** Human writes feature → planner adds acceptance criteria and edge cases → stakeholder validates it represents user intent → critic checks for gaps → human reviews enriched spec → spec drives decisions and strategies.
 
 ## DJ-034: Quality Strategies for Best Practice Enforcement
+
+**Status:** shipping
 
 **Decision:** Best practices are modeled as a new strategy kind (`quality`, alongside `foundational` and `derived`). Quality strategies are cross-cutting — applied to ALL workstreams by the supervisor, not just one. They carry machine-verifiable assertions (linters, duplication detectors, grep patterns) that the supervisor enforces regardless of whether the agent "remembered" the instruction.
 
@@ -378,6 +457,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-035: LLM-Based Assertions Alongside Deterministic Checks
 
+**Status:** settled
+
 **Decision:** Assertions can be either deterministic (`test_pass`, `contains`, `compiles`, `lint_clean`, etc.) or LLM-based (`llm_review`). Deterministic assertions run first (fast, cheap). LLM review assertions run last (slower, costlier, but catch semantic issues).
 
 **Why not deterministic-only:** Some quality checks require judgment that regex and linters can't provide: "Does this code follow the separation of concerns in the architecture strategy?", "Is the error handling consistent with patterns elsewhere?", "Does this UI match the visual language of the design system?" These are real concerns that agents routinely get wrong, and no heuristic can catch them.
@@ -387,6 +468,8 @@ Session date: 2026-04-13 to 2026-04-14
 **Cost management:** Deterministic assertions short-circuit — if they fail, LLM reviews don't run (fix the cheap failures first). LLM reviews only run on passing code, keeping cost proportional to quality.
 
 ## DJ-036: Council Agents and Workflow DAG Are Externalizable Files
+
+**Status:** shipped
 
 **Decision:** Council agent definitions are YAML frontmatter + markdown body files in `.borg/council/agents/`. The council workflow DAG is `.borg/council/workflow.yaml`. Both are written from embedded defaults at `locutus init` and loaded at runtime. Users can customize without recompiling.
 
@@ -403,6 +486,8 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-037: Convergence Monitor Uses LLM, Not Just Deterministic Checks
 
+**Status:** shipping
+
 **Decision:** The convergence monitor is an LLM call using a cheap/fast model (Haiku-class), not purely deterministic code.
 
 **Why LLM:** Deterministic convergence checks ("did the concerns list change?") can't distinguish between:
@@ -416,6 +501,8 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 
 ## DJ-038: On-Demand Specialist Agents for Plan Fleshing-Out
 
+**Status:** settled
+
 **Decision:** Implementation details (executable acceptance tests, UI descriptions, schema designs) are handled by on-demand specialist agents, not the core planner. Specialists are invoked after the core council converges on structure.
 
 **Specialists:** Test architect (Playwright scripts, Go test skeletons), UI designer (component descriptions from feature specs), schema designer (migrations, proto definitions, API contracts). Users can add custom specialists (security reviewer, accessibility auditor, i18n specialist).
@@ -425,6 +512,8 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 **How they fit:** Core council rounds converge on structure → readiness gate passes → specialist agents flesh out implementation details (1-3 additional LLM calls) → master plan is complete with both architecture and executable detail.
 
 ## DJ-039: Agent Writes Tests, Plan Specifies Criteria (Reverses DJ-017)
+
+**Status:** shipped
 
 **Decision:** The coding agent writes both implementation AND tests. The plan specifies acceptance criteria (WHAT to test, pass/fail conditions). The supervisor validates that tests actually cover the criteria via `llm_review` assertion.
 
@@ -437,6 +526,8 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 
 ## DJ-040: Test-First Workstream Pattern as a Quality Strategy
 
+**Status:** settled
+
 **Decision:** Every workstream must start with defining acceptance tests and conclude with all tests passing. This is a foundational quality strategy enforced structurally by the supervisor — a hard gate, not optional guidance.
 
 **The pattern:** Plan acceptance criteria → first step: agent defines/writes tests → middle steps: agent implements → final step: all tests pass. The supervisor won't mark a workstream as complete until the test gate passes.
@@ -444,6 +535,8 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 **Why a quality strategy, not just an instruction:** Instructions get forgotten. A quality strategy is enforced by the supervisor on every workstream regardless of what the agent does. The test-first pattern is too important to be advisory — it's the primary mechanism for ensuring the result actually works.
 
 ## DJ-041: GOALS.md as Project Root + Issue-Driven Intake
+
+**Status:** shipped
 
 **Decision:** GOALS.md is a human-authored document at the project root that defines project scope, success criteria, and in/out-of-scope boundaries. GitHub issues are automatically evaluated against GOALS.md for intake. Features and bugs are spec artifacts.
 
@@ -463,6 +556,8 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 
 ## DJ-042: Local-Only, No Write-Back to External Issue Trackers
 
+**Status:** shipped
+
 **Decision:** Locutus is local-only. `locutus import <source>` reads an external issue once and creates a local spec artifact. Locutus never writes back. Deep integration with GitHub/Jira/Linear is explicitly deferred.
 
 **Why local-only:**
@@ -478,6 +573,8 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 
 ## DJ-043: Triage Command + CI-Bridge Pattern
 
+**Status:** shipped
+
 **Decision:** Add `locutus triage --input <file> --json` command that evaluates an issue against GOALS.md and outputs a structured JSON verdict (accepted/rejected/duplicate). A thin CI wrapper (GitHub Action) handles the external system interaction on both sides.
 
 **The pattern:** CI fetches issue → pipes to `locutus triage` → reads JSON verdict → acts on external system (comment, label, close). Locutus never calls external APIs, never needs API keys.
@@ -486,6 +583,8 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 
 ## DJ-044: Markdown Input for Triage/Import, Not JSON
 
+**Status:** shipped
+
 **Decision:** The input format for `locutus triage` and `locutus import` is markdown with YAML frontmatter, not JSON. The CI exporter (provider-specific) converts from the external system's format to markdown.
 
 **Why markdown:** Issues are already written in markdown. Markdown carries inline images, Figma links, code blocks, discussion threads — rich content that JSON can't naturally represent. Locutus already has a frontmatter parser. The markdown body becomes the feature/bug `.md` file directly.
@@ -493,6 +592,8 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 **The flow:** External system → provider-specific exporter → markdown+frontmatter → `locutus triage`/`locutus import` → structured JSON verdict (for triage) or local spec artifact (for import). If import is called without prior triage, it runs triage internally and rejects out-of-scope items.
 
 ## DJ-045: Brownfield Includes Gap Analysis and Autonomous Remediation
+
+**Status:** shipping
 
 **Decision:** After inferring the spec from existing code, brownfield runs a gap analysis (missing tests, undocumented decisions, orphan code, missing quality strategies, stale docs) and fills the gaps autonomously with `assumed` decisions and strategies. Same pattern as greenfield — no pause for user input.
 
@@ -504,11 +605,15 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 
 ## DJ-046: Hybrid Remediation — Cross-Cutting + Feature-Specific
 
+**Status:** shipping
+
 **Decision:** Cross-cutting gaps (missing CI, linter config, coverage thresholds) become a single consolidated "project-remediation" feature. Feature-specific gaps (missing auth tests, undocumented auth decisions) attach to their respective features.
 
 **Why hybrid:** Pure consolidation loses the feature-level context ("these missing tests are for auth"). Pure per-feature loses the cross-cutting view ("the project has no CI at all"). Hybrid gives both: the consolidated feature handles infrastructure gaps, individual features handle their own quality gaps.
 
 ## DJ-047: Full Build Order Rewrite — 8 Tiers
+
+**Status:** shipped
 
 **Decision:** Rewrote the entire build order after a comprehensive gap analysis identified ~20 missing pieces across all tiers. Expanded from 6 tiers to 8.
 
@@ -525,6 +630,8 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 
 ## DJ-048: Minimal CLI, MCP as Primary Interface, Headless via --json
 
+**Status:** shipped
+
 **Decision:** CLI is minimal interaction (stdin prompts for revisit, pterm spinners for progress, text output). MCP is the primary interactive interface — supported by VS Code, Claude Code, JetBrains, Cursor, Windsurf, Zed, Gemini CLI, and likely Antigravity. Headless mode via `--json` flag on every command. Rich TUI is a future feature if demanded.
 
 **Why not rich CLI now:** MCP covers all major IDEs via stdio transport. Most users will access Locutus through whatever AI assistant their IDE provides. A rich bubbletea-based TUI would cost 500-1000 LOC, delay shipping, and serve a narrow audience (power terminal users). Start minimal, add later.
@@ -537,6 +644,8 @@ Session date: 2026-04-16 to 2026-04-17 — post-Tier-8 refinements
 
 ## DJ-049: Generic Step Executor Extraction
 
+**Status:** shipped
+
 **Decision:** Extract a generic `internal/executor` package that powers both the planning council workflow and workstream dispatch. Parameterized by a `State` type. Provides dependency-ordered execution, bounded parallelism via semaphores, per-type concurrency limits, snapshot isolation for parallel steps, optional convergence loop, and progress events via channel.
 
 **Why:** The planning council DAG and the Tier 7 dispatch DAG are the same pattern with different payloads. Rather than duplicate coordination logic, extract it once and let callers provide typed state and a `RunStep` function. The planning workflow wraps it as `WorkflowExecutor[PlanningState]`; the dispatcher wraps it as `executor.Executor[dispatchState]`.
@@ -545,11 +654,15 @@ Session date: 2026-04-16 to 2026-04-17 — post-Tier-8 refinements
 
 ## DJ-050: brownfield → assimilation Rename
 
+**Status:** shipped
+
 **Decision:** Rename "brownfield" to "assimilation" throughout the codebase: package names, types (`BrownfieldRequest` → `AssimilationRequest`), enum values (`PlanActionBrownfield` → `PlanActionAssimilation`), comments, and agent definitions.
 
 **Why:** "Brownfield" is enterprise jargon that doesn't fit the Borg theme. "Assimilation" matches the project's naming convention and is more descriptive of what the pipeline actually does — it absorbs an existing codebase into the spec graph.
 
 ## DJ-051: Flat Scaffold Layout
+
+**Status:** shipped
 
 **Decision:** Scaffold structure is flat: `internal/scaffold/agents/` holds all 15 agent definitions; `internal/scaffold/workflows/` holds `planning.yaml` and `assimilation.yaml`. On disk after `locutus init`: `.borg/agents/` and `.borg/workflows/`.
 
@@ -559,6 +672,8 @@ Session date: 2026-04-16 to 2026-04-17 — post-Tier-8 refinements
 
 ## DJ-052: Agent Definitions Are the Prompt Source of Truth
 
+**Status:** shipped
+
 **Decision:** Each agent `.md` file contains the full prompt: identity, context, task, output format, quality criteria, and anti-patterns. Go code in `projection.go`, `convergence.go`, and `supervisor.go` only injects dynamic context (state snapshots, event data) as user messages.
 
 **Why:** Scattered prompt engineering across Go code is hard to iterate on, review, and version. Consolidating prompts in `.md` files makes them: editable by non-developers, diffable in PRs, isolatable for A/B testing, and loadable at runtime (users can customize per-project after `locutus init`).
@@ -566,6 +681,8 @@ Session date: 2026-04-16 to 2026-04-17 — post-Tier-8 refinements
 **Alternatives considered:** Keep prompt fragments in Go code for compile-time safety. Rejected because prompt engineering is iterative content authoring, not programming — locking it in Go tightens feedback loops unnecessarily.
 
 ## DJ-053: Capability Tiers with Multi-Provider Resolution
+
+**Status:** superseded by DJ-067
 
 **Decision:** Agent frontmatter specifies `capability: fast|balanced|strong` instead of a specific model. The capability tier resolves to an actual model at `BuildGenerateRequest` time via configurable mapping. Default mapping uses Anthropic models (Haiku/Sonnet/Opus). Future: discover available providers from env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`) and map tiers to the best available model per provider, possibly via LLM-powered routing for task-specific provider selection.
 
@@ -575,6 +692,8 @@ Session date: 2026-04-16 to 2026-04-17 — post-Tier-8 refinements
 
 ## DJ-054: JSON Schema via Struct Tags and Registry
 
+**Status:** shipped
+
 **Decision:** Agent frontmatter can specify `output_schema: MasterPlan` (or other registered type name). At `BuildGenerateRequest` time, Go reflects the corresponding type and appends a JSON schema to the system prompt. Struct tags (`jsonschema:"description=..."`) provide field-level documentation. A `schemaRegistry` maps type names to example instances.
 
 **Why:** LLMs produce more reliable structured output when given an explicit schema, and descriptions next to fields keep the schema in sync with Go code. The alternative — inlining schemas as Markdown in agent `.md` files — drifts from the Go types over time.
@@ -582,6 +701,8 @@ Session date: 2026-04-16 to 2026-04-17 — post-Tier-8 refinements
 **Pattern:** `github.com/google/jsonschema-go` (already a transitive MCP SDK dependency) handles reflection. Equivalent to Pydantic's `Field(description="...")` in Python.
 
 ## DJ-055: Executor Uses func(any) bool for Step.Conditional, Accepting Generics Leak
+
+**Status:** shipped
 
 **Decision:** `executor.Step.Conditional` has signature `func(state any) bool` even though the executor is generic on `State`. Callers type-assert `state.(*MyState)` in their closures.
 
@@ -591,6 +712,8 @@ Session date: 2026-04-16 to 2026-04-17 — post-Tier-8 refinements
 
 ## DJ-056: Fast-Tier LLM Monitor Replaces Go Heuristic Watchdog
 
+**Status:** shipped
+
 **Decision:** For fuzzy supervision decisions (churn detection, scope drift, stalled progress, invented requirements), use a fast-tier LLM ("Haiku-class") invoked periodically over a sliding event window. Go code handles only mechanical bookkeeping: ring buffer of recent events, cooldown clock between invocations, circuit breaker for repeated errors. No pattern-detection heuristics in Go.
 
 **Why:** Heuristics for "what counts as churn" would always chase edge cases. Coding agents evolve, emit new event patterns, interleave legitimate retries with actual cycles. An LLM observes the pattern in context and adapts without code changes. Tuning happens in the `monitor.md` agent's prompt, not in Go. Cost is bounded by a cooldown (≥10 events between invocations) and a cheap model tier.
@@ -598,6 +721,8 @@ Session date: 2026-04-16 to 2026-04-17 — post-Tier-8 refinements
 **Alternatives considered:** Pure Go heuristics (fragile, high maintenance). Pure LLM on every event (prohibitive cost). Tiered — Go watchdog triggers LLM judgment (still has the heuristic fragility problem). Picked pure periodic LLM because it shifts all judgment to the prompt, which is the right surface for this kind of decision.
 
 ## DJ-057: Permission/Question Routing via Tool-Name Registry, Not Heuristics
+
+**Status:** superseded by DJ-062
 
 **Decision:** `EventPermissionRequest` and `EventClarifyQuestion` are identified by matching the event's tool name against a per-driver registry:
 
@@ -610,6 +735,8 @@ If a driver doesn't support either mechanism, those events simply don't fire for
 
 ## DJ-058: Churn and Retry Are Distinct
 
+**Status:** shipped
+
 **Decision:** Churn and retry are separate supervision phenomena:
 
 - **Retry** is vertical — a new attempt after a failure signal (validation rejected, test failed, timeout). Lives in the outer `Supervisor.Supervise` loop.
@@ -621,6 +748,8 @@ Churn-aborted attempts feed the retry loop with pattern-specific feedback. Two c
 
 ## DJ-059: Streaming Supervision Deferred to Follow-Up Plan
 
+**Status:** superseded by DJ-061
+
 **Decision:** Supervisor currently runs coding agents in batch mode (`CommandRunner` returns `[]byte`). Streaming supervision — NDJSON event loop with mid-attempt churn detection, permission/question routing, MCP progress forwarding — is captured in `.claude/plans/streaming-supervision.md` for execution in a future session.
 
 **Why:** The current batch supervisor works for all existing tests and the 8 tiers as originally specified. Streaming requires ~10 new files, touches every driver, and significantly expands the supervision surface. Better to keep it as a coherent follow-up plan than jam it into the already-large tier sequence.
@@ -628,6 +757,8 @@ Churn-aborted attempts feed the retry loop with pattern-specific feedback. Two c
 **Plan scope includes:** normalized `AgentEvent`, pull-based stream parser per driver, sliding-window LLM monitor, permission/question tool-name registry, MCP progress notifications, heartbeat and size-bomb timeouts for mid-stream detection (belt-and-suspenders with reassembly-based monitor), context-cancellation propagation to kill forked processes.
 
 ## DJ-060: Dispatcher Uses Executor, Steps Within a Workstream Use a For-Loop
+
+**Status:** shipped
 
 **Decision:** The outer workstream DAG uses `executor.Executor[dispatchState]` for dependency ordering, parallel execution, and per-agent concurrency limits. The inner step iteration within a single workstream is a plain `for` loop in `Dispatcher.runWorkstream`.
 
@@ -643,6 +774,8 @@ Session date: 2026-04-17 to 2026-04-18 (streaming supervision build-out)
 
 ## DJ-061: Streaming Supervision Plan Executed End-to-End (Closes DJ-059)
 
+**Status:** shipped
+
 **Decision:** The streaming-supervision plan deferred in DJ-059 shipped across 13 commits. Batch `CommandRunner` signature replaced with `io.ReadCloser`, supervisor's outer loop rewritten around `runAttempt`, NDJSON parser + delta reassembler for Claude Code, fast-tier LLM monitor with ring buffer + cooldown + circuit breaker, MCP permission bridge via a `locutus mcp-perm-bridge` subcommand + Unix socket, MCP progress forwarding through a session-wrapped notifier.
 
 **What actually shipped vs what the plan specified:** All 9 parts closed with real assertions and no `t.Skip`. 61 new tests, entire repo clean under `go test -race -count=1`. Live smoke test against real `claude --output-format stream-json` green end-to-end (~9s via Claude Max OAuth, zero API tokens). The pre-existing batch `Supervise` is removed; streaming is the only supervisory path.
@@ -650,6 +783,8 @@ Session date: 2026-04-17 to 2026-04-18 (streaming supervision build-out)
 **Deferred from the plan:** Codex and Gemini CLI driver fixtures/parsers (need real captures once each provider's auth is configured). The `locutus mcp-perm-bridge` subcommand is built and tested but not yet wired into `ClaudeCodeDriver.BuildCommand` — the supervisor exposes a `permBridge` hook that tests set directly; production wire-up happens when the Dispatcher gets a CLI entry point.
 
 ## DJ-062: Permission Bridge via In-Process MCP Server, Not Stream Parsing (Reverses DJ-057)
+
+**Status:** shipped
 
 **Decision:** Permission events surface via a Unix-socket bridge from an in-process MCP server (`locutus mcp-perm-bridge` subcommand), not by tool-name matching on the agent's public event stream.
 
@@ -663,6 +798,8 @@ Session date: 2026-04-17 to 2026-04-18 (streaming supervision build-out)
 
 ## DJ-063: Sliding-Window Churn Rule over Consecutive Counter (Refines DJ-058)
 
+**Status:** shipped
+
 **Decision:** Escalate to `RefineStep` when ≥2 of the last 3 attempt outcomes are `churnDetected`. Validation-only failures occupy slots in the window without counting as churn.
 
 **Refines DJ-058** (which described a simple `consecutiveChurns` counter incremented on churn and reset on any non-churn outcome). That rule fails on alternating patterns — churn → validation-fail → churn — because the reset on the middle attempt clears the counter even though the step is clearly stuck in a loop.
@@ -673,6 +810,8 @@ Session date: 2026-04-17 to 2026-04-18 (streaming supervision build-out)
 
 ## DJ-064: FastLLM Field Bounds Monitor Cost (Extends DJ-056)
 
+**Status:** shipped
+
 **Decision:** `SupervisorConfig` gains a `FastLLM agent.LLM` field distinct from the strong-tier `LLM`. `Supervisor.monitorCycle` uses `FastLLM`; `Supervisor.validate` and `handleInteraction` use `LLM`. When the monitor agent is configured but `FastLLM` is nil, the supervisor surfaces a clear "FastLLM is nil" error at call time rather than routing monitor prompts through the strong tier.
 
 **Extends DJ-056.** The original plan had the monitor calling `s.cfg.LLM`, which in production would send every monitor cycle through the strong tier — defeating the "bounded cost" property that was DJ-056's whole point. The separate field makes the cost envelope explicit: monitors burn fast-tier tokens, validators/guardians burn strong-tier tokens, and callers who care (most importantly, `Dispatcher`) plumb both through explicitly.
@@ -680,6 +819,8 @@ Session date: 2026-04-17 to 2026-04-18 (streaming supervision build-out)
 **Missing monitor agent behavior:** when `AgentDefs["monitor"]` is unset, `monitorCycle` logs an INFO notice exactly once per supervisor (via `sync.Once`) and returns `IsCycle=false`. Silent disable — validation at attempt end still catches bad outcomes; a one-time log means misconfiguration is discoverable without noise.
 
 ## DJ-065: End-to-End Smoke Test Caught Three Production Bugs That Mock-Only Unit Tests Had Hidden
+
+**Status:** shipped
 
 **Decision:** Between Parts 6 and 7 of the streaming supervision build, paused feature work and wrote a hand-rolled integration test (`internal/dispatch/live_integration_test.go`, gated behind `LOCUTUS_INTEGRATION_TEST=1`) that runs the batch dispatcher against a real Claude Code subprocess on a trivial "create hello.txt" step. The test surfaced three production bugs in the pre-existing Dispatcher path that unit tests had never run into:
 
@@ -695,6 +836,8 @@ Session date: 2026-04-17 to 2026-04-18 (streaming supervision build-out)
 
 ## DJ-066: Genkit Wired with Env-Driven Plugin Auto-Detection (Completes DJ-003)
 
+**Status:** shipped
+
 **Decision:** `internal/agent/genkit.go` no longer stubs. `NewGenKitLLM()` inspects the environment via `DetectProviders()`, registers `github.com/firebase/genkit/go/plugins/anthropic` when `ANTHROPIC_API_KEY` is present and `github.com/firebase/genkit/go/plugins/googlegenai` when `GEMINI_API_KEY` or `GOOGLE_API_KEY` is present, and exposes an `agent.LLM` backed by `genkit.GenerateText`.
 
 **Completes DJ-003.** The original decision committed to Genkit Go as the LLM abstraction layer but left `Generate()` returning `"GenKit LLM provider not yet wired"`. That stub is replaced; the live smoke test (`TestGenKitLLM_LiveSmoke` with `LOCUTUS_INTEGRATION_TEST=1`) hits a real provider through a real API key loaded from `.env`.
@@ -706,6 +849,8 @@ Session date: 2026-04-17 to 2026-04-18 (streaming supervision build-out)
 **Provider prefix required:** Genkit requires `anthropic/...` or `googleai/...` on every model string — it routes by prefix. Model strings without a prefix fall back to the configured default via `GenKitLLM.resolveModel`. Callers can override at three layers: `LOCUTUS_MODEL` env var (global), per-`AgentDef.Model` field (per agent), or `LOCUTUS_MODELS_CONFIG` YAML override (per-project or per-user — see DJ-067).
 
 ## DJ-067: Model Tier Config via Embedded YAML, List-per-Tier Runtime Resolution (Supersedes DJ-053)
+
+**Status:** shipped
 
 **Decision:** Tier → model mapping moves from hardcoded Go maps into an embedded `internal/agent/models.yaml`. Each `CapabilityTier` holds an ordered list of candidate model strings; `ModelConfig.ResolveTier(tier, providers)` walks the list and returns the first entry whose provider prefix is enabled in `DetectedProviders`. List order is the user's preference when multiple providers match.
 
@@ -737,6 +882,8 @@ tiers:
 Session date: 2026-04-20
 
 ## DJ-068: Manifest/State Separation — Kubernetes-Inspired Reconciliation Model
+
+**Status:** shipped
 
 **Decision:** The spec graph (desired state / manifest) and the runtime state store (observed state) are separate concerns. The spec graph is immutable-ish desired state; the state store is a mutable record of what has actually been reconciled.
 
@@ -783,6 +930,8 @@ Only `Approach` nodes have state store entries. `Feature` and `Strategy` nodes d
 - Out-of-repo state store (local SQLite or similar) — rejected in favor of in-repo YAML. In-repo state is diffable, survives repo clones, and participates in the same version control as the spec.
 
 ## DJ-069: DAG Node Type Redesign — Goal / Feature / Strategy / Decision / Approach
+
+**Status:** shipped
 
 **Decision:** Replace the original `Feature → Decision → Strategy → Code` hierarchy with a redesigned DAG: `Goal → (Feature | Strategy) → Decision`, with a new `Approach` node as the synthesis layer handed to coding agents. The `Code` node type is removed entirely.
 
@@ -844,6 +993,8 @@ The same Approach generates different PlanSteps on successive planning runs (bro
 
 ## DJ-070: Node ID Generation — LLM-Derived Kebab-Case Slugs
 
+**Status:** shipped
+
 **Decision:** All spec node IDs (Feature, Strategy, Decision, Approach, Bug, Entity) are kebab-case slugs derived from the node's title by the generating agent at creation time. Sequential counter IDs (e.g., `DEC-001`, `FEAT-003`) are retired for new nodes. Existing nodes with legacy IDs are left untouched — the ID field is a plain string and any value is valid.
 
 **Slug format:**
@@ -874,6 +1025,8 @@ The primary author of spec nodes is the council of LLM agents, not the human. Ha
 **CLAUDE.md count update:** this entry brings the total to 70.
 
 ## DJ-071: Pre-Flight Clarification Protocol — Coding Agent Ambiguity Resolution Before Implementation
+
+**Status:** shipped
 
 **Decision:** Introduce a `pre_flight` phase in the workstream execution lifecycle, sitting between `planned` and `in_progress`. During pre-flight, Locutus presents the Approach Body and PlanSteps to the coding agent in a constrained "clarify only" mode (no implementation). The agent returns a list of ambiguities. Locutus resolves each by consulting the spec graph or making an explicit assumption. All assumptions are recorded as new Decision nodes, which cascade through the spec graph exactly as any other Decision revision would (parent Feature/Strategy rewrites its present-tense statement; dependent Approaches are marked `drifted`). Once all ambiguities are resolved or the round limit is reached, the Approach transitions to `in_progress` and implementation begins.
 
@@ -918,6 +1071,8 @@ Pre-flight is distinct from the existing `RefineStep → ExplicitGuide → Repla
 Session date: 2026-04-21
 
 ## DJ-072: CLI Surface Consolidated to 8-Verb Lifecycle Shape
+
+**Status:** shipped
 
 **Decision:** Replace the 13 enumerative commands that accumulated through Tiers 1–8 (plus post-Tier-8 streaming work) with an 8-verb lifecycle that maps one-to-one to the phases a user actually moves through when operating on a Locutus project.
 
@@ -972,6 +1127,8 @@ The current `adopt` is honest about this scope — it classifies, gates on prere
 Both DJs remain authoritative on the design of the state store, node types, cascade, and pre-flight. Phase C's minimum viable `adopt` is the first implementation increment against them — it validates the schema and classification model but leaves the cascade/pre-flight mechanics for later. Neither DJ is superseded.
 
 ## DJ-073: Active Workstream Persistence for Crash Recovery
+
+**Status:** shipped
 
 **Decision:** Refine DJ-069's "ephemeral PlanStep" claim: the full in-flight dispatch — MasterPlan plus all its ActiveWorkstreams — is **ephemeral at planning time** (not cached between `adopt` invocations; each plan run regenerates the plan tree from the current Approaches + codebase state, per DJ-069's original rationale) but **persistent during execution**. Once the planner hands a MasterPlan to the dispatcher, both the plan itself (for its InterfaceContracts, GlobalAssertions, and workstream dependencies per DJ-027) and each ActiveWorkstream (for its PlanStep DAG, agent session ID, per-step status) are written under `.locutus/workstreams/<plan-id>/` and kept until every Approach the plan covers reaches `live` (archive) or upstream drift invalidates the plan (delete + re-plan).
 
@@ -1048,7 +1205,9 @@ Orphaned workstream records (Approaches removed from the graph while a record st
 
 ## DJ-074: True `--resume` for Interrupted Adoption (Proposed, Not Implemented)
 
-**Status:** Proposal. The current `adopt` invalidates any leftover plan subdirectory from `.locutus/workstreams/` and replans from scratch, even when nothing has drifted. DJ-073's resume-path contract explicitly specifies per-session resume ("Restart the coding agent with `--resume <AgentSessionID>`, skipping PlanSteps already marked complete") but landing that cleanly requires two pieces of plumbing the Phase C MVP skipped. This DJ captures the design so future work can execute it without re-deriving the shape.
+**Status:** settled
+
+The current `adopt` invalidates any leftover plan subdirectory from `.locutus/workstreams/` and replans from scratch, even when nothing has drifted. DJ-073's resume-path contract explicitly specifies per-session resume ("Restart the coding agent with `--resume <AgentSessionID>`, skipping PlanSteps already marked complete") but landing that cleanly requires two pieces of plumbing the Phase C MVP skipped. This DJ captures the design so future work can execute it without re-deriving the shape.
 
 **Decision:** Implement true resume for the DJ-073 "no drift detected" branch with the following components:
 
