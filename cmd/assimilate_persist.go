@@ -54,9 +54,10 @@ func persistAssimilationResult(fsys specio.FS, result *agent.AssimilationResult)
 	if err := persistApproaches(fsys, result.Approaches); err != nil {
 		return err
 	}
-	// Entities are not yet split to their own directory in the scaffold;
-	// skip until the entity store shape is decided (out of scope for
-	// Round 1 — capture as a known gap).
+	// Entities are deliberately NOT persisted per DJ-076. They stay as
+	// in-memory context on AssimilationResult for downstream agents to
+	// consume in the same run; the authoritative schema is the code
+	// itself (Go structs, migrations, protos).
 
 	if err := removeSentinel(fsys); err != nil {
 		return fmt.Errorf("assimilate: remove sentinel: %w", err)
@@ -214,7 +215,9 @@ func loadExistingSpec(fsys specio.FS) *agent.ExistingSpec {
 	}
 	// Approaches are pure markdown.
 	snap.Approaches = loadApproachesFromDir(fsys, ".borg/spec/approaches")
-	// Entities: not yet a separate store; skip.
+	// Entities are not loaded from disk — per DJ-076 they live only in
+	// the transient AssimilationResult and are not persisted. A fresh
+	// assimilate run reconstructs the entity projection from code.
 
 	return snap
 }

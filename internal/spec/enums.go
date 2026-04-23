@@ -92,6 +92,6 @@ const (
 	KindBug      NodeKind = "bug"
 	KindDecision NodeKind = "decision"
 	KindStrategy NodeKind = "strategy"
-	KindEntity   NodeKind = "entity"
+	KindEntity   NodeKind = "entity" // DJ-076: Entity is in-memory context, never persisted; kind value kept for agent output typing.
 	KindApproach NodeKind = "approach"
 )

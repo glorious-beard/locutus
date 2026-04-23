@@ -39,7 +39,12 @@ type ExistingSpec struct {
 	Decisions  []spec.Decision
 	Strategies []spec.Strategy
 	Approaches []spec.Approach
-	Entities   []spec.Entity
+	// Entities is populated by the caller from a prior assimilation run's
+	// in-memory output when available. It is NOT loaded from `.borg/spec/`
+	// (no such directory exists per DJ-076) — if the caller doesn't have
+	// an entity projection handy, this stays nil and the LLM reconstructs
+	// from code on the current run.
+	Entities []spec.Entity
 }
 
 // IsEmpty reports whether the snapshot has any nodes at all. Greenfield
@@ -54,6 +59,12 @@ func (e *ExistingSpec) IsEmpty() bool {
 }
 
 // AssimilationResult holds the full output of assimilation analysis.
+// Entities are included as in-memory context per DJ-076 — downstream
+// agents (planner, supervisor, remediator) consume them for structured
+// domain knowledge, but the persistence layer does NOT write them to
+// `.borg/spec/entities/`. The code (Go structs, migrations, proto
+// files) remains the authoritative schema; Entities here are a working
+// projection of that code for LLM context during the same run.
 type AssimilationResult struct {
 	Features   []spec.Feature
 	Decisions  []spec.Decision

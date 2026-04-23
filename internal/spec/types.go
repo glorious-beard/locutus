@@ -37,7 +37,13 @@ type Strategy struct {
 	InfluencedBy  []string          `json:"influenced_by,omitempty" yaml:"influenced_by,omitempty"`
 }
 
-// Entity represents a domain model entity extracted from the spec.
+// Entity represents a domain model entity extracted from code during
+// assimilation. Per DJ-076 Entity is a context carrier, not a persisted
+// spec node: the assimilation pipeline builds Entities in memory and
+// feeds them to downstream agents (planner, supervisor, remediator) as
+// structured context, but no file is ever written to `.borg/spec/
+// entities/`. The code itself — Go structs, DB migrations, proto
+// definitions — remains the authoritative schema.
 type Entity struct {
 	ID            string         `json:"id" yaml:"id"`
 	Name          string         `json:"name" yaml:"name"`
