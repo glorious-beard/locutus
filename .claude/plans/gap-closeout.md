@@ -187,6 +187,19 @@ Feature/Strategy refines reuse the rewriter agent from cascade. Approach refine 
 
 ~1 session.
 
+### Status
+
+**Shipped 2026-04-24.** `cmd/refine.go` now dispatches by kind:
+
+- Decision → existing `cascade.Cascade` (unchanged).
+- Feature / Strategy / Bug → reverse cascade via exported `cascade.RewriteFeature` / `RewriteStrategy` / new `RewriteBug`; child Approaches marked drifted via exported `cascade.MarkApproachesDrifted`; history event recorded.
+- Approach → new synthesizer agent ([`internal/scaffold/agents/synthesizer.md`](../../internal/scaffold/agents/synthesizer.md)) regenerates `Approach.Body`; the Approach itself is marked drifted for replan.
+- Goals → explicit "goals are human-authored; edit GOALS.md directly" error.
+
+Ambiguity resolutions honored: (a) Feature refine is reverse-cascade per DJ-069's "parent prose is the denormalization" reading; (b) Strategy refine operates on the md body via `RewriteStrategy`; (c) Approach refine uses a dedicated synthesizer rather than a planner step; (d) Goal refine is out of scope per ambiguity 4; (e) Bug refine uses the parent Feature's Decisions as applicable context and reuses the rewriter.
+
+`RefineCmd.Run` now routes through `dispatchRefine`, which is exported to tests so the Goals-not-supported branch can be covered without a full fixture. 12 tests green under `-race -count=1`. Rewriter agent def updated to acknowledge `bug` parent kind and the "no recent-changed Decisions" case (direct refine with no cascade trigger). Historian's `Record` now lazily MkdirAlls the history directory — matches the pattern narrative.go already used in the same package; removed a fixture pre-stage requirement.
+
 ---
 
 ## Round 4: `llm_review` Assertion Kind

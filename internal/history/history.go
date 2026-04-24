@@ -33,11 +33,16 @@ func NewHistorian(fsys specio.FS, dir string) *Historian {
 	return &Historian{fsys: fsys, dir: dir}
 }
 
-// Record persists an event as a JSON file. Filename: dir/eventID.json
+// Record persists an event as a JSON file. Filename: dir/eventID.json.
+// The history directory is created on first write — matches narrative.go's
+// lazy-mkdir pattern, so callers don't need to pre-stage the scaffold.
 func (h *Historian) Record(event Event) error {
 	data, err := json.MarshalIndent(event, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal event %s: %w", event.ID, err)
+	}
+	if err := h.fsys.MkdirAll(h.dir, 0o755); err != nil {
+		return fmt.Errorf("history mkdir %s: %w", h.dir, err)
 	}
 	fp := path.Join(h.dir, event.ID+".json")
 	return h.fsys.WriteFile(fp, data, 0o644)

@@ -81,7 +81,7 @@ func Cascade(
 
 	for _, f := range features {
 		applicable := applicableDecisions(graph, f.Decisions)
-		changed, rationale, err := rewriteFeature(ctx, llm, fsys, f, applicable, []spec.Decision{*dec})
+		changed, rationale, err := RewriteFeature(ctx, llm, fsys, f, applicable, []spec.Decision{*dec})
 		if err != nil {
 			return result, fmt.Errorf("cascade rewrite feature %s: %w", f.ID, err)
 		}
@@ -90,7 +90,7 @@ func Cascade(
 			continue
 		}
 		result.UpdatedFeatures = append(result.UpdatedFeatures, f.ID)
-		if err := markApproachesDrifted(store, f.Approaches, &result.DriftedApproaches); err != nil {
+		if err := MarkApproachesDrifted(store, f.Approaches, &result.DriftedApproaches); err != nil {
 			return result, err
 		}
 		evt := cascadeEvent(decisionID, f.ID, "feature_rewritten", rationale)
@@ -102,7 +102,7 @@ func Cascade(
 
 	for _, s := range strategies {
 		applicable := applicableDecisions(graph, s.Decisions)
-		changed, rationale, err := rewriteStrategy(ctx, llm, fsys, s, applicable, []spec.Decision{*dec})
+		changed, rationale, err := RewriteStrategy(ctx, llm, fsys, s, applicable, []spec.Decision{*dec})
 		if err != nil {
 			return result, fmt.Errorf("cascade rewrite strategy %s: %w", s.ID, err)
 		}
@@ -111,7 +111,7 @@ func Cascade(
 			continue
 		}
 		result.UpdatedStrategies = append(result.UpdatedStrategies, s.ID)
-		if err := markApproachesDrifted(store, s.Approaches, &result.DriftedApproaches); err != nil {
+		if err := MarkApproachesDrifted(store, s.Approaches, &result.DriftedApproaches); err != nil {
 			return result, err
 		}
 		evt := cascadeEvent(decisionID, s.ID, "strategy_rewritten", rationale)
@@ -168,9 +168,10 @@ func applicableDecisions(g *spec.SpecGraph, ids []string) []spec.Decision {
 	return out
 }
 
-// rewriteFeature calls the rewriter agent for a Feature and, when it
-// reports a change, saves the updated body to the spec store.
-func rewriteFeature(
+// RewriteFeature calls the rewriter agent for a Feature and, when it
+// reports a change, saves the updated body to the spec store. Exported so
+// `refine` can reuse the same mechanism for non-Decision-driven rewrites.
+func RewriteFeature(
 	ctx context.Context,
 	llm agent.LLM,
 	fsys specio.FS,
@@ -192,11 +193,11 @@ func rewriteFeature(
 	return true, result.Rationale, nil
 }
 
-// rewriteStrategy does the same for a Strategy. Strategies don't carry a
+// RewriteStrategy does the same for a Strategy. Strategies don't carry a
 // Description field; their prose is stored in the markdown body of the
 // .md companion. We round-trip through SavePair which writes both the JSON
 // and the body.
-func rewriteStrategy(
+func RewriteStrategy(
 	ctx context.Context,
 	llm agent.LLM,
 	fsys specio.FS,
@@ -213,6 +214,32 @@ func rewriteStrategy(
 	}
 	if err := specio.SavePair(fsys, ".borg/spec/strategies/"+s.ID, s, result.RevisedBody); err != nil {
 		return false, "", fmt.Errorf("save strategy: %w", err)
+	}
+	return true, result.Rationale, nil
+}
+
+// RewriteBug rewrites a Bug's Description using the same rewriter agent as
+// Feature/Strategy. Bugs have no Decisions field of their own — callers
+// pass the parent Feature's Decisions as `applicable`. RootCause and
+// FixPlan are incident-diagnosis fields and are left untouched.
+func RewriteBug(
+	ctx context.Context,
+	llm agent.LLM,
+	fsys specio.FS,
+	b spec.Bug,
+	applicable, changed []spec.Decision,
+) (bool, string, error) {
+	result, err := invokeRewriter(ctx, llm, "bug", b.ID, b.Title, b.Description, applicable, changed)
+	if err != nil {
+		return false, "", err
+	}
+	if !result.Changed || strings.TrimSpace(result.RevisedBody) == strings.TrimSpace(b.Description) {
+		return false, result.Rationale, nil
+	}
+	b.Description = result.RevisedBody
+	b.UpdatedAt = time.Now()
+	if err := specio.SavePair(fsys, ".borg/spec/bugs/"+b.ID, b, result.RevisedBody); err != nil {
+		return false, "", fmt.Errorf("save bug: %w", err)
 	}
 	return true, result.Rationale, nil
 }
@@ -258,10 +285,11 @@ func invokeRewriter(
 	return &out, nil
 }
 
-// markApproachesDrifted zeroes the stored SpecHash for each Approach (and
+// MarkApproachesDrifted zeroes the stored SpecHash for each Approach (and
 // clears stale plan pointers per DJ-072) so the next adopt classification
-// routes it through drifted → planned.
-func markApproachesDrifted(store *state.FileStateStore, approachIDs []string, out *[]string) error {
+// routes it through drifted → planned. Exported for `refine`, which marks
+// child Approaches drifted on non-Decision rewrites.
+func MarkApproachesDrifted(store *state.FileStateStore, approachIDs []string, out *[]string) error {
 	for _, id := range approachIDs {
 		existing, err := store.Load(id)
 		if err != nil {
