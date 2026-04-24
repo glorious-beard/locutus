@@ -52,6 +52,26 @@ func (o *OSFS) WriteFile(name string, data []byte, perm os.FileMode) error {
 	return os.WriteFile(o.resolve(name), data, perm)
 }
 
+// AppendFile appends data to the named file (relative to the base directory),
+// creating it if necessary. Uses O_APPEND + fsync so the tail survives a
+// crash — callers relying on append-only semantics (e.g. internal/session)
+// depend on this.
+func (o *OSFS) AppendFile(name string, data []byte) error {
+	f, err := os.OpenFile(o.resolve(name), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 // MkdirAll creates a directory path relative to the base directory.
 func (o *OSFS) MkdirAll(path string, perm os.FileMode) error {
 	return os.MkdirAll(o.resolve(path), perm)

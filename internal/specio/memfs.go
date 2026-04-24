@@ -63,6 +63,24 @@ func (m *MemFS) WriteFile(name string, data []byte, _ os.FileMode) error {
 	return nil
 }
 
+// AppendFile concatenates data onto the named file, creating it if needed.
+// The existing prefix is preserved byte-for-byte so append-only consumers
+// (e.g. internal/session) can rely on the same invariant the OS-backed FS
+// provides via O_APPEND.
+func (m *MemFS) AppendFile(name string, data []byte) error {
+	name = cleanPath(name)
+	dir := path.Dir(name)
+	if dir != "." && !m.dirs[dir] {
+		return &fs.PathError{Op: "append", Path: name, Err: fs.ErrNotExist}
+	}
+	existing := m.files[name]
+	combined := make([]byte, 0, len(existing)+len(data))
+	combined = append(combined, existing...)
+	combined = append(combined, data...)
+	m.files[name] = combined
+	return nil
+}
+
 // MkdirAll creates a directory path (and all parents).
 func (m *MemFS) MkdirAll(p string, _ os.FileMode) error {
 	p = cleanPath(p)
