@@ -6,6 +6,9 @@ require (
 	github.com/alecthomas/kong v1.15.0
 	github.com/creativeprojects/go-selfupdate v1.5.2
 	github.com/dominikbraun/graph v0.23.0
+	github.com/firebase/genkit/go v1.6.1
+	github.com/google/uuid v1.6.0
+	github.com/joho/godotenv v1.5.1
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/pterm/pterm v0.12.83
 	github.com/stretchr/testify v1.11.1
@@ -30,7 +33,6 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/davidmz/go-pageant v1.0.2 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
-	github.com/firebase/genkit/go v1.6.1 // indirect
 	github.com/go-fed/httpsig v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -41,7 +43,6 @@ require (
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.2 // indirect
 	github.com/gookit/color v1.6.0 // indirect
@@ -50,7 +51,6 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
 	github.com/hashicorp/go-version v1.8.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
-	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/lithammer/fuzzysearch v1.1.8 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
 	github.com/mattn/go-runewidth v0.0.20 // indirect

@@ -1,0 +1,27 @@
+Locutus
+Copyright 2025-2026 Chetan Deshpande
+
+This product includes software adapted from third-party projects. The
+adaptations preserve the upstream copyright and license; the Locutus-
+authored code around them is licensed under the MIT License (see LICENSE).
+
+-------------------------------------------------------------------------------
+github.com/google/adk-go  (Apache License 2.0)
+Copyright 2025 Google LLC
+https://github.com/google/adk-go
+
+Adapted portions:
+
+  internal/memory/service.go
+      The two-method Service interface (AddSessionToMemory / SearchMemory),
+      the Entry shape (id, author, timestamp, custom metadata), and the
+      SearchRequest / SearchResponse pair are adapted from adk-go/memory.
+      Locutus scopes entries by Namespace rather than user+app, uses a
+      plain string for Content rather than genai.Content, and treats
+      SearchRequest.Query as a case-insensitive substring predicate.
+
+Governing decisions: DJ-077 (selective ADK adoption), DJ-078 (Locutus
+serialization format and text/template policy).
+
+A copy of the Apache License 2.0 is available at:
+    https://www.apache.org/licenses/LICENSE-2.0

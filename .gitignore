@@ -43,6 +43,11 @@ go.work.sum
 # is mid-dispatch and is deleted on terminal transition or drift-invalidation.
 /.locutus/workstreams/
 
+# Agent memory (DJ-077). Learned context curated by one agent for future
+# agents; transient, not audit material. A fresh clone starts with an empty
+# memory and agents rebuild from project state as needed.
+/.locutus/memory/
+
 # Editor/IDE
 # .idea/
 # .vscode/

@@ -1371,7 +1371,7 @@ Until then, the framing holds: **usage and motivation are the valuable outputs o
 
 **Implications for the gap-closeout plan:**
 
-- **Pre-Round-3 increment (this session):** memory adoption lands as `internal/memory/` with the `memory.Service` shape (adapted). Closes the audit's memory gap ahead of the rounds that would benefit (cascade, preflight, planner, analyst). Tracked in `.claude/plans/gap-closeout-pre-round3-memory.md`.
+- **Pre-Round-3 increment — memory (shipped 2026-04-24):** `internal/memory/` ships the two-method `Service` interface (`AddSessionToMemory` + `SearchMemory`), an `Entry` shape adapted from `adk-go/memory` (string content instead of `genai.Content`, namespace scoping instead of user+app), and two implementations: `NewInMemoryService()` and `NewFileStoreService(fsys, root)` keyed by UUIDv4. Search is case-insensitive substring over `Content` (embedding-backed impl deferred). File layout: `<root>/<namespace>/<uuid>.yaml`, gitignored per DJ-073's transient-learned-state posture. Attribution lives in top-of-file comments and `NOTICE` at the repo root. Tracked in [`.claude/plans/gap-closeout-pre-round3-memory.md`](../.claude/plans/gap-closeout-pre-round3-memory.md).
 - **Round 4 reshape:** `llm_review` assertion rework targets adk-python eval framework rather than a bespoke reviewer agent. Round 4 effort grows (~1 session to ~2) but the result is reusable eval plumbing.
 - **Rounds 3, 5–8:** unchanged in scope; memory primitive becomes available to later rounds as optional input.
 
