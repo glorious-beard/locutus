@@ -110,7 +110,7 @@ func TestDispatchSingleWorkstream(t *testing.T) {
 		Runner:  alwaysPassRunner(),
 	}
 
-	results, err := d.Dispatch(context.Background(), plan, repoDir)
+	results, err := d.Dispatch(context.Background(), plan, repoDir, nil)
 	assert.NoError(t, err)
 	assert.Len(t, results, 1)
 	assert.True(t, results[0].Success, "workstream should succeed")
@@ -136,7 +136,7 @@ func TestDispatchMultipleWorkstreamsParallel(t *testing.T) {
 		MaxTotal:    10,
 	}
 
-	results, err := d.Dispatch(context.Background(), plan, repoDir)
+	results, err := d.Dispatch(context.Background(), plan, repoDir, nil)
 	assert.NoError(t, err)
 	assert.Len(t, results, 2)
 	for _, r := range results {
@@ -182,7 +182,7 @@ func TestDispatchRespectsDependencies(t *testing.T) {
 		Runner:  orderRunner,
 	}
 
-	results, err := d.Dispatch(context.Background(), plan, repoDir)
+	results, err := d.Dispatch(context.Background(), plan, repoDir, nil)
 	assert.NoError(t, err)
 	assert.Len(t, results, 2)
 
@@ -224,7 +224,7 @@ func TestDispatchPerAgentConcurrencyLimit(t *testing.T) {
 		MaxPerAgent: map[string]int{"claude-code": 1},
 	}
 
-	results, err := d.Dispatch(context.Background(), plan, repoDir)
+	results, err := d.Dispatch(context.Background(), plan, repoDir, nil)
 	assert.NoError(t, err)
 	assert.Len(t, results, 3)
 	assert.LessOrEqual(t, int(peak.Load()), 1, "at most 1 claude-code workstream should run at a time")
@@ -246,7 +246,7 @@ func TestDispatchMissingDriver(t *testing.T) {
 		Runner:  alwaysPassRunner(),
 	}
 
-	results, err := d.Dispatch(context.Background(), plan, repoDir)
+	results, err := d.Dispatch(context.Background(), plan, repoDir, nil)
 	// Dispatch itself completes, but the workstream fails.
 	assert.NoError(t, err)
 	assert.Len(t, results, 1)

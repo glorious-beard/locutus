@@ -440,6 +440,41 @@ Per DJ-074:
 
 ~1.5 sessions (biggest remaining round).
 
+### Status
+
+**Phase A + B shipped 2026-04-25; Phase C (resume policy) deferred.**
+
+Phase A — dispatch-layer plumbing (commit `c20604e`):
+
+- `StepOutcome.SessionID` + `WorkstreamResult.AgentSessionID` carry the streaming-driver session ID.
+- `ResumePoint{StepID, SessionID}` describes resume entry.
+- `Supervisor.SuperviseFrom` pre-seeds sessionID into the first attempt.
+- `runWorkstream` accepts `*ResumePoint`: skips earlier steps, uses `BuildRetryCommand` on the first attempt of the resumed step, bases the worktree on `locutus/<ws-id>` instead of HEAD via the new `CreateWorktreeFromBase`.
+- `workstreamHasStep` validates the step ID before any side effects.
+- 8 tests in `internal/dispatch/resume_test.go` cover surfacing, skip-to-step, sessionID pre-seed into BuildRetryCommand, unknown-step error, sessionID propagation to WorkstreamResult.
+
+Phase B — cmd/adopt.go shape (this commit):
+
+- `DispatchFunc` signature grows `resume map[string]*dispatch.ResumePoint`. All call sites updated (production `realDispatch` + 3 test fakes + `internal/dispatch/dispatcher_test.go` + `live_integration_test.go`).
+- `AdoptConfig.DiscardInFlight` and the `--discard-in-flight` CLI flag (DJ-074).
+- `resumeOrInvalidateActivePlans` replaced by `classifyActivePlans` returning a `planClassification{ResumeMap, Invalidated, Archived}`. The shape is the contract Phase C will fulfill; today it preserves the prior always-invalidate behavior.
+- `recordStepProgress` persists `AgentSessionID` on `ActiveWorkstream` so a future adopt invocation can read it from disk.
+
+Phase C — resume policy (deferred):
+
+The actual classifier — drift check against current spec, skip-planner-on-resume, build per-workstream ResumePoint from StepStatus — is the remaining work. The plumbing is complete; what's missing is the policy decision logic that picks resume vs invalidate per leftover plan and the branching in `RunAdoptWithConfig` to skip planning when resuming. Not in this commit because the logic deserves its own focused pass with the resume-flow tests (`TestAdoptResumesNonDriftedPlan`, `TestAdoptDiscardInFlightForceFlag`).
+
+DJ-074 stays at `settled` until Phase C lands; only then does it flip to `shipped`.
+
+Ambiguity resolutions (Phase A + B):
+
+1. **Plumbing order:** Phase A (capture + skip + driver flag) shipped together as a self-contained refactor; Phase B (consumer) followed.
+2. **Worktree base on resume:** `locutus/<ws-id>` via `CreateWorktreeFromBase`. Missing branch surfaces a clear error rather than silent fallback to HEAD.
+3. **Unsupported drivers:** out of immediate scope — only Claude Code is supported and its `BuildRetryCommand` already issues `--resume <id>`. Codex/Gemini support tracked under DJ-074's "next steps."
+4. **Flag name:** `--discard-in-flight` per DJ-074.
+
+8 new tests in `internal/dispatch/resume_test.go` plus all 23 existing packages green under `-race -count=1`.
+
 ---
 
 ## Round 8: Team-Facing Enforcement (DJ-032 + DJ-038 + DJ-040)

@@ -71,7 +71,7 @@ func fakePlanOneWorkstream(planID, wsID, approachID string) PlanFunc {
 // fakeDispatchSuccess returns a DispatchFunc that reports every workstream
 // as having completed all its steps successfully.
 func fakeDispatchSuccess() DispatchFunc {
-	return func(ctx context.Context, plan *spec.MasterPlan, repoDir string) ([]*dispatch.WorkstreamResult, error) {
+	return func(ctx context.Context, plan *spec.MasterPlan, repoDir string, _ map[string]*dispatch.ResumePoint) ([]*dispatch.WorkstreamResult, error) {
 		out := make([]*dispatch.WorkstreamResult, 0, len(plan.Workstreams))
 		for _, ws := range plan.Workstreams {
 			stepResults := make([]*dispatch.StepOutcome, len(ws.Steps))
@@ -91,7 +91,7 @@ func fakeDispatchSuccess() DispatchFunc {
 // fakeDispatchFailure returns a DispatchFunc that reports every workstream
 // as having dispatch-level failure (agent errored, couldn't complete).
 func fakeDispatchFailure(message string) DispatchFunc {
-	return func(ctx context.Context, plan *spec.MasterPlan, repoDir string) ([]*dispatch.WorkstreamResult, error) {
+	return func(ctx context.Context, plan *spec.MasterPlan, repoDir string, _ map[string]*dispatch.ResumePoint) ([]*dispatch.WorkstreamResult, error) {
 		out := make([]*dispatch.WorkstreamResult, 0, len(plan.Workstreams))
 		for _, ws := range plan.Workstreams {
 			out = append(out, &dispatch.WorkstreamResult{
@@ -259,7 +259,7 @@ func TestRunAdoptDryRunDoesNotDispatch(t *testing.T) {
 		t.Fatalf("dry-run must not invoke planner")
 		return nil, nil
 	})
-	panicDispatch := DispatchFunc(func(context.Context, *spec.MasterPlan, string) ([]*dispatch.WorkstreamResult, error) {
+	panicDispatch := DispatchFunc(func(context.Context, *spec.MasterPlan, string, map[string]*dispatch.ResumePoint) ([]*dispatch.WorkstreamResult, error) {
 		t.Fatalf("dry-run must not invoke dispatcher")
 		return nil, nil
 	})

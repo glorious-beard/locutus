@@ -72,7 +72,7 @@ func TestClaudeCodeLive(t *testing.T) {
 	defer cancel()
 
 	t.Logf("dispatching plan %q against %s", plan.ID, repoDir)
-	results, err := d.Dispatch(ctx, plan, repoDir)
+	results, err := d.Dispatch(ctx, plan, repoDir, nil)
 	require.NoError(t, err, "Dispatch returned error")
 	require.Len(t, results, 1)
 

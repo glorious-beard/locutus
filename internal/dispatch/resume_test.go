@@ -158,6 +158,29 @@ func TestRunWorkstreamResumePreSeedsSessionIDIntoFirstAttempt(t *testing.T) {
 		"first BuildRetryCommand call must receive the persisted sessionID")
 }
 
+// TestStepOutcomeSessionIDPropagatesToWorkstreamResult checks the
+// integration point Phase B persistence depends on: runWorkstream rolls
+// the most recent step's SessionID up to AgentSessionID. recordStepProgress
+// in cmd/adopt.go reads that field and stamps it on ActiveWorkstream.
+func TestStepOutcomeSessionIDPropagatesToWorkstreamResult(t *testing.T) {
+	repoDir := setupDispatchRepo(t)
+	driver := &stepRecordingDriver{id: "claude-code"}
+
+	d := &Dispatcher{
+		LLM:     mockLLMAllPass(10),
+		FastLLM: mockLLMAllPass(10),
+		Drivers: map[string]StreamingDriver{"claude-code": driver},
+		Runner:  alwaysPassRunner(),
+	}
+	ws := makeWorkstream("ws-a", "claude-code", 3)
+	result := d.runWorkstream(context.Background(), ws, repoDir, 1, nil)
+	require.NoError(t, result.Err)
+	assert.Equal(t, "sess-claude-code", result.AgentSessionID)
+	for i, so := range result.StepResults {
+		assert.Equal(t, "sess-claude-code", so.SessionID, "step %d carries sessionID", i)
+	}
+}
+
 func TestRunWorkstreamResumeUnknownStepIDIsError(t *testing.T) {
 	repoDir := setupDispatchRepo(t)
 	driver := &stepRecordingDriver{id: "claude-code"}

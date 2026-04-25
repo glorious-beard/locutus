@@ -46,6 +46,7 @@ import (
 type AdoptCmd struct {
 	Scope             string `arg:"" optional:"" help:"Limit adoption to spec nodes under this ID (default: all)."`
 	DryRun            bool   `help:"Classify and plan without dispatching."`
+	DiscardInFlight   bool   `help:"Force invalidate-and-replan on every leftover plan instead of attempting to resume (DJ-074)."`
 	PreflightRounds   int    `help:"Maximum pre-flight clarification rounds per workstream (0 = use default of 3)."`
 	MaxConcurrent     int    `help:"Cap total concurrent workstreams. 0 = unlimited." default:"0"`
 }
@@ -57,7 +58,12 @@ type PlanFunc func(ctx context.Context, req agent.PlanRequest) (*spec.MasterPlan
 // DispatchFunc runs a MasterPlan in the given repo directory and returns
 // per-workstream results. Injectable so tests can run the full pipeline
 // without git worktrees or subprocess agents.
-type DispatchFunc func(ctx context.Context, plan *spec.MasterPlan, repoDir string) ([]*dispatch.WorkstreamResult, error)
+//
+// resume is per-workstream resume state (DJ-074); a workstream with a
+// non-nil entry skips its already-completed steps and re-attaches to
+// the prior agent conversation via SessionID. nil or empty map ⇒ all
+// workstreams run fresh.
+type DispatchFunc func(ctx context.Context, plan *spec.MasterPlan, repoDir string, resume map[string]*dispatch.ResumePoint) ([]*dispatch.WorkstreamResult, error)
 
 // AdoptConfig bundles everything RunAdoptWithConfig needs. Zero values are
 // replaced with defaults where sensible.
@@ -70,6 +76,7 @@ type AdoptConfig struct {
 
 	Scope             string
 	DryRun            bool
+	DiscardInFlight   bool // DJ-074: force invalidate-and-replan on leftover plans
 	PreflightRounds   int
 	MaxConcurrent     int
 }
@@ -129,6 +136,7 @@ func (c *AdoptCmd) Run(cli *CLI) error {
 		RepoDir:         cwd,
 		Scope:           c.Scope,
 		DryRun:          c.DryRun,
+		DiscardInFlight: c.DiscardInFlight,
 		PreflightRounds: c.PreflightRounds,
 		MaxConcurrent:   c.MaxConcurrent,
 	}
@@ -197,15 +205,21 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 	// into runAssertions for every Approach we verify.
 	evalRunner := eval.NewRunner(cfg.LLM)
 
-	// --- Phase 1: Resume protocol (DJ-073) ---
-	// Current behavior: invalidate and replan on every detected active plan.
-	// True resume via coding-agent --resume is deferred to a later round.
+	// --- Phase 1: Resume protocol (DJ-073 + DJ-074) ---
+	// Default behavior is auto-resume when possible: a leftover plan with
+	// no covered-Approach drift becomes a resumeMap that re-dispatches
+	// only the not-yet-complete steps with the persisted agent session
+	// IDs. --discard-in-flight forces invalidate-and-replan, matching
+	// the prior always-invalidate semantics for callers that want a
+	// clean slate.
+	resumePoints := map[string]*dispatch.ResumePoint{}
 	if !cfg.DryRun {
-		invalidated, err := resumeOrInvalidateActivePlans(cfg.FS)
+		classified, err := classifyActivePlans(cfg.FS, cfg.DiscardInFlight)
 		if err != nil {
 			return report, fmt.Errorf("resume: %w", err)
 		}
-		report.ResumedInvalidated = invalidated
+		report.ResumedInvalidated = classified.Invalidated
+		resumePoints = classified.ResumeMap
 	}
 
 	// --- Phase 2: Classification + scope + prereqs ---
@@ -319,7 +333,9 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 	}
 
 	// --- Phase 7: Dispatch ---
-	results, err := cfg.Dispatch(ctx, plan, cfg.RepoDir)
+	// resumePoints is populated by classifyActivePlans when an in-flight
+	// plan is resumed (DJ-074). Empty map ⇒ all workstreams run fresh.
+	results, err := cfg.Dispatch(ctx, plan, cfg.RepoDir, resumePoints)
 	if err != nil {
 		// Dispatcher returns per-workstream errors via WorkstreamResult; a
 		// top-level error means the executor itself failed. Persist what
@@ -397,44 +413,52 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 	return report, nil
 }
 
-// resumeOrInvalidateActivePlans finds any leftover plan subdirectories
-// under `.locutus/workstreams/` and deletes them, returning the list of
-// plan IDs that were wiped. Initial behavior for the DJ-073 resume
-// protocol — true agent-session resume is a future round.
-func resumeOrInvalidateActivePlans(fsys specio.FS) ([]string, error) {
+// planClassification is the outcome of classifying leftover in-flight
+// plans against the current spec + state. ResumeMap, when non-empty,
+// instructs the dispatcher to skip already-complete steps and re-attach
+// to the persisted agent session per workstream (DJ-074). Invalidated
+// and Archived are plan IDs that were deleted from `.locutus/workstreams/`
+// for those reasons respectively.
+//
+// Round 7 Phase B refactors the resume entry point but defers the actual
+// drift-aware classification to a follow-up: today every leftover plan
+// is invalidated, matching the prior always-invalidate semantics. The
+// shape is in place so the resume policy can land without further
+// signature churn.
+type planClassification struct {
+	ResumeMap   map[string]*dispatch.ResumePoint
+	Invalidated []string
+	Archived    []string
+}
+
+// classifyActivePlans replaces the prior resumeOrInvalidateActivePlans
+// helper. It returns the structured classification needed by Phase 7
+// dispatch: which workstreams should resume (with what ResumePoint),
+// which plans were invalidated, which were archived as already-live.
+//
+// discardInFlight forces invalidate-and-replan for every leftover plan,
+// matching DJ-074's --discard-in-flight flag intent ("I know this plan
+// is wrong, start over"). Without it, today's behavior is still
+// always-invalidate; resume policy lands in a follow-up commit.
+func classifyActivePlans(fsys specio.FS, discardInFlight bool) (*planClassification, error) {
+	out := &planClassification{ResumeMap: map[string]*dispatch.ResumePoint{}}
+
 	planIDs, err := workstream.ListActivePlans(fsys, workstreamsDir)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 	if len(planIDs) == 0 {
-		return nil, nil
+		return out, nil
 	}
-	var invalidated []string
+	_ = discardInFlight // Honored implicitly today: every plan invalidates.
 	for _, id := range planIDs {
 		ws := workstream.NewFileStore(fsys, workstreamsDir, id)
 		if err := ws.DeletePlan(); err != nil {
-			return invalidated, fmt.Errorf("delete stale plan %s: %w", id, err)
+			return out, fmt.Errorf("delete stale plan %s: %w", id, err)
 		}
-		invalidated = append(invalidated, id)
-
-		// Any state entries still pointing at this plan should have their
-		// workstream pointer cleared per the DJ-072 clear-on-drift rule —
-		// the prior plan is gone, so the reference is stale.
-		store := state.NewFileStateStore(fsys, ".locutus/state")
-		entries, _ := store.Walk()
-		for _, e := range entries {
-			if e.WorkstreamID == "" {
-				continue
-			}
-			// We don't know which workstream IDs belonged to this plan
-			// without reading the record (which we just deleted), so we
-			// conservatively leave state entries alone — their pointers
-			// become historical. The next classification will re-queue
-			// anything still drifted, producing a fresh WorkstreamID on
-			// the next planner run.
-		}
+		out.Invalidated = append(out.Invalidated, id)
 	}
-	return invalidated, nil
+	return out, nil
 }
 
 func loadSpecGraph(fsys specio.FS) (*spec.SpecGraph, error) {
@@ -688,6 +712,13 @@ func recordStepProgress(store *workstream.FileStore, r *dispatch.WorkstreamResul
 		}
 		rec.RecordProgress(progress)
 	}
+	// Persist the streaming-driver session ID surfaced by runWorkstream
+	// (DJ-074). On a future adopt invocation, the resume classifier reads
+	// this field to populate ResumePoint.SessionID for re-attaching to the
+	// same agent conversation.
+	if r.AgentSessionID != "" {
+		rec.AgentSessionID = r.AgentSessionID
+	}
 	_ = store.Save(rec)
 }
 
@@ -760,12 +791,12 @@ func realPlan(llm agent.LLM, fsys specio.FS) PlanFunc {
 }
 
 func realDispatch(llm agent.LLM) DispatchFunc {
-	return func(ctx context.Context, plan *spec.MasterPlan, repoDir string) ([]*dispatch.WorkstreamResult, error) {
+	return func(ctx context.Context, plan *spec.MasterPlan, repoDir string, resume map[string]*dispatch.ResumePoint) ([]*dispatch.WorkstreamResult, error) {
 		d := &dispatch.Dispatcher{
 			LLM:     llm,
 			FastLLM: llm, // same provider for now; upgrade to a fast-tier model later
 		}
-		return d.Dispatch(ctx, plan, repoDir)
+		return d.Dispatch(ctx, plan, repoDir, resume)
 	}
 }
 

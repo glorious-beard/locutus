@@ -91,7 +91,7 @@ type dispatchState struct {
 
 // Dispatch runs all workstreams in the plan, respecting DependsOn edges and
 // concurrency limits. Returns a WorkstreamResult for each workstream.
-func (d *Dispatcher) Dispatch(ctx context.Context, plan *spec.MasterPlan, repoDir string) ([]*WorkstreamResult, error) {
+func (d *Dispatcher) Dispatch(ctx context.Context, plan *spec.MasterPlan, repoDir string, resume map[string]*ResumePoint) ([]*WorkstreamResult, error) {
 	if plan == nil {
 		return nil, fmt.Errorf("dispatch: plan is nil")
 	}
@@ -132,7 +132,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, plan *spec.MasterPlan, repoDi
 		Steps: dagSteps,
 		RunStep: func(ctx context.Context, step executor.Step, _ dispatchState) (executor.StepResult, error) {
 			ws := wsLookup[step.ID]
-			result := d.runWorkstream(ctx, ws, repoDir, maxRetries, nil)
+			var resumeFrom *ResumePoint
+			if resume != nil {
+				resumeFrom = resume[ws.ID]
+			}
+			result := d.runWorkstream(ctx, ws, repoDir, maxRetries, resumeFrom)
 			return executor.StepResult{Output: result}, nil // never error — per-workstream failures captured in result
 		},
 		Merge: func(s *dispatchState, r executor.StepResult) {
