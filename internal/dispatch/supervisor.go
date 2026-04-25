@@ -49,11 +49,16 @@ type SupervisorConfig struct {
 }
 
 // StepOutcome is the result of supervising a step.
+//
+// SessionID is the streaming-driver conversation ID surfaced from the
+// last attempt's event feed. Captured here so runWorkstream can roll it
+// up into WorkstreamResult.AgentSessionID for adopt to persist (DJ-074).
 type StepOutcome struct {
 	Success    bool
 	Attempts   int
 	Files      []string
 	Escalation string
+	SessionID  string
 }
 
 // Supervisor orchestrates the retry-and-validate loop for a plan step.
@@ -108,6 +113,20 @@ func NewSupervisor(cfg SupervisorConfig, runner CommandRunner) *Supervisor {
 // in churn, the step is escalated to RefineStep — repeated cycling
 // suggests the step itself is ill-posed, not the implementation.
 func (s *Supervisor) Supervise(ctx context.Context, step spec.PlanStep, driver StreamingDriver, workDir string) (*StepOutcome, error) {
+	return s.superviseImpl(ctx, step, driver, workDir, "")
+}
+
+// SuperviseFrom is the resume-aware variant of Supervise. When
+// initialSessionID is non-empty, the first attempt re-attaches to the
+// prior agent conversation via the streaming driver's
+// BuildRetryCommand path (which translates to `--resume <id>` for
+// drivers that support it). Used by runWorkstream when DJ-074 resume
+// is in effect; equivalent to Supervise when initialSessionID is empty.
+func (s *Supervisor) SuperviseFrom(ctx context.Context, step spec.PlanStep, driver StreamingDriver, workDir, initialSessionID string) (*StepOutcome, error) {
+	return s.superviseImpl(ctx, step, driver, workDir, initialSessionID)
+}
+
+func (s *Supervisor) superviseImpl(ctx context.Context, step spec.PlanStep, driver StreamingDriver, workDir, initialSessionID string) (*StepOutcome, error) {
 	fastRetry := agent.RetryConfig{
 		MaxAttempts: 2,
 		BaseDelay:   500 * time.Millisecond,
@@ -115,7 +134,7 @@ func (s *Supervisor) Supervise(ctx context.Context, step spec.PlanStep, driver S
 	}
 
 	var (
-		sessionID string
+		sessionID = initialSessionID
 		feedback  string
 		outcomes  []outcomeKind
 		lastFiles []string
@@ -146,6 +165,7 @@ func (s *Supervisor) Supervise(ctx context.Context, step spec.PlanStep, driver S
 					Attempts:   attempt,
 					Files:      lastFiles,
 					Escalation: string(EscalateRefineStep),
+					SessionID:  sessionID,
 				}, nil
 			}
 			feedback = fmt.Sprintf(
@@ -172,9 +192,10 @@ func (s *Supervisor) Supervise(ctx context.Context, step spec.PlanStep, driver S
 
 		if isPass(validationResp.Content) {
 			return &StepOutcome{
-				Success:  true,
-				Attempts: attempt,
-				Files:    result.files,
+				Success:   true,
+				Attempts:  attempt,
+				Files:     result.files,
+				SessionID: sessionID,
 			}, nil
 		}
 
@@ -186,9 +207,10 @@ func (s *Supervisor) Supervise(ctx context.Context, step spec.PlanStep, driver S
 	// the churn sliding window already triggered above (which would have
 	// returned before now).
 	return &StepOutcome{
-		Success:  false,
-		Attempts: s.cfg.MaxRetries,
-		Files:    lastFiles,
+		Success:   false,
+		Attempts:  s.cfg.MaxRetries,
+		Files:     lastFiles,
+		SessionID: sessionID,
 	}, nil
 }
 

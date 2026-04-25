@@ -38,18 +38,36 @@ func gitOutput(dir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
-// CreateWorktree creates a new git worktree for the given workstream ID.
-// The worktree is checked out on a scratch branch "locutus-wt/<workstreamID>",
-// distinct from the feature branch "locutus/<workstreamID>" that
-// MergeToFeatureBranch will ultimately land the work on. Using the same
-// name for both would leave the feature branch un-checkout-able in the
-// main repo (git refuses to check out a branch already used by a worktree).
+// CreateWorktree creates a new git worktree for the given workstream ID,
+// based on the current HEAD (typically main). The worktree is checked
+// out on a scratch branch "locutus-wt/<workstreamID>", distinct from the
+// feature branch "locutus/<workstreamID>" that MergeToFeatureBranch will
+// ultimately land the work on. Using the same name for both would leave
+// the feature branch un-checkout-able in the main repo (git refuses to
+// check out a branch already used by a worktree).
 func CreateWorktree(repoDir string, workstreamID string) (*Worktree, error) {
+	return createWorktreeOn(repoDir, workstreamID, "")
+}
+
+// CreateWorktreeFromBase is the resume-aware variant: the new scratch
+// branch is rooted at baseBranch instead of HEAD. Used by DJ-074 resume
+// so the prior run's already-merged steps (which live on
+// "locutus/<workstreamID>") form the starting state. baseBranch must
+// exist; an empty value falls back to HEAD-rooted (same as
+// CreateWorktree).
+func CreateWorktreeFromBase(repoDir, workstreamID, baseBranch string) (*Worktree, error) {
+	return createWorktreeOn(repoDir, workstreamID, baseBranch)
+}
+
+func createWorktreeOn(repoDir, workstreamID, baseBranch string) (*Worktree, error) {
 	branchName := "locutus-wt/" + workstreamID
 	worktreeDir := filepath.Join(os.TempDir(), "locutus-wt-"+workstreamID)
 
-	err := gitCmd(repoDir, "worktree", "add", "-b", branchName, worktreeDir)
-	if err != nil {
+	args := []string{"worktree", "add", "-b", branchName, worktreeDir}
+	if baseBranch != "" {
+		args = append(args, baseBranch)
+	}
+	if err := gitCmd(repoDir, args...); err != nil {
 		return nil, fmt.Errorf("create worktree: %w", err)
 	}
 

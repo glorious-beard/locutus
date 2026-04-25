@@ -56,12 +56,30 @@ type Dispatcher struct {
 }
 
 // WorkstreamResult is the outcome of running a single workstream.
+//
+// AgentSessionID carries the streaming-driver session ID surfaced from
+// the last step's last attempt. The adopt loop persists this on the
+// ActiveWorkstream record (DJ-074) so a subsequent `adopt` invocation
+// can resume an in-flight workstream with --resume <session> against
+// the same agent conversation.
 type WorkstreamResult struct {
-	WorkstreamID string
-	BranchName   string
-	StepResults  []*StepOutcome
-	Success      bool
-	Err          error
+	WorkstreamID   string
+	BranchName     string
+	StepResults    []*StepOutcome
+	AgentSessionID string
+	Success        bool
+	Err            error
+}
+
+// ResumePoint marks where a workstream's execution should pick up on
+// re-dispatch. StepID identifies the first not-yet-complete step in the
+// workstream's persisted progress; SessionID is the streaming-driver
+// conversation ID captured on the prior run, threaded into the resumed
+// step's first attempt so the agent continues the same conversation
+// (Claude Code: `--resume <id>`).
+type ResumePoint struct {
+	StepID    string
+	SessionID string
 }
 
 // dispatchState is the shared state across workstream executions.
@@ -114,7 +132,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, plan *spec.MasterPlan, repoDi
 		Steps: dagSteps,
 		RunStep: func(ctx context.Context, step executor.Step, _ dispatchState) (executor.StepResult, error) {
 			ws := wsLookup[step.ID]
-			result := d.runWorkstream(ctx, ws, repoDir, maxRetries)
+			result := d.runWorkstream(ctx, ws, repoDir, maxRetries, nil)
 			return executor.StepResult{Output: result}, nil // never error — per-workstream failures captured in result
 		},
 		Merge: func(s *dispatchState, r executor.StepResult) {
@@ -137,9 +155,32 @@ func (d *Dispatcher) Dispatch(ctx context.Context, plan *spec.MasterPlan, repoDi
 	return state.results, nil
 }
 
+// workstreamHasStep reports whether ws contains a step with the given ID.
+// Used as an early validation on resume so a stale ResumePoint surfaces
+// before the worktree is created and side effects begin.
+func workstreamHasStep(ws spec.Workstream, stepID string) bool {
+	for _, s := range ws.Steps {
+		if s.ID == stepID {
+			return true
+		}
+	}
+	return false
+}
+
 // runWorkstream executes a single workstream: creates a worktree, routes to
 // the agent, supervises each step, merges on success, cleans up on completion.
-func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repoDir string, maxRetries int) *WorkstreamResult {
+//
+// resumeFrom controls re-entry on a previously-interrupted workstream
+// (DJ-074). When non-nil:
+//   - The worktree is based on the existing `locutus/<ws-id>` feature
+//     branch so the prior run's already-merged step output forms the
+//     starting state, not a fresh main.
+//   - Steps before resumeFrom.StepID are skipped — they're already done.
+//   - The resumed step's first attempt receives resumeFrom.SessionID so
+//     the streaming driver can `--resume <id>` the prior conversation.
+//
+// When nil, the workstream runs fresh from main with no skipping.
+func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repoDir string, maxRetries int, resumeFrom *ResumePoint) *WorkstreamResult {
 	result := &WorkstreamResult{
 		WorkstreamID: ws.ID,
 	}
@@ -151,8 +192,26 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 		return result
 	}
 
-	// Create a worktree for this workstream.
-	wt, err := CreateWorktree(repoDir, ws.ID)
+	// On resume: validate the named step exists before any side effects.
+	if resumeFrom != nil {
+		if !workstreamHasStep(ws, resumeFrom.StepID) {
+			result.Err = fmt.Errorf("resume: step %q not found in workstream %s", resumeFrom.StepID, ws.ID)
+			return result
+		}
+	}
+
+	// Create a worktree for this workstream. On resume, base the
+	// worktree on the existing feature branch so prior steps' merged
+	// work survives.
+	var (
+		wt  *Worktree
+		err error
+	)
+	if resumeFrom != nil {
+		wt, err = CreateWorktreeFromBase(repoDir, ws.ID, "locutus/"+ws.ID)
+	} else {
+		wt, err = CreateWorktree(repoDir, ws.ID)
+	}
 	if err != nil {
 		result.Err = fmt.Errorf("create worktree: %w", err)
 		return result
@@ -174,9 +233,27 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 		ProgressNotifier: d.ProgressNotifier,
 	}, d.Runner)
 
+	skipping := resumeFrom != nil
 	allPassed := true
 	for _, step := range ws.Steps {
-		outcome, err := sup.Supervise(ctx, step, driver, wt.WorktreeDir)
+		// Skip already-completed steps on resume.
+		if skipping {
+			if step.ID != resumeFrom.StepID {
+				continue
+			}
+			skipping = false
+		}
+
+		// Pre-seed sessionID on the first attempt of the resumed step
+		// so the driver issues `--resume <id>` against the prior agent
+		// conversation. Subsequent steps run as fresh conversations
+		// (existing semantics).
+		var initialSessionID string
+		if resumeFrom != nil && step.ID == resumeFrom.StepID {
+			initialSessionID = resumeFrom.SessionID
+		}
+
+		outcome, err := sup.SuperviseFrom(ctx, step, driver, wt.WorktreeDir, initialSessionID)
 		if err != nil {
 			result.Err = fmt.Errorf("step %s: %w", step.ID, err)
 			result.StepResults = append(result.StepResults, outcome)
@@ -188,6 +265,11 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 			allPassed = false
 			break
 		}
+	}
+
+	// Surface the most recent step's session ID for adopt persistence.
+	if n := len(result.StepResults); n > 0 {
+		result.AgentSessionID = result.StepResults[n-1].SessionID
 	}
 
 	if !allPassed {
