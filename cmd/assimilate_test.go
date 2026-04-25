@@ -341,3 +341,56 @@ func TestAssimilateRemediationSkippedWhenNoGaps(t *testing.T) {
 	// CallCount is 5 (scout + 3 analyzers + gap_analyst).
 	assert.Equal(t, 5, llm.CallCount(), "no LLM call for remediator when gaps are empty")
 }
+
+// TestAssimilateRecordsRemediationHistoryEvent confirms that one
+// `remediation_run` history event is written per pass, with summary
+// counts in the rationale. This closes the Round 5 followup
+// (gap-closeout.md ambiguity 3).
+func TestAssimilateRecordsRemediationHistoryEvent(t *testing.T) {
+	fs := setupAssimilateFS(t)
+	llm := mockAssimilationLLMWithGaps()
+
+	_, err := RunAssimilate(context.Background(), llm, fs, true)
+	require.NoError(t, err)
+
+	files, err := fs.ListDir(".borg/history")
+	require.NoError(t, err)
+
+	var found []string
+	for _, f := range files {
+		if !strings.HasSuffix(f, ".json") {
+			continue
+		}
+		data, err := fs.ReadFile(f)
+		require.NoError(t, err)
+		var evt struct {
+			Kind      string `json:"kind"`
+			Rationale string `json:"rationale"`
+		}
+		require.NoError(t, json.Unmarshal(data, &evt))
+		if evt.Kind == "remediation_run" {
+			found = append(found, evt.Rationale)
+		}
+	}
+	require.Len(t, found, 1, "exactly one remediation_run event per pass")
+	assert.Contains(t, found[0], "1 gap")
+	assert.Contains(t, found[0], "1 decisions")
+}
+
+// TestAssimilateNoHistoryEventWithoutRemediation confirms the event is
+// only emitted on an actual remediation pass — no event when
+// --no-remediate is set, no event when there are no gaps.
+func TestAssimilateNoHistoryEventWithoutRemediation(t *testing.T) {
+	fs := setupAssimilateFS(t)
+	llm := mockAssimilationLLMWithGaps()
+
+	_, err := RunAssimilate(context.Background(), llm, fs, false)
+	require.NoError(t, err)
+
+	files, _ := fs.ListDir(".borg/history")
+	for _, f := range files {
+		data, err := fs.ReadFile(f)
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), `"kind": "remediation_run"`, "no event when --no-remediate")
+	}
+}

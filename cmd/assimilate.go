@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/chetan/locutus/internal/agent"
+	"github.com/chetan/locutus/internal/history"
 	"github.com/chetan/locutus/internal/remediate"
 	"github.com/chetan/locutus/internal/specio"
 )
@@ -99,6 +101,7 @@ func RunAssimilate(ctx context.Context, llm agent.LLM, fsys specio.FS, runRemedi
 			return result, fmt.Errorf("assimilation remediate: %w", err)
 		}
 		remediate.ApplyToAssimilation(remResult.Plan, result, existing)
+		recordRemediationRun(fsys, len(result.Gaps), remResult)
 	}
 
 	if err := persistAssimilationResult(fsys, result); err != nil {
@@ -108,3 +111,20 @@ func RunAssimilate(ctx context.Context, llm agent.LLM, fsys specio.FS, runRemedi
 	return result, nil
 }
 
+// recordRemediationRun emits a single history event summarising one
+// remediation pass. Errors are swallowed: history is best-effort and a
+// readOnlyFS wrapper (dry-run) silently drops the write.
+func recordRemediationRun(fsys specio.FS, gapCount int, r *remediate.Result) {
+	if r == nil {
+		return
+	}
+	hist := history.NewHistorian(fsys, ".borg/history")
+	now := time.Now()
+	_ = hist.Record(history.Event{
+		ID:        fmt.Sprintf("evt-remediation-%d", now.UnixNano()),
+		Timestamp: now,
+		Kind:      "remediation_run",
+		Rationale: fmt.Sprintf("Remediated %d gap(s): %d decisions, %d strategies, %d features created; %d features updated.",
+			gapCount, r.DecisionsCreated, r.StrategiesCreated, r.FeaturesCreated, r.FeaturesUpdated),
+	})
+}
