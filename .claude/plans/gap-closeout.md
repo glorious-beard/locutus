@@ -370,6 +370,30 @@ Called in `runPlannerForCandidates` in `cmd/adopt.go` between plan generation an
 
 ~0.5 session.
 
+### Status
+
+**Shipped 2026-04-25.** New package [`internal/overlap/`](../../internal/overlap/) ships `Detect(plan, approachesByID) []Report` and `FormatReports([]Report) string`. The detector unions `PlanStep.ExpectedFiles` and `Approach.ArtifactPaths` so a planner that populates either field has its declared writes counted. Transitive `DependsOn` resolves sequential vs parallel — sequential pairs sharing files is fine. Intra-workstream sharing is allowed.
+
+`cmd/adopt.go:planWithOverlapRetry` wraps `cfg.Plan` in a retry loop. On overlap, the next planner call sees the conflict list embedded in `req.Prompt` under an "Overlap conflicts (must restructure)" section, with explicit resolution paths (merge or `depends_on`). 3 retries cap, then error.
+
+Ambiguity resolutions:
+
+1. **Source of truth for overlap input:** union of `ArtifactPaths ∪ ExpectedFiles`. Defensive against a planner that populates either field. Whether `ExpectedFiles` is supposed to be a strict subset, additive, or free is a separate spec-architecture decision deferred to a future DJ.
+2. **Detection layer:** Go code, not an LLM critic. File-set intersection is mechanical; the planner's retry call (already an LLM) handles the qualitative call about how to resolve.
+3. **Retry budget:** 3.
+
+16 tests green under `-race -count=1`: 10 in `internal/overlap/` (empty-plan, single-workstream, parallel-overlap, sequential-ignored, transitively-sequential-ignored, intra-workstream-allowed, expected-files-union, multiple-shared-sorted, deterministic-pair-order, format-reports) + 6 in `cmd/adopt_overlap_test.go` (no-overlap, succeeds-on-second, sequential-resolution, persistent-error, prompt-augmentation, planner-error-propagation).
+
+**Known followup — agent-shaped file granularity (separate DJ):** the synthesizer (Round 3) and the planner currently allocate file sets without preferring smaller, agent-assignable units. Operating evidence may show that finer-grained files reduce overlap-retry pressure. A future DJ should consider:
+
+- Whether the synthesizer prompt should bias greenfield Approach output toward smaller files when generating `ArtifactPaths`.
+- Whether the planner should similarly prefer smaller per-step `ExpectedFiles` allocations.
+- Whether brownfield assimilation/remediation should **split existing files** toward agent-shaped layouts as a best-practice transformation. Locutus is opinionated and invasive by design (per user); this is a legitimate scope for it.
+
+Out of Round 6 scope; tracked here so we don't lose it.
+
+**DJ-030 status:** flipped from `settled` to `shipped` (plan-time prevention; rebase fallback explicitly deferred).
+
 ---
 
 ## Round 7: True `--resume` (DJ-074)

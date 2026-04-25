@@ -12,6 +12,7 @@ import (
 	"github.com/chetan/locutus/internal/check"
 	"github.com/chetan/locutus/internal/dispatch"
 	"github.com/chetan/locutus/internal/eval"
+	"github.com/chetan/locutus/internal/overlap"
 	"github.com/chetan/locutus/internal/preflight"
 	"github.com/chetan/locutus/internal/reconcile"
 	"github.com/chetan/locutus/internal/spec"
@@ -531,7 +532,62 @@ func runPlannerForCandidates(
 		req.GoalsBody = string(data)
 	}
 
-	return cfg.Plan(ctx, req)
+	approachesByID := make(map[string]spec.Approach, len(deps))
+	for _, d := range deps {
+		if d.Kind == spec.KindApproach {
+			if a := graph.Approach(d.ID); a != nil {
+				approachesByID[d.ID] = *a
+			}
+		}
+	}
+
+	return planWithOverlapRetry(ctx, cfg.Plan, req, approachesByID)
+}
+
+// maxOverlapRetries caps how many times the planner is asked to
+// restructure on file overlap before adopt errors out (DJ-030).
+const maxOverlapRetries = 3
+
+// planWithOverlapRetry runs the planner, checks for inter-workstream file
+// overlap, and on conflict re-asks the planner with the overlap report
+// embedded in the prompt. After maxOverlapRetries unsuccessful attempts,
+// surfaces the persistent overlap as an error so the operator can
+// intervene.
+func planWithOverlapRetry(ctx context.Context, planFn PlanFunc, req agent.PlanRequest, approachesByID map[string]spec.Approach) (*spec.MasterPlan, error) {
+	currentReq := req
+	for attempt := 0; attempt <= maxOverlapRetries; attempt++ {
+		plan, err := planFn(ctx, currentReq)
+		if err != nil {
+			return nil, err
+		}
+		reports := overlap.Detect(plan, approachesByID)
+		if len(reports) == 0 {
+			return plan, nil
+		}
+		if attempt == maxOverlapRetries {
+			return nil, fmt.Errorf(
+				"planner produced overlapping workstreams after %d retries:\n%s",
+				maxOverlapRetries, overlap.FormatReports(reports),
+			)
+		}
+		currentReq = augmentWithOverlapFeedback(currentReq, reports)
+	}
+	// unreachable — loop returns or errors on every iteration
+	return nil, fmt.Errorf("plan retry loop exited unexpectedly")
+}
+
+// augmentWithOverlapFeedback appends an "Overlap conflicts" section to
+// the planner prompt so the next call sees the conflict list. Two valid
+// resolutions are spelled out: merge the conflicting workstreams (single
+// agent session) or add a depends_on edge (sequential execution).
+func augmentWithOverlapFeedback(req agent.PlanRequest, reports []overlap.Report) agent.PlanRequest {
+	req.Prompt += "\n\n## Overlap conflicts (must restructure)\n\n" +
+		"The previous plan produced file overlaps between parallel workstreams. " +
+		"Restructure to eliminate these — either merge the conflicting workstreams " +
+		"into one (so a single agent owns the writes) or add a `depends_on` edge so " +
+		"the workstreams execute sequentially.\n\n" +
+		overlap.FormatReports(reports)
+	return req
 }
 
 // approachesCoveredByWorkstreams computes the unique Approach set each
