@@ -20,6 +20,15 @@ Adapted portions:
       plain string for Content rather than genai.Content, and treats
       SearchRequest.Query as a case-insensitive substring predicate.
 
+  internal/eval/evaluator.go, runner.go, llmjudge.go
+      The Evaluator interface, the EvalCase / EvalMetric separation, and
+      the LLM-as-judge pattern are adapted from google/adk-python's
+      evaluation framework (src/google/adk/evaluation). Locutus drops
+      ADK's EvalSet / Invocation abstractions (those assume a chat-turn
+      runtime Locutus does not have) and keys the Runner's dispatch on
+      spec.AssertionKind rather than evaluator names. The JSON output
+      schema (passed / reasoning / confidence) is Locutus-native.
+
 Governing decisions: DJ-077 (selective ADK adoption), DJ-078 (Locutus
 serialization format and text/template policy).
 

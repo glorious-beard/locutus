@@ -245,6 +245,24 @@ Threaded through `runAssertions` via a new signature that takes `(llm, approach,
 
 ~0.5 session.
 
+### Status
+
+**Shipped 2026-04-24, reshaped per DJ-077.** Original ~0.5-session plan was a narrow `evaluateLLMReview` helper + reviewer.md. Per DJ-077's "commit to the port" reshape, shipped instead as a full evaluation framework — `internal/eval/` with an `Evaluator` interface, `EvalCase`/`EvalMetric` separation, and a `Runner` keyed by `spec.AssertionKind`. MVP evaluator is `LLMJudge` registered for `AssertionKindLLMReview`; future evaluators (safety, latency, multi-judge consensus) bind against new kinds without a switch.
+
+Ambiguity resolutions:
+
+1. New agent `internal/scaffold/agents/llm_judge.md` (not the existing `reviewer.md` — different shape: structured JSON output, narrow per-assertion judge rather than diff-level reviewer; see ambiguity discussion before Round 4 for why).
+2. Prompt triad confirmed: Approach body + assertion `Prompt` + artifact contents per `ArtifactPaths`.
+3. Trust the boolean `passed` directly; `confidence` surfaced but not gated.
+4. No caching for MVP.
+5. Tier: `capability: fast` in the agent def — the per-assertion judgment is meant to be repeatable and quick; if quality issues emerge, upgrade to `balanced` or `strong` per-evaluator.
+6. Per-file size cap: 64 KiB default, configurable via `LLMJudge.ArtifactCapBytes`. Truncation produces a `(file truncated at N bytes; full size M bytes)` marker the judge is instructed to treat as evidence-of-gap, not a free pass.
+7. No `.gitignore` filtering — ignored files are still implementation artifacts; review everything in `ArtifactPaths` per user directive.
+
+`runAssertions` signature grew to `(ctx, approach, repoDir, *eval.Runner, specio.FS)`; the only call site (`cmd/adopt.go:354`) constructs a single `eval.NewRunner(cfg.LLM)` per adopt run and passes it through. The pass-with-note stub for `llm_review` is gone; nil runner / nil LLM surfaces as an explicit failed verdict ("llm_review requires an llm provider; none configured") — DJ-035 intent: absence of a reviewer is not success.
+
+13 tests green under `-race -count=1` (8 in `internal/eval/`, 5 in `cmd/`). Attribution in `NOTICE` for the Evaluator/EvalMetric shape.
+
 ---
 
 ## Round 5: Assimilate → Remediation

@@ -11,6 +11,7 @@ import (
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/check"
 	"github.com/chetan/locutus/internal/dispatch"
+	"github.com/chetan/locutus/internal/eval"
 	"github.com/chetan/locutus/internal/preflight"
 	"github.com/chetan/locutus/internal/reconcile"
 	"github.com/chetan/locutus/internal/spec"
@@ -190,6 +191,11 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 		DryRun: cfg.DryRun,
 	}
 
+	// Eval runner for assertions whose verdict requires an LLM call —
+	// today only `llm_review`. Constructed once per adopt run; passed
+	// into runAssertions for every Approach we verify.
+	evalRunner := eval.NewRunner(cfg.LLM)
+
 	// --- Phase 1: Resume protocol (DJ-073) ---
 	// MVP: invalidate and replan on every detected active plan. True resume
 	// via coding-agent --resume is deferred to a later round.
@@ -351,7 +357,7 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 		// Dispatch succeeded — run assertions for each covered Approach.
 		for _, aid := range coveredIDs {
 			approach := approachesByID[aid]
-			assertionResults := runAssertions(approach.Assertions, cfg.RepoDir)
+			assertionResults := runAssertions(ctx, approach, cfg.RepoDir, evalRunner, cfg.FS)
 			newArtifactHashes := spec.ComputeArtifactHashes(cfg.FS.ReadFile, approach)
 
 			entry, err := store.Load(aid)
