@@ -431,23 +431,27 @@ Session date: 2026-04-13 to 2026-04-14
 
 **Why:** The DAG says "4 workstreams can run in parallel" but Claude Max might only support 2 concurrent sessions. Codex might have its own limits. The user's machine might not handle 5 worktrees. The scheduler is a standard job-queue pattern (ready queue → running slots → blocked) with configurable limits that the user sets based on their subscription and hardware.
 
-## DJ-032: PR-Per-Workstream, Auto-Merge Locally, Human Pushes
+## DJ-032: Commit-Per-Workstream on a Local Feature Branch (Reframed 2026-04-25)
 
-**Status:** shipping
+**Status:** shipped (2026-04-25 reframe)
 
-**Decision:** Each workstream produces a PR. Locutus reviews and auto-merges PRs to a local feature branch (e.g., `locutus/feature-auth`) without human intervention. Locutus never pushes to remote — the human reviews the accumulated local state and pushes when satisfied.
+**Decision:** Each workstream produces commits on a scratch branch (`locutus-wt/<workstream-id>`), then merges into a local feature branch (`locutus/<workstream-id>`) — no PR objects, no automated review hop, no remote push. The human reviews the accumulated local state when work is done (git log, diff, run the app) and pushes when satisfied.
 
-**Why not halt per PR:** A plan with 30 workstreams would require 30 human approvals, killing the DX. The user doesn't want to be interrupted for each workstream — they want the work to flow and to review the final result.
+**Why no PR objects:** Locutus is a local, opinionated tool today. PRs are a team-facing artifact — they exist for review by other humans on a remote-hosted forge (GitHub, GitLab, Gitea). Locutus has only one operator. Creating PRs that no one will look at is waste, and an automated "Locutus reviews its own PR before merging" hop is just code obscuring what's already a pure local merge. The cleanest abstraction is what the dispatcher already does: commit, merge to feature branch, move on.
 
-**Why not auto-push:** Pushing to remote is irreversible (in a team context). The user needs a review point before changes are visible to others. Local auto-merge gives Locutus full autonomy during execution while keeping the user in control of what goes upstream.
+**Why not auto-push:** Pushing to remote is irreversible. The user needs a review point before changes leave the machine. Local auto-merge gives Locutus full autonomy during execution while keeping the user in control of what becomes visible elsewhere.
 
-**The model:**
-- Locutus creates PRs per workstream, reviews them (spec alignment, tests, no stubs), auto-merges to a local branch
-- Work flows continuously — no halts
-- User reviews the accumulated state on the local branch (git log, diff, run the app)
-- User pushes when satisfied, or resets/cherry-picks if something is wrong
+**The model (as implemented):**
 
-**PR review checks:** Acceptance tests pass, spec alignment (files match traces.json), no stubs/TODOs, interface contracts satisfied, auto-generated PR description (which feature, which decisions/strategies, what acceptance criteria).
+- `dispatch.runWorkstream` creates a worktree on `locutus-wt/<ws-id>`, runs the agent, commits the result, then `MergeToFeatureBranch("locutus/<ws-id>")`.
+- Multiple workstreams in a plan each produce their own feature branch.
+- Work flows continuously — no per-workstream human halts.
+- User reviews `git log`, `git diff`, runs the app, decides what to push.
+- User pushes when satisfied, or resets / cherry-picks / amends when not.
+
+**Reframe note (2026-04-25):** the original DJ called this "PR-Per-Workstream" with an implied auto-review hop. That language was aspirational and never reached implementation — the dispatcher always did local commit-and-merge. The new framing aligns vocabulary with reality. The team-facing pivot (real PR creation, automated reviewer agent against the PR diff, structural test-first enforcement at plan time) is **deferred** — see DJ-038, DJ-040, and the gap-closeout plan's Round 8 deferral.
+
+**Scope of "shipped":** the local commit-and-merge mechanism. Quality gates that should fire on the merged feature branch (spec alignment vs. `traces.json`, no-stubs check, interface-contract satisfaction) are tracked separately and run in the verify phase of `adopt`, not as a PR review. If/when Locutus pivots team-facing, those checks become inputs to the PR-level reviewer.
 
 ## DJ-033: Features Are Human-Initiated, Council-Enriched
 
@@ -523,7 +527,9 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 
 ## DJ-038: On-Demand Specialist Agents for Plan Fleshing-Out
 
-**Status:** settled
+**Status:** settled (deferred 2026-04-25 pending team-facing decision)
+
+**Deferral note:** the specialist-agent layer is most valuable when Locutus is producing PRs for human review (test-architect proves tests cover the criteria; UI-designer / schema-designer flesh out detail before review). Locutus's current posture is local commit-per-workstream (DJ-032 reframed) with one operator. Specialists are overhead in that posture — the agent already writes tests (DJ-039) and the human reviews the merged feature branch directly. Reopen this DJ when/if Locutus pivots team-facing.
 
 **Decision:** Implementation details (executable acceptance tests, UI descriptions, schema designs) are handled by on-demand specialist agents, not the core planner. Specialists are invoked after the core council converges on structure.
 
@@ -548,7 +554,9 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 
 ## DJ-040: Test-First Workstream Pattern as a Quality Strategy
 
-**Status:** settled
+**Status:** settled (deferred 2026-04-25 pending team-facing decision)
+
+**Deferral note:** the test-first **structural gate** (a hard plan-time enforcement that every workstream's first step has an assertion describing a failing test) is most valuable when Locutus is producing PRs for human review — it makes review faster and catches "agent skipped tests" failure modes before they ship. In Locutus's current local posture (DJ-032 reframed), test-first is **practiced** (DJ-039: agent writes tests, supervisor's `llm_review` validates coverage) but not **structurally gated** at plan time. The user reviews the merged feature branch directly and can re-run with stricter assertions if a workstream skipped tests. Reopen this DJ when/if Locutus pivots team-facing — the hard gate then earns its keep.
 
 **Decision:** Every workstream must start with defining acceptance tests and conclude with all tests passing. This is a foundational quality strategy enforced structurally by the supervisor — a hard gate, not optional guidance.
 

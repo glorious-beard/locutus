@@ -513,6 +513,17 @@ Depends on decision.
 
 ~2 sessions if pursued. Zero if Locutus stays solo-facing.
 
+### Status
+
+**Deferred 2026-04-25.** User decision: Locutus stays local-facing for now; "team-facing" is ill-defined and not the current target. Concretely:
+
+- **DJ-032 reframed** from "PR-Per-Workstream" to "Commit-Per-Workstream on a Local Feature Branch" and flipped to `shipped`. The dispatcher's actual behavior since the streaming-supervision build has always been local commit-and-merge; the PR vocabulary was aspirational. The team-facing pivot (real PR creation, automated reviewer agent against the PR diff) is gated on a future explicit decision.
+- **DJ-038** (specialist agents) and **DJ-040** (test-first structural gate at plan time) keep `Status: settled` but each gets a dated **deferral note** explaining why they're parked. Both reopen cleanly if Locutus pivots team-facing.
+
+No code changes in this commit — the dispatcher already implements the reframed DJ-032. This is a documentation-alignment commit that closes the gap-closeout plan as fully resolved for the current solo posture.
+
+If Locutus later pivots team-facing (concrete signal: collaborator opens an issue, multi-operator workflow, public release with PR-based contribution model), reopen Round 8 with the original ambiguity list and a fresh effort estimate.
+
 ---
 
 ## Total cost estimate
