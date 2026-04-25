@@ -10,8 +10,7 @@ rounds:
     agent: gap_analyst
     parallel: false
     depends_on: [analyze]
-  - id: remediate
-    agent: remediator
-    parallel: false
-    depends_on: [gaps]
+# Remediation runs OUTSIDE the workflow per Round 5 / DJ-045: cmd/assimilate.go
+# invokes internal/remediate after Analyze returns, applying consolidation +
+# attachment rules that the workflow's blind JSON merge cannot honor.
 max_rounds: 1

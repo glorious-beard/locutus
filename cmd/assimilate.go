@@ -7,13 +7,21 @@ import (
 	"os"
 
 	"github.com/chetan/locutus/internal/agent"
+	"github.com/chetan/locutus/internal/remediate"
 	"github.com/chetan/locutus/internal/specio"
 )
 
 // AssimilateCmd analyzes an existing codebase and produces a spec graph.
 // Formerly named `analyze`; the CLI still accepts the old name via alias.
+//
+// Default behavior is to run remediation (DJ-045 + DJ-046) after the
+// inference pass — the gap_analyst's findings are converted into
+// assumed Decisions, new Strategies, and updated Features in a single
+// atomic write. `--no-remediate` opts out: the report still includes
+// the Gaps list but no remediation writes happen.
 type AssimilateCmd struct {
-	DryRun bool `help:"Run the pipeline but do not write spec files."`
+	DryRun      bool `help:"Run the pipeline but do not write spec files."`
+	NoRemediate bool `help:"Skip the remediation pass; report gaps but do not auto-fill them with assumed Decisions/Strategies/Features."`
 }
 
 func (c *AssimilateCmd) Run(cli *CLI) error {
@@ -36,7 +44,7 @@ func (c *AssimilateCmd) Run(cli *CLI) error {
 		effective = newReadOnlyFS(fsys)
 	}
 
-	result, err := RunAssimilate(context.Background(), llm, effective)
+	result, err := RunAssimilate(context.Background(), llm, effective, !c.NoRemediate)
 	if err != nil {
 		return err
 	}
@@ -56,27 +64,41 @@ func (c *AssimilateCmd) Run(cli *CLI) error {
 // RunAssimilate executes the assimilation analysis pipeline: walks the
 // file inventory, loads the current spec snapshot so the LLM can
 // distinguish new from existing nodes, delegates inference to
-// agent.Analyze, and finally writes the inferred spec back to
-// `.borg/spec/` via a per-file atomic pass. A crash-safety sentinel at
-// `.borg/spec/.assimilating` is present for the duration of the write
-// loop so a crashed prior run is visible to the next invocation.
+// agent.Analyze, optionally runs the remediation pass to fill gaps
+// autonomously (DJ-045 + DJ-046), and finally writes the merged spec
+// back to `.borg/spec/` via a per-file atomic pass. A crash-safety
+// sentinel at `.borg/spec/.assimilating` is present for the duration
+// of the write loop so a crashed prior run is visible to the next
+// invocation.
 //
 // Dry-run is handled by the caller wrapping fsys with readOnlyFS — all
 // writes (including the sentinel) are silently dropped by the wrapper,
 // which preserves the preview semantics without extra branching here.
-func RunAssimilate(ctx context.Context, llm agent.LLM, fsys specio.FS) (*agent.AssimilationResult, error) {
+//
+// remediate=true runs the gap-filling pass; remediate=false leaves
+// inference output untouched and reports gaps without acting on them.
+func RunAssimilate(ctx context.Context, llm agent.LLM, fsys specio.FS, runRemediate bool) (*agent.AssimilationResult, error) {
 	inventory, err := agent.WalkInventory(fsys)
 	if err != nil {
 		return nil, fmt.Errorf("walking inventory: %w", err)
 	}
 
+	existing := loadExistingSpec(fsys)
 	req := agent.AssimilationRequest{
 		Inventory:    inventory,
-		ExistingSpec: loadExistingSpec(fsys),
+		ExistingSpec: existing,
 	}
 	result, err := agent.Analyze(ctx, llm, fsys, req)
 	if err != nil {
 		return nil, fmt.Errorf("assimilation analysis: %w", err)
+	}
+
+	if runRemediate && len(result.Gaps) > 0 {
+		remResult, err := remediate.Remediate(ctx, llm, result.Gaps, existing)
+		if err != nil {
+			return result, fmt.Errorf("assimilation remediate: %w", err)
+		}
+		remediate.ApplyToAssimilation(remResult.Plan, result, existing)
 	}
 
 	if err := persistAssimilationResult(fsys, result); err != nil {

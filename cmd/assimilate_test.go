@@ -34,7 +34,9 @@ func setupAssimilateFS(t *testing.T) *specio.MemFS {
 		fs.WriteFile(".borg/agents/"+id+".md", []byte(content), 0o644)
 	}
 
-	// Assimilation workflow matching embedded workflow.yaml.
+	// Assimilation workflow matching embedded workflow.yaml — remediate
+	// is NOT a workflow round; it runs as a separate pass in
+	// cmd/assimilate after Analyze (Round 5 / DJ-045).
 	fs.WriteFile(".borg/workflows/assimilation.yaml", []byte(`rounds:
   - id: scan
     agent: scout
@@ -47,10 +49,6 @@ func setupAssimilateFS(t *testing.T) *specio.MemFS {
     agent: gap_analyst
     parallel: false
     depends_on: [analyze]
-  - id: remediate
-    agent: remediator
-    parallel: false
-    depends_on: [gaps]
 max_rounds: 1
 `), 0o644)
 
@@ -76,7 +74,7 @@ func TestRunAssimilateProducesSpec(t *testing.T) {
 	fs := setupAssimilateFS(t)
 	llm := mockAssimilationLLM()
 
-	result, err := RunAssimilate(context.Background(), llm, fs)
+	result, err := RunAssimilate(context.Background(), llm, fs, false)
 	assert.NoError(t, err)
 	if !assert.NotNil(t, result) {
 		return
@@ -88,7 +86,7 @@ func TestRunAssimilateMissingConfig(t *testing.T) {
 	fs := specio.NewMemFS()
 	llm := agent.NewMockLLM()
 
-	result, err := RunAssimilate(context.Background(), llm, fs)
+	result, err := RunAssimilate(context.Background(), llm, fs, false)
 	assert.Error(t, err)
 	assert.Nil(t, result)
 }
@@ -124,7 +122,7 @@ func TestRunAssimilatePersistsInferredSpec(t *testing.T) {
 	fs := setupAssimilateFS(t)
 	llm := mockPersistenceLLM()
 
-	result, err := RunAssimilate(context.Background(), llm, fs)
+	result, err := RunAssimilate(context.Background(), llm, fs, false)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -147,7 +145,7 @@ func TestRunAssimilateDryRunDoesNotWrite(t *testing.T) {
 	llm := mockPersistenceLLM()
 
 	ro := newReadOnlyFS(fs)
-	_, err := RunAssimilate(context.Background(), llm, ro)
+	_, err := RunAssimilate(context.Background(), llm, ro, false)
 	require.NoError(t, err)
 
 	// Reads go to the underlying fs; but writes should have been dropped.
@@ -173,7 +171,7 @@ func TestRunAssimilateRespectsExistingSpec(t *testing.T) {
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/features/feat-auth", existing, existing.Description))
 
 	llm := mockPersistenceLLM()
-	_, err := RunAssimilate(context.Background(), llm, fs)
+	_, err := RunAssimilate(context.Background(), llm, fs, false)
 	require.NoError(t, err)
 
 	// Inspect the first prompt sent to the LLM (scout round). Must mention
@@ -200,7 +198,7 @@ func TestRunAssimilateUpdatesExistingNode(t *testing.T) {
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-go", stale, "stale body"))
 
 	llm := mockPersistenceLLM()
-	_, err := RunAssimilate(context.Background(), llm, fs)
+	_, err := RunAssimilate(context.Background(), llm, fs, false)
 	require.NoError(t, err)
 
 	data, err := fs.ReadFile(".borg/spec/decisions/dec-go.json")
@@ -219,7 +217,7 @@ func TestRunAssimilateSentinelCleanup(t *testing.T) {
 	fs := setupAssimilateFS(t)
 	llm := mockPersistenceLLM()
 
-	_, err := RunAssimilate(context.Background(), llm, fs)
+	_, err := RunAssimilate(context.Background(), llm, fs, false)
 	require.NoError(t, err)
 
 	_, err = fs.ReadFile(".borg/spec/.assimilating")
@@ -243,7 +241,7 @@ func TestRunAssimilateInferredStatusDefault(t *testing.T) {
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
 	)
 
-	_, err := RunAssimilate(context.Background(), llm, fs)
+	_, err := RunAssimilate(context.Background(), llm, fs, false)
 	require.NoError(t, err)
 
 	data, err := fs.ReadFile(".borg/spec/features/feat-nostatus.json")
@@ -264,4 +262,82 @@ func callToPromptString(req agent.GenerateRequest) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// mockAssimilationLLMWithGaps scripts an analysis pipeline whose
+// gap_analyst surfaces a non-empty gap, plus a remediator response that
+// emits an assumed Decision filling that gap. Used to verify Round 5
+// integration: with runRemediate=true, the assumed Decision lands in
+// the AssimilationResult and on disk; with runRemediate=false, only
+// the inferred-spec output lands.
+func mockAssimilationLLMWithGaps() *agent.MockLLM {
+	return agent.NewMockLLM(
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"languages":["go"],"frameworks":[],"structure":"single-binary"}`}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[{"id":"d-go","title":"Go backend","status":"inferred","confidence":0.95}],"entities":[]}`}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[],"strategies":[]}`}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[]}`}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"gaps":[{"category":"missing_test_framework","severity":"high","description":"no tests configured"}]}`}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[{"id":"d-testing","title":"Use go test","status":"assumed","rationale":"fills missing_test_framework gap"}]}`}},
+	)
+}
+
+func TestAssimilateRunsRemediationByDefault(t *testing.T) {
+	fs := setupAssimilateFS(t)
+	llm := mockAssimilationLLMWithGaps()
+
+	result, err := RunAssimilate(context.Background(), llm, fs, true)
+	require.NoError(t, err)
+
+	// Result includes both the inferred Decision (d-go) and the
+	// remediator's assumed Decision (d-testing).
+	var ids []string
+	for _, d := range result.Decisions {
+		ids = append(ids, d.ID)
+	}
+	assert.Contains(t, ids, "d-go", "inferred decision retained")
+	assert.Contains(t, ids, "d-testing", "remediator decision merged into result")
+
+	// And persisted to disk.
+	data, err := fs.ReadFile(".borg/spec/decisions/d-testing.json")
+	require.NoError(t, err)
+	var got spec.Decision
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, spec.DecisionStatusAssumed, got.Status)
+}
+
+func TestAssimilateNoRemediateSkipsRemediation(t *testing.T) {
+	fs := setupAssimilateFS(t)
+	llm := mockAssimilationLLMWithGaps()
+
+	result, err := RunAssimilate(context.Background(), llm, fs, false)
+	require.NoError(t, err)
+
+	// Gap is reported in the result but not acted on.
+	require.Len(t, result.Gaps, 1)
+	assert.Equal(t, "missing_test_framework", result.Gaps[0].Category)
+
+	// Remediator's d-testing Decision is NOT in the result.
+	for _, d := range result.Decisions {
+		assert.NotEqual(t, "d-testing", d.ID, "remediator output must not land when --no-remediate")
+	}
+
+	// And NOT on disk.
+	_, err = fs.ReadFile(".borg/spec/decisions/d-testing.json")
+	require.Error(t, err, "no file should be written for the unremediated gap")
+}
+
+func TestAssimilateRemediationSkippedWhenNoGaps(t *testing.T) {
+	fs := setupAssimilateFS(t)
+	// Standard mock — gap_analyst returns no gaps, so even with
+	// runRemediate=true the remediator LLM call is skipped.
+	llm := mockAssimilationLLM()
+
+	result, err := RunAssimilate(context.Background(), llm, fs, true)
+	require.NoError(t, err)
+	assert.Empty(t, result.Gaps)
+
+	// Mock had a 6th scripted response (intended for the remediator),
+	// but it should not have been consumed because gaps were empty.
+	// CallCount is 5 (scout + 3 analyzers + gap_analyst).
+	assert.Equal(t, 5, llm.CallCount(), "no LLM call for remediator when gaps are empty")
 }

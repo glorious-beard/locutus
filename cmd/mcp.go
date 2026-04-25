@@ -147,7 +147,7 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
-		result, err := RunAssimilate(ctx, llm, fsys)
+		result, err := RunAssimilate(ctx, llm, fsys, true)
 		if err != nil {
 			return errorResult(fmt.Sprintf("assimilate failed: %v", err)), nil, nil
 		}

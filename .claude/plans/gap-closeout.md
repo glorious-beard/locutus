@@ -308,6 +308,23 @@ Called from `RunAssimilate` after persistence (Round 1), guarded by a `Remediate
 
 ~1 session. Hard-gated on Round 1.
 
+### Status
+
+**Shipped 2026-04-25.** New package [`internal/remediate/`](../../internal/remediate/) with `Plan`, `FeatureUpdate`, `Result`, and the two functions: `Remediate(ctx, llm, gaps, existing)` invokes the remediator agent with gaps + existing spec context and parses the structured Plan; `ApplyToAssimilation(plan, result, existing)` merges Plan output into the AssimilationResult before persistence. The remediate pass runs **outside** the workflow YAML — the previous in-workflow `remediate` round was removed from [`internal/scaffold/workflows/assimilation.yaml`](../../internal/scaffold/workflows/assimilation.yaml) and the matching test fixture, because `parseAssimilationResults` was merging that round blindly with no consolidation, no attachment, and no opt-out.
+
+Ambiguity resolutions:
+
+1. **Default ON, opt-out via `--no-remediate`** (reversed from the plan's flag-on-opt-in lean per user direction). `RunAssimilate` signature grew a `runRemediate bool` parameter; the only non-test caller (`cmd/mcp.go`) passes `true`.
+2. **Cascade NOT fired after remediation** — caveat noted in DJ-045/046: drift between remediator-authored prose and rewriter voice may surface; if so, follow-up DJ documents the trigger.
+3. **One `remediation_run` history event per pass.** (Deferred to a small follow-up — not in the initial commit; flagged here so we don't lose it.)
+4. Status defaults: Decisions `assumed`, Features `inferred`, Strategies `assumed`/`proposed`. Honored.
+
+11 assimilate tests + 8 remediate tests = 19 tests green under `-race -count=1`. Existing `RunAssimilate` callers in `cmd/assimilate_test.go` (8 sites) and `cmd/mcp.go` updated for the new bool parameter.
+
+**Known followup (cascade drift caveat).** If runtime evidence shows remediator-authored prose drifting from rewriter voice, the fix is to fire cascade selectively on remediator-touched parents. Not addressed in Round 5; revisit on operational signal.
+
+**Known followup (history event).** Per ambiguity 3, we agreed on one `remediation_run` history event per pass with summary counts. Not landed in the initial commit; follow-up commit will add the historian.Record call in `cmd/assimilate.go` after `remediate.Remediate` returns.
+
 ---
 
 ## Round 6: File-Overlap Check at Plan Time (DJ-030)

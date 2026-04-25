@@ -607,7 +607,7 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 
 ## DJ-045: Brownfield Includes Gap Analysis and Autonomous Remediation
 
-**Status:** shipping
+**Status:** shipped (2026-04-25)
 
 **Decision:** After inferring the spec from existing code, brownfield runs a gap analysis (missing tests, undocumented decisions, orphan code, missing quality strategies, stale docs) and fills the gaps autonomously with `assumed` decisions and strategies. Same pattern as greenfield — no pause for user input.
 
@@ -615,15 +615,19 @@ An LLM (even a cheap one) can make these nuanced judgments using its own criteri
 
 **Gap categories:** Missing tests, missing acceptance criteria, undocumented decisions (code implies a choice but no decision is recorded), orphan code (files not traced to any strategy), missing quality strategies (no linter, no CI, no coverage), stale documentation.
 
-**The remediation plan** goes through the council for validation and executes via the normal dispatch/supervision pipeline.
+**Implementation (Round 5, 2026-04-25):** [`internal/remediate/`](../internal/remediate/) ships `Plan` (the remediator agent's structured output with Decisions, Strategies, Features, FeatureUpdates), `Remediate(ctx, llm, gaps, existing) → *Result`, and `ApplyToAssimilation(plan, result, existing)` which merges remediation output into the AssimilationResult before persistence so the existing DJ-075 atomic-write pass writes everything in one go. The remediate pass runs **outside** the workflow YAML — `agent.Analyze`'s `parseAssimilationResults` previously merged the workflow's `remediate` round output blindly, with no consolidation, no attachment, and no opt-out; that round was removed from [`internal/scaffold/workflows/assimilation.yaml`](../internal/scaffold/workflows/assimilation.yaml). `cmd/assimilate.go` calls `remediate.Remediate` after `agent.Analyze` returns, gated by the new `--no-remediate` opt-out flag (default ON per the autonomy posture).
 
 ## DJ-046: Hybrid Remediation — Cross-Cutting + Feature-Specific
 
-**Status:** shipping
+**Status:** shipped (2026-04-25)
 
 **Decision:** Cross-cutting gaps (missing CI, linter config, coverage thresholds) become a single consolidated "project-remediation" feature. Feature-specific gaps (missing auth tests, undocumented auth decisions) attach to their respective features.
 
 **Why hybrid:** Pure consolidation loses the feature-level context ("these missing tests are for auth"). Pure per-feature loses the cross-cutting view ("the project has no CI at all"). Hybrid gives both: the consolidated feature handles infrastructure gaps, individual features handle their own quality gaps.
+
+**Implementation (Round 5, 2026-04-25):** Consolidation and attachment rules live in the [`remediator` agent prompt](../internal/scaffold/agents/remediator.md), not in `internal/remediate/`. The agent is told: cross-cutting quality gaps go under one `f-project-remediation` Feature with separate Decision+Strategy pairs; feature-specific gaps emit a `FeatureUpdate{FeatureID, AddedDecisions}` against the existing Feature. The package code faithfully threads the agent's structured output into the AssimilationResult, pulling existing-spec Features into the result when a `FeatureUpdate` references one, so the persistence pass writes them back with the new Decision references.
+
+**Cascade-skip caveat:** Round 5 ships without firing `cascade.Cascade` after remediation — the remediator writes new Decisions and updates parent Features in coordination, so the resulting prose is consistent by construction. If empirical drift emerges between remediator-authored prose and the rewriter's voice in later runs, revisit; a follow-up DJ would document the trigger.
 
 ## DJ-047: Full Build Order Rewrite — 8 Tiers
 
