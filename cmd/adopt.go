@@ -25,7 +25,7 @@ import (
 // the prereq gate, and exits. Otherwise it invokes the full pipeline:
 //
 //  1. Resume protocol (DJ-073): any in-flight plans under
-//     `.locutus/workstreams/` are inspected. For this round the MVP
+//     `.locutus/workstreams/` are inspected. The current behavior
 //     unconditionally invalidates and replans; true `--resume <session>`
 //     semantics require agent-driver changes that live in a future
 //     round. See DJ-073's "Resume protocol" for the target behaviour.
@@ -197,8 +197,8 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 	evalRunner := eval.NewRunner(cfg.LLM)
 
 	// --- Phase 1: Resume protocol (DJ-073) ---
-	// MVP: invalidate and replan on every detected active plan. True resume
-	// via coding-agent --resume is deferred to a later round.
+	// Current behavior: invalidate and replan on every detected active plan.
+	// True resume via coding-agent --resume is deferred to a later round.
 	if !cfg.DryRun {
 		invalidated, err := resumeOrInvalidateActivePlans(cfg.FS)
 		if err != nil {
@@ -398,8 +398,8 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 
 // resumeOrInvalidateActivePlans finds any leftover plan subdirectories
 // under `.locutus/workstreams/` and deletes them, returning the list of
-// plan IDs that were wiped. MVP behavior for the DJ-073 resume protocol —
-// true agent-session resume is a future round.
+// plan IDs that were wiped. Initial behavior for the DJ-073 resume
+// protocol — true agent-session resume is a future round.
 func resumeOrInvalidateActivePlans(fsys specio.FS) ([]string, error) {
 	planIDs, err := workstream.ListActivePlans(fsys, workstreamsDir)
 	if err != nil {

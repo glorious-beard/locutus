@@ -11,7 +11,7 @@
 // scoping. Cross-namespace queries are allowed by passing an empty
 // Namespace on SearchRequest.
 //
-// Search: MVP is case-insensitive substring match over Entry.Content. The
+// Search: case-insensitive substring match over Entry.Content. The
 // Service shape leaves room for an embedding-backed implementation later.
 //
 // Portions adapted from github.com/google/adk-go/memory (two-method

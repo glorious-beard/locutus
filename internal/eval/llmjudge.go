@@ -18,9 +18,10 @@ const defaultArtifactCapBytes = 64 * 1024
 
 // LLMJudge is an Evaluator that asks an LLM to render a structured
 // pass/fail judgment against the Approach body, the assertion's Prompt,
-// and the artifact contents. It is the MVP evaluator — the first and only
-// one Locutus ships for `llm_review` today. Future evaluators replace or
-// augment it by registering against the same (or a new) AssertionKind.
+// and the artifact contents. It is the built-in evaluator for
+// `llm_review` — the only one Locutus registers by default. Future
+// evaluators replace or augment it by registering against the same (or
+// a new) AssertionKind.
 //
 // Prompt shape adapted from the LLM-as-judge pattern in adk-python's
 // evaluation framework; the JSON-output schema (passed / reasoning /
