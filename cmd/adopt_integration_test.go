@@ -219,14 +219,68 @@ func TestRunAdoptDispatchFailureMarksAllCoveredFailed(t *testing.T) {
 	assert.Equal(t, state.StatusFailed, entry.Status)
 }
 
-func TestRunAdoptInvalidatesStalePlanOnResume(t *testing.T) {
+func TestRunAdoptDiscardInFlightForceInvalidates(t *testing.T) {
+	// Pre-DJ-074 behavior: every leftover plan was invalidated. Now
+	// auto-resume is the default; --discard-in-flight (DiscardInFlight=true)
+	// forces the prior always-invalidate semantics for callers who know
+	// the plan is stale.
 	repoDir, fs, _ := setupIntegrationFixture(t, nil)
 
-	// Pre-seed a stale plan directory as if a previous Locutus died
-	// mid-dispatch.
 	wsStore := workstream.NewFileStore(fs, ".locutus/workstreams", "plan-old")
 	require.NoError(t, wsStore.SavePlan(spec.MasterPlan{ID: "plan-old"}))
 	require.NoError(t, wsStore.Save(workstream.ActiveWorkstream{WorkstreamID: "ws-old", PlanID: "plan-old"}))
+
+	cfg := AdoptConfig{
+		FS:              fs,
+		LLM:             emptyPreflightLLM(2),
+		RepoDir:         repoDir,
+		Plan:            fakePlanOneWorkstream("plan-new", "ws-new", "app-oauth"),
+		Dispatch:        fakeDispatchSuccess(),
+		DiscardInFlight: true,
+	}
+
+	report, err := RunAdoptWithConfig(context.Background(), cfg)
+	require.NoError(t, err)
+
+	assert.Contains(t, report.ResumedInvalidated, "plan-old", "discard-in-flight invalidates regardless of drift")
+
+	activeIDs, err := workstream.ListActivePlans(fs, ".locutus/workstreams")
+	require.NoError(t, err)
+	assert.NotContains(t, activeIDs, "plan-old")
+	assert.NotContains(t, activeIDs, "plan-new")
+	assert.Contains(t, report.Archived, "plan-new")
+}
+
+func TestRunAdoptArchivesAlreadyLivePlan(t *testing.T) {
+	// A leftover plan whose covered Approaches are all StatusLive (and
+	// SpecHash matches) should be archived without reinvoking the
+	// planner — the work's already done.
+	repoDir, fs, _ := setupIntegrationFixture(t, nil)
+
+	// Look up app-oauth from the fixture's spec graph and stamp its
+	// state as live with the current SpecHash so classifyPlanAction
+	// returns "all live → archive".
+	graph, err := loadSpecGraph(fs)
+	require.NoError(t, err)
+	approach := graph.Approach("app-oauth")
+	require.NotNil(t, approach)
+	specHash := spec.ComputeSpecHash(*approach)
+
+	store := state.NewFileStateStore(fs, ".locutus/state")
+	require.NoError(t, store.Save(state.ReconciliationState{
+		ApproachID:     "app-oauth",
+		Status:         state.StatusLive,
+		SpecHash:       specHash,
+		LastReconciled: time.Now(),
+	}))
+
+	wsStore := workstream.NewFileStore(fs, ".locutus/workstreams", "plan-done")
+	require.NoError(t, wsStore.SavePlan(spec.MasterPlan{ID: "plan-done"}))
+	require.NoError(t, wsStore.Save(workstream.ActiveWorkstream{
+		WorkstreamID: "ws-done",
+		PlanID:       "plan-done",
+		ApproachIDs:  []string{"app-oauth"},
+	}))
 
 	cfg := AdoptConfig{
 		FS:       fs,
@@ -239,15 +293,132 @@ func TestRunAdoptInvalidatesStalePlanOnResume(t *testing.T) {
 	report, err := RunAdoptWithConfig(context.Background(), cfg)
 	require.NoError(t, err)
 
-	assert.Contains(t, report.ResumedInvalidated, "plan-old")
+	assert.Contains(t, report.Archived, "plan-done", "all-live plan archived in classifier")
+	assert.NotContains(t, report.ResumedInvalidated, "plan-done")
+}
 
-	// plan-old subdir must be gone.
-	activeIDs, err := workstream.ListActivePlans(fs, ".locutus/workstreams")
+func TestRunAdoptInvalidatesDriftedPlan(t *testing.T) {
+	// A leftover plan whose covered Approach has a SpecHash mismatch
+	// (drift) should be invalidated, not resumed.
+	repoDir, fs, _ := setupIntegrationFixture(t, nil)
+
+	store := state.NewFileStateStore(fs, ".locutus/state")
+	require.NoError(t, store.Save(state.ReconciliationState{
+		ApproachID:     "app-oauth",
+		Status:         state.StatusInProgress,
+		SpecHash:       "stale-hash-from-prior-run",
+		LastReconciled: time.Now(),
+	}))
+
+	wsStore := workstream.NewFileStore(fs, ".locutus/workstreams", "plan-drifted")
+	require.NoError(t, wsStore.SavePlan(spec.MasterPlan{ID: "plan-drifted"}))
+	require.NoError(t, wsStore.Save(workstream.ActiveWorkstream{
+		WorkstreamID:   "ws-drifted",
+		PlanID:         "plan-drifted",
+		ApproachIDs:    []string{"app-oauth"},
+		AgentSessionID: "session-from-prior",
+	}))
+
+	cfg := AdoptConfig{
+		FS:       fs,
+		LLM:      emptyPreflightLLM(2),
+		RepoDir:  repoDir,
+		Plan:     fakePlanOneWorkstream("plan-new", "ws-new", "app-oauth"),
+		Dispatch: fakeDispatchSuccess(),
+	}
+
+	report, err := RunAdoptWithConfig(context.Background(), cfg)
 	require.NoError(t, err)
-	assert.NotContains(t, activeIDs, "plan-old")
-	// plan-new completed and got archived.
-	assert.NotContains(t, activeIDs, "plan-new")
-	assert.Contains(t, report.Archived, "plan-new")
+
+	assert.Contains(t, report.ResumedInvalidated, "plan-drifted", "drift triggers invalidate")
+	assert.NotContains(t, report.Resumed, "plan-drifted")
+}
+
+func TestRunAdoptResumesNonDriftedPlan(t *testing.T) {
+	// A leftover plan whose covered Approaches are all SpecHash-clean
+	// and not yet live, with a persisted AgentSessionID and at least
+	// one not-yet-complete step, should be resumed: planner is NOT
+	// invoked, dispatch is called with a populated resumeMap.
+	repoDir, fs, _ := setupIntegrationFixture(t, nil)
+
+	graph, err := loadSpecGraph(fs)
+	require.NoError(t, err)
+	approach := graph.Approach("app-oauth")
+	require.NotNil(t, approach)
+	specHash := spec.ComputeSpecHash(*approach)
+
+	store := state.NewFileStateStore(fs, ".locutus/state")
+	require.NoError(t, store.Save(state.ReconciliationState{
+		ApproachID:     "app-oauth",
+		Status:         state.StatusInProgress,
+		SpecHash:       specHash,
+		LastReconciled: time.Now(),
+	}))
+
+	resumablePlan := spec.MasterPlan{
+		ID: "plan-resumable",
+		Workstreams: []spec.Workstream{
+			{
+				ID: "ws-resumable",
+				Steps: []spec.PlanStep{
+					{ID: "step-1", ApproachID: "app-oauth"},
+					{ID: "step-2", ApproachID: "app-oauth"},
+				},
+			},
+		},
+	}
+	wsStore := workstream.NewFileStore(fs, ".locutus/workstreams", "plan-resumable")
+	require.NoError(t, wsStore.SavePlan(resumablePlan))
+	require.NoError(t, wsStore.Save(workstream.ActiveWorkstream{
+		WorkstreamID:   "ws-resumable",
+		PlanID:         "plan-resumable",
+		ApproachIDs:    []string{"app-oauth"},
+		Plan:           resumablePlan.Workstreams[0],
+		AgentSessionID: "session-from-prior",
+		StepStatus: []workstream.StepProgress{
+			{StepID: "step-1", Status: workstream.StepComplete},
+		},
+	}))
+
+	// Capture the resumeMap the dispatcher sees so we can verify the
+	// resume path was wired through with the correct ResumePoint.
+	var capturedResume map[string]*dispatch.ResumePoint
+	plannerCalled := false
+
+	cfg := AdoptConfig{
+		FS:      fs,
+		LLM:     emptyPreflightLLM(2),
+		RepoDir: repoDir,
+		Plan: PlanFunc(func(context.Context, agent.PlanRequest) (*spec.MasterPlan, error) {
+			plannerCalled = true
+			return nil, nil
+		}),
+		Dispatch: DispatchFunc(func(_ context.Context, plan *spec.MasterPlan, _ string, resume map[string]*dispatch.ResumePoint) ([]*dispatch.WorkstreamResult, error) {
+			capturedResume = resume
+			out := make([]*dispatch.WorkstreamResult, 0, len(plan.Workstreams))
+			for _, ws := range plan.Workstreams {
+				out = append(out, &dispatch.WorkstreamResult{
+					WorkstreamID: ws.ID,
+					Success:      true,
+					StepResults:  []*dispatch.StepOutcome{{Success: true}},
+				})
+			}
+			return out, nil
+		}),
+	}
+
+	report, err := RunAdoptWithConfig(context.Background(), cfg)
+	require.NoError(t, err)
+
+	assert.False(t, plannerCalled, "resume path must NOT invoke the planner")
+	assert.Contains(t, report.Resumed, "plan-resumable")
+	assert.Equal(t, "plan-resumable", report.PlanID)
+
+	require.NotNil(t, capturedResume)
+	rp, ok := capturedResume["ws-resumable"]
+	require.True(t, ok, "resumeMap must carry ResumePoint for ws-resumable")
+	assert.Equal(t, "step-2", rp.StepID, "resume targets first not-yet-complete step")
+	assert.Equal(t, "session-from-prior", rp.SessionID)
 }
 
 func TestRunAdoptDryRunDoesNotDispatch(t *testing.T) {

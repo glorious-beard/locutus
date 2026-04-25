@@ -442,7 +442,7 @@ Per DJ-074:
 
 ### Status
 
-**Phase A + B shipped 2026-04-25; Phase C (resume policy) deferred.**
+**Shipped 2026-04-25 across three commits (Phase A → Phase B → Phase C).**
 
 Phase A — dispatch-layer plumbing (commit `c20604e`):
 

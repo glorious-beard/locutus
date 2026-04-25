@@ -1229,9 +1229,9 @@ Orphaned workstream records (Approaches removed from the graph while a record st
 - Cross-machine resume. Everything here assumes single-machine execution; distributed resume is a future problem.
 - Concurrent plans. Nothing forbids two overlapping plans in the layout (subdirectories don't collide), but `adopt` doesn't today take a write-lock against another in-flight `adopt`. If that becomes a concern, a lockfile under `.locutus/` is the natural next step.
 
-## DJ-074: True `--resume` for Interrupted Adoption (Proposed, Not Implemented)
+## DJ-074: True `--resume` for Interrupted Adoption
 
-**Status:** settled
+**Status:** shipped (2026-04-25)
 
 The current `adopt` invalidates any leftover plan subdirectory from `.locutus/workstreams/` and replans from scratch, even when nothing has drifted. DJ-073's resume-path contract explicitly specifies per-session resume ("Restart the coding agent with `--resume <AgentSessionID>`, skipping PlanSteps already marked complete") but landing that cleanly requires two pieces of plumbing the Phase C MVP skipped. This DJ captures the design so future work can execute it without re-deriving the shape.
 
@@ -1261,6 +1261,16 @@ The current `adopt` invalidates any leftover plan subdirectory from `.locutus/wo
 - **Interactive prompt on leftover detection.** When `adopt` detects a leftover plan, stop and ask the user `[r]esume, [d]iscard?`. Rejected: `adopt` must remain scriptable. Flags (`--discard-in-flight`) carry the same signal without blocking automation.
 
 **Dependencies & next steps:** Implementing DJ-074 touches `internal/dispatch/supervisor.go` (session-id surfacing), `internal/dispatch/dispatcher.go` (resume-from-step mode), `internal/dispatch/drivers/*` (driver flag), and `cmd/adopt.go` (branching replace). Estimated one focused session if the driver flag work is scoped to Claude Code first and Codex lands as a follow-up.
+
+**Implementation (Round 7, 2026-04-25):** landed in three commits.
+
+- **Phase A** (`c20604e`, dispatch layer): `StepOutcome.SessionID`, `WorkstreamResult.AgentSessionID`, `ResumePoint{StepID, SessionID}`, `Supervisor.SuperviseFrom` (sibling that pre-seeds sessionID), `runWorkstream` accepts `*ResumePoint` (skip-to-step + worktree-from-base via `CreateWorktreeFromBase`), `workstreamHasStep` validates the step ID before any side effects.
+- **Phase B** (`672b33f`, plumbing): `DispatchFunc` and `Dispatcher.Dispatch` signatures grew `resume map[string]*dispatch.ResumePoint`; `AdoptCmd.DiscardInFlight` + `--discard-in-flight` CLI flag; `recordStepProgress` persists `AgentSessionID` on `ActiveWorkstream`.
+- **Phase C** (this commit, policy): `classifyActivePlans` does drift-aware classification — for each leftover plan, walks records, computes current `ComputeSpecHash` for each covered Approach and compares against the persisted state's `SpecHash`. Verdicts: any drift → invalidate; all live → archive; otherwise resume. `RunAdoptWithConfig` now short-circuits to a new `runAdoptDispatchAndVerify` helper when `PlanToResume` is non-nil — the planner is **not** invoked, the persisted plan is used directly, pre-flight is skipped (it ran on the prior invocation). `buildResumePoint` walks each ActiveWorkstream's `StepStatus` and points `ResumePoint.StepID` at the first non-`StepComplete` step with the workstream's persisted `AgentSessionID`. At most one resumable plan per invocation; multiple leftover resumable plans → first wins, rest invalidate.
+
+Driver `--resume` support landed implicitly: Claude Code's existing `BuildRetryCommand` already issues `--resume <id>`, and Phase A wired `SuperviseFrom` to call `BuildRetryCommand` on the resumed step's first attempt. Codex / Gemini support is still deferred per the original DJ scoping.
+
+20 tests across `internal/dispatch/resume_test.go` and `cmd/adopt_integration_test.go` cover: surfacing, skip-to-step, sessionID pre-seed, unknown-step error, sessionID propagation, `--discard-in-flight` force invalidate, archive-when-all-live, invalidate-on-drift, resume-when-clean (planner not called, dispatch sees correct ResumeMap).
 
 ## DJ-075: Assimilate Reads Existing Spec, Writes Back Atomically
 

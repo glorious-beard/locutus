@@ -96,6 +96,7 @@ type AdoptReport struct {
 	PreflightResolutions  []preflight.Resolution   `json:"preflight_resolutions,omitempty"`
 	AssumedDecisions      []string                 `json:"assumed_decisions,omitempty"` // IDs of new assumed Decisions
 	ResumedInvalidated    []string                 `json:"resumed_invalidated,omitempty"` // plan IDs whose prior run was wiped
+	Resumed               []string                 `json:"resumed,omitempty"`             // plan IDs picked up via DJ-074 resume
 	Archived              []string                 `json:"archived,omitempty"`            // plan IDs deleted on terminal transition
 }
 
@@ -205,29 +206,48 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 	// into runAssertions for every Approach we verify.
 	evalRunner := eval.NewRunner(cfg.LLM)
 
-	// --- Phase 1: Resume protocol (DJ-073 + DJ-074) ---
-	// Default behavior is auto-resume when possible: a leftover plan with
-	// no covered-Approach drift becomes a resumeMap that re-dispatches
-	// only the not-yet-complete steps with the persisted agent session
-	// IDs. --discard-in-flight forces invalidate-and-replan, matching
-	// the prior always-invalidate semantics for callers that want a
-	// clean slate.
-	resumePoints := map[string]*dispatch.ResumePoint{}
-	if !cfg.DryRun {
-		classified, err := classifyActivePlans(cfg.FS, cfg.DiscardInFlight)
-		if err != nil {
-			return report, fmt.Errorf("resume: %w", err)
-		}
-		report.ResumedInvalidated = classified.Invalidated
-		resumePoints = classified.ResumeMap
-	}
-
-	// --- Phase 2: Classification + scope + prereqs ---
+	// Load the spec graph + state store first so the resume classifier
+	// (Phase 1) can do drift detection. Both are reused throughout the
+	// rest of the flow.
 	graph, err := loadSpecGraph(cfg.FS)
 	if err != nil {
 		return report, err
 	}
 	store := state.NewFileStateStore(cfg.FS, ".locutus/state")
+
+	// --- Phase 1: Resume protocol (DJ-073 + DJ-074) ---
+	// Default behavior is auto-resume when possible: a leftover plan
+	// with no covered-Approach drift becomes a resumeMap that
+	// re-dispatches only the not-yet-complete steps with the persisted
+	// agent session IDs. A plan whose covered Approaches are all live
+	// is archived. Drift triggers invalidate-and-replan.
+	// --discard-in-flight forces invalidate on every leftover plan.
+	resumePoints := map[string]*dispatch.ResumePoint{}
+	var planToResume *spec.MasterPlan
+	if !cfg.DryRun {
+		classified, err := classifyActivePlans(cfg.FS, cfg.DiscardInFlight, graph, store)
+		if err != nil {
+			return report, fmt.Errorf("resume: %w", err)
+		}
+		report.ResumedInvalidated = classified.Invalidated
+		report.Archived = append(report.Archived, classified.Archived...)
+		resumePoints = classified.ResumeMap
+		planToResume = classified.PlanToResume
+	}
+
+	// --- Resume short-circuit ---
+	// When a leftover plan classified as resumable, skip Phases 2-6
+	// (classification + planning + persistence + pre-flight). The plan
+	// is already on disk; the persisted state has the prior run's
+	// progress; pre-flight already happened. Jump to dispatch with the
+	// resumeMap and let Phase 8 verify the outcome.
+	if planToResume != nil {
+		report.PlanID = planToResume.ID
+		report.Resumed = append(report.Resumed, planToResume.ID)
+		return runAdoptDispatchAndVerify(ctx, cfg, report, graph, store, planToResume, resumePoints, evalRunner)
+	}
+
+	// --- Phase 2: Classification + scope + prereqs ---
 
 	classifications, err := reconcile.Classify(cfg.FS, graph, store)
 	if err != nil {
@@ -332,9 +352,31 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 		}
 	}
 
-	// --- Phase 7: Dispatch ---
-	// resumePoints is populated by classifyActivePlans when an in-flight
-	// plan is resumed (DJ-074). Empty map ⇒ all workstreams run fresh.
+	return runAdoptDispatchAndVerify(ctx, cfg, report, graph, store, plan, resumePoints, evalRunner)
+}
+
+// runAdoptDispatchAndVerify covers Phases 7-9: dispatch the plan,
+// verify assertions per Approach, archive the plan when every
+// workstream reached a terminal state. Both the fresh-adopt and
+// resume paths funnel through here. Caller has already ensured the
+// plan record + per-Approach state entries are in place (either
+// freshly written in Phase 5 or persisted by a prior run we're now
+// resuming). The pre-flight pass (Phase 6) is also caller-owned —
+// resume skips it because the prior run already executed it.
+func runAdoptDispatchAndVerify(
+	ctx context.Context,
+	cfg AdoptConfig,
+	report *AdoptReport,
+	graph *spec.SpecGraph,
+	store *state.FileStateStore,
+	plan *spec.MasterPlan,
+	resumePoints map[string]*dispatch.ResumePoint,
+	evalRunner *eval.Runner,
+) (*AdoptReport, error) {
+	wsStore := workstream.NewFileStore(cfg.FS, workstreamsDir, plan.ID)
+	approachesByWorkstream := approachesCoveredByWorkstreams(plan)
+	approachesByID := indexApproaches(graph)
+
 	results, err := cfg.Dispatch(ctx, plan, cfg.RepoDir, resumePoints)
 	if err != nil {
 		// Dispatcher returns per-workstream errors via WorkstreamResult; a
@@ -344,7 +386,6 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 		return report, fmt.Errorf("dispatch: %w", err)
 	}
 
-	// --- Phase 8: Verify assertions, record StepProgress, flip state ---
 	for _, wsResult := range results {
 		outcome := WorkstreamOutcome{
 			WorkstreamID: wsResult.WorkstreamID,
@@ -355,7 +396,8 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 			outcome.Error = wsResult.Err.Error()
 		}
 
-		// Record per-step progress on the workstream record.
+		// Record per-step progress on the workstream record (and roll
+		// AgentSessionID up for next-run resume per DJ-074).
 		recordStepProgress(wsStore, wsResult)
 
 		coveredIDs := approachesByWorkstream[wsResult.WorkstreamID]
@@ -402,7 +444,7 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 		report.DispatchedWorkstreams = append(report.DispatchedWorkstreams, outcome)
 	}
 
-	// --- Phase 9: Archive on terminal transition ---
+	// Archive on terminal transition.
 	if planIsTerminal(report.DispatchedWorkstreams) {
 		if err := wsStore.DeletePlan(); err != nil {
 			return report, fmt.Errorf("archive plan %s: %w", plan.ID, err)
@@ -414,33 +456,38 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 }
 
 // planClassification is the outcome of classifying leftover in-flight
-// plans against the current spec + state. ResumeMap, when non-empty,
-// instructs the dispatcher to skip already-complete steps and re-attach
-// to the persisted agent session per workstream (DJ-074). Invalidated
-// and Archived are plan IDs that were deleted from `.locutus/workstreams/`
-// for those reasons respectively.
+// plans against the current spec + state. Per DJ-074:
+//   - All covered Approaches unchanged → resume: PlanToResume holds the
+//     persisted MasterPlan; ResumeMap entries point each workstream at
+//     its first not-yet-complete step with the persisted SessionID.
+//   - Any covered Approach drifted → invalidate: plan deleted, listed
+//     in Invalidated.
+//   - All covered Approaches already live → archive: plan deleted,
+//     listed in Archived.
 //
-// Round 7 Phase B refactors the resume entry point but defers the actual
-// drift-aware classification to a follow-up: today every leftover plan
-// is invalidated, matching the prior always-invalidate semantics. The
-// shape is in place so the resume policy can land without further
-// signature churn.
+// At most one PlanToResume per classification — multiple leftover plans
+// in flight at once is unusual; if found, the first (sorted) resumable
+// plan wins and the rest invalidate. This matches the "one in-flight
+// adopt" mental model the rest of the system assumes.
 type planClassification struct {
-	ResumeMap   map[string]*dispatch.ResumePoint
-	Invalidated []string
-	Archived    []string
+	ResumeMap    map[string]*dispatch.ResumePoint
+	Invalidated  []string
+	Archived     []string
+	PlanToResume *spec.MasterPlan
 }
 
-// classifyActivePlans replaces the prior resumeOrInvalidateActivePlans
-// helper. It returns the structured classification needed by Phase 7
-// dispatch: which workstreams should resume (with what ResumePoint),
-// which plans were invalidated, which were archived as already-live.
+// classifyActivePlans inspects every leftover plan subdirectory under
+// `.locutus/workstreams/` and decides what to do per DJ-074's resume
+// protocol. discardInFlight short-circuits the analysis and forces
+// invalidate-and-replan on every plan regardless of drift state — the
+// `--discard-in-flight` opt-out for "I know this plan is wrong, start
+// over."
 //
-// discardInFlight forces invalidate-and-replan for every leftover plan,
-// matching DJ-074's --discard-in-flight flag intent ("I know this plan
-// is wrong, start over"). Without it, today's behavior is still
-// always-invalidate; resume policy lands in a follow-up commit.
-func classifyActivePlans(fsys specio.FS, discardInFlight bool) (*planClassification, error) {
+// graph + store are needed to compute drift: an Approach is considered
+// drifted when its current ComputeSpecHash differs from the SpecHash
+// recorded on the prior run's state entry, or when the Approach has
+// been removed from the spec entirely.
+func classifyActivePlans(fsys specio.FS, discardInFlight bool, graph *spec.SpecGraph, store *state.FileStateStore) (*planClassification, error) {
 	out := &planClassification{ResumeMap: map[string]*dispatch.ResumePoint{}}
 
 	planIDs, err := workstream.ListActivePlans(fsys, workstreamsDir)
@@ -450,15 +497,139 @@ func classifyActivePlans(fsys specio.FS, discardInFlight bool) (*planClassificat
 	if len(planIDs) == 0 {
 		return out, nil
 	}
-	_ = discardInFlight // Honored implicitly today: every plan invalidates.
+
+	// On --discard-in-flight, every plan invalidates regardless of drift.
+	if discardInFlight {
+		for _, id := range planIDs {
+			ws := workstream.NewFileStore(fsys, workstreamsDir, id)
+			if err := ws.DeletePlan(); err != nil {
+				return out, fmt.Errorf("delete stale plan %s: %w", id, err)
+			}
+			out.Invalidated = append(out.Invalidated, id)
+		}
+		return out, nil
+	}
+
 	for _, id := range planIDs {
 		ws := workstream.NewFileStore(fsys, workstreamsDir, id)
-		if err := ws.DeletePlan(); err != nil {
-			return out, fmt.Errorf("delete stale plan %s: %w", id, err)
+		planRec, perr := ws.LoadPlan()
+		if perr != nil {
+			// Corrupt or missing plan.yaml — invalidate; no shape to resume from.
+			_ = ws.DeletePlan()
+			out.Invalidated = append(out.Invalidated, id)
+			continue
 		}
-		out.Invalidated = append(out.Invalidated, id)
+		records, rerr := ws.Walk()
+		if rerr != nil || len(records) == 0 {
+			_ = ws.DeletePlan()
+			out.Invalidated = append(out.Invalidated, id)
+			continue
+		}
+
+		action := classifyPlanAction(records, store, graph)
+		switch action {
+		case planActionArchive:
+			_ = ws.DeletePlan()
+			out.Archived = append(out.Archived, id)
+		case planActionInvalidate:
+			_ = ws.DeletePlan()
+			out.Invalidated = append(out.Invalidated, id)
+		case planActionResume:
+			// Already chose another plan to resume → invalidate this one.
+			if out.PlanToResume != nil {
+				_ = ws.DeletePlan()
+				out.Invalidated = append(out.Invalidated, id)
+				continue
+			}
+			// Build ResumePoint per workstream; if any workstream has no
+			// resumable shape (missing SessionID or all-steps-complete in
+			// a record marked drift-but-not-yet-replanned), fall back to
+			// invalidate for safety — partial resume risks burning tokens
+			// on an inconsistent state.
+			resumeMap := map[string]*dispatch.ResumePoint{}
+			resumable := true
+			for _, rec := range records {
+				rp := buildResumePoint(rec)
+				if rp == nil {
+					resumable = false
+					break
+				}
+				resumeMap[rec.WorkstreamID] = rp
+			}
+			if !resumable {
+				_ = ws.DeletePlan()
+				out.Invalidated = append(out.Invalidated, id)
+				continue
+			}
+			plan := planRec.Plan
+			out.PlanToResume = &plan
+			out.ResumeMap = resumeMap
+		}
 	}
+
 	return out, nil
+}
+
+// planAction enumerates the per-plan classifier verdicts.
+type planAction int
+
+const (
+	planActionInvalidate planAction = iota
+	planActionResume
+	planActionArchive
+)
+
+// classifyPlanAction inspects the records of a single leftover plan and
+// returns the verdict. Archive wins iff every covered Approach is live;
+// invalidate fires on any drift; otherwise resume.
+func classifyPlanAction(records []workstream.ActiveWorkstream, store *state.FileStateStore, graph *spec.SpecGraph) planAction {
+	allLive := true
+	for _, rec := range records {
+		for _, aid := range rec.ApproachIDs {
+			approach := graph.Approach(aid)
+			if approach == nil {
+				return planActionInvalidate // Approach removed from spec.
+			}
+			entry, err := store.Load(aid)
+			if err != nil {
+				// No state entry for a covered Approach: the prior run
+				// never reached the persistence step. Treat as drift.
+				return planActionInvalidate
+			}
+			if entry.SpecHash == "" || entry.SpecHash != spec.ComputeSpecHash(*approach) {
+				return planActionInvalidate
+			}
+			if entry.Status != state.StatusLive {
+				allLive = false
+			}
+		}
+	}
+	if allLive {
+		return planActionArchive
+	}
+	return planActionResume
+}
+
+// buildResumePoint walks an ActiveWorkstream's StepStatus and returns a
+// ResumePoint for the first step that is not yet StepComplete. Returns
+// nil when the workstream has no AgentSessionID (resume target needs
+// one) or when every step is already complete (no work left for this
+// workstream — caller's classifier should have routed to archive in
+// that case).
+func buildResumePoint(rec workstream.ActiveWorkstream) *dispatch.ResumePoint {
+	if rec.AgentSessionID == "" {
+		return nil
+	}
+	for _, step := range rec.Plan.Steps {
+		progress := rec.StepByID(step.ID)
+		if progress.Status != workstream.StepComplete {
+			return &dispatch.ResumePoint{
+				StepID:    step.ID,
+				SessionID: rec.AgentSessionID,
+			}
+		}
+	}
+	return nil
 }
 
 func loadSpecGraph(fsys specio.FS) (*spec.SpecGraph, error) {
