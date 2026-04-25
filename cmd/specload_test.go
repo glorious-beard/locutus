@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func diffNodeIDs(nodes []spec.GraphNode) []string {
+func blastRadiusNodeIDs(nodes []spec.GraphNode) []string {
 	ids := make([]string, len(nodes))
 	for i, n := range nodes {
 		ids[i] = n.ID
@@ -21,7 +21,7 @@ func diffNodeIDs(nodes []spec.GraphNode) []string {
 	return ids
 }
 
-func setupDiffFS(t *testing.T) specio.FS {
+func setupBlastRadiusFS(t *testing.T) specio.FS {
 	t.Helper()
 
 	fs := specio.NewMemFS()
@@ -52,21 +52,21 @@ func setupDiffFS(t *testing.T) specio.FS {
 	return fs
 }
 
-func TestDiffFromFeature(t *testing.T) {
-	fs := setupDiffFS(t)
+func TestRunDiffFromFeature(t *testing.T) {
+	fs := setupBlastRadiusFS(t)
 	result, err := RunDiff(fs, "feat-auth")
 	assert.NoError(t, err)
 	if !assert.NotNil(t, result) {
 		return
 	}
 	assert.Equal(t, "feat-auth", result.Root.ID)
-	assert.Equal(t, []string{"dec-lang"}, diffNodeIDs(result.Decisions))
+	assert.Equal(t, []string{"dec-lang"}, blastRadiusNodeIDs(result.Decisions))
 	assert.Empty(t, result.Strategies)
-	assert.Equal(t, []string{"app-auth"}, diffNodeIDs(result.Approaches))
+	assert.Equal(t, []string{"app-auth"}, blastRadiusNodeIDs(result.Approaches))
 }
 
-func TestDiffFromApproach(t *testing.T) {
-	fs := setupDiffFS(t)
+func TestRunDiffFromApproach(t *testing.T) {
+	fs := setupBlastRadiusFS(t)
 	result, err := RunDiff(fs, "app-auth")
 	assert.NoError(t, err)
 	if !assert.NotNil(t, result) {
@@ -77,8 +77,8 @@ func TestDiffFromApproach(t *testing.T) {
 	assert.Empty(t, result.Decisions)
 }
 
-func TestDiffUnknownID(t *testing.T) {
-	fs := setupDiffFS(t)
+func TestRunDiffUnknownID(t *testing.T) {
+	fs := setupBlastRadiusFS(t)
 	result, err := RunDiff(fs, "nonexistent")
 	assert.Error(t, err)
 	assert.Nil(t, result)

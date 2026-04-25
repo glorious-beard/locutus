@@ -15,34 +15,34 @@ import (
 )
 
 func TestResolveNodeKindFromFeature(t *testing.T) {
-	fs := setupDiffFS(t)
+	fs := setupBlastRadiusFS(t)
 	kind, err := resolveNodeKind(fs, "feat-auth")
 	require.NoError(t, err)
 	assert.Equal(t, spec.KindFeature, kind)
 }
 
 func TestResolveNodeKindFromDecision(t *testing.T) {
-	fs := setupDiffFS(t)
+	fs := setupBlastRadiusFS(t)
 	kind, err := resolveNodeKind(fs, "dec-lang")
 	require.NoError(t, err)
 	assert.Equal(t, spec.KindDecision, kind)
 }
 
 func TestResolveNodeKindFromApproach(t *testing.T) {
-	fs := setupDiffFS(t)
+	fs := setupBlastRadiusFS(t)
 	kind, err := resolveNodeKind(fs, "app-auth")
 	require.NoError(t, err)
 	assert.Equal(t, spec.KindApproach, kind)
 }
 
 func TestResolveNodeKindUnknown(t *testing.T) {
-	fs := setupDiffFS(t)
+	fs := setupBlastRadiusFS(t)
 	_, err := resolveNodeKind(fs, "nonexistent")
 	assert.Error(t, err)
 }
 
 func TestRefineDryRunRendersBlastRadius(t *testing.T) {
-	fs := setupDiffFS(t)
+	fs := setupBlastRadiusFS(t)
 	out := captureStdout(func() {
 		err := renderRefineDryRun(fs, "dec-lang", spec.KindDecision)
 		require.NoError(t, err)
@@ -50,11 +50,11 @@ func TestRefineDryRunRendersBlastRadius(t *testing.T) {
 	assert.Contains(t, out, "cascade preview")
 }
 
-// setupRefineFS extends setupDiffFS with a Bug and wires up a state entry for
+// setupRefineFS extends setupBlastRadiusFS with a Bug and wires up a state entry for
 // the Approach so drift-on-refine can be asserted.
 func setupRefineFS(t *testing.T) specio.FS {
 	t.Helper()
-	fs := setupDiffFS(t)
+	fs := setupBlastRadiusFS(t)
 
 	bug := spec.Bug{
 		ID:          "bug-login",

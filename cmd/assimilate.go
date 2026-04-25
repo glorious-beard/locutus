@@ -14,7 +14,6 @@ import (
 )
 
 // AssimilateCmd analyzes an existing codebase and produces a spec graph.
-// Formerly named `analyze`; the CLI still accepts the old name via alias.
 //
 // Default behavior is to run remediation (DJ-045 + DJ-046) after the
 // inference pass — the gap_analyst's findings are converted into
