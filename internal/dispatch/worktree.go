@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,6 +66,13 @@ func createWorktreeOn(ctx context.Context, repoDir, workstreamID, baseBranch str
 	branchName := "locutus-wt/" + workstreamID
 	worktreeDir := filepath.Join(os.TempDir(), "locutus-wt-"+workstreamID)
 
+	// Best-effort recovery from a prior crashed run. SIGKILL skips
+	// defer wt.Cleanup(), leaving a worktree dir + git registration +
+	// scratch branch behind that would otherwise make `git worktree add`
+	// fail with "fatal: a branch named ... already exists" and
+	// structurally block DJ-074 resume.
+	recoverStaleWorktree(ctx, repoDir, workstreamID, branchName, worktreeDir)
+
 	args := []string{"worktree", "add", "-b", branchName, worktreeDir}
 	if baseBranch != "" {
 		args = append(args, baseBranch)
@@ -78,6 +86,52 @@ func createWorktreeOn(ctx context.Context, repoDir, workstreamID, baseBranch str
 		WorktreeDir: worktreeDir,
 		BranchName:  branchName,
 	}, nil
+}
+
+// recoverStaleWorktree removes any leftover worktree state for this
+// workstream ID so `git worktree add` can proceed cleanly. Safe to call
+// on a clean tree: every step is best-effort and logged-but-not-failed.
+// Three artifacts can survive a SIGKILL'd run:
+//
+//   - the worktree directory under os.TempDir()
+//   - git's registration under <repo>/.git/worktrees/<name>/
+//   - the scratch branch locutus-wt/<workstreamID>
+//
+// Any uncommitted or committed-but-unmerged work in the orphan is
+// deliberately discarded — today nothing lands on the feature branch
+// until the entire workstream completes (one final wt.Commit), so there
+// is nothing here for users to recover by hand. When per-step
+// persistence lands (the DJ-073 follow-up), re-evaluate.
+func recoverStaleWorktree(ctx context.Context, repoDir, workstreamID, branchName, worktreeDir string) {
+	var actions []string
+
+	// Prune registrations whose directories were already removed (e.g.
+	// a /tmp wipe between runs). Errors are non-actionable here.
+	_ = gitCmd(ctx, repoDir, "worktree", "prune")
+
+	if _, err := os.Stat(worktreeDir); err == nil {
+		// git's clean removal first — also unregisters.
+		if err := gitCmd(ctx, repoDir, "worktree", "remove", worktreeDir, "--force"); err == nil {
+			actions = append(actions, "removed orphan worktree dir via git")
+		} else if rmErr := os.RemoveAll(worktreeDir); rmErr == nil {
+			// Fallback: registration may already be gone.
+			_ = gitCmd(ctx, repoDir, "worktree", "prune")
+			actions = append(actions, "removed orphan worktree dir via filesystem")
+		}
+	}
+
+	if branchOut, _ := gitOutput(ctx, repoDir, "branch", "--list", branchName); strings.TrimSpace(branchOut) != "" {
+		if err := gitCmd(ctx, repoDir, "branch", "-D", branchName); err == nil {
+			actions = append(actions, "deleted orphan scratch branch")
+		}
+	}
+
+	if len(actions) > 0 {
+		slog.Warn("recovered stale worktree state from prior crashed run",
+			"workstream_id", workstreamID,
+			"actions", actions,
+		)
+	}
 }
 
 // Commit stages all changes in the worktree and commits with the given message.

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupTestRepo creates a real temporary git repo with an initial commit.
@@ -141,6 +142,65 @@ func TestWorktreeCleanup(t *testing.T) {
 	branchOut := runOutput(t, repoDir, "git", "branch", "--list", branchName)
 	trimmed := strings.TrimSpace(branchOut)
 	assert.Empty(t, trimmed, "worktree branch should be deleted after cleanup")
+}
+
+// TestCreateWorktreeRecoversFromStaleLeftover simulates a SIGKILL-orphaned
+// worktree from a prior crashed run and verifies CreateWorktree cleans up
+// before adding the new one. Without recoverStaleWorktree, git worktree
+// add would fail with "fatal: a branch named 'locutus-wt/<id>' already
+// exists", structurally blocking DJ-074 resume.
+func TestCreateWorktreeRecoversFromStaleLeftover(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	wsID := "ws-recover-test"
+
+	// First "run": create a worktree and leave it behind without calling
+	// Cleanup. This is exactly what a SIGKILL during dispatch produces:
+	// the dir exists on disk, git's worktree registration exists, and the
+	// scratch branch exists.
+	wt1, err := CreateWorktree(context.Background(), repoDir, wsID)
+	require.NoError(t, err)
+	leftover := filepath.Join(wt1.WorktreeDir, "leftover.go")
+	require.NoError(t, os.WriteFile(leftover, []byte("package main\n"), 0o644))
+	require.NoError(t, wt1.Commit(context.Background(), "in-flight work that crashed"))
+	// NO wt1.Cleanup() — this is the SIGKILL scenario.
+
+	// Second "run": should detect the leftover state and recover
+	// transparently, then succeed.
+	wt2, err := CreateWorktree(context.Background(), repoDir, wsID)
+	require.NoError(t, err, "CreateWorktree must recover from a stale prior worktree")
+	require.NotNil(t, wt2)
+	t.Cleanup(func() { _ = wt2.Cleanup() })
+
+	// The new worktree directory exists at the expected path.
+	_, err = os.Stat(wt2.WorktreeDir)
+	require.NoError(t, err)
+
+	// The new worktree is a fresh checkout from HEAD: the prior crashed
+	// commit's file should NOT be present. (Mid-step commit preservation
+	// is batch 5's concern, not batch 4's.)
+	_, err = os.Stat(filepath.Join(wt2.WorktreeDir, "leftover.go"))
+	assert.True(t, os.IsNotExist(err),
+		"recovered worktree should not carry forward the prior crashed commit")
+}
+
+// TestCreateWorktreeRecoversFromMissingDirOnly covers the case where /tmp
+// was wiped (e.g., reboot) but git's worktree registration and the scratch
+// branch survive in the repo. Without recovery, git worktree add fails
+// with "fatal: '<dir>' is a missing but locked worktree".
+func TestCreateWorktreeRecoversFromMissingDirOnly(t *testing.T) {
+	repoDir := setupTestRepo(t)
+	wsID := "ws-recover-missing-dir"
+
+	wt1, err := CreateWorktree(context.Background(), repoDir, wsID)
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(wt1.WorktreeDir),
+		"simulate /tmp wipe: registration + branch survive, dir does not")
+	// Note: NO wt1.Cleanup(), so git's registration and the branch persist.
+
+	wt2, err := CreateWorktree(context.Background(), repoDir, wsID)
+	require.NoError(t, err, "CreateWorktree must recover when registration outlives the directory")
+	require.NotNil(t, wt2)
+	t.Cleanup(func() { _ = wt2.Cleanup() })
 }
 
 func TestMultipleWorktrees(t *testing.T) {
