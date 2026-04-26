@@ -6,6 +6,7 @@ import (
 
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // buildTestGraph builds the canonical test fixture:
@@ -140,7 +141,8 @@ func TestForwardWalkFromApproach(t *testing.T) {
 
 func TestBlastRadiusFromRoot(t *testing.T) {
 	g := buildTestGraph()
-	br := g.BlastRadius(spec.RootID)
+	br, err := g.BlastRadius(spec.RootID)
+	require.NoError(t, err)
 
 	assert.Equal(t, spec.RootID, br.Root.ID)
 	assert.Equal(t, spec.KindGoals, br.Root.Kind)
@@ -153,7 +155,8 @@ func TestBlastRadiusFromRoot(t *testing.T) {
 
 func TestBlastRadiusFromFeature(t *testing.T) {
 	g := buildTestGraph()
-	br := g.BlastRadius("feat-auth")
+	br, err := g.BlastRadius("feat-auth")
+	require.NoError(t, err)
 
 	assert.Equal(t, "feat-auth", br.Root.ID)
 	assert.Equal(t, spec.KindFeature, br.Root.Kind)
@@ -166,7 +169,8 @@ func TestBlastRadiusFromFeature(t *testing.T) {
 
 func TestBlastRadiusFromDecision(t *testing.T) {
 	g := buildTestGraph()
-	br := g.BlastRadius("dec-x")
+	br, err := g.BlastRadius("dec-x")
+	require.NoError(t, err)
 
 	assert.Equal(t, spec.KindDecision, br.Root.Kind)
 	assert.Empty(t, br.Decisions)
@@ -176,12 +180,20 @@ func TestBlastRadiusFromDecision(t *testing.T) {
 
 func TestBlastRadiusFromStrategy(t *testing.T) {
 	g := buildTestGraph()
-	br := g.BlastRadius("strat-go")
+	br, err := g.BlastRadius("strat-go")
+	require.NoError(t, err)
 
 	assert.Equal(t, spec.KindStrategy, br.Root.Kind)
 	assert.Empty(t, br.Strategies)
 	assert.Equal(t, []string{"dec-y"}, graphNodeIDs(br.Decisions))
 	assert.Equal(t, []string{"app-go"}, graphNodeIDs(br.Approaches))
+}
+
+func TestBlastRadiusUnknownIDErrors(t *testing.T) {
+	g := buildTestGraph()
+	_, err := g.BlastRadius("does-not-exist")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does-not-exist")
 }
 
 func TestDetectCyclesNone(t *testing.T) {

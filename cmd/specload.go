@@ -27,7 +27,7 @@ func RunDiff(fsys specio.FS, id string) (*spec.BlastRadius, error) {
 	}
 
 	g := spec.BuildGraph(features, bugs, decisions, strategies, approaches, traces)
-	return spec.ComputeBlastRadius(g, id)
+	return g.BlastRadius(id)
 }
 
 // collectObjects walks a spec directory and returns successfully loaded

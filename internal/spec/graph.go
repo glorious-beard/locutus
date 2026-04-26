@@ -260,17 +260,20 @@ func (g *SpecGraph) ForwardWalk(startID string) []GraphNode {
 	return result
 }
 
-// BlastRadius computes the downstream impact of the given node, categorized by kind.
-func (g *SpecGraph) BlastRadius(id string) *BlastRadius {
-	nodes := g.ForwardWalk(id)
-	if len(nodes) == 0 {
-		return &BlastRadius{}
+// BlastRadius computes the downstream cascade impact of the given node,
+// categorized by kind. Returns an error if id is not present in the graph;
+// silently returning an empty result for missing IDs hid bugs in callers
+// (refine --dry-run, MCP refine) that needed explicit "node not found"
+// reporting. Per DJ-068 / DJ-069 this is the canonical cascade-preview entry
+// point.
+func (g *SpecGraph) BlastRadius(id string) (*BlastRadius, error) {
+	root, err := g.dag.Vertex(id)
+	if err != nil {
+		return nil, fmt.Errorf("blast radius: node %q not found", id)
 	}
 
-	root, _ := g.dag.Vertex(id)
 	br := &BlastRadius{Root: root}
-
-	for _, n := range nodes {
+	for _, n := range g.ForwardWalk(id) {
 		if n.ID == id {
 			continue
 		}
@@ -288,19 +291,7 @@ func (g *SpecGraph) BlastRadius(id string) *BlastRadius {
 		}
 	}
 
-	return br
-}
-
-// ComputeBlastRadius computes the blast radius for the given ID.
-// Returns an error if the graph is nil or the ID is not found.
-func ComputeBlastRadius(g *SpecGraph, id string) (*BlastRadius, error) {
-	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
-	}
-	if _, err := g.dag.Vertex(id); err != nil {
-		return nil, fmt.Errorf("node %q not found in graph", id)
-	}
-	return g.BlastRadius(id), nil
+	return br, nil
 }
 
 // DetectCycles returns any cycles found in the graph.
