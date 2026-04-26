@@ -1,10 +1,11 @@
 package dispatch
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
-	"os"
 	"strings"
 )
 
@@ -16,9 +17,10 @@ type Worktree struct {
 }
 
 // gitCmd runs a git command in the given directory and returns an error with
-// combined output on failure.
-func gitCmd(dir string, args ...string) error {
-	cmd := exec.Command("git", args...)
+// combined output on failure. ctx cancellation kills the underlying git
+// process via exec.CommandContext.
+func gitCmd(ctx context.Context, dir string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -28,8 +30,8 @@ func gitCmd(dir string, args ...string) error {
 }
 
 // gitOutput runs a git command in the given directory and returns its combined output.
-func gitOutput(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -45,8 +47,8 @@ func gitOutput(dir string, args ...string) (string, error) {
 // ultimately land the work on. Using the same name for both would leave
 // the feature branch un-checkout-able in the main repo (git refuses to
 // check out a branch already used by a worktree).
-func CreateWorktree(repoDir string, workstreamID string) (*Worktree, error) {
-	return createWorktreeOn(repoDir, workstreamID, "")
+func CreateWorktree(ctx context.Context, repoDir string, workstreamID string) (*Worktree, error) {
+	return createWorktreeOn(ctx, repoDir, workstreamID, "")
 }
 
 // CreateWorktreeFromBase is the resume-aware variant: the new scratch
@@ -55,11 +57,11 @@ func CreateWorktree(repoDir string, workstreamID string) (*Worktree, error) {
 // "locutus/<workstreamID>") form the starting state. baseBranch must
 // exist; an empty value falls back to HEAD-rooted (same as
 // CreateWorktree).
-func CreateWorktreeFromBase(repoDir, workstreamID, baseBranch string) (*Worktree, error) {
-	return createWorktreeOn(repoDir, workstreamID, baseBranch)
+func CreateWorktreeFromBase(ctx context.Context, repoDir, workstreamID, baseBranch string) (*Worktree, error) {
+	return createWorktreeOn(ctx, repoDir, workstreamID, baseBranch)
 }
 
-func createWorktreeOn(repoDir, workstreamID, baseBranch string) (*Worktree, error) {
+func createWorktreeOn(ctx context.Context, repoDir, workstreamID, baseBranch string) (*Worktree, error) {
 	branchName := "locutus-wt/" + workstreamID
 	worktreeDir := filepath.Join(os.TempDir(), "locutus-wt-"+workstreamID)
 
@@ -67,7 +69,7 @@ func createWorktreeOn(repoDir, workstreamID, baseBranch string) (*Worktree, erro
 	if baseBranch != "" {
 		args = append(args, baseBranch)
 	}
-	if err := gitCmd(repoDir, args...); err != nil {
+	if err := gitCmd(ctx, repoDir, args...); err != nil {
 		return nil, fmt.Errorf("create worktree: %w", err)
 	}
 
@@ -79,11 +81,11 @@ func createWorktreeOn(repoDir, workstreamID, baseBranch string) (*Worktree, erro
 }
 
 // Commit stages all changes in the worktree and commits with the given message.
-func (w *Worktree) Commit(message string) error {
-	if err := gitCmd(w.WorktreeDir, "add", "-A"); err != nil {
+func (w *Worktree) Commit(ctx context.Context, message string) error {
+	if err := gitCmd(ctx, w.WorktreeDir, "add", "-A"); err != nil {
 		return fmt.Errorf("stage changes: %w", err)
 	}
-	if err := gitCmd(w.WorktreeDir, "commit", "-m", message); err != nil {
+	if err := gitCmd(ctx, w.WorktreeDir, "commit", "-m", message); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
@@ -91,33 +93,33 @@ func (w *Worktree) Commit(message string) error {
 
 // MergeToFeatureBranch merges the worktree branch into the given feature branch
 // in the main repository. If the feature branch does not exist, it is created.
-func (w *Worktree) MergeToFeatureBranch(featureBranch string) error {
+func (w *Worktree) MergeToFeatureBranch(ctx context.Context, featureBranch string) error {
 	// Save the current branch so we can return to it.
-	origBranch, err := gitOutput(w.RepoDir, "rev-parse", "--abbrev-ref", "HEAD")
+	origBranch, err := gitOutput(ctx, w.RepoDir, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return fmt.Errorf("get current branch: %w", err)
 	}
 	origBranch = strings.TrimSpace(origBranch)
 
 	// Check if feature branch exists.
-	branchOut, _ := gitOutput(w.RepoDir, "branch", "--list", featureBranch)
+	branchOut, _ := gitOutput(ctx, w.RepoDir, "branch", "--list", featureBranch)
 	if strings.TrimSpace(branchOut) == "" {
 		// Create the feature branch from HEAD.
-		if err := gitCmd(w.RepoDir, "branch", featureBranch); err != nil {
+		if err := gitCmd(ctx, w.RepoDir, "branch", featureBranch); err != nil {
 			return fmt.Errorf("create feature branch: %w", err)
 		}
 	}
 
 	// Checkout the feature branch.
-	if err := gitCmd(w.RepoDir, "checkout", featureBranch); err != nil {
+	if err := gitCmd(ctx, w.RepoDir, "checkout", featureBranch); err != nil {
 		return fmt.Errorf("checkout feature branch: %w", err)
 	}
 
 	// Merge the worktree branch into the feature branch.
-	mergeErr := gitCmd(w.RepoDir, "merge", w.BranchName, "--no-ff", "-m", "merge workstream")
+	mergeErr := gitCmd(ctx, w.RepoDir, "merge", w.BranchName, "--no-ff", "-m", "merge workstream")
 
 	// Always return to the original branch, even if merge failed.
-	if checkoutErr := gitCmd(w.RepoDir, "checkout", origBranch); checkoutErr != nil {
+	if checkoutErr := gitCmd(ctx, w.RepoDir, "checkout", origBranch); checkoutErr != nil {
 		if mergeErr != nil {
 			return fmt.Errorf("merge failed: %w; also failed to restore branch: %v", mergeErr, checkoutErr)
 		}
@@ -131,11 +133,16 @@ func (w *Worktree) MergeToFeatureBranch(featureBranch string) error {
 }
 
 // Cleanup removes the worktree and deletes its branch from the repository.
+// Uses context.Background internally because Cleanup typically runs in a
+// defer where the parent ctx may already be cancelled — we still need git
+// to finish unregistering the worktree so the directory and branch don't
+// orphan and block the next adopt run (DJ-074 resume hazard).
 func (w *Worktree) Cleanup() error {
-	if err := gitCmd(w.RepoDir, "worktree", "remove", w.WorktreeDir, "--force"); err != nil {
+	ctx := context.Background()
+	if err := gitCmd(ctx, w.RepoDir, "worktree", "remove", w.WorktreeDir, "--force"); err != nil {
 		return fmt.Errorf("remove worktree: %w", err)
 	}
-	if err := gitCmd(w.RepoDir, "branch", "-D", w.BranchName); err != nil {
+	if err := gitCmd(ctx, w.RepoDir, "branch", "-D", w.BranchName); err != nil {
 		return fmt.Errorf("delete branch: %w", err)
 	}
 	return nil

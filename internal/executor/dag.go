@@ -267,14 +267,26 @@ func (e *Executor[S]) runParallel(ctx context.Context, state *S, steps []Step) (
 		go func(idx int, step Step) {
 			defer wg.Done()
 
-			// Acquire global semaphore slot.
-			sem <- struct{}{}
+			// Acquire global semaphore slot. Select on ctx so a Ctrl-C
+			// during workstream queue-up doesn't park goroutines waiting
+			// for slots that will never come.
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				errOnce.Do(func() { firstErr = ctx.Err() })
+				return
+			}
 			defer func() { <-sem }()
 
 			// Acquire per-type semaphore slot if applicable.
 			if step.Type != "" {
 				if tsem, ok := typeSems[step.Type]; ok {
-					tsem <- struct{}{}
+					select {
+					case tsem <- struct{}{}:
+					case <-ctx.Done():
+						errOnce.Do(func() { firstErr = ctx.Err() })
+						return
+					}
 					defer func() { <-tsem }()
 				}
 			}

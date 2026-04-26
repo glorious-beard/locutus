@@ -23,19 +23,19 @@ type stepRecordingDriver struct {
 	retrySessionIDs []string                  // sessionID arg per BuildRetryCommand call
 }
 
-func (d *stepRecordingDriver) BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd {
+func (d *stepRecordingDriver) BuildCommand(ctx context.Context, step spec.PlanStep, workDir string) *exec.Cmd {
 	d.mu.Lock()
 	d.buildCommandIDs = append(d.buildCommandIDs, step.ID)
 	d.mu.Unlock()
-	return exec.Command("echo", "mock:"+d.id)
+	return exec.CommandContext(ctx, "echo", "mock:"+d.id)
 }
 
-func (d *stepRecordingDriver) BuildRetryCommand(step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
+func (d *stepRecordingDriver) BuildRetryCommand(ctx context.Context, step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
 	d.mu.Lock()
 	d.retryCommandIDs = append(d.retryCommandIDs, step.ID)
 	d.retrySessionIDs = append(d.retrySessionIDs, sessionID)
 	d.mu.Unlock()
-	return exec.Command("echo", "mock-retry:"+d.id)
+	return exec.CommandContext(ctx, "echo", "mock-retry:"+d.id)
 }
 
 func (d *stepRecordingDriver) ParseStream(r io.Reader) StreamParser {
@@ -45,8 +45,8 @@ func (d *stepRecordingDriver) ParseStream(r io.Reader) StreamParser {
 	}}
 }
 
-func (d *stepRecordingDriver) RespondToAgent(sessionID, response string) (*exec.Cmd, error) {
-	return exec.Command("echo", "mock-respond"), nil
+func (d *stepRecordingDriver) RespondToAgent(ctx context.Context, sessionID, response string) (*exec.Cmd, error) {
+	return exec.CommandContext(ctx, "echo", "mock-respond"), nil
 }
 
 func (d *stepRecordingDriver) dispatchedSteps() []string {

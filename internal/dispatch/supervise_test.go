@@ -30,18 +30,18 @@ type scriptedStreamingDriver struct {
 	buildArgs []string // feedback values in order, one per attempt; "" for the initial attempt
 }
 
-func (d *scriptedStreamingDriver) BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd {
+func (d *scriptedStreamingDriver) BuildCommand(ctx context.Context, step spec.PlanStep, workDir string) *exec.Cmd {
 	d.mu.Lock()
 	d.buildArgs = append(d.buildArgs, "")
 	d.mu.Unlock()
-	return exec.Command("echo", "mock")
+	return exec.CommandContext(ctx, "echo", "mock")
 }
 
-func (d *scriptedStreamingDriver) BuildRetryCommand(step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
+func (d *scriptedStreamingDriver) BuildRetryCommand(ctx context.Context, step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
 	d.mu.Lock()
 	d.buildArgs = append(d.buildArgs, feedback)
 	d.mu.Unlock()
-	return exec.Command("echo", "mock-retry")
+	return exec.CommandContext(ctx, "echo", "mock-retry")
 }
 
 func (d *scriptedStreamingDriver) ParseStream(r io.Reader) StreamParser {
@@ -56,8 +56,8 @@ func (d *scriptedStreamingDriver) ParseStream(r io.Reader) StreamParser {
 	return p
 }
 
-func (d *scriptedStreamingDriver) RespondToAgent(sessionID, response string) (*exec.Cmd, error) {
-	return exec.Command("echo", "mock-resume"), nil
+func (d *scriptedStreamingDriver) RespondToAgent(ctx context.Context, sessionID, response string) (*exec.Cmd, error) {
+	return exec.CommandContext(ctx, "echo", "mock-resume"), nil
 }
 
 // feedbackAt returns the feedback passed to the Nth attempt (1-indexed).
@@ -317,17 +317,17 @@ type channelParserDriver struct {
 	parser *channelStreamParser
 }
 
-func (d *channelParserDriver) BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd {
-	return exec.Command("echo", "mock")
+func (d *channelParserDriver) BuildCommand(ctx context.Context, step spec.PlanStep, workDir string) *exec.Cmd {
+	return exec.CommandContext(ctx, "echo", "mock")
 }
-func (d *channelParserDriver) BuildRetryCommand(step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
-	return exec.Command("echo", "mock-retry")
+func (d *channelParserDriver) BuildRetryCommand(ctx context.Context, step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
+	return exec.CommandContext(ctx, "echo", "mock-retry")
 }
 func (d *channelParserDriver) ParseStream(r io.Reader) StreamParser {
 	return d.parser
 }
-func (d *channelParserDriver) RespondToAgent(sessionID, response string) (*exec.Cmd, error) {
-	return exec.Command("echo", "mock-resume"), nil
+func (d *channelParserDriver) RespondToAgent(ctx context.Context, sessionID, response string) (*exec.Cmd, error) {
+	return exec.CommandContext(ctx, "echo", "mock-resume"), nil
 }
 
 // countChurn is a small self-check of churnCountInLastN so a regression

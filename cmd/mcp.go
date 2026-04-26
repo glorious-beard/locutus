@@ -17,7 +17,7 @@ type McpCmd struct {
 	HTTP string `help:"Start HTTP transport on the given address (e.g. :8080)." optional:""`
 }
 
-func (c *McpCmd) Run(cli *CLI) error {
+func (c *McpCmd) Run(ctx context.Context, cli *CLI) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getwd: %w", err)
@@ -25,7 +25,6 @@ func (c *McpCmd) Run(cli *CLI) error {
 
 	server := NewMCPServerWithDir(cwd)
 
-	ctx := context.Background()
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		return fmt.Errorf("mcp server: %w", err)
 	}

@@ -126,7 +126,7 @@ type AdoptSummary struct {
 
 const workstreamsDir = ".locutus/workstreams"
 
-func (c *AdoptCmd) Run(cli *CLI) error {
+func (c *AdoptCmd) Run(ctx context.Context, cli *CLI) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getwd: %w", err)
@@ -156,7 +156,7 @@ func (c *AdoptCmd) Run(cli *CLI) error {
 		cfg.Dispatch = realDispatch(llm)
 	}
 
-	report, err := RunAdoptWithConfig(context.Background(), cfg)
+	report, err := RunAdoptWithConfig(ctx, cfg)
 	if err != nil {
 		return err
 	}

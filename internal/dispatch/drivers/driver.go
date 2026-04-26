@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"encoding/json"
 	"os/exec"
 
@@ -16,9 +17,12 @@ type DriverOutput struct {
 }
 
 // AgentDriver is the interface every coding-agent driver must implement.
+// ctx is threaded into BuildCommand / BuildRetryCommand so CommandContext
+// kills the spawned process when the supervisor's ctx is cancelled (Ctrl-C
+// from the user, SIGTERM, or supervisor-internal abort).
 type AgentDriver interface {
-	BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd
-	BuildRetryCommand(step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd
+	BuildCommand(ctx context.Context, step spec.PlanStep, workDir string) *exec.Cmd
+	BuildRetryCommand(ctx context.Context, step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd
 	ParseOutput(output []byte) (DriverOutput, error)
 }
 
@@ -42,7 +46,7 @@ type rawOutput struct {
 // than relying solely on the parsed output.
 type ClaudeCodeDriver struct{}
 
-func (d ClaudeCodeDriver) BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd {
+func (d ClaudeCodeDriver) BuildCommand(ctx context.Context, step spec.PlanStep, workDir string) *exec.Cmd {
 	// stream-json + --verbose + --include-partial-messages produce the
 	// NDJSON event stream our parser consumes (see
 	// internal/dispatch/drivers/claude_stream.go). --permission-mode
@@ -50,7 +54,7 @@ func (d ClaudeCodeDriver) BuildCommand(step spec.PlanStep, workDir string) *exec
 	// possible; acceptEdits allows file edit/write tools but not shell
 	// or network). --no-session-persistence keeps one-shot supervised
 	// runs out of the user's session store.
-	cmd := exec.Command(
+	cmd := exec.CommandContext(ctx,
 		"claude",
 		"-p",
 		"--output-format", "stream-json",
@@ -64,8 +68,8 @@ func (d ClaudeCodeDriver) BuildCommand(step spec.PlanStep, workDir string) *exec
 	return cmd
 }
 
-func (d ClaudeCodeDriver) BuildRetryCommand(step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd {
-	cmd := exec.Command(
+func (d ClaudeCodeDriver) BuildRetryCommand(ctx context.Context, step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx,
 		"claude",
 		"-p",
 		"--output-format", "stream-json",
@@ -99,15 +103,15 @@ func (d ClaudeCodeDriver) ParseOutput(output []byte) (DriverOutput, error) {
 // CodexDriver drives the OpenAI Codex CLI via `codex exec`.
 type CodexDriver struct{}
 
-func (d CodexDriver) BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd {
-	cmd := exec.Command("codex", "exec", step.Description)
+func (d CodexDriver) BuildCommand(ctx context.Context, step spec.PlanStep, workDir string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "codex", "exec", step.Description)
 
 	cmd.Dir = workDir
 	return cmd
 }
 
-func (d CodexDriver) BuildRetryCommand(step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd {
-	cmd := exec.Command("codex", "exec", "--resume", sessionID, feedback)
+func (d CodexDriver) BuildRetryCommand(ctx context.Context, step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "codex", "exec", "--resume", sessionID, feedback)
 
 	cmd.Dir = workDir
 	return cmd

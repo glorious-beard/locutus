@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"context"
 	"os/exec"
 	"testing"
 
@@ -16,7 +17,7 @@ func TestClaudeCodeBuildCommand(t *testing.T) {
 	}
 	workDir := "/tmp/project"
 
-	cmd := driver.BuildCommand(step, workDir)
+	cmd := driver.BuildCommand(context.Background(), step, workDir)
 
 	assert.IsType(t, &exec.Cmd{}, cmd)
 	assert.Equal(t, workDir, cmd.Dir)
@@ -52,7 +53,7 @@ func TestClaudeCodeBuildRetryCommand(t *testing.T) {
 	sessionID := "sess-abc-123"
 	feedback := "The tests are failing because the handler is not exported"
 
-	cmd := driver.BuildRetryCommand(step, workDir, sessionID, feedback)
+	cmd := driver.BuildRetryCommand(context.Background(), step, workDir, sessionID, feedback)
 
 	assert.IsType(t, &exec.Cmd{}, cmd)
 	assert.Equal(t, workDir, cmd.Dir)
@@ -113,7 +114,7 @@ func TestCodexBuildCommand(t *testing.T) {
 	}
 	workDir := "/tmp/project"
 
-	cmd := driver.BuildCommand(step, workDir)
+	cmd := driver.BuildCommand(context.Background(), step, workDir)
 
 	assert.IsType(t, &exec.Cmd{}, cmd)
 	assert.Equal(t, workDir, cmd.Dir)
@@ -151,4 +152,31 @@ func TestCodexParseOutputInvalidJSON(t *testing.T) {
 
 	_, err := driver.ParseOutput(rawJSON)
 	assert.Error(t, err)
+}
+
+// TestDriversUseCommandContext is a structural regression guard: every
+// driver's command-building method must use exec.CommandContext, not
+// exec.Command. Without this, a SIGINT during dispatch leaves the
+// spawned claude/codex process running until it exits on its own — the
+// gap surfaced in the 2026-04-25 resilience audit. exec.CommandContext
+// sets Cmd.Cancel; exec.Command leaves it nil, so the field is the
+// cheapest reliable signal that ctx is wired through.
+func TestDriversUseCommandContext(t *testing.T) {
+	step := spec.PlanStep{ID: "step-1", Description: "do thing"}
+	workDir := "/tmp/project"
+	cases := []struct {
+		name string
+		got  *exec.Cmd
+	}{
+		{"claude.BuildCommand", ClaudeCodeDriver{}.BuildCommand(context.Background(), step, workDir)},
+		{"claude.BuildRetryCommand", ClaudeCodeDriver{}.BuildRetryCommand(context.Background(), step, workDir, "sess-1", "fb")},
+		{"codex.BuildCommand", CodexDriver{}.BuildCommand(context.Background(), step, workDir)},
+		{"codex.BuildRetryCommand", CodexDriver{}.BuildRetryCommand(context.Background(), step, workDir, "sess-1", "fb")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.NotNil(t, c.got.Cancel,
+				"%s must use exec.CommandContext so ctx cancel kills the subprocess", c.name)
+		})
+	}
 }

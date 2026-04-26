@@ -25,7 +25,7 @@ type AssimilateCmd struct {
 	NoRemediate bool `help:"Skip the remediation pass; report gaps but do not auto-fill them with assumed Decisions/Strategies/Features."`
 }
 
-func (c *AssimilateCmd) Run(cli *CLI) error {
+func (c *AssimilateCmd) Run(ctx context.Context, cli *CLI) error {
 	llm, err := getLLM()
 	if err != nil {
 		return err
@@ -45,7 +45,7 @@ func (c *AssimilateCmd) Run(cli *CLI) error {
 		effective = newReadOnlyFS(fsys)
 	}
 
-	result, err := RunAssimilate(context.Background(), llm, effective, !c.NoRemediate)
+	result, err := RunAssimilate(ctx, llm, effective, !c.NoRemediate)
 	if err != nil {
 		return err
 	}

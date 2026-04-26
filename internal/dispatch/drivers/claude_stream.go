@@ -30,11 +30,11 @@ func (d ClaudeCodeDriver) ParseStream(r io.Reader) dispatch.StreamParser {
 // continues the session with the supervisor's response text as the next user
 // message. Always passes stream-json so the caller gets events of the same
 // shape as the initial invocation.
-func (d ClaudeCodeDriver) RespondToAgent(sessionID, response string) (*exec.Cmd, error) {
+func (d ClaudeCodeDriver) RespondToAgent(ctx context.Context, sessionID, response string) (*exec.Cmd, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("RespondToAgent: sessionID required")
 	}
-	return exec.Command(
+	return exec.CommandContext(ctx,
 		"claude",
 		"-p",
 		"--output-format", "stream-json",
@@ -53,7 +53,7 @@ func (d CodexDriver) ParseStream(r io.Reader) dispatch.StreamParser {
 }
 
 // RespondToAgent on CodexDriver is deferred along with ParseStream.
-func (d CodexDriver) RespondToAgent(sessionID, response string) (*exec.Cmd, error) {
+func (d CodexDriver) RespondToAgent(ctx context.Context, sessionID, response string) (*exec.Cmd, error) {
 	return nil, fmt.Errorf("codex RespondToAgent not yet implemented; pending fixtures + auth")
 }
 

@@ -53,7 +53,7 @@ type RewriteSummary struct {
 	DriftedApproaches []string `json:"drifted_approaches,omitempty"`
 }
 
-func (c *RefineCmd) Run(cli *CLI) error {
+func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getwd: %w", err)
@@ -74,7 +74,7 @@ func (c *RefineCmd) Run(cli *CLI) error {
 		return err
 	}
 
-	result, err := dispatchRefine(context.Background(), llm, fsys, c.ID, kind)
+	result, err := dispatchRefine(ctx, llm, fsys, c.ID, kind)
 	if err != nil {
 		return err
 	}

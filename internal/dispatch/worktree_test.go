@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,7 +47,7 @@ func runOutput(t *testing.T, dir string, name string, args ...string) string {
 func TestCreateWorktree(t *testing.T) {
 	repoDir := setupTestRepo(t)
 
-	wt, err := CreateWorktree(repoDir, "ws-auth-001")
+	wt, err := CreateWorktree(context.Background(), repoDir, "ws-auth-001")
 	assert.NoError(t, err)
 	assert.NotNil(t, wt)
 
@@ -70,7 +71,7 @@ func TestCreateWorktree(t *testing.T) {
 func TestWorktreeCommit(t *testing.T) {
 	repoDir := setupTestRepo(t)
 
-	wt, err := CreateWorktree(repoDir, "ws-commit-test")
+	wt, err := CreateWorktree(context.Background(), repoDir, "ws-commit-test")
 	assert.NoError(t, err)
 	assert.NotNil(t, wt)
 	defer func() { _ = wt.Cleanup() }()
@@ -81,7 +82,7 @@ func TestWorktreeCommit(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Commit the change.
-	err = wt.Commit("add handler stub")
+	err = wt.Commit(context.Background(), "add handler stub")
 	assert.NoError(t, err)
 
 	// Verify git log in the worktree shows the commit message.
@@ -92,7 +93,7 @@ func TestWorktreeCommit(t *testing.T) {
 func TestMergeToFeatureBranch(t *testing.T) {
 	repoDir := setupTestRepo(t)
 
-	wt, err := CreateWorktree(repoDir, "ws-merge-test")
+	wt, err := CreateWorktree(context.Background(), repoDir, "ws-merge-test")
 	assert.NoError(t, err)
 	assert.NotNil(t, wt)
 	defer func() { _ = wt.Cleanup() }()
@@ -101,12 +102,12 @@ func TestMergeToFeatureBranch(t *testing.T) {
 	newFile := filepath.Join(wt.WorktreeDir, "auth.go")
 	err = os.WriteFile(newFile, []byte("package auth\n"), 0o644)
 	assert.NoError(t, err)
-	err = wt.Commit("add auth module")
+	err = wt.Commit(context.Background(), "add auth module")
 	assert.NoError(t, err)
 
 	// Merge into a feature branch.
 	featureBranch := "locutus/feat-auth"
-	err = wt.MergeToFeatureBranch(featureBranch)
+	err = wt.MergeToFeatureBranch(context.Background(), featureBranch)
 	assert.NoError(t, err)
 
 	// Verify the feature branch exists in the main repo.
@@ -121,7 +122,7 @@ func TestMergeToFeatureBranch(t *testing.T) {
 func TestWorktreeCleanup(t *testing.T) {
 	repoDir := setupTestRepo(t)
 
-	wt, err := CreateWorktree(repoDir, "ws-cleanup-test")
+	wt, err := CreateWorktree(context.Background(), repoDir, "ws-cleanup-test")
 	assert.NoError(t, err)
 	assert.NotNil(t, wt)
 
@@ -145,12 +146,12 @@ func TestWorktreeCleanup(t *testing.T) {
 func TestMultipleWorktrees(t *testing.T) {
 	repoDir := setupTestRepo(t)
 
-	wt1, err := CreateWorktree(repoDir, "ws-alpha")
+	wt1, err := CreateWorktree(context.Background(), repoDir, "ws-alpha")
 	assert.NoError(t, err)
 	assert.NotNil(t, wt1)
 	defer func() { _ = wt1.Cleanup() }()
 
-	wt2, err := CreateWorktree(repoDir, "ws-beta")
+	wt2, err := CreateWorktree(context.Background(), repoDir, "ws-beta")
 	assert.NoError(t, err)
 	assert.NotNil(t, wt2)
 	defer func() { _ = wt2.Cleanup() }()

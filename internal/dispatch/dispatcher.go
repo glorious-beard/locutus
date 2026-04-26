@@ -212,9 +212,9 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 		err error
 	)
 	if resumeFrom != nil {
-		wt, err = CreateWorktreeFromBase(repoDir, ws.ID, "locutus/"+ws.ID)
+		wt, err = CreateWorktreeFromBase(ctx, repoDir, ws.ID, "locutus/"+ws.ID)
 	} else {
-		wt, err = CreateWorktree(repoDir, ws.ID)
+		wt, err = CreateWorktree(ctx, repoDir, ws.ID)
 	}
 	if err != nil {
 		result.Err = fmt.Errorf("create worktree: %w", err)
@@ -281,7 +281,7 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 	}
 
 	// All steps passed: commit and merge to feature branch.
-	if err := wt.Commit(fmt.Sprintf("workstream %s complete", ws.ID)); err != nil {
+	if err := wt.Commit(ctx, fmt.Sprintf("workstream %s complete", ws.ID)); err != nil {
 		// Commit may fail if there are no changes — that's fine for mock tests.
 		// In production, we'd distinguish "no changes" from real errors.
 		result.Success = true
@@ -289,7 +289,7 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 	}
 
 	featureBranch := "locutus/" + ws.ID
-	if err := wt.MergeToFeatureBranch(featureBranch); err != nil {
+	if err := wt.MergeToFeatureBranch(ctx, featureBranch); err != nil {
 		result.Err = fmt.Errorf("merge to %s: %w", featureBranch, err)
 		return result
 	}

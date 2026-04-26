@@ -35,7 +35,7 @@ type ImportResult struct {
 	SkippedTriage bool                `json:"skipped_triage"`
 }
 
-func (c *ImportCmd) Run(cli *CLI) error {
+func (c *ImportCmd) Run(ctx context.Context, cli *CLI) error {
 	if c.Input == "" {
 		return fmt.Errorf("--input is required")
 	}
@@ -50,7 +50,7 @@ func (c *ImportCmd) Run(cli *CLI) error {
 	}
 	fsys := specio.NewOSFS(cwd)
 
-	result, err := RunImport(context.Background(), fsys, data, c.Type, c.SkipTriage, c.DryRun)
+	result, err := RunImport(ctx, fsys, data, c.Type, c.SkipTriage, c.DryRun)
 	if err != nil {
 		return err
 	}

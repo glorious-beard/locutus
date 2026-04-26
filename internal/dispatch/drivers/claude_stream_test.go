@@ -197,7 +197,7 @@ func TestClaudeStream_CtxCancelMidStream(t *testing.T) {
 
 func TestClaudeDriver_RespondToAgent(t *testing.T) {
 	driver := ClaudeCodeDriver{}
-	cmd, err := driver.RespondToAgent("sess-abc-123", "allow: safe for this workdir")
+	cmd, err := driver.RespondToAgent(context.Background(), "sess-abc-123", "allow: safe for this workdir")
 	require.NoError(t, err)
 	require.NotNil(t, cmd)
 

@@ -20,13 +20,13 @@ type MockDriver struct {
 }
 
 // BuildCommand returns a no-op command (not actually executed in tests).
-func (m *MockDriver) BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd {
-	return exec.Command("echo", "mock")
+func (m *MockDriver) BuildCommand(ctx context.Context, step spec.PlanStep, workDir string) *exec.Cmd {
+	return exec.CommandContext(ctx, "echo", "mock")
 }
 
 // BuildRetryCommand returns a no-op retry command.
-func (m *MockDriver) BuildRetryCommand(step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
-	return exec.Command("echo", "mock-retry")
+func (m *MockDriver) BuildRetryCommand(ctx context.Context, step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
+	return exec.CommandContext(ctx, "echo", "mock-retry")
 }
 
 // ParseStream returns a parser that yields the scripted events once and
@@ -38,8 +38,8 @@ func (m *MockDriver) ParseStream(r io.Reader) StreamParser {
 }
 
 // RespondToAgent returns a no-op resume command.
-func (m *MockDriver) RespondToAgent(sessionID, response string) (*exec.Cmd, error) {
-	return exec.Command("echo", "mock-resume"), nil
+func (m *MockDriver) RespondToAgent(ctx context.Context, sessionID, response string) (*exec.Cmd, error) {
+	return exec.CommandContext(ctx, "echo", "mock-resume"), nil
 }
 
 // mockRunner returns a CommandRunner that always succeeds with empty output.

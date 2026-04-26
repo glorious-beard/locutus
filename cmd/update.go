@@ -13,13 +13,11 @@ const updateRepo = "glorious-beard/locutus"
 // UpdateCmd self-updates to the latest release.
 type UpdateCmd struct{}
 
-func (c *UpdateCmd) Run(cli *CLI) error {
+func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 	if buildVersion == "dev" {
 		fmt.Println("Self-update is not available in dev builds. Install a release build to enable.")
 		return nil
 	}
-
-	ctx := context.Background()
 
 	source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{})
 	if err != nil {

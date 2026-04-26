@@ -29,7 +29,7 @@ type HistoryCmd struct {
 }
 
 
-func (c *HistoryCmd) Run(cli *CLI) error {
+func (c *HistoryCmd) Run(ctx context.Context, cli *CLI) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getwd: %w", err)
@@ -39,7 +39,7 @@ func (c *HistoryCmd) Run(cli *CLI) error {
 	hist := history.NewHistorian(fsys, ".borg/history")
 
 	if c.RegenerateNarrative {
-		return c.runRegenerateNarrative(hist, cli)
+		return c.runRegenerateNarrative(ctx, hist, cli)
 	}
 
 	if c.Narrative {
@@ -118,7 +118,7 @@ func (c *HistoryCmd) Run(cli *CLI) error {
 // Archivist and analyst are loaded as separate agent defs per DJ-036 —
 // their system prompts (role, behavioural rules) live in
 // `.borg/agents/{archivist,analyst}.md`, not hard-coded here.
-func (c *HistoryCmd) runRegenerateNarrative(hist *history.Historian, cli *CLI) error {
+func (c *HistoryCmd) runRegenerateNarrative(ctx context.Context, hist *history.Historian, cli *CLI) error {
 	llm, err := getLLM()
 	if err != nil {
 		return err
@@ -159,7 +159,7 @@ func (c *HistoryCmd) runRegenerateNarrative(hist *history.Historian, cli *CLI) e
 		cfg.Until = &t
 	}
 
-	report, err := hist.GenerateNarrative(context.Background(), cfg)
+	report, err := hist.GenerateNarrative(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("regenerate narrative: %w", err)
 	}

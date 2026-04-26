@@ -25,8 +25,7 @@ type McpPermBridgeCmd struct {
 
 // Run starts the bridge. Blocks until stdin closes (Claude exits) or the
 // socket connection drops.
-func (c *McpPermBridgeCmd) Run(cli *CLI) error {
-	ctx := context.Background()
+func (c *McpPermBridgeCmd) Run(ctx context.Context, cli *CLI) error {
 	client, err := dialBridgeSocket(ctx, c.Socket)
 	if err != nil {
 		return fmt.Errorf("dial supervisor at %s: %w", c.Socket, err)

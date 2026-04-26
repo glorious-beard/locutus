@@ -54,17 +54,17 @@ func allPassed(results []state.AssertionResult) bool {
 func evaluateAssertion(ctx context.Context, a spec.Assertion, approach spec.Approach, repoDir string, runner *eval.Runner, fsys specio.FS) (bool, string) {
 	switch a.Kind {
 	case spec.AssertionKindCommandExitZero:
-		return runShell(a.Target, repoDir)
+		return runShell(ctx, a.Target, repoDir)
 	case spec.AssertionKindTestPass:
 		target := a.Target
 		if target == "" {
 			target = "./..."
 		}
-		return runShell("go test "+target, repoDir)
+		return runShell(ctx, "go test "+target, repoDir)
 	case spec.AssertionKindCompiles:
-		return runShell("go build ./...", repoDir)
+		return runShell(ctx, "go build ./...", repoDir)
 	case spec.AssertionKindLintClean:
-		return runShell("go vet ./...", repoDir)
+		return runShell(ctx, "go vet ./...", repoDir)
 	case spec.AssertionKindFileExists:
 		return fileExists(filepath.Join(repoDir, a.Target))
 	case spec.AssertionKindFileNotExists:
@@ -137,33 +137,36 @@ func readArtifactContents(fsys specio.FS, paths []string) map[string]string {
 
 // runShell executes a command string (shell-style with space-separated
 // tokens) in repoDir with a 60s timeout. Returns (passed, combined-output).
+// ctx cancellation kills the subprocess via exec.CommandContext; the 60s
+// cap is layered on top via context.WithTimeout so a parent ctx cancel
+// (e.g. user Ctrl-C) takes precedence over the assertion-level timeout.
 // No PATH munging; relies on the caller's environment.
-func runShell(cmdline, repoDir string) (bool, string) {
+func runShell(ctx context.Context, cmdline, repoDir string) (bool, string) {
 	cmdline = strings.TrimSpace(cmdline)
 	if cmdline == "" {
 		return false, "empty command"
 	}
 	fields := strings.Fields(cmdline)
-	c := exec.Command(fields[0], fields[1:]...)
+
+	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	c := exec.CommandContext(cmdCtx, fields[0], fields[1:]...)
 	c.Dir = repoDir
 	var buf bytes.Buffer
 	c.Stdout = &buf
 	c.Stderr = &buf
-	if err := c.Start(); err != nil {
-		return false, fmt.Sprintf("start %s: %v", cmdline, err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- c.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			return false, fmt.Sprintf("%s: %v\n%s", cmdline, err, buf.String())
+	err := c.Run()
+	if err != nil {
+		if cmdCtx.Err() == context.DeadlineExceeded {
+			return false, fmt.Sprintf("%s: timed out after 60s\n%s", cmdline, buf.String())
 		}
-		return true, buf.String()
-	case <-time.After(60 * time.Second):
-		_ = c.Process.Kill()
-		return false, fmt.Sprintf("%s: timed out after 60s\n%s", cmdline, buf.String())
+		if ctx.Err() != nil {
+			return false, fmt.Sprintf("%s: %v\n%s", cmdline, ctx.Err(), buf.String())
+		}
+		return false, fmt.Sprintf("%s: %v\n%s", cmdline, err, buf.String())
 	}
+	return true, buf.String()
 }
 
 func fileExists(path string) (bool, string) {

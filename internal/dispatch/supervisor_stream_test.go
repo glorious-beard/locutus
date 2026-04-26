@@ -53,20 +53,20 @@ type fakeStreamingDriver struct {
 	parser StreamParser
 }
 
-func (f *fakeStreamingDriver) BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd {
-	return exec.Command("echo", "mock")
+func (f *fakeStreamingDriver) BuildCommand(ctx context.Context, step spec.PlanStep, workDir string) *exec.Cmd {
+	return exec.CommandContext(ctx, "echo", "mock")
 }
 
-func (f *fakeStreamingDriver) BuildRetryCommand(step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
-	return exec.Command("echo", "mock-retry")
+func (f *fakeStreamingDriver) BuildRetryCommand(ctx context.Context, step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
+	return exec.CommandContext(ctx, "echo", "mock-retry")
 }
 
 func (f *fakeStreamingDriver) ParseStream(r io.Reader) StreamParser {
 	return f.parser
 }
 
-func (f *fakeStreamingDriver) RespondToAgent(sessionID, response string) (*exec.Cmd, error) {
-	return exec.Command("echo", "mock-resume"), nil
+func (f *fakeStreamingDriver) RespondToAgent(ctx context.Context, sessionID, response string) (*exec.Cmd, error) {
+	return exec.CommandContext(ctx, "echo", "mock-resume"), nil
 }
 
 // mockNotifier captures Notify calls for assertion.

@@ -42,11 +42,11 @@ type alwaysPassDriver struct {
 	id string
 }
 
-func (m *alwaysPassDriver) BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd {
-	return exec.Command("echo", "mock:"+m.id)
+func (m *alwaysPassDriver) BuildCommand(ctx context.Context, step spec.PlanStep, workDir string) *exec.Cmd {
+	return exec.CommandContext(ctx, "echo", "mock:"+m.id)
 }
-func (m *alwaysPassDriver) BuildRetryCommand(step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd {
-	return exec.Command("echo", "mock-retry:"+m.id)
+func (m *alwaysPassDriver) BuildRetryCommand(ctx context.Context, step spec.PlanStep, workDir string, sessionID string, feedback string) *exec.Cmd {
+	return exec.CommandContext(ctx, "echo", "mock-retry:"+m.id)
 }
 func (m *alwaysPassDriver) ParseStream(r io.Reader) StreamParser {
 	return &fakeStreamParser{events: []AgentEvent{
@@ -55,8 +55,8 @@ func (m *alwaysPassDriver) ParseStream(r io.Reader) StreamParser {
 		{Kind: EventResult, Text: "done", SessionID: "sess-" + m.id},
 	}}
 }
-func (m *alwaysPassDriver) RespondToAgent(sessionID, response string) (*exec.Cmd, error) {
-	return exec.Command("echo", "mock-resume:"+m.id), nil
+func (m *alwaysPassDriver) RespondToAgent(ctx context.Context, sessionID, response string) (*exec.Cmd, error) {
+	return exec.CommandContext(ctx, "echo", "mock-resume:"+m.id), nil
 }
 
 // mockLLMAllPass returns a MockLLM that validates every call as PASS.

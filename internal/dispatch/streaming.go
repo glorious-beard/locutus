@@ -16,10 +16,10 @@ import (
 // also implement the batch `drivers.AgentDriver` interface for backward
 // compatibility.
 type StreamingDriver interface {
-	BuildCommand(step spec.PlanStep, workDir string) *exec.Cmd
-	BuildRetryCommand(step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd
+	BuildCommand(ctx context.Context, step spec.PlanStep, workDir string) *exec.Cmd
+	BuildRetryCommand(ctx context.Context, step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd
 	ParseStream(r io.Reader) StreamParser
-	RespondToAgent(sessionID, response string) (*exec.Cmd, error)
+	RespondToAgent(ctx context.Context, sessionID, response string) (*exec.Cmd, error)
 }
 
 // ProgressNotifier lets the supervisor emit human-readable progress updates
@@ -124,7 +124,7 @@ func (s *Supervisor) runAttempt(
 	attemptCtx, cancelAttempt := context.WithCancel(ctx)
 	defer cancelAttempt()
 
-	cmd := s.buildAttemptCommand(driver, step, workDir, sessionID, feedback)
+	cmd := s.buildAttemptCommand(attemptCtx, driver, step, workDir, sessionID, feedback)
 
 	stream, err := s.runner(cmd)
 	if err != nil {
@@ -229,11 +229,11 @@ func (s *Supervisor) bridgeEvents() <-chan AgentEvent {
 	return s.permBridge.Events
 }
 
-func (s *Supervisor) buildAttemptCommand(driver StreamingDriver, step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
+func (s *Supervisor) buildAttemptCommand(ctx context.Context, driver StreamingDriver, step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
 	if sessionID == "" {
-		return driver.BuildCommand(step, workDir)
+		return driver.BuildCommand(ctx, step, workDir)
 	}
-	return driver.BuildRetryCommand(step, workDir, sessionID, feedback)
+	return driver.BuildRetryCommand(ctx, step, workDir, sessionID, feedback)
 }
 
 // emitProgress translates an AgentEvent into a ProgressParams update when
