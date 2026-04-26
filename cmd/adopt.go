@@ -153,7 +153,7 @@ func (c *AdoptCmd) Run(ctx context.Context, cli *CLI) error {
 		}
 		cfg.LLM = llm
 		cfg.Plan = realPlan(llm, fsys)
-		cfg.Dispatch = realDispatch(llm)
+		cfg.Dispatch = realDispatch(llm, cfg.FS)
 	}
 
 	report, err := RunAdoptWithConfig(ctx, cfg)
@@ -966,13 +966,62 @@ func realPlan(llm agent.LLM, fsys specio.FS) PlanFunc {
 	}
 }
 
-func realDispatch(llm agent.LLM) DispatchFunc {
+func realDispatch(llm agent.LLM, fsys specio.FS) DispatchFunc {
 	return func(ctx context.Context, plan *spec.MasterPlan, repoDir string, resume map[string]*dispatch.ResumePoint) ([]*dispatch.WorkstreamResult, error) {
+		wsStore := workstream.NewFileStore(fsys, workstreamsDir, plan.ID)
 		d := &dispatch.Dispatcher{
-			LLM:     llm,
-			FastLLM: llm, // same provider for now; upgrade to a fast-tier model later
+			LLM:            llm,
+			FastLLM:        llm, // same provider for now; upgrade to a fast-tier model later
+			OnStepComplete: persistStepProgress(wsStore),
 		}
 		return d.Dispatch(ctx, plan, repoDir, resume)
+	}
+}
+
+// persistStepProgress returns a dispatch.StepCompleteHandler that records
+// each PlanStep's outcome on the ActiveWorkstream record as soon as the
+// dispatcher emits it (per DJ-073). A SIGKILL after this handler returns
+// for step N still leaves StepStatus[N] = complete on disk, so the next
+// adopt's buildResumePoint resumes at step N+1 instead of replaying the
+// whole workstream.
+//
+// Errors are logged and swallowed: the handler is best-effort progress
+// tracking, not the source of truth (the git feature branch is). A Save
+// failure after a successful merge is recoverable on retry — the agent
+// re-runs the step via --resume, CommitIfChanges sees no diff, and the
+// next OnStepComplete invocation re-saves with the same status.
+func persistStepProgress(wsStore *workstream.FileStore) dispatch.StepCompleteHandler {
+	return func(ctx context.Context, evt dispatch.StepEvent) {
+		rec, err := wsStore.Load(evt.WorkstreamID)
+		if err != nil {
+			slog.Warn("step progress: load failed",
+				"workstream_id", evt.WorkstreamID,
+				"step_id", evt.StepID,
+				"error", err,
+			)
+			return
+		}
+		now := time.Now()
+		progress := workstream.StepProgress{
+			StepID:  evt.StepID,
+			Status:  workstream.StepComplete,
+			EndedAt: &now,
+			Message: evt.Message,
+		}
+		if !evt.Success {
+			progress.Status = workstream.StepFailed
+		}
+		rec.RecordProgress(progress)
+		if evt.SessionID != "" {
+			rec.AgentSessionID = evt.SessionID
+		}
+		if err := wsStore.Save(rec); err != nil {
+			slog.Warn("step progress: save failed",
+				"workstream_id", evt.WorkstreamID,
+				"step_id", evt.StepID,
+				"error", err,
+			)
+		}
 	}
 }
 

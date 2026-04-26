@@ -53,6 +53,32 @@ type Dispatcher struct {
 
 	// MaxRetriesPerStep caps retry attempts per plan step. Defaults to 3.
 	MaxRetriesPerStep int
+
+	// OnStepComplete fires after every PlanStep finishes (success or
+	// failure) so the caller can persist progress mid-workstream. Per
+	// DJ-073 ("On each PlanStep completion: dispatcher calls Save on the
+	// affected ActiveWorkstream"), the cmd/adopt path wires this to a
+	// per-step workstream.FileStore.Save so a SIGKILL during PlanStep N
+	// of M doesn't cost the user the prior N-1 steps' work on resume.
+	// Optional — when nil, persistence happens only via the tail
+	// recordStepProgress call after the workstream returns (existing
+	// behaviour, no resume granularity).
+	OnStepComplete StepCompleteHandler
+}
+
+// StepCompleteHandler is the per-step persistence hook. It runs
+// synchronously between steps, after Commit + Merge for successful steps
+// and immediately on failure. Errors from the handler are not propagated
+// (best-effort persistence) but should be logged by the handler itself.
+type StepCompleteHandler func(ctx context.Context, evt StepEvent)
+
+// StepEvent describes the outcome of a single PlanStep.
+type StepEvent struct {
+	WorkstreamID string
+	StepID       string
+	SessionID    string // last-known agent conversation ID
+	Success      bool
+	Message      string // populated on failure (escalation reason or commit/merge error)
 }
 
 // WorkstreamResult is the outcome of running a single workstream.
@@ -239,6 +265,8 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 
 	skipping := resumeFrom != nil
 	allPassed := true
+	featureBranch := "locutus/" + ws.ID
+	anyMerged := false
 	for _, step := range ws.Steps {
 		// Skip already-completed steps on resume.
 		if skipping {
@@ -257,15 +285,64 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 			initialSessionID = resumeFrom.SessionID
 		}
 
-		outcome, err := sup.SuperviseFrom(ctx, step, driver, wt.WorktreeDir, initialSessionID)
-		if err != nil {
-			result.Err = fmt.Errorf("step %s: %w", step.ID, err)
-			result.StepResults = append(result.StepResults, outcome)
-			allPassed = false
-			break
+		outcome, supErr := sup.SuperviseFrom(ctx, step, driver, wt.WorktreeDir, initialSessionID)
+		stepSuccess := supErr == nil && outcome != nil && outcome.Success
+		stepMessage := ""
+		sessionID := ""
+		if outcome != nil {
+			sessionID = outcome.SessionID
+			if !stepSuccess && outcome.Escalation != "" {
+				stepMessage = outcome.Escalation
+			}
 		}
-		result.StepResults = append(result.StepResults, outcome)
-		if !outcome.Success {
+		if supErr != nil {
+			stepMessage = supErr.Error()
+		}
+
+		// Per-step commit + merge for successful steps so the feature
+		// branch accumulates completed work as we go (DJ-074: "the
+		// already-completed steps' merged work forms the starting state"
+		// on resume). A commit failure mid-workstream demotes the step
+		// to failed so the persisted record is honest about what landed.
+		if stepSuccess {
+			committed, commitErr := wt.CommitIfChanges(ctx, fmt.Sprintf("workstream %s: step %s", ws.ID, step.ID))
+			if commitErr != nil {
+				stepSuccess = false
+				stepMessage = fmt.Sprintf("commit step %s: %v", step.ID, commitErr)
+				supErr = commitErr
+			} else if committed {
+				if mergeErr := wt.MergeToFeatureBranch(ctx, featureBranch); mergeErr != nil {
+					stepSuccess = false
+					stepMessage = fmt.Sprintf("merge step %s: %v", step.ID, mergeErr)
+					supErr = mergeErr
+				} else {
+					anyMerged = true
+				}
+			}
+		}
+
+		// Persist progress for this step before moving on. SIGKILL after
+		// this point on a successful step still leaves the work on the
+		// feature branch and the record marked complete; resume picks up
+		// at the next step.
+		if d.OnStepComplete != nil {
+			d.OnStepComplete(ctx, StepEvent{
+				WorkstreamID: ws.ID,
+				StepID:       step.ID,
+				SessionID:    sessionID,
+				Success:      stepSuccess,
+				Message:      stepMessage,
+			})
+		}
+
+		if outcome != nil {
+			result.StepResults = append(result.StepResults, outcome)
+		}
+
+		if !stepSuccess {
+			if supErr != nil && result.Err == nil {
+				result.Err = fmt.Errorf("step %s: %w", step.ID, supErr)
+			}
 			allPassed = false
 			break
 		}
@@ -276,25 +353,17 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 		result.AgentSessionID = result.StepResults[n-1].SessionID
 	}
 
+	if anyMerged {
+		// At least one step's work landed on the feature branch — that's
+		// where the durable artefact lives after Cleanup tears down the
+		// scratch branch.
+		result.BranchName = featureBranch
+	}
+
 	if !allPassed {
 		return result
 	}
 
-	// All steps passed: commit and merge to feature branch.
-	if err := wt.Commit(ctx, fmt.Sprintf("workstream %s complete", ws.ID)); err != nil {
-		// Commit may fail if there are no changes — that's fine for mock tests.
-		// In production, we'd distinguish "no changes" from real errors.
-		result.Success = true
-		return result
-	}
-
-	featureBranch := "locutus/" + ws.ID
-	if err := wt.MergeToFeatureBranch(ctx, featureBranch); err != nil {
-		result.Err = fmt.Errorf("merge to %s: %w", featureBranch, err)
-		return result
-	}
-
-	result.BranchName = featureBranch
 	result.Success = true
 	return result
 }

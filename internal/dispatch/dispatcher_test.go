@@ -3,10 +3,13 @@ package dispatch
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +17,7 @@ import (
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // setupDispatchRepo creates a real temp git repo and returns its path.
@@ -228,6 +232,112 @@ func TestDispatchPerAgentConcurrencyLimit(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, results, 3)
 	assert.LessOrEqual(t, int(peak.Load()), 1, "at most 1 claude-code workstream should run at a time")
+}
+
+// TestRunWorkstreamFiresOnStepCompletePerStep verifies the per-step
+// persistence hook (DJ-073: "On each PlanStep completion: dispatcher
+// calls Save on the affected ActiveWorkstream") fires once per step,
+// in plan order, with the right StepID and SessionID. Without this,
+// crash mid-workstream loses the prior steps' resume granularity.
+func TestRunWorkstreamFiresOnStepCompletePerStep(t *testing.T) {
+	repoDir := setupDispatchRepo(t)
+	plan := &spec.MasterPlan{
+		ID: "plan-step-events",
+		Workstreams: []spec.Workstream{
+			makeWorkstream("ws-three", "claude-code", 3),
+		},
+	}
+
+	var (
+		mu     sync.Mutex
+		events []StepEvent
+	)
+	d := &Dispatcher{
+		LLM:     mockLLMAllPass(3),
+		Drivers: map[string]StreamingDriver{"claude-code": &alwaysPassDriver{id: "claude-code"}},
+		Runner:  alwaysPassRunner(),
+		OnStepComplete: func(_ context.Context, evt StepEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, evt)
+		},
+	}
+
+	results, err := d.Dispatch(context.Background(), plan, repoDir, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.True(t, results[0].Success)
+
+	require.Len(t, events, 3, "OnStepComplete should fire once per step")
+	expectedIDs := []string{"ws-three-step-1", "ws-three-step-2", "ws-three-step-3"}
+	for i, evt := range events {
+		assert.Equal(t, "ws-three", evt.WorkstreamID)
+		assert.Equal(t, expectedIDs[i], evt.StepID, "step %d ID", i+1)
+		assert.True(t, evt.Success, "step %d should report success", i+1)
+		assert.Equal(t, "sess-claude-code", evt.SessionID, "step %d session", i+1)
+	}
+}
+
+// fileWritingDriver actually writes a file in the worktree as a side
+// effect of "running" the agent, so per-step CommitIfChanges has real
+// diffs to merge. Used to verify that DJ-074's "already-completed
+// steps' merged work" promise is now delivered: each successful step's
+// changes land on the feature branch as we go, not in one tail commit.
+type fileWritingDriver struct{ id string }
+
+func (d *fileWritingDriver) BuildCommand(ctx context.Context, step spec.PlanStep, workDir string) *exec.Cmd {
+	return exec.CommandContext(ctx, "sh", "-c",
+		fmt.Sprintf("printf %q > %s/%s.txt", step.Description, workDir, step.ID))
+}
+func (d *fileWritingDriver) BuildRetryCommand(ctx context.Context, step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
+	return d.BuildCommand(ctx, step, workDir)
+}
+func (d *fileWritingDriver) ParseStream(_ io.Reader) StreamParser {
+	return &fakeStreamParser{events: []AgentEvent{
+		{Kind: EventInit, SessionID: "sess-" + d.id},
+		{Kind: EventResult, Text: "done", SessionID: "sess-" + d.id},
+	}}
+}
+func (d *fileWritingDriver) RespondToAgent(ctx context.Context, sessionID, response string) (*exec.Cmd, error) {
+	return exec.CommandContext(ctx, "echo", "ok"), nil
+}
+
+// TestRunWorkstreamPerStepMergeAccumulatesOnFeatureBranch verifies the
+// per-step merge actually creates the feature branch with one commit
+// per step, so a SIGKILL'd workstream's resume can pick up from
+// `locutus/<wsID>` and skip already-merged steps (DJ-074).
+func TestRunWorkstreamPerStepMergeAccumulatesOnFeatureBranch(t *testing.T) {
+	repoDir := setupDispatchRepo(t)
+	plan := &spec.MasterPlan{
+		ID:          "plan-merge",
+		Workstreams: []spec.Workstream{makeWorkstream("ws-merge", "claude-code", 3)},
+	}
+
+	d := &Dispatcher{
+		LLM:     mockLLMAllPass(3),
+		Drivers: map[string]StreamingDriver{"claude-code": &fileWritingDriver{id: "claude-code"}},
+		Runner:  ProductionRunner,
+	}
+
+	results, err := d.Dispatch(context.Background(), plan, repoDir, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.True(t, results[0].Success, "workstream should succeed; err=%v", results[0].Err)
+	assert.Equal(t, "locutus/ws-merge", results[0].BranchName,
+		"BranchName should advance to the feature branch once any step has merged")
+
+	// Verify the feature branch carries one commit per step (plus
+	// merge commits from --no-ff). We grep for the per-step commit
+	// message format "workstream <wsID>: step <stepID>".
+	logOut := runOutput(t, repoDir, "git", "log", "--oneline", "locutus/ws-merge")
+	stepCommits := 0
+	for _, line := range strings.Split(strings.TrimSpace(logOut), "\n") {
+		if strings.Contains(line, "workstream ws-merge: step ws-merge-step-") {
+			stepCommits++
+		}
+	}
+	assert.Equal(t, 3, stepCommits,
+		"feature branch should have one commit per successful step; got log:\n%s", logOut)
 }
 
 func TestDispatchMissingDriver(t *testing.T) {

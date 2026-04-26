@@ -145,6 +145,25 @@ func (w *Worktree) Commit(ctx context.Context, message string) error {
 	return nil
 }
 
+// CommitIfChanges stages and commits any pending changes with the given
+// message, returning (true, nil) when a commit was created and (false, nil)
+// when the working tree was clean. Per-step persistence (DJ-073) calls this
+// for every step so research / validation / no-op steps don't error out the
+// way bare Commit does.
+func (w *Worktree) CommitIfChanges(ctx context.Context, message string) (bool, error) {
+	status, err := gitOutput(ctx, w.WorktreeDir, "status", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("status: %w", err)
+	}
+	if strings.TrimSpace(status) == "" {
+		return false, nil
+	}
+	if err := w.Commit(ctx, message); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // MergeToFeatureBranch merges the worktree branch into the given feature branch
 // in the main repository. If the feature branch does not exist, it is created.
 func (w *Worktree) MergeToFeatureBranch(ctx context.Context, featureBranch string) error {
