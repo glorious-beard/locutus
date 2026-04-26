@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+
 	"github.com/alecthomas/kong"
 	"github.com/chetan/locutus/cmd"
 	"github.com/joho/godotenv"
@@ -25,5 +27,8 @@ func main() {
 		kong.Vars{"version": version},
 	)
 	err := ctx.Run(&cli)
+	if code, ok := cmd.IsExitCode(err); ok {
+		os.Exit(code)
+	}
 	ctx.FatalIfErrorf(err)
 }

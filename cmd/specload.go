@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"log/slog"
 
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
@@ -20,7 +21,9 @@ func RunDiff(fsys specio.FS, id string) (*spec.BlastRadius, error) {
 
 	var traces spec.TraceabilityIndex
 	if data, err := fsys.ReadFile(".borg/spec/traces.json"); err == nil {
-		_ = json.Unmarshal(data, &traces)
+		if err := json.Unmarshal(data, &traces); err != nil {
+			slog.Warn("traces.json unmarshal failed; proceeding without traces", "error", err)
+		}
 	}
 
 	g := spec.BuildGraph(features, bugs, decisions, strategies, approaches, traces)

@@ -274,27 +274,11 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 	// Accumulate results across convergence iterations.
 	var allResults []RoundResult
 
-	// Bridge DAG events to WorkflowEvents.
-	var dagEvents chan executor.Event
-	var bridgeDone chan struct{}
-	if e.Events != nil {
-		dagEvents = make(chan executor.Event, 50)
-		bridgeDone = make(chan struct{})
-		go func() {
-			defer close(bridgeDone)
-			for evt := range dagEvents {
-				select {
-				case e.Events <- WorkflowEvent{
-					StepID:    evt.StepID,
-					Status:    evt.Status,
-					Message:   evt.Message,
-					Timestamp: evt.Timestamp,
-				}:
-				default:
-				}
-			}
-		}()
-	}
+	// Bridge DAG events to WorkflowEvents. The cleanup func is deferred so
+	// every return path joins the goroutine — earlier hand-written cleanup
+	// only ran on the success path and leaked on convergence/readiness errors.
+	dagEvents, stopBridge := e.startEventBridge()
+	defer stopBridge()
 
 	for iteration := 0; iteration < maxRounds; iteration++ {
 		if e.Events != nil {
@@ -378,10 +362,35 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 		state.ResearchResults = nil
 	}
 
-	if dagEvents != nil {
-		close(dagEvents)
-		<-bridgeDone // wait for bridge goroutine to drain
-	}
-
 	return allResults, nil
+}
+
+// startEventBridge spawns a goroutine that forwards executor events as
+// WorkflowEvents to e.Events. Returns the channel the executor should write
+// to and a cleanup func that closes the channel and waits for the goroutine
+// to drain. When e.Events is nil, both returns are no-ops.
+func (e *WorkflowExecutor) startEventBridge() (chan executor.Event, func()) {
+	if e.Events == nil {
+		return nil, func() {}
+	}
+	dagEvents := make(chan executor.Event, 50)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for evt := range dagEvents {
+			select {
+			case e.Events <- WorkflowEvent{
+				StepID:    evt.StepID,
+				Status:    evt.Status,
+				Message:   evt.Message,
+				Timestamp: evt.Timestamp,
+			}:
+			default:
+			}
+		}
+	}()
+	return dagEvents, func() {
+		close(dagEvents)
+		<-done
+	}
 }

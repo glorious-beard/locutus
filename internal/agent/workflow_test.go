@@ -2,12 +2,15 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const workflowYAML = `rounds:
@@ -310,6 +313,46 @@ func TestWorkflowRunWithRetryableError(t *testing.T) {
 	assert.Len(t, results, 1)
 	assert.Equal(t, "propose", results[0].StepID)
 	assert.Equal(t, 2, mock.CallCount())
+}
+
+// TestWorkflowCleansUpBridgeOnConvergenceError verifies that when Run takes
+// the convergence-error early-return path, the events-bridge goroutine still
+// exits — i.e., the cleanup is structurally guaranteed, not dependent on
+// reaching the trailing close. Regression guard for the leak that escaped
+// audit on 2026-04-25.
+func TestWorkflowCleansUpBridgeOnConvergenceError(t *testing.T) {
+	// First call: planner step succeeds. Second call: convergence check fails
+	// with a non-retryable error so GenerateWithRetry returns immediately and
+	// Run early-returns at the convergence-error branch.
+	mock := NewMockLLM(
+		mockResp("planner output"),
+		MockResponse{Err: errors.New("convergence model unavailable")},
+	)
+
+	events := make(chan WorkflowEvent, 100)
+	exec := &WorkflowExecutor{
+		LLM: mock,
+		AgentDefs: map[string]AgentDef{
+			"planner":     {ID: "planner", SystemPrompt: "plan."},
+			"convergence": {ID: "convergence", SystemPrompt: "judge."},
+		},
+		Workflow: &Workflow{
+			Rounds:    []WorkflowStep{{ID: "propose", Agent: "planner"}},
+			MaxRounds: 5,
+		},
+		Events: events,
+	}
+
+	before := runtime.NumGoroutine()
+	_, err := exec.Run(context.Background(), "Plan something.")
+	require.Error(t, err, "convergence model failure should error out")
+
+	// stopBridge blocks on the bridge goroutine's done channel before Run
+	// returns, so a leak shows up as an elevated count immediately. No
+	// settling delay needed; using Eventually here is unsafe because its
+	// own polling goroutine bumps the count.
+	assert.LessOrEqual(t, runtime.NumGoroutine(), before,
+		"bridge goroutine leaked after early-return")
 }
 
 func TestWorkflowEvents(t *testing.T) {

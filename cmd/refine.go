@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -380,7 +381,9 @@ func buildGraphForRefine(fsys specio.FS) *spec.SpecGraph {
 
 	var traces spec.TraceabilityIndex
 	if data, err := fsys.ReadFile(".borg/spec/traces.json"); err == nil {
-		_ = json.Unmarshal(data, &traces)
+		if err := json.Unmarshal(data, &traces); err != nil {
+			slog.Warn("traces.json unmarshal failed; proceeding without traces", "error", err)
+		}
 	}
 	return spec.BuildGraph(features, bugs, decisions, strategies, approaches, traces)
 }

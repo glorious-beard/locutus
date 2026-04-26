@@ -67,6 +67,45 @@ func TestErrNotFound(t *testing.T) {
 	assert.True(t, errors.Is(err, state.ErrNotFound))
 }
 
+// failingReadFS forces ReadFile to return a caller-specified error so we can
+// drive Load down its non-NotExist branch without provoking real IO failures.
+// Per DJ-068 the state store is the observed-state authority for the reconcile
+// loop; conflating "file missing" with "permission denied" / "IO error" would
+// cause the reconciler to re-classify a known Approach as unplanned and replan
+// completed work.
+type failingReadFS struct {
+	specio.FS
+	err error
+}
+
+func (f *failingReadFS) ReadFile(string) ([]byte, error) { return nil, f.err }
+
+func TestLoadDoesNotMaskIOErrorAsNotFound(t *testing.T) {
+	fsys := &failingReadFS{
+		FS:  specio.NewMemFS(),
+		err: errors.New("permission denied"),
+	}
+	store := state.NewFileStateStore(fsys, ".locutus/state")
+
+	_, err := store.Load("oauth-login")
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, state.ErrNotFound),
+		"non-NotExist errors must propagate, not collapse to ErrNotFound")
+	assert.Contains(t, err.Error(), "permission denied")
+}
+
+func TestWalkSurfacesIOErrors(t *testing.T) {
+	mem := specio.NewMemFS()
+	require.NoError(t, mem.MkdirAll(".locutus/state", 0o755))
+	require.NoError(t, mem.WriteFile(".locutus/state/oauth-login.yaml", []byte("approach_id: oauth-login\n"), 0o644))
+	fsys := &failingReadFS{FS: mem, err: errors.New("disk read failure")}
+	store := state.NewFileStateStore(fsys, ".locutus/state")
+
+	_, err := store.Walk()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disk read failure")
+}
+
 func TestOverwriteUpdatesStatus(t *testing.T) {
 	store := newStore()
 	s := sampleState("oauth-login")

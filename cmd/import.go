@@ -60,7 +60,7 @@ func (c *ImportCmd) Run(cli *CLI) error {
 	}
 	printImportResult(result)
 	if !result.Accepted {
-		os.Exit(1)
+		return ExitCode(1)
 	}
 	return nil
 }

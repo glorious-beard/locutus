@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"time"
@@ -170,21 +171,23 @@ func (c *AdoptCmd) Run(cli *CLI) error {
 		return nil
 	}
 	if !report.PrereqsOK {
-		os.Exit(2)
+		return ExitCode(2)
 	}
 	if report.Summary.OutOfSpec > 0 {
-		os.Exit(1)
+		return ExitCode(1)
 	}
 	if hasAnyFailedWorkstream(report) {
-		os.Exit(1)
+		return ExitCode(1)
 	}
 	return nil
 }
 
-// RunAdopt preserves the original signature for backward compat (MCP
-// handler + older tests). It runs classification + prereq gate + planned
-// state writes; if you want the full dispatch pipeline, use
-// RunAdoptWithConfig with a Plan + Dispatch wired in.
+// RunAdopt is the narrow entry point used by the MCP handler (cmd/mcp.go)
+// and the cmd-package tests. It runs classification + prereq gate + planned
+// state writes against fsys; pass scope to limit work to a subgraph and
+// dryRun to suppress mutations. For the full dispatch pipeline (planner +
+// supervised execution), construct AdoptConfig and call RunAdoptWithConfig
+// directly — that's the path AdoptCmd.Run uses.
 func RunAdopt(ctx context.Context, fsys specio.FS, scope string, dryRun bool) (*AdoptReport, error) {
 	return RunAdoptWithConfig(ctx, AdoptConfig{FS: fsys, Scope: scope, DryRun: dryRun})
 }
@@ -641,7 +644,9 @@ func loadSpecGraph(fsys specio.FS) (*spec.SpecGraph, error) {
 
 	var traces spec.TraceabilityIndex
 	if data, err := fsys.ReadFile(".borg/spec/traces.json"); err == nil {
-		_ = json.Unmarshal(data, &traces)
+		if err := json.Unmarshal(data, &traces); err != nil {
+			slog.Warn("traces.json unmarshal failed; proceeding without traces", "error", err)
+		}
 	}
 	return spec.BuildGraph(features, bugs, decisions, strategies, approaches, traces), nil
 }

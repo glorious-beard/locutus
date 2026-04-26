@@ -3,6 +3,7 @@ package state
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"path"
 	"sort"
 	"strings"
@@ -47,11 +48,16 @@ func (s *FileStateStore) Save(rs ReconciliationState) error {
 }
 
 // Load reads and unmarshals the state entry for approachID.
-// Returns ErrNotFound if no entry exists.
+// Returns ErrNotFound only when no entry exists; permission/IO/unmarshal
+// errors propagate so the reconciler can distinguish "Approach unplanned"
+// from a real disk problem (DJ-068).
 func (s *FileStateStore) Load(approachID string) (ReconciliationState, error) {
 	data, err := s.fsys.ReadFile(s.path(approachID))
 	if err != nil {
-		return ReconciliationState{}, ErrNotFound
+		if errors.Is(err, fs.ErrNotExist) {
+			return ReconciliationState{}, ErrNotFound
+		}
+		return ReconciliationState{}, fmt.Errorf("state load read: %w", err)
 	}
 	var rs ReconciliationState
 	if err := yaml.Unmarshal(data, &rs); err != nil {
