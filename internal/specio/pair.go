@@ -3,7 +3,6 @@ package specio
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/chetan/locutus/internal/frontmatter"
 )
@@ -68,10 +67,10 @@ func SavePair[T any](fsys FS, basePath string, obj T, body string) error {
 	}
 
 	// Write JSON first, then MD.
-	if err := atomicWrite(fsys, basePath+".json", jsonData, 0o644); err != nil {
+	if err := AtomicWriteFile(fsys, basePath+".json", jsonData, 0o644); err != nil {
 		return fmt.Errorf("save pair write json: %w", err)
 	}
-	if err := atomicWrite(fsys, basePath+".md", mdData, 0o644); err != nil {
+	if err := AtomicWriteFile(fsys, basePath+".md", mdData, 0o644); err != nil {
 		return fmt.Errorf("save pair write md: %w", err)
 	}
 	return nil
@@ -100,15 +99,3 @@ func extractHeader(obj any) (FrontmatterHeader, error) {
 	}, nil
 }
 
-// atomicWrite writes data to path atomically. For OSFS it writes to a temp file
-// then renames; for other FS implementations it writes directly.
-func atomicWrite(fsys FS, path string, data []byte, perm os.FileMode) error {
-	if osfs, ok := fsys.(*OSFS); ok {
-		tmp := osfs.resolve(path) + ".tmp"
-		if err := os.WriteFile(tmp, data, perm); err != nil {
-			return err
-		}
-		return os.Rename(tmp, osfs.resolve(path))
-	}
-	return fsys.WriteFile(path, data, perm)
-}

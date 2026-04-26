@@ -46,7 +46,7 @@ func GenerateTaskfile(ctx context.Context, llm LLM, fsys specio.FS, req Artifact
 		return fmt.Errorf("generate taskfile: %w", err)
 	}
 
-	return fsys.WriteFile("Taskfile.yml", []byte(resp.Content), 0o644)
+	return specio.AtomicWriteFile(fsys, "Taskfile.yml", []byte(resp.Content), 0o644)
 }
 
 // GenerateClaudeMD produces a CLAUDE.md via LLM.
@@ -85,7 +85,7 @@ func GenerateClaudeMD(ctx context.Context, llm LLM, fsys specio.FS, req Artifact
 		return fmt.Errorf("generate claude.md: %w", err)
 	}
 
-	return fsys.WriteFile("CLAUDE.md", []byte(resp.Content), 0o644)
+	return specio.AtomicWriteFile(fsys, "CLAUDE.md", []byte(resp.Content), 0o644)
 }
 
 // GenerateAgentsMD produces an AGENTS.md via LLM.
@@ -124,5 +124,5 @@ func GenerateAgentsMD(ctx context.Context, llm LLM, fsys specio.FS, req Artifact
 		return fmt.Errorf("generate agents.md: %w", err)
 	}
 
-	return fsys.WriteFile("AGENTS.md", []byte(resp.Content), 0o644)
+	return specio.AtomicWriteFile(fsys, "AGENTS.md", []byte(resp.Content), 0o644)
 }

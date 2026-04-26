@@ -26,6 +26,7 @@ package workstream
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"path"
 	"sort"
 	"strings"
@@ -162,18 +163,23 @@ func (s *FileStore) SavePlan(plan spec.MasterPlan) error {
 	if err != nil {
 		return fmt.Errorf("workstream save plan marshal: %w", err)
 	}
-	if err := s.fsys.WriteFile(s.planPath(), data, 0o644); err != nil {
+	if err := specio.AtomicWriteFile(s.fsys, s.planPath(), data, 0o644); err != nil {
 		return fmt.Errorf("workstream save plan write: %w", err)
 	}
 	return nil
 }
 
 // LoadPlan reads the MasterPlan record for this store's plan. Returns
-// ErrNotFound if no plan.yaml exists yet.
+// ErrNotFound only when plan.yaml does not exist; permission/IO/unmarshal
+// errors propagate so the resume classifier can distinguish "no plan in
+// flight" from "plan exists but unreadable" (DJ-073).
 func (s *FileStore) LoadPlan() (PlanRecord, error) {
 	data, err := s.fsys.ReadFile(s.planPath())
 	if err != nil {
-		return PlanRecord{}, ErrNotFound
+		if errors.Is(err, fs.ErrNotExist) {
+			return PlanRecord{}, ErrNotFound
+		}
+		return PlanRecord{}, fmt.Errorf("workstream load plan read: %w", err)
 	}
 	var rec PlanRecord
 	if err := yaml.Unmarshal(data, &rec); err != nil {
@@ -198,17 +204,23 @@ func (s *FileStore) Save(rec ActiveWorkstream) error {
 	if err != nil {
 		return fmt.Errorf("workstream save marshal: %w", err)
 	}
-	if err := s.fsys.WriteFile(s.workstreamPath(rec.WorkstreamID), data, 0o644); err != nil {
+	if err := specio.AtomicWriteFile(s.fsys, s.workstreamPath(rec.WorkstreamID), data, 0o644); err != nil {
 		return fmt.Errorf("workstream save write: %w", err)
 	}
 	return nil
 }
 
-// Load reads the ActiveWorkstream record for id. Returns ErrNotFound if absent.
+// Load reads the ActiveWorkstream record for id. Returns ErrNotFound only
+// when the file does not exist; permission/IO/unmarshal errors propagate
+// so the caller can distinguish "no record" from "record exists but
+// unreadable" (DJ-073).
 func (s *FileStore) Load(id string) (ActiveWorkstream, error) {
 	data, err := s.fsys.ReadFile(s.workstreamPath(id))
 	if err != nil {
-		return ActiveWorkstream{}, ErrNotFound
+		if errors.Is(err, fs.ErrNotExist) {
+			return ActiveWorkstream{}, ErrNotFound
+		}
+		return ActiveWorkstream{}, fmt.Errorf("workstream load read: %w", err)
 	}
 	var rec ActiveWorkstream
 	if err := yaml.Unmarshal(data, &rec); err != nil {

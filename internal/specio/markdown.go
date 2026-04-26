@@ -24,7 +24,7 @@ func SaveMarkdown[T any](fsys FS, path string, obj T, body string) error {
 	}
 	_ = yamlData // marshaled above only to surface errors early
 
-	if err := atomicWrite(fsys, path, mdData, 0o644); err != nil {
+	if err := AtomicWriteFile(fsys, path, mdData, 0o644); err != nil {
 		return fmt.Errorf("save markdown write: %w", err)
 	}
 	return nil

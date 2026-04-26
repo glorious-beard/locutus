@@ -41,7 +41,7 @@ func (s *FileStateStore) Save(rs ReconciliationState) error {
 	if err != nil {
 		return fmt.Errorf("state save marshal: %w", err)
 	}
-	if err := s.fsys.WriteFile(s.path(rs.ApproachID), data, 0o644); err != nil {
+	if err := specio.AtomicWriteFile(s.fsys, s.path(rs.ApproachID), data, 0o644); err != nil {
 		return fmt.Errorf("state save write: %w", err)
 	}
 	return nil

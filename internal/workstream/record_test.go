@@ -1,6 +1,7 @@
 package workstream_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -133,6 +134,65 @@ func TestLoadMissingReturnsErrNotFound(t *testing.T) {
 
 	_, err = store.LoadPlan()
 	assert.ErrorIs(t, err, workstream.ErrNotFound)
+}
+
+// failingReadFS forces ReadFile to return a caller-specified error so we can
+// drive Load/LoadPlan down their non-NotExist branches. Per DJ-073 the
+// classifier's resume-decide branch needs to distinguish "no plan on disk"
+// (treat as nothing in flight) from "plan exists but unreadable" (surface
+// the disk problem) — collapsing both to ErrNotFound silently invalidates
+// recoverable plans on transient IO failure. Same bug class as the
+// state.Load fix in commit 74b3104.
+type failingReadFS struct {
+	specio.FS
+	err error
+}
+
+func (f *failingReadFS) ReadFile(string) ([]byte, error) { return nil, f.err }
+
+func TestLoadDoesNotMaskIOErrorAsNotFound(t *testing.T) {
+	fsys := &failingReadFS{
+		FS:  specio.NewMemFS(),
+		err: errors.New("permission denied"),
+	}
+	store := workstream.NewFileStore(fsys, ".locutus/workstreams", planID)
+
+	_, err := store.Load("ws-a")
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, workstream.ErrNotFound),
+		"non-NotExist errors must propagate, not collapse to ErrNotFound")
+	assert.Contains(t, err.Error(), "permission denied")
+}
+
+func TestLoadPlanDoesNotMaskIOErrorAsNotFound(t *testing.T) {
+	fsys := &failingReadFS{
+		FS:  specio.NewMemFS(),
+		err: errors.New("disk read failure"),
+	}
+	store := workstream.NewFileStore(fsys, ".locutus/workstreams", planID)
+
+	_, err := store.LoadPlan()
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, workstream.ErrNotFound),
+		"non-NotExist errors must propagate, not collapse to ErrNotFound")
+	assert.Contains(t, err.Error(), "disk read failure")
+}
+
+func TestLoadCorruptYAMLPropagatesUnmarshalError(t *testing.T) {
+	mem := specio.NewMemFS()
+	require.NoError(t, mem.MkdirAll(".locutus/workstreams/"+planID, 0o755))
+	// Truncated YAML — simulates a SIGKILL mid-Save.
+	require.NoError(t, mem.WriteFile(
+		".locutus/workstreams/"+planID+"/ws-a.yaml",
+		[]byte("workstream_id: ws-a\nplan_id: ["),
+		0o644,
+	))
+	store := workstream.NewFileStore(mem, ".locutus/workstreams", planID)
+
+	_, err := store.Load("ws-a")
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, workstream.ErrNotFound))
+	assert.Contains(t, err.Error(), "unmarshal")
 }
 
 func TestWalkSortedByID(t *testing.T) {

@@ -45,7 +45,7 @@ func (h *Historian) Record(event Event) error {
 		return fmt.Errorf("history mkdir %s: %w", h.dir, err)
 	}
 	fp := path.Join(h.dir, event.ID+".json")
-	return h.fsys.WriteFile(fp, data, 0o644)
+	return specio.AtomicWriteFile(h.fsys, fp, data, 0o644)
 }
 
 // Events returns all recorded events, sorted by timestamp ascending.
