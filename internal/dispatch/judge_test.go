@@ -72,7 +72,7 @@ func TestMonitorCycle_MalformedJSON_ReturnsError(t *testing.T) {
 
 	v, err := sup.monitorCycle(context.Background(), newTestStep(), []AgentEvent{{Kind: EventText}})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parse monitor verdict")
+	assert.Contains(t, err.Error(), "parse llm response")
 	assert.Nil(t, v, "no verdict returned on parse failure")
 }
 

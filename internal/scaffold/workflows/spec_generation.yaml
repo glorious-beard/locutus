@@ -1,0 +1,42 @@
+# Spec-generation council workflow. Driven by `locutus refine goals`
+# and `locutus import <doc>` (post-admission planning pass).
+#
+# The flow:
+#   1. survey   — a senior-engineer scout brief: domain read, tech options,
+#                 the implicit assumptions GOALS.md leaves out (scale, cost,
+#                 ops model, deployment posture, availability, compliance).
+#   2. propose  — the architect commits to a SpecProposal, honoring the
+#                 scout's implicit_assumptions as strategy+decision pairs.
+#   3. critique — four specialist critics run in parallel: architecture,
+#                 DevOps, SRE, cost. Each emits CriticIssues from its own
+#                 lens. The orchestrator merges issues into state.Concerns.
+#   4. revise   — fires only when there ARE concerns. The architect
+#                 emits a complete corrected SpecProposal addressing every
+#                 issue. Output overwrites the prior proposal.
+#
+# max_rounds=1 because there is no convergence agent in this workflow —
+# the executor will break after one full pass. Increase it (and add a
+# convergence agent) only if multi-round critique is genuinely needed;
+# at six LLM calls per iteration the cost adds up fast.
+rounds:
+  - id: survey
+    agent: spec_scout
+    parallel: false
+    merge_as: scout_brief
+  - id: propose
+    agent: spec_architect
+    parallel: false
+    depends_on: [survey]
+    merge_as: proposed_spec
+  - id: critique
+    agents: [architect_critic, devops_critic, sre_critic, cost_critic]
+    parallel: true
+    depends_on: [propose]
+    merge_as: critic_issues
+  - id: revise
+    agent: spec_architect
+    parallel: false
+    depends_on: [critique]
+    conditional: has_concerns
+    merge_as: revisions
+max_rounds: 1

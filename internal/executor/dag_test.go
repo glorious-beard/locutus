@@ -590,6 +590,63 @@ func TestPerTypeLimitCombinedWithGlobalLimit(t *testing.T) {
 	assert.LessOrEqual(t, int(maxSeen.Load()), 2, "global limit should cap concurrency at 2")
 }
 
+func TestRunRejectsCycle(t *testing.T) {
+	// Cycle: A → B → C → A. The original implementation surfaced this
+	// mid-run as a generic "deadlock" error after attempting wave
+	// scheduling. The refactor catches it before any step runs, via
+	// dominikbraun/graph's PreventCycles + TopologicalSort.
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{ID: "A", DependsOn: []string{"C"}},
+			{ID: "B", DependsOn: []string{"A"}},
+			{ID: "C", DependsOn: []string{"B"}},
+		},
+		RunStep:  runStep,
+		Merge:    merge,
+		Snapshot: snapshot,
+	}
+
+	state := &testState{}
+	results, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+
+	assert.Error(t, err, "cycles must be rejected before any step runs")
+	assert.Contains(t, err.Error(), "cycle",
+		"error should name the failure as a cycle, not a generic deadlock")
+	assert.Empty(t, results, "no step output should be produced when the graph is invalid")
+	assert.Empty(t, state.Log, "no step should run when the graph is invalid")
+}
+
+func TestRunRejectsDuplicateStepIDs(t *testing.T) {
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{ID: "A"},
+			{ID: "A"},
+		},
+		RunStep:  runStep,
+		Merge:    merge,
+		Snapshot: snapshot,
+	}
+
+	_, err := executor.NewExecutor(cfg).Run(context.Background(), &testState{})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate step id")
+}
+
+func TestRunRejectsUndeclaredDependency(t *testing.T) {
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{ID: "A", DependsOn: []string{"missing"}},
+		},
+		RunStep:  runStep,
+		Merge:    merge,
+		Snapshot: snapshot,
+	}
+
+	_, err := executor.NewExecutor(cfg).Run(context.Background(), &testState{})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `depends on undeclared step "missing"`)
+}
+
 func TestStepTypeFieldOptional(t *testing.T) {
 	// Steps without a Type field should work normally and not be affected by TypeLimits.
 	cfg := executor.Config[testState]{

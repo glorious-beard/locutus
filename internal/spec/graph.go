@@ -6,8 +6,10 @@ import (
 	dgraph "github.com/dominikbraun/graph"
 )
 
-// RootID is the well-known ID for the GOALS.md root node.
-const RootID = "GOALS.md"
+// RootID is the well-known ID for the Goals root node — reserved so users
+// can address it directly (e.g. `locutus refine goals`). The id is purely
+// in-memory; no spec file on disk is named "goals".
+const RootID = "goals"
 
 // GraphNode represents a vertex in the spec dependency graph.
 type GraphNode struct {

@@ -20,15 +20,20 @@ type Finding struct {
 // agents receive read-only snapshots via StateSnapshot, and their results are
 // merged back by the orchestrator after all parallel agents complete.
 type PlanningState struct {
-	Round            int        `json:"round"`
-	Prompt           string     `json:"prompt"`
-	ProposedSpec     string     `json:"proposed_spec,omitempty"`
-	Concerns         []Concern  `json:"concerns,omitempty"`
-	ResearchResults  []Finding  `json:"research_results,omitempty"`
-	Revisions        string     `json:"revisions,omitempty"`
-	Record           string     `json:"record,omitempty"`
-	OpenConcerns     []string   `json:"open_concerns,omitempty"`
-	ResolvedConcerns []string   `json:"resolved_concerns,omitempty"`
+	Round            int       `json:"round"`
+	Prompt           string    `json:"prompt"`
+	ProposedSpec     string    `json:"proposed_spec,omitempty"`
+	Concerns         []Concern `json:"concerns,omitempty"`
+	ResearchResults  []Finding `json:"research_results,omitempty"`
+	Revisions        string    `json:"revisions,omitempty"`
+	Record           string    `json:"record,omitempty"`
+	OpenConcerns     []string  `json:"open_concerns,omitempty"`
+	ResolvedConcerns []string  `json:"resolved_concerns,omitempty"`
+	// ScoutBrief carries a survey-step output (e.g. the spec-generation
+	// council's spec_scout) into downstream propose/revise rounds. It is
+	// the raw JSON of an agent.ScoutBrief — projection.go formats it
+	// for human-readable inclusion in the proposer's user message.
+	ScoutBrief string `json:"scout_brief,omitempty"`
 }
 
 // StateSnapshot is a read-only copy of PlanningState fields relevant to a
@@ -41,6 +46,7 @@ type StateSnapshot struct {
 	ResearchResults []Finding
 	Revisions       string
 	OpenConcerns    []string
+	ScoutBrief      string
 }
 
 // Snapshot creates a read-only copy of the current state. Slice fields are
@@ -52,6 +58,7 @@ func (s *PlanningState) Snapshot() StateSnapshot {
 		Prompt:       s.Prompt,
 		ProposedSpec: s.ProposedSpec,
 		Revisions:    s.Revisions,
+		ScoutBrief:   s.ScoutBrief,
 	}
 	if len(s.Concerns) > 0 {
 		snap.Concerns = make([]Concern, len(s.Concerns))

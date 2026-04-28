@@ -9,28 +9,37 @@
 //   - An optional Snapshot function for safe concurrent reads
 //   - An optional Converged function for iterative convergence loops
 //   - An optional MaxConcurrency limit for resource-constrained environments
+//
+// The DAG itself is held in github.com/dominikbraun/graph (the same library
+// the spec graph uses, per DJ-084) — cycle detection and predecessor lookups
+// come from there. The runtime semantics (RunStep callbacks, snapshot
+// isolation, parallelism limits, convergence loops, conditional steps) live
+// in this package.
 package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
+
+	dgraph "github.com/dominikbraun/graph"
 )
 
 // Step defines a unit of work in the DAG.
 type Step struct {
 	ID          string
-	DependsOn   []string // IDs of steps that must complete before this one
-	Parallel    bool     // if true, can run concurrently with other ready steps
-	Type        string   // optional; used with Config.TypeLimits for per-type concurrency
+	DependsOn   []string             // IDs of steps that must complete before this one
+	Parallel    bool                 // if true, can run concurrently with other ready steps
+	Type        string               // optional; used with Config.TypeLimits for per-type concurrency
 	Conditional func(state any) bool // optional; if non-nil and returns false, step is skipped
 }
 
 // StepResult is the output of executing a single step.
 type StepResult struct {
 	StepID string
-	Output any    // caller-defined payload
+	Output any // caller-defined payload
 	Err    error
 }
 
@@ -94,7 +103,18 @@ func NewExecutor[S any](cfg Config[S]) *Executor[S] {
 
 // Run executes the DAG, optionally looping until convergence. Returns all
 // step results from all iterations.
+//
+// Before any step runs, Run validates the DAG: it builds the graph,
+// rejects duplicate step IDs and edges to undeclared steps, and runs
+// dgraph.TopologicalSort to surface cycles up-front. Previously a cycle
+// manifested mid-run as a generic "deadlock" error; now it fails fast
+// with the cycle's vertices named.
 func (e *Executor[S]) Run(ctx context.Context, state *S) ([]StepResult, error) {
+	graph, stepMap, err := buildStepGraph(e.cfg.Steps)
+	if err != nil {
+		return nil, err
+	}
+
 	maxIter := e.cfg.MaxIterations
 	if maxIter <= 0 {
 		maxIter = 1
@@ -106,7 +126,7 @@ func (e *Executor[S]) Run(ctx context.Context, state *S) ([]StepResult, error) {
 	var allResults []StepResult
 
 	for iter := 0; iter < maxIter; iter++ {
-		results, err := e.executeOnce(ctx, state)
+		results, err := e.executeOnce(ctx, state, graph, stepMap)
 		allResults = append(allResults, results...)
 		if err != nil {
 			return allResults, err
@@ -128,32 +148,71 @@ func (e *Executor[S]) Run(ctx context.Context, state *S) ([]StepResult, error) {
 	return allResults, nil
 }
 
-// executeOnce runs the DAG once, executing steps in dependency order with
-// bounded parallelism.
-func (e *Executor[S]) executeOnce(ctx context.Context, state *S) ([]StepResult, error) {
-	// Build lookup and track completion.
-	completed := make(map[string]bool)
-	stepMap := make(map[string]Step, len(e.cfg.Steps))
-	for _, s := range e.cfg.Steps {
+// buildStepGraph constructs a dominikbraun/graph DAG from the step list,
+// validates structure, and returns it along with an id→Step lookup. Any
+// of these conditions returns an error: duplicate step ID, edge to an
+// undeclared step, or a cycle (caught by TopologicalSort).
+func buildStepGraph(steps []Step) (dgraph.Graph[string, Step], map[string]Step, error) {
+	stepMap := make(map[string]Step, len(steps))
+	g := dgraph.New(func(s Step) string { return s.ID }, dgraph.Directed(), dgraph.PreventCycles())
+
+	for _, s := range steps {
+		if _, dup := stepMap[s.ID]; dup {
+			return nil, nil, fmt.Errorf("duplicate step id %q", s.ID)
+		}
 		stepMap[s.ID] = s
+		if err := g.AddVertex(s); err != nil {
+			return nil, nil, fmt.Errorf("add step %q to graph: %w", s.ID, err)
+		}
 	}
 
-	var allResults []StepResult
-
-	for len(completed) < len(e.cfg.Steps) {
-		// Find all steps whose dependencies are satisfied and aren't yet completed.
-		var ready []Step
-		for _, s := range e.cfg.Steps {
-			if completed[s.ID] {
-				continue
+	// Edge direction is dependency → dependent: dgraph.PredecessorMap then
+	// gives us each step's prerequisites, which is what wave-selection
+	// reads. dgraph.PreventCycles errors on AddEdge if a cycle would form,
+	// so we get cycle detection at edge-insertion time.
+	for _, s := range steps {
+		for _, dep := range s.DependsOn {
+			if _, ok := stepMap[dep]; !ok {
+				return nil, nil, fmt.Errorf("step %q depends on undeclared step %q", s.ID, dep)
 			}
-			if depsReady(s.DependsOn, completed) {
-				ready = append(ready, s)
+			if err := g.AddEdge(dep, s.ID); err != nil {
+				if errors.Is(err, dgraph.ErrEdgeCreatesCycle) {
+					return nil, nil, fmt.Errorf("dependency cycle reaches step %q via %q", s.ID, dep)
+				}
+				return nil, nil, fmt.Errorf("add dependency %q → %q: %w", dep, s.ID, err)
 			}
 		}
+	}
 
-		if len(ready) == 0 && len(completed) < len(e.cfg.Steps) {
-			return allResults, fmt.Errorf("deadlock: no steps ready but %d incomplete", len(e.cfg.Steps)-len(completed))
+	// Belt-and-braces: TopologicalSort double-checks acyclicity. With
+	// PreventCycles in play this should always succeed, but a future
+	// refactor that drops PreventCycles would still trip the check here.
+	if _, err := dgraph.TopologicalSort(g); err != nil {
+		return nil, nil, fmt.Errorf("dependency cycle: %w", err)
+	}
+
+	return g, stepMap, nil
+}
+
+// executeOnce runs the DAG once, executing steps in dependency order with
+// bounded parallelism. Wave selection comes from the graph's predecessor
+// map: a step is "ready" when every predecessor has been marked completed.
+func (e *Executor[S]) executeOnce(ctx context.Context, state *S, g dgraph.Graph[string, Step], stepMap map[string]Step) ([]StepResult, error) {
+	predecessors, err := g.PredecessorMap()
+	if err != nil {
+		return nil, fmt.Errorf("predecessor map: %w", err)
+	}
+
+	completed := make(map[string]bool, len(stepMap))
+	var allResults []StepResult
+
+	for len(completed) < len(stepMap) {
+		ready := readySteps(stepMap, predecessors, completed)
+		if len(ready) == 0 {
+			// Should be unreachable: buildStepGraph runs TopologicalSort
+			// up front, so a cycle can't survive into executeOnce.
+			// Surface a precise error if it ever does.
+			return allResults, fmt.Errorf("no steps ready but %d incomplete (likely a graph-building bug)", len(stepMap)-len(completed))
 		}
 
 		// Separate parallel-eligible and sequential steps.
@@ -200,6 +259,34 @@ func (e *Executor[S]) executeOnce(ctx context.Context, state *S) ([]StepResult, 
 	}
 
 	return allResults, nil
+}
+
+// readySteps returns steps that have every predecessor satisfied (in
+// completed) and aren't themselves completed yet. Iteration order is
+// driven by stepMap (Go's map iteration is randomised, but the wave
+// then partitions into parallel/sequential which makes ordering within
+// the wave irrelevant for correctness; only the set matters).
+func readySteps(stepMap map[string]Step, predecessors map[string]map[string]dgraph.Edge[string], completed map[string]bool) []Step {
+	var ready []Step
+	for id, step := range stepMap {
+		if completed[id] {
+			continue
+		}
+		if !allPredecessorsCompleted(predecessors[id], completed) {
+			continue
+		}
+		ready = append(ready, step)
+	}
+	return ready
+}
+
+func allPredecessorsCompleted(preds map[string]dgraph.Edge[string], completed map[string]bool) bool {
+	for predID := range preds {
+		if !completed[predID] {
+			return false
+		}
+	}
+	return true
 }
 
 // runSingle executes one step sequentially. Returns (result, skipped, error).
@@ -336,13 +423,4 @@ func (e *Executor[S]) emit(stepID, status, message string) {
 		default:
 		}
 	}
-}
-
-func depsReady(deps []string, completed map[string]bool) bool {
-	for _, d := range deps {
-		if !completed[d] {
-			return false
-		}
-	}
-	return true
 }

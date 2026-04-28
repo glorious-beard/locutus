@@ -22,7 +22,6 @@ package remediate
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -180,13 +179,9 @@ func invokeRemediator(ctx context.Context, llm agent.LLM, gaps []agent.Gap, exis
 			{Role: "user", Content: buildPrompt(gaps, existing)},
 		},
 	}
-	resp, err := llm.Generate(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("remediator generate: %w", err)
-	}
 	var plan Plan
-	if err := json.Unmarshal([]byte(resp.Content), &plan); err != nil {
-		return nil, fmt.Errorf("remediator parse: %w", err)
+	if err := agent.GenerateInto(ctx, llm, req, &plan); err != nil {
+		return nil, fmt.Errorf("remediator: %w", err)
 	}
 	return &plan, nil
 }

@@ -127,15 +127,14 @@ type AdoptSummary struct {
 const workstreamsDir = ".locutus/workstreams"
 
 func (c *AdoptCmd) Run(ctx context.Context, cli *CLI) error {
-	cwd, err := os.Getwd()
+	fsys, root, err := projectFS()
 	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
+		return err
 	}
-	fsys := specio.NewOSFS(cwd)
 
 	cfg := AdoptConfig{
 		FS:              fsys,
-		RepoDir:         cwd,
+		RepoDir:         root,
 		Scope:           c.Scope,
 		DryRun:          c.DryRun,
 		DiscardInFlight: c.DiscardInFlight,

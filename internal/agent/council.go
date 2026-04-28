@@ -86,9 +86,16 @@ func BuildGenerateRequest(def AgentDef, messages []Message) GenerateRequest {
 
 	systemPrompt := def.SystemPrompt
 
-	// Append JSON schema if output_schema is specified.
+	// If the agent declares an output_schema, look up the registered
+	// example value. We pass it through GenerateRequest.OutputSchema so
+	// the LLM provider enforces JSON output natively (Anthropic forced
+	// tool-use, Gemini responseSchema). Also append the schema example
+	// to the system prompt as documentation for providers that don't
+	// support native constrained output.
+	var schemaValue any
 	if def.OutputSchema != "" {
 		if schema, ok := schemaRegistry[def.OutputSchema]; ok {
+			schemaValue = schema
 			schemaJSON, err := json.MarshalIndent(schema, "", "  ")
 			if err == nil {
 				systemPrompt += "\n\n## Output JSON Schema\n\n```json\n" + string(schemaJSON) + "\n```\n"
@@ -101,9 +108,10 @@ func BuildGenerateRequest(def AgentDef, messages []Message) GenerateRequest {
 	msgs = append(msgs, messages...)
 
 	return GenerateRequest{
-		Model:       model,
-		Messages:    msgs,
-		Temperature: def.Temperature,
+		Model:        model,
+		Messages:     msgs,
+		Temperature:  def.Temperature,
+		OutputSchema: schemaValue,
 	}
 }
 

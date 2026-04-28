@@ -3,8 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 
+	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/render"
 	"github.com/chetan/locutus/internal/scaffold"
 	"github.com/chetan/locutus/internal/spec"
@@ -18,12 +18,12 @@ type McpCmd struct {
 }
 
 func (c *McpCmd) Run(ctx context.Context, cli *CLI) error {
-	cwd, err := os.Getwd()
+	root, err := specio.FindProjectRootFromCwd()
 	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
+		return fmt.Errorf("mcp: %w — start `locutus mcp` from inside a Locutus project", err)
 	}
 
-	server := NewMCPServerWithDir(cwd)
+	server := NewMCPServerWithDir(root)
 
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		return fmt.Errorf("mcp server: %w", err)
@@ -43,6 +43,7 @@ type importInput struct {
 	Content    string `json:"content"`
 	Type       string `json:"type,omitempty"`
 	SkipTriage bool   `json:"skip_triage,omitempty"`
+	NoPlan     bool   `json:"no_plan,omitempty"`
 	DryRun     bool   `json:"dry_run,omitempty"`
 }
 
@@ -115,7 +116,15 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		if kind == "" {
 			kind = "feature"
 		}
-		result, err := RunImport(ctx, fsys, []byte(input.Content), kind, input.SkipTriage, input.DryRun)
+		var llm agent.LLM
+		if !input.SkipTriage {
+			var err error
+			llm, _, err = recordingLLM(fsys, dir, "mcp:import")
+			if err != nil {
+				return errorResult(err.Error()), nil, nil
+			}
+		}
+		result, err := RunImport(ctx, llm, fsys, []byte(input.Content), "", kind, input.SkipTriage, input.NoPlan, input.DryRun)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}

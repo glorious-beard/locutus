@@ -14,7 +14,6 @@ package cascade
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -244,9 +243,11 @@ func RewriteBug(
 	return true, result.Rationale, nil
 }
 
-// invokeRewriter assembles the rewriter prompt and parses the JSON reply.
-// Kept as a single call — the rewriter agent is deliberately narrow, so we
-// don't need retries or structured-output libraries here.
+// invokeRewriter assembles the rewriter prompt and runs the LLM call with
+// provider-enforced structured output (via agent.GenerateInto → Genkit
+// WithOutputType). The schema for RewriteResult is derived from the Go
+// type, so Gemini's responseSchema and Anthropic's OutputConfig
+// constrain the response at the API layer rather than after the fact.
 func invokeRewriter(
 	ctx context.Context,
 	llm agent.LLM,
@@ -274,13 +275,9 @@ func invokeRewriter(
 			{Role: "user", Content: prompt.String()},
 		},
 	}
-	resp, err := llm.Generate(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("rewriter generate: %w", err)
-	}
 	var out RewriteResult
-	if err := json.Unmarshal([]byte(resp.Content), &out); err != nil {
-		return nil, fmt.Errorf("rewriter parse: %w", err)
+	if err := agent.GenerateInto(agent.WithRole(ctx, "rewriter"), llm, req, &out); err != nil {
+		return nil, fmt.Errorf("rewriter: %w", err)
 	}
 	return &out, nil
 }

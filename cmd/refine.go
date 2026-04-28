@@ -37,10 +37,11 @@ type RefineCmd struct {
 // Exactly one of `Cascade` (Decision path) or `Rewrite` (non-Decision
 // paths) is populated.
 type RefineResult struct {
-	NodeID   string          `json:"node_id"`
-	NodeKind spec.NodeKind   `json:"node_kind"`
-	Cascade  *cascade.Result `json:"cascade,omitempty"`
-	Rewrite  *RewriteSummary `json:"rewrite,omitempty"`
+	NodeID    string             `json:"node_id"`
+	NodeKind  spec.NodeKind      `json:"node_kind"`
+	Cascade   *cascade.Result    `json:"cascade,omitempty"`
+	Rewrite   *RewriteSummary    `json:"rewrite,omitempty"`
+	Generated *GenerationSummary `json:"generated,omitempty"`
 }
 
 // RewriteSummary captures the outcome of a Feature / Strategy / Bug /
@@ -54,11 +55,10 @@ type RewriteSummary struct {
 }
 
 func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
-	cwd, err := os.Getwd()
+	fsys, root, err := projectFS()
 	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
+		return err
 	}
-	fsys := specio.NewOSFS(cwd)
 
 	kind, err := resolveNodeKind(fsys, c.ID)
 	if err != nil {
@@ -69,7 +69,7 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 		return renderRefineDryRun(fsys, c.ID, kind)
 	}
 
-	llm, err := getLLM()
+	llm, rec, err := recordingLLM(fsys, root, "refine "+c.ID)
 	if err != nil {
 		return err
 	}
@@ -83,6 +83,7 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 	printRefineSummary(result)
+	fmt.Printf("Session: %s\n", rec.Path())
 	return nil
 }
 
@@ -102,10 +103,48 @@ func dispatchRefine(ctx context.Context, llm agent.LLM, fsys specio.FS, id strin
 	case spec.KindApproach:
 		return RunRefineApproach(ctx, llm, fsys, id)
 	case spec.KindGoals:
-		return nil, fmt.Errorf("refine: goals are human-authored; edit GOALS.md directly")
+		return RunRefineGoals(ctx, llm, fsys)
 	default:
 		return nil, fmt.Errorf("refine for %s is not yet implemented", kind)
 	}
+}
+
+// RunRefineGoals fires the spec-generation pipeline against GOALS.md.
+// It reads the current goals body and the existing spec snapshot, runs an
+// LLM call that proposes features/decisions/strategies/approaches, and
+// persists the result through the same atomicity layer as `assimilate`.
+//
+// Re-running is incremental: existing nodes whose IDs the LLM reuses are
+// updated in place, new IDs land as new files. Quality strategies
+// (testing, observability, deployment) are mandatory in the LLM prompt
+// so engineering best practices show up by construction.
+func RunRefineGoals(ctx context.Context, llm agent.LLM, fsys specio.FS) (*RefineResult, error) {
+	goalsBody, found := readGoals(fsys)
+	if !found || strings.TrimSpace(goalsBody) == "" {
+		return nil, fmt.Errorf("refine goals: GOALS.md is empty or missing — populate it before running")
+	}
+
+	existing := loadExistingSpec(fsys)
+	gen, err := runSpecGeneration(ctx, llm, fsys, agent.SpecGenRequest{
+		GoalsBody: goalsBody,
+		Existing:  existing,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("refine goals: %w", err)
+	}
+
+	hist := history.NewHistorian(fsys, ".borg/history")
+	rationale := fmt.Sprintf("Generated %d feature(s), %d decision(s), %d strategy(ies), %d approach(es) from GOALS.md.",
+		gen.Features, gen.Decisions, gen.Strategies, gen.Approaches)
+	if err := hist.Record(refineEvent(spec.RootID, "goals_refined", rationale)); err != nil {
+		slog.Warn("failed to record goals_refined event", "error", err)
+	}
+
+	return &RefineResult{
+		NodeID:    spec.RootID,
+		NodeKind:  spec.KindGoals,
+		Generated: gen,
+	}, nil
 }
 
 // RunRefine is the Decision-path refinement: fires the DJ-069 cascade.
@@ -358,13 +397,9 @@ func invokeSynthesizer(ctx context.Context, llm agent.LLM, a spec.Approach, pare
 			{Role: "user", Content: prompt.String()},
 		},
 	}
-	resp, err := llm.Generate(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("synthesizer generate: %w", err)
-	}
 	var out cascade.RewriteResult
-	if err := json.Unmarshal([]byte(resp.Content), &out); err != nil {
-		return nil, fmt.Errorf("synthesizer parse: %w", err)
+	if err := agent.GenerateInto(agent.WithRole(ctx, "synthesizer"), llm, req, &out); err != nil {
+		return nil, fmt.Errorf("synthesizer: %w", err)
 	}
 	return &out, nil
 }
@@ -428,6 +463,18 @@ func printRefineSummary(r *RefineResult) {
 	}
 	if r.Cascade != nil {
 		printCascadeSummary(r.NodeID, r.Cascade)
+		return
+	}
+	if r.Generated != nil {
+		fmt.Printf("Refined %s %s: %d feature(s), %d decision(s), %d strategy(ies), %d approach(es).\n",
+			r.NodeKind, r.NodeID,
+			r.Generated.Features, r.Generated.Decisions, r.Generated.Strategies, r.Generated.Approaches)
+		if len(r.Generated.IntegrityWarnings) > 0 {
+			fmt.Printf("  %d dangling reference(s) stripped from the LLM output:\n", len(r.Generated.IntegrityWarnings))
+			for _, w := range r.Generated.IntegrityWarnings {
+				fmt.Printf("    - %s\n", w)
+			}
+		}
 		return
 	}
 	if r.Rewrite == nil {

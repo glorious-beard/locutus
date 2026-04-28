@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -11,12 +12,31 @@ import (
 )
 
 // EnvKeyModelsConfig is the env-var callers set to override the embedded
-// model-tier config with a file on disk. Empty path = use the embedded
-// defaults that ship with this build.
+// model-tier config with a file on disk. Empty path = use the project's
+// .borg/models.yaml when present, else the embedded defaults that ship
+// with this build.
 const EnvKeyModelsConfig = "LOCUTUS_MODELS_CONFIG"
+
+// ProjectModelsConfigPath is the in-tree path scaffolded by `locutus init`.
+// LoadModelConfig reads from here on every invocation when the env-var
+// override is unset, so per-project edits to model preferences are picked
+// up without rebuilding or setting an env var.
+const ProjectModelsConfigPath = ".borg/models.yaml"
 
 //go:embed models.yaml
 var embeddedModelsYAML []byte
+
+// EmbeddedModelsYAML returns the model-tier config bytes baked into the
+// binary at build time. Exposed so the scaffold package can seed
+// .borg/models.yaml on `locutus init` from the same source of truth as
+// the runtime fallback.
+func EmbeddedModelsYAML() []byte {
+	// Defensive copy — the caller is the scaffold writer and shouldn't
+	// be able to mutate the package's embedded bytes.
+	out := make([]byte, len(embeddedModelsYAML))
+	copy(out, embeddedModelsYAML)
+	return out
+}
 
 // ModelConfig maps each CapabilityTier to an ordered list of candidate
 // model strings. ResolveTier walks the list and returns the first entry
@@ -58,21 +78,56 @@ func DefaultModelConfig() (*ModelConfig, error) {
 	return defaultConfig, defaultConfigErr
 }
 
-// LoadModelConfig reads the user's override file if LOCUTUS_MODELS_CONFIG
-// is set, else returns the embedded defaults. Missing override file is
-// an error (the user asked for it via env var, so they expect it to
-// exist) — silent fallback would hide typos. If the env var is empty,
-// returns the embedded defaults with no error.
+// LoadModelConfig resolves the model-tier config in this precedence:
+//
+//  1. LOCUTUS_MODELS_CONFIG env var (explicit override). Missing file is
+//     an error — silent fallback would hide typos.
+//  2. .borg/models.yaml under the nearest ancestor that contains the
+//     project root marker (so subcommands run from a subdirectory still
+//     pick up the project's model preferences). Missing or unreadable
+//     falls through silently — the file is optional.
+//  3. The embedded defaults baked into the binary.
 func LoadModelConfig() (*ModelConfig, error) {
-	path := os.Getenv(EnvKeyModelsConfig)
-	if path == "" {
-		return DefaultModelConfig()
+	if path := os.Getenv(EnvKeyModelsConfig); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("%s=%q: %w", EnvKeyModelsConfig, path, err)
+		}
+		return parseModelConfig(data)
 	}
-	data, err := os.ReadFile(path)
+	if root, err := findProjectRootForConfig(); err == nil {
+		if data, err := os.ReadFile(filepath.Join(root, ProjectModelsConfigPath)); err == nil {
+			return parseModelConfig(data)
+		}
+	}
+	return DefaultModelConfig()
+}
+
+// findProjectRootForConfig walks up from the current working directory
+// looking for the project root marker. Returns the absolute path or an
+// error when no ancestor contains it. Kept inline (rather than importing
+// internal/specio) to avoid a layering cycle: specio is a pure FS shim
+// and shouldn't depend on agent, but agent has historically depended on
+// specio, so the helper is duplicated by design here.
+func findProjectRootForConfig() (string, error) {
+	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, fmt.Errorf("%s=%q: %w", EnvKeyModelsConfig, path, err)
+		return "", err
 	}
-	return parseModelConfig(data)
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(abs, ".borg/manifest.json")); err == nil {
+			return abs, nil
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return "", fmt.Errorf("no project root found")
+		}
+		abs = parent
+	}
 }
 
 // ResolveTier returns the first model string in the tier's candidate

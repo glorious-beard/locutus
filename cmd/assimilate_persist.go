@@ -158,6 +158,14 @@ func persistApproaches(fsys specio.FS, approaches []spec.Approach) error {
 // normalizeFeature backfills defaults for LLM-inferred Features that may
 // have missing fields. Per DJ-019 a freshly-inferred Feature lands as
 // `inferred` status. CreatedAt is stamped only when the node is new.
+//
+// Note on the two callers: brownfield `assimilate` leaves Status empty
+// so the default fires (inferred — the spec was reverse-engineered from
+// existing code). Greenfield/doc-driven `runSpecGeneration` stamps
+// `proposed` on the Feature in `(*SpecProposal).ToAssimilationResult`
+// before this function runs, so the default is bypassed for that path.
+// The semantic split is intentional: inferred = derived-from-code,
+// proposed = derived-from-doc-or-goals.
 func normalizeFeature(f spec.Feature) spec.Feature {
 	if f.Status == "" {
 		f.Status = spec.FeatureStatusInferred
@@ -173,6 +181,11 @@ func normalizeFeature(f spec.Feature) spec.Feature {
 // normalizeDecision mirrors normalizeFeature for Decisions. The Decision
 // enum already has DecisionStatusInferred; we default to it for missing
 // status. Confidence is left as-is (zero is a meaningful signal).
+//
+// When Provenance is set but its GeneratedAt is zero, stamp it now —
+// the council-generated path (greenfield/doc-driven) doesn't carry
+// timestamps in the LLM proposal, but persisted provenance should know
+// when it was written so future audits can see how stale it is.
 func normalizeDecision(d spec.Decision) spec.Decision {
 	if d.Status == "" {
 		d.Status = spec.DecisionStatusInferred
@@ -182,6 +195,9 @@ func normalizeDecision(d spec.Decision) spec.Decision {
 		d.CreatedAt = now
 	}
 	d.UpdatedAt = now
+	if d.Provenance != nil && d.Provenance.GeneratedAt.IsZero() {
+		d.Provenance.GeneratedAt = now
+	}
 	return d
 }
 

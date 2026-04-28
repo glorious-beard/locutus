@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -12,7 +13,7 @@ func ProjectState(stepID string, snap StateSnapshot) []Message {
 	switch stepID {
 	case "propose":
 		return projectPropose(snap)
-	case "challenge":
+	case "challenge", "critique":
 		return projectChallenge(snap)
 	case "research":
 		return projectResearch(snap)
@@ -27,7 +28,17 @@ func ProjectState(stepID string, snap StateSnapshot) []Message {
 }
 
 func projectPropose(snap StateSnapshot) []Message {
-	msgs := []Message{{Role: "user", Content: snap.Prompt}}
+	prompt := snap.Prompt
+	// If a scout brief was produced upstream (spec-generation council),
+	// fold its formatted form into the proposer's user message so the
+	// proposer reads the senior-engineer survey alongside GOALS.md
+	// rather than working from the goals body alone.
+	if snap.ScoutBrief != "" {
+		if formatted := formatScoutBrief(snap.ScoutBrief); formatted != "" {
+			prompt = prompt + "\n\n## Scout brief\n\n" + formatted
+		}
+	}
+	msgs := []Message{{Role: "user", Content: prompt}}
 
 	// On revision rounds, include open concerns to address.
 	if len(snap.OpenConcerns) > 0 {
@@ -37,6 +48,42 @@ func projectPropose(snap StateSnapshot) []Message {
 		})
 	}
 	return msgs
+}
+
+// formatScoutBrief unmarshals the raw ScoutBrief JSON the scout step
+// produced and renders it as human-readable markdown for the proposer's
+// user message. Falls back to the raw JSON on parse failure so the
+// proposer still receives the upstream content.
+func formatScoutBrief(raw string) string {
+	var brief ScoutBrief
+	if err := json.Unmarshal([]byte(raw), &brief); err != nil {
+		return raw
+	}
+	var b strings.Builder
+	if brief.DomainRead != "" {
+		fmt.Fprintf(&b, "**Domain read:** %s\n\n", brief.DomainRead)
+	}
+	if len(brief.TechnologyOptions) > 0 {
+		b.WriteString("**Technology options to choose among:**\n")
+		for _, o := range brief.TechnologyOptions {
+			fmt.Fprintf(&b, "- %s\n", o)
+		}
+		b.WriteString("\n")
+	}
+	if len(brief.ImplicitAssumptions) > 0 {
+		b.WriteString("**Implicit assumptions you MUST commit to (one strategy + one decision each):**\n")
+		for _, a := range brief.ImplicitAssumptions {
+			fmt.Fprintf(&b, "- %s\n", a)
+		}
+		b.WriteString("\n")
+	}
+	if len(brief.WatchOuts) > 0 {
+		b.WriteString("**Watch-outs:**\n")
+		for _, w := range brief.WatchOuts {
+			fmt.Fprintf(&b, "- %s\n", w)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func projectChallenge(snap StateSnapshot) []Message {

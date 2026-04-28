@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 )
@@ -22,6 +23,9 @@ var planningWorkflow []byte
 
 //go:embed workflows/assimilation.yaml
 var assimilationWorkflow []byte
+
+//go:embed workflows/spec_generation.yaml
+var specGenerationWorkflow []byte
 
 // directories is the set of directories created by Scaffold.
 var directories = []string{
@@ -95,6 +99,22 @@ func Scaffold(fsys specio.FS, projectName string) error {
 	}); err != nil {
 		return err
 	}
+	if err := writeIfMissing(fsys, ".borg/workflows/spec_generation.yaml", func() ([]byte, error) {
+		return specGenerationWorkflow, nil
+	}); err != nil {
+		return err
+	}
+
+	// 7. Seed .borg/models.yaml from the embedded defaults so users can
+	// edit per-project model preferences (provider order, tier candidates)
+	// without rebuilding or setting LOCUTUS_MODELS_CONFIG. The runtime
+	// reads from this path on every invocation; absent file falls back
+	// to the embedded bytes.
+	if err := writeIfMissing(fsys, ".borg/models.yaml", func() ([]byte, error) {
+		return agent.EmbeddedModelsYAML(), nil
+	}); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -118,6 +138,90 @@ func copyEmbedded(fsys specio.FS, embedded embed.FS, root, targetPrefix string) 
 			return embedded.ReadFile(path)
 		})
 	})
+}
+
+// ResetReport tells the caller what `update --reset` overwrote. Surfaced
+// so the CLI can print "refreshed N agents, M workflows, models.yaml" or
+// the like — and so tests can assert exact behavior.
+type ResetReport struct {
+	AgentsReset    []string // FS-relative paths of agent files written
+	WorkflowsReset []string // FS-relative paths of workflow files written
+	ModelsReset    bool     // true if .borg/models.yaml was rewritten
+}
+
+// Reset overwrites scaffolded artifacts on fsys with the versions baked
+// into the running binary. User-owned content is left untouched:
+// GOALS.md, .borg/spec/, .borg/history/, .borg/manifest.json, the
+// project's .locutus/ runtime state, and .gitignore.
+//
+// Use this after upgrading the locutus binary to pick up new or
+// changed agent definitions and workflow shapes the upstream build
+// ships. It does NOT download anything — the caller is expected to
+// already have the desired binary running.
+//
+// Custom agent files the user added under .borg/agents/ that aren't in
+// the embedded set are not touched. Embedded agents that have been
+// removed in this build are also left alone — Reset overwrites; it
+// never deletes. A future "prune" mode could surface stale files, but
+// that's a separate decision than reset semantics.
+func Reset(fsys specio.FS) (*ResetReport, error) {
+	report := &ResetReport{}
+
+	// Overwrite each embedded agent file. fs.WalkDir gives us every file
+	// under the agents/ embed root; we rewrite the corresponding
+	// .borg/agents/<rel>.md path on fsys.
+	if err := fs.WalkDir(agentsFS, "agents", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			rel := path[len("agents"):]
+			return fsys.MkdirAll(".borg/agents"+rel, 0o755)
+		}
+		rel := path[len("agents"):]
+		target := ".borg/agents" + rel
+		data, err := agentsFS.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read embedded agent %s: %w", path, err)
+		}
+		if err := fsys.WriteFile(target, data, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", target, err)
+		}
+		report.AgentsReset = append(report.AgentsReset, target)
+		return nil
+	}); err != nil {
+		return report, err
+	}
+
+	// Overwrite the three embedded workflow YAMLs.
+	workflows := []struct {
+		path string
+		data []byte
+	}{
+		{".borg/workflows/planning.yaml", planningWorkflow},
+		{".borg/workflows/assimilation.yaml", assimilationWorkflow},
+		{".borg/workflows/spec_generation.yaml", specGenerationWorkflow},
+	}
+	if err := fsys.MkdirAll(".borg/workflows", 0o755); err != nil {
+		return report, err
+	}
+	for _, wf := range workflows {
+		if err := fsys.WriteFile(wf.path, wf.data, 0o644); err != nil {
+			return report, fmt.Errorf("write %s: %w", wf.path, err)
+		}
+		report.WorkflowsReset = append(report.WorkflowsReset, wf.path)
+	}
+
+	// Overwrite models.yaml.
+	if err := fsys.MkdirAll(".borg", 0o755); err != nil {
+		return report, err
+	}
+	if err := fsys.WriteFile(".borg/models.yaml", agent.EmbeddedModelsYAML(), 0o644); err != nil {
+		return report, fmt.Errorf("write .borg/models.yaml: %w", err)
+	}
+	report.ModelsReset = true
+
+	return report, nil
 }
 
 // writeIfMissing writes a file only if it does not already exist (idempotency).

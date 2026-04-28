@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/chetan/locutus/internal/agent"
+	"github.com/chetan/locutus/internal/scaffold"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/chetan/locutus/internal/state"
@@ -188,11 +189,104 @@ func TestRefineApproachResynthesizesBody(t *testing.T) {
 	assert.Empty(t, entry.SpecHash)
 }
 
-func TestRefineGoalsReturnsExplicitNotSupported(t *testing.T) {
-	_, err := dispatchRefine(context.Background(), nil, nil, "goals", spec.KindGoals)
+func TestRefineGoalsRequiresNonEmptyGOALS(t *testing.T) {
+	fs := specio.NewMemFS()
+	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
+	// No GOALS.md present.
+	_, err := RunRefineGoals(context.Background(), nil, fs)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "goals are human-authored")
-	assert.Contains(t, err.Error(), "GOALS.md")
+	assert.Contains(t, err.Error(), "GOALS.md is empty or missing")
+}
+
+func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
+	// Use scaffold.Scaffold to bootstrap a project FS — this writes the
+	// six council agents and spec_generation.yaml that the workflow
+	// executor needs to load. RunRefineGoals goes through GenerateSpec
+	// which loads .borg/agents/ and .borg/workflows/spec_generation.yaml.
+	fs := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fs, "test-project"))
+	require.NoError(t, fs.WriteFile("GOALS.md", []byte("# WinPlan\nHelp candidates win elections.\n"), 0o644))
+	// Drop the convergence agent so the workflow executor's convergence
+	// check (which runs once after a max_rounds=1 pass) doesn't try a
+	// 7th LLM call. Production users keep the agent — it's harmless when
+	// the loop won't iterate again, just a small extra call.
+	require.NoError(t, fs.Remove(".borg/agents/convergence.md"))
+
+	// Council flow: scout → architect → 4 critics (empty) → no revise.
+	scoutResp := `{"domain_read":"electoral campaign","technology_options":["x: a vs b"],"implicit_assumptions":["scale: 100k. Default: 1k concurrent"],"watch_outs":[]}`
+	proposalResp := `{
+		"features": [
+			{"id":"feat-dashboard","title":"Candidate dashboard","description":"At-a-glance campaign view.","decisions":["dec-frontend-stack"]}
+		],
+		"decisions": [
+			{
+				"id":"dec-frontend-stack",
+				"title":"Use TanStack Start",
+				"rationale":"Best balance of SSR and DX",
+				"confidence":0.9,
+				"alternatives":[{"name":"Next.js","rationale":"Mature","rejected_because":"Heavier than needed"}],
+				"citations":[{"kind":"goals","reference":"GOALS.md","span":"lines 6-8","excerpt":"Help candidates win elections."}],
+				"architect_rationale":"GOALS.md framing motivates a low-friction frontend."
+			}
+		],
+		"strategies": [
+			{"id":"strat-frontend","title":"React + TypeScript","kind":"foundational","body":"Frontend prose","decisions":["dec-frontend-stack"]},
+			{"id":"strat-quality","title":"Test-first","kind":"quality","body":"Testing approach"}
+		],
+		"approaches": [
+			{"id":"app-dashboard","title":"Dashboard scaffold","parent_id":"feat-dashboard","body":"Implementation sketch"}
+		]
+	}`
+	mock := agent.NewMockLLM(
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: scoutResp, Model: "m"}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: proposalResp, Model: "m"}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
+	)
+
+	result, err := RunRefineGoals(context.Background(), mock, fs)
+	require.NoError(t, err)
+	require.NotNil(t, result.Generated)
+	assert.Equal(t, 1, result.Generated.Features)
+	assert.Equal(t, 1, result.Generated.Decisions)
+	assert.Equal(t, 2, result.Generated.Strategies)
+	assert.Equal(t, 1, result.Generated.Approaches)
+	assert.Equal(t, spec.KindGoals, result.NodeKind)
+	assert.Equal(t, spec.RootID, result.NodeID)
+
+	// Verify nodes landed on disk.
+	_, err = fs.ReadFile(".borg/spec/features/feat-dashboard.json")
+	assert.NoError(t, err, "feature JSON should be persisted")
+	_, err = fs.ReadFile(".borg/spec/decisions/dec-frontend-stack.json")
+	assert.NoError(t, err, "decision JSON should be persisted")
+	_, err = fs.ReadFile(".borg/spec/strategies/strat-frontend.json")
+	assert.NoError(t, err, "strategy JSON should be persisted")
+	_, err = fs.ReadFile(".borg/spec/approaches/app-dashboard.md")
+	assert.NoError(t, err, "approach md should be persisted")
+
+	// Strategy body should be in the .md sidecar.
+	stratMd, err := fs.ReadFile(".borg/spec/strategies/strat-frontend.md")
+	require.NoError(t, err)
+	assert.Contains(t, string(stratMd), "Frontend prose")
+
+	// Provenance must land on the persisted decision JSON, denormalized
+	// per DJ-085 — deleting .locutus/sessions/ never costs the project
+	// its justification record.
+	decJSON, err := fs.ReadFile(".borg/spec/decisions/dec-frontend-stack.json")
+	require.NoError(t, err)
+	var persisted spec.Decision
+	require.NoError(t, json.Unmarshal(decJSON, &persisted))
+	require.NotNil(t, persisted.Provenance, "decision JSON should carry provenance")
+	require.Equal(t, 1, len(persisted.Provenance.Citations))
+	assert.Equal(t, "goals", persisted.Provenance.Citations[0].Kind)
+	assert.Equal(t, "Help candidates win elections.", persisted.Provenance.Citations[0].Excerpt,
+		"excerpt should be persisted verbatim alongside the decision")
+	assert.Equal(t, "GOALS.md framing motivates a low-friction frontend.",
+		persisted.Provenance.ArchitectRationale)
+	assert.False(t, persisted.Provenance.GeneratedAt.IsZero(),
+		"normalize step should stamp GeneratedAt at write time")
 }
 
 func TestDispatchRefineUnknownKindFailsGracefully(t *testing.T) {

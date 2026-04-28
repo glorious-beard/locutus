@@ -30,11 +30,10 @@ type HistoryCmd struct {
 
 
 func (c *HistoryCmd) Run(ctx context.Context, cli *CLI) error {
-	cwd, err := os.Getwd()
+	fsys, _, err := projectFS()
 	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
+		return err
 	}
-	fsys := specio.NewOSFS(cwd)
 
 	hist := history.NewHistorian(fsys, ".borg/history")
 
@@ -123,11 +122,10 @@ func (c *HistoryCmd) runRegenerateNarrative(ctx context.Context, hist *history.H
 	if err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	fsys, _, err := projectFS()
 	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
+		return err
 	}
-	fsys := specio.NewOSFS(cwd)
 
 	archivistRaw, err := agent.NamedAgentFn(fsys, llm, "archivist")
 	if err != nil {

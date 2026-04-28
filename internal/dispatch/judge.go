@@ -2,7 +2,6 @@ package dispatch
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -63,14 +62,9 @@ func (s *Supervisor) monitorCycle(ctx context.Context, step spec.PlanStep, event
 	prompt := fmt.Sprintf("Step goal: %s\n\nRecent agent activity:\n%s", step.Description, summary)
 
 	req := agent.BuildGenerateRequest(def, []agent.Message{{Role: "user", Content: prompt}})
-	resp, err := agent.GenerateWithRetry(ctx, s.cfg.FastLLM, req, fastMonitorRetry)
-	if err != nil {
-		return nil, err
-	}
-
 	var verdict CycleVerdict
-	if err := json.Unmarshal([]byte(resp.Content), &verdict); err != nil {
-		return nil, fmt.Errorf("parse monitor verdict: %w (content=%q)", err, resp.Content)
+	if err := agent.GenerateIntoWithRetry(ctx, s.cfg.FastLLM, req, fastMonitorRetry, &verdict); err != nil {
+		return nil, fmt.Errorf("monitor verdict: %w", err)
 	}
 	return &verdict, nil
 }

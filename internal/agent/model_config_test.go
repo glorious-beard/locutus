@@ -156,6 +156,63 @@ func TestLoadModelConfig_MissingOverrideFileErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "nonexistent/models.yaml")
 }
 
+func TestLoadModelConfig_ProjectFileBeatsEmbedded(t *testing.T) {
+	// .borg/models.yaml under the project root should win over the
+	// embedded defaults when the env-var override is unset. Lets users
+	// edit per-project model preferences without setting
+	// LOCUTUS_MODELS_CONFIG.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".borg"), 0o755))
+	// manifest.json is the project root marker — the walk-up bails out
+	// without it, falling back to the embedded defaults.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".borg/manifest.json"), []byte("{}"), 0o644))
+	projectYAML := `tiers:
+  fast:
+    - anthropic/claude-haiku-4-5-20251001
+  balanced:
+    - anthropic/claude-sonnet-4-6
+  strong:
+    - anthropic/claude-opus-4-7
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".borg/models.yaml"), []byte(projectYAML), 0o644))
+
+	t.Chdir(dir)
+	t.Setenv(EnvKeyModelsConfig, "")
+
+	cfg, err := LoadModelConfig()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic/claude-haiku-4-5-20251001"}, cfg.Tiers[CapabilityFast],
+		"project .borg/models.yaml should take precedence over embedded defaults")
+}
+
+func TestLoadModelConfig_EnvVarBeatsProjectFile(t *testing.T) {
+	// Project has one config; user sets env var pointing elsewhere.
+	// Env var wins (explicit > implicit).
+	projectDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(projectDir, ".borg"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, ".borg/models.yaml"), []byte(`tiers:
+  fast: [googleai/gemini-2.5-flash-lite]
+  balanced: [googleai/gemini-2.5-flash]
+  strong: [googleai/gemini-2.5-pro]
+`), 0o644))
+
+	overrideDir := t.TempDir()
+	overridePath := filepath.Join(overrideDir, "override.yaml")
+	require.NoError(t, os.WriteFile(overridePath, []byte(`tiers:
+  fast: [anthropic/claude-haiku-4-5-20251001]
+  balanced: [anthropic/claude-sonnet-4-6]
+  strong: [anthropic/claude-opus-4-7]
+`), 0o644))
+
+	t.Chdir(projectDir)
+	t.Setenv(EnvKeyModelsConfig, overridePath)
+
+	cfg, err := LoadModelConfig()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic/claude-haiku-4-5-20251001"}, cfg.Tiers[CapabilityFast],
+		"env-var override should win over project .borg/models.yaml")
+}
+
 func TestParseModelConfig_EmptyTiersIsError(t *testing.T) {
 	// A config with no tiers silently resolves everything to empty;
 	// we want the loader to refuse it so misconfiguration is loud.

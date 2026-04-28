@@ -17,7 +17,10 @@ type StatusCmd struct {
 }
 
 func (c *StatusCmd) Run(cli *CLI) error {
-	fsys := specio.NewOSFS(".")
+	fsys, _, err := projectFS()
+	if err != nil {
+		return err
+	}
 
 	if c.InFlight {
 		report, err := GatherInFlight(fsys)

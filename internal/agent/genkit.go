@@ -181,12 +181,20 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 			MaxOutputTokens: req.MaxTokens,
 		}))
 	}
+	// If the caller asked for structured output, push it down to the
+	// provider so the response is constrained at the API level (Anthropic
+	// forced tool-use, Gemini responseSchema). Without this, every model
+	// is asked for JSON in prose only, and Gemini in particular wraps
+	// output in markdown fences that downstream parsers reject.
+	if req.OutputSchema != nil {
+		opts = append(opts, ai.WithOutputType(req.OutputSchema))
+	}
 
-	text, err := genkit.GenerateText(ctx, g.g, opts...)
+	resp, err := genkit.Generate(ctx, g.g, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("genkit generate (model=%s): %w", model, err)
 	}
-	return &GenerateResponse{Content: text, Model: model}, nil
+	return &GenerateResponse{Content: resp.Text(), Model: model}, nil
 }
 
 // resolveModel picks the model string to pass to Genkit: the request's

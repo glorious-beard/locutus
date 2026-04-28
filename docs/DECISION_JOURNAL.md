@@ -1460,3 +1460,159 @@ DJ-029 remains in force for wholesale-framework adoption of LangGraphGo/LangChai
 **Reversal criteria:**
 
 DJ-078 gets revisited if: (a) an ADK capability we need cannot be faithfully expressed against markdown + `text/template` without significant contortion; or (b) we discover operational need for a declarative agent config format that multiple tools (Locutus + external) must parse identically — at that point a shared YAML surface may earn its way in.
+
+## DJ-079: `refine goals` Generates the Spec Graph from GOALS.md
+
+**Status:** shipped
+
+**Decision:** `locutus refine goals` is the entry point for greenfield spec generation. It reads `GOALS.md`, calls a council-driven `agent.GenerateSpec` (proposer + critic + revise), and persists the resulting features, decisions, strategies, and approaches via the existing assimilation persistence layer. Re-running is incremental: matching IDs update in place; new IDs land as new files. The Goals root node ID is reserved as the literal string `"goals"` (not `"GOALS.md"` as before) so users can address it directly on the CLI.
+
+**Why `refine` rather than a new verb:** `refine` already means "council-driven deliberation on any spec node" (DJ-069). Goals is a node (KindGoals); deliberating on it = deriving its children (features, strategies, decisions, approaches). Adding a `plan` verb would inflate the 8-verb surface. The semantic stretch is small: refine cascades changes through an existing graph, and `refine goals` is the same operation at the top of the tree — generate or update the children to reflect the parent.
+
+**Why not fold into `assimilate`:** `assimilate` is for inferring spec from *code*. Its agents (backend_analyzer, frontend_analyzer, infra_analyzer) are tuned for code analysis. A docs-only or greenfield repo runs `assimilate` and produces thin, mis-shaped output. The two flows have different inputs and different LLM-side prompts; conflating them would dilute both.
+
+**Composability with `import`:** `import <doc>` runs the same internal pipeline (`runSpecGeneration`) post-admission. The shared call site means a user can iterate: edit GOALS.md → `refine goals` to seed, then `import docs/feature-X.md` for each design doc → `import` extends the existing graph rather than re-introducing nodes. `--no-plan` opts out for admission-only.
+
+## DJ-080: `models.yaml` Follows the Embedded-Then-Editable Pattern
+
+**Status:** shipped
+
+**Decision:** `internal/agent/models.yaml` is `//go:embed`-ed into the binary as the source of truth, but `locutus init` writes a copy to `.borg/models.yaml` so users can edit per-project model preferences. `LoadModelConfig` reads with this precedence: (1) `LOCUTUS_MODELS_CONFIG` env var, (2) `.borg/models.yaml` walked up from cwd, (3) embedded defaults.
+
+**Why scaffold instead of env-var-only:** consistent with DJ-036's "embedded-then-editable pattern" already used for council agents and workflow YAML. A user who wants to flip Anthropic-first for the strong tier should be able to edit a file in the repo, not set an environment variable. `locutus update` (the analogue refresh path for embedded artifacts) is the seam for picking up upstream changes.
+
+**Why precedence puts the project file ABOVE the env var:** it doesn't — env var wins. Rationale: env-var override is the explicit signal ("I want this specific path"), the project file is the implicit default. CI / shared environments / power users get the env var; everyone else gets the project file.
+
+## DJ-081: Project-Root Walk-Up for All Subcommands Except `init`
+
+**Status:** shipped
+
+**Decision:** Every subcommand except `init` resolves its filesystem root by walking up from the current working directory until it finds `.borg/manifest.json` (the marker scaffolded by `init`). Reaching the filesystem root without finding it returns `ErrNotInProject` with a friendly "run `locutus init` here, or cd into an existing project" message. `init` deliberately stays cwd-rooted because that's the bootstrap step.
+
+**Why walk-up, not cwd-only:** before this, running any subcommand from a subdirectory would either error (no `.borg/`) or write a fresh `.borg/` in the wrong place. Standard tools (git, cargo, npm) walk up; users expect Locutus to do the same.
+
+**Why `.borg/manifest.json` as the marker:** it's persistent (lifetime of the project), already written by `init`, and the JSON content carries authoritative metadata so a misplaced empty `.borg/` directory doesn't masquerade as a project root.
+
+## DJ-082: Spec Generation Uses Single-Pass Council, Not the Planner Workflow
+
+**Status:** superseded by DJ-083
+
+**Decision (historical):** `agent.GenerateSpec` runs a lightweight council inline — proposer LLM call, then 0..N critic-and-revise rounds — rather than going through the existing `agent.Plan` planning workflow (which uses `WorkflowExecutor` + `planning.yaml`). Default critique rounds = 1 from the cmd-layer entry point.
+
+**Reversal:** DJ-083 supersedes this. Spec generation now uses externalized agent definitions and a dedicated workflow YAML, the same model the planning council uses. The triggering observation was multi-agent expansion — once the council grew to six members (scout + architect + four specialist critics), the inline approach turned every prompt into a Go string constant and every tuning knob into a recompile. The reversal criteria DJ-082 set out ("when a graph-generator workflow is added to planning.yaml") were met as soon as it was cheaper to externalize than to keep maintaining the inline shape.
+
+## DJ-083: Spec Generation Uses Externalized Agents + Dedicated Workflow YAML (Supersedes DJ-082)
+
+**Status:** shipped
+
+**Decision:** Spec generation runs through `WorkflowExecutor` against six agent definitions in `internal/scaffold/agents/` (`spec_scout.md`, `spec_architect.md`, `architect_critic.md`, `devops_critic.md`, `sre_critic.md`, `cost_critic.md`) and a workflow YAML in `internal/scaffold/workflows/spec_generation.yaml`. `locutus init` writes both into `.borg/agents/` and `.borg/workflows/`; the runtime loads from there on every invocation. Editing those files tunes the council without rebuilding.
+
+**Workflow shape:**
+
+- `survey` — `spec_scout` produces a `ScoutBrief` (domain read, technology options, implicit assumptions, watch-outs).
+- `propose` — `spec_architect` produces a `SpecProposal`, with the scout brief folded into its user message via `projectPropose`.
+- `critique` — four specialist critics (architect, DevOps, SRE, cost) run in parallel. Each emits `CriticIssues`; `merge_as: critic_issues` flattens each issue into a `Concern` attributed to the critic's role.
+- `revise` — `spec_architect` again, conditional on `has_concerns`. Sees the proposal and the critic concerns via `projectRevise`.
+
+**Why the four critics:** the original single-critic design caught dangling references (the most common proposer failure) but missed entire classes of weakness — deployment coherence ("this can't actually run on Vercel"), operational reality ("no on-call model named"), cost runaway ("BigQuery + Datadog + Vercel Pro will blow through the stated budget"). Each specialist has its own rule set; their union is a meaningfully tougher review than any single generalist.
+
+**Why a scout pre-step:** the proposer working from goals + training distribution defaults to its priors. A scout brief that explicitly lists *implicit assumptions* (scale, cost, ops model, deployment posture, availability, compliance) and *technology options with tradeoffs* gives the proposer a concrete frame to react to. The proposer is then mandated to commit to each implicit assumption as a strategy + decision pair — turning unstated assumptions into first-class spec nodes.
+
+**Schema enforcement:** `ScoutBrief`, `SpecProposal`, and `CriticIssues` are registered in `schemas.go` so `BuildGenerateRequest` wires them through Genkit's structured-output path. Each agent's response is JSON-by-construction at the API layer, not parsed out of free-form text.
+
+**Cost envelope:** one full pass = 6 LLM calls (1 scout + 1 architect + 4 critics) when the proposal is clean, 7 when it isn't. Per-agent model tier comes from the agent's frontmatter (architect: strong, scout: balanced, critics: balanced) so the strong-tier cost is bounded to one (or two on revise) calls per invocation. Multi-round critique requires a `convergence` agent and `max_rounds > 1`; the default workflow ships with `max_rounds: 1`.
+
+**PlanningState extensions to support this:** added `ScoutBrief string`, plus `merge_as: scout_brief` and `merge_as: critic_issues` cases in `mergeResults`. `projectPropose` was updated to fold the formatted scout brief into the proposer's user message; `projectChallenge` now also handles the `critique` step ID. These are minimal, additive changes — the existing planner workflow is unaffected.
+
+**Reversal criteria:** DJ-083 stays unless either (a) a single-pass design with a stronger model demonstrably matches the four-critic output (would let us drop ~3 LLM calls per invocation), or (b) the council grows beyond what `WorkflowExecutor` + `PlanningState` can express cleanly (would need a generic state type or a parallel executor). Neither is currently in sight.
+
+## DJ-084: `dominikbraun/graph` Is the Canonical Graph Library; Spec and Executor Share It
+
+**Status:** shipped
+
+**Decision:** Both `internal/spec` (the spec dependency graph) and `internal/executor` (the runtime DAG) hold their graph structures in [`github.com/dominikbraun/graph`](https://github.com/dominikbraun/graph). Cycle detection, predecessor and adjacency lookups, and topological sort all delegate to the library. Hand-rolled equivalents are not allowed.
+
+**What runs in our code instead:**
+
+- Runtime semantics — `RunStep`, `Merge`, `Snapshot` callbacks; the convergence loop; conditional steps; the parallel/sequential split per wave; `MaxConcurrency` and `TypeLimits` enforcement; the events channel.
+- Domain semantics — what a vertex *means* (a `Step`, a `Feature`, a `Decision`), what an edge *means* (dependency, parent-child), how nodes are persisted.
+
+The graph library is an implementation detail of the storage and traversal layer, not a leaky abstraction the runtime is built around.
+
+**Why one library, not two (or one library + a hand-rolled twin):** before this refactor, `internal/spec/graph.go` already used the library, but `internal/executor/dag.go` had its own ~150 lines of "track a `completed` map, scan for steps whose `DependsOn` are all in `completed`" wave scheduling. That code worked, but it duplicated graph machinery the spec graph wasn't reinventing — and crucially, it surfaced cycles mid-run as a generic "deadlock: N incomplete" error rather than at config time with the cycle's vertices named.
+
+The previous defense ("the executor is execute-and-mutate, not a query structure, so a graph library doesn't help") conflated two layers. The graph itself is a passive structure either way; what makes the executor a runtime is the callback layer, the scheduling policy, and the convergence loop — none of which the library is asked to provide.
+
+**Concrete wins from sharing the library:**
+
+- Cycle detection at config time, not as a runtime symptom. The error surface goes from "deadlock: 3 incomplete" to "dependency cycle reaches step X via Y."
+- Duplicate step IDs and edges to undeclared steps are caught at the same checkpoint, courtesy of `dgraph.PreventCycles` + a small upfront validation pass.
+- Future improvements to the library (faster topological sort, deterministic ordering via `StableTopologicalSort`, memory layout work) land in both the spec graph and the executor without further effort.
+- Less hand-coded graph bookkeeping to audit. The wave-selection function (`readySteps`) is now ~10 lines that filter `PredecessorMap()` against a `completed` set.
+
+**What the library is NOT asked to do:**
+
+- Express runtime parallelism or scheduling policy. Both stay in our code.
+- Hold typed state. The `State[S]` parameterization is independent of the graph.
+- Drive the convergence loop. That's a callback in `Config[S]`.
+
+**Reversal criteria:** DJ-084 reverses only if `dominikbraun/graph` makes a breaking change we can't follow, or if a graph-shape requirement emerges that the library can't express (e.g., weighted edges for prioritization, or hyperedges for grouped dependencies). Neither is currently in sight; the library has been stable and our usage is mainstream.
+
+**Note on DJ-029:** DJ-029's "custom orchestration, ~350 LOC, not a generic framework" framing remains correct for the *runtime semantics* layer — that's still the executor's identity. DJ-084 specifies that within that boundary, graph storage and traversal are library-backed; "custom orchestration" never meant "custom graph data structure."
+
+## DJ-085: Decisions Denormalize Their Justification; Session Transcripts Are Debug-Only
+
+**Status:** shipped
+
+**Decision:** A council-generated `spec.Decision` carries its own justification record on the persisted node. New types `spec.Citation` and `spec.DecisionProvenance` are populated by the architect at proposal time and survive on disk under `.borg/spec/decisions/<id>.{json,md}`. Each citation is `{kind: "goals" | "doc" | "best_practice" | "spec_node", reference, span?, excerpt?}` with the verbatim excerpt persisted alongside the reference, so a citation survives the cited file moving or being rewritten. Every council-generated decision MUST carry at least one citation and a one-sentence `architect_rationale`; the architect critic flags violations.
+
+**Why denormalize, not point at the session file:** session transcripts live under `.locutus/sessions/<date>/<time>/<sid>.yaml`, which is gitignored and explicitly ephemeral debug context. An earlier sketch of this feature stored a `SessionID` on each Decision so a future tool could load the full council exchange. That made the Decision's justification load-bearing on a file the user is encouraged to delete — exactly the wrong durability story for the spec graph, which is supposed to be the project's authoritative record.
+
+The denormalized shape solves it cleanly: the citations + the architect's own reason are persisted on the spec node. The session file remains useful for full-fidelity debug (the verbatim prompts, the critic exchange, the revise round) but its absence costs nothing structural. The same posture as `models.yaml` (embedded source of truth + editable `.borg/` copy) and like git's commit object versus the working tree.
+
+**What lands on each decision:**
+
+- `Citations []Citation` — at least one entry. Each citation grounds the decision in something traceable: a span of GOALS.md, a doc the user imported, a named precise best practice ("12-factor app: stateless processes" — not "industry best practices"), or another spec node. Excerpts are persisted verbatim.
+- `ArchitectRationale string` — one short sentence summary, distinct from the longer prose `Rationale` field. The audit-scan version of "why."
+- `SourceSession string` — non-load-bearing pointer at the transcript file. Empty when the decision was not council-generated. The `justify` verb (when added) reads it as a hint; nothing breaks when the file is gone.
+- `GeneratedAt time.Time` — stamped by `normalizeDecision` at persist time so future audits know how stale the provenance record is.
+
+**What the architect's prompt requires:** every decision MUST emit at least one citation. Vague rationale without a citation is a critic flag (architect_critic rule 6). Best-practice citations must name something precise — vague appeals to "good engineering" don't satisfy the rule.
+
+**Carve-outs:** decisions that did NOT come from the council (hand-authored by the user, inferred by `assimilate` from existing code, etc.) leave `Provenance` nil rather than carrying a hollow `Provenance{}`. Distinguishable from "council ran and returned nothing." Future `assimilate` work can populate Provenance with `kind: "spec_node"` self-references where appropriate, but the current path is to leave it empty.
+
+**Reversal criteria:** DJ-085 reverses only if (a) we move sessions into source control (would make the pointer durable, but bloats the spec with multi-KB transcripts per refine — not on the table), or (b) the citation field set proves insufficient (would extend the schema, not abandon denormalization).
+
+**Note for `justify` verb (forthcoming):** The verb reads `Provenance.Citations` directly to produce a defense report. When `SourceSession` resolves to an existing file, it can pull the full council exchange as supplementary context. When it doesn't, the durable Citations + ArchitectRationale + Alternatives + Rationale already in the spec are sufficient — the decision defends itself.
+
+## DJ-086: `update` Has Two Orthogonal Flags — `--reset` and `--offline`
+
+**Status:** shipped
+
+**Decision:** `locutus update` grows two independent flags that compose:
+
+- `--reset` overwrites the project's scaffolded artifacts (`.borg/agents/*.md`, `.borg/workflows/*.yaml`, `.borg/models.yaml`) with the running binary's embedded versions. User content (`GOALS.md`, `.borg/spec/`, `.borg/history/`, `.borg/manifest.json`, `.locutus/`) is never modified.
+- `--offline` skips the GitHub release check and download.
+
+The four meaningful combinations:
+
+| Command | Behavior |
+| --- | --- |
+| `update` | Check, download newer binary if available. Local files untouched. |
+| `update --reset` | Check + download. If a download happened, refuse to reset (the running process still has old embedded artifacts) and tell the user to re-run `update --offline --reset` against the new binary. Otherwise, reset using the current binary. |
+| `update --offline` | No-op with a friendly message — paired with `--reset` is the useful form. |
+| `update --offline --reset` | Reset only; no network. The canonical "I just upgraded the binary, refresh my project files" command. |
+
+**Why `--reset` is opt-in, not the default:** users edit `.borg/agents/*.md`, `.borg/workflows/*.yaml`, and `.borg/models.yaml` to tune their council and model preferences (DJ-036, DJ-080). Silently overwriting those edits on a casual binary update would surprise people. Default `update` has the narrow, predictable scope of "make the binary current"; refreshing local files requires explicit consent.
+
+**Why two flags rather than one combined verb:** the verb-level question is "are you trying to upgrade the install?" The answer is yes either way; the flags scope what "upgrade" means in this invocation. Keeping the two operations independently togglable also covers the offline-and-reset case (which is the most common follow-up to a binary download) without inventing a third flag for it.
+
+**Why we don't re-exec after a download to apply `--reset` immediately:** technically possible (`syscall.Exec` would replace the running process with the freshly-downloaded binary), but it's a real behavioral surprise — environment, signal handlers, and stdout/stderr buffering all behave differently across an exec. A clear "download succeeded; run `update --offline --reset` to refresh project files" message is less clever and less surprising. We can revisit if the two-step pattern becomes friction in practice.
+
+**What `Reset` does NOT do:**
+
+- It doesn't delete files. An agent that was in the embed in v1.0 but removed in v1.1 stays on disk after a v1.0 → v1.1 upgrade unless the user removes it manually. A future "prune" mode is its own decision.
+- It doesn't touch agent files the user added that aren't in the embed (custom agents survive).
+- It doesn't touch user-content directories (specs, history, manifest, runtime state, GOALS.md).
+
+**Reversal criteria:** DJ-086 reverses only if either (a) the friction of "download finished; run --offline --reset" becomes a real complaint and re-exec ergonomics improve, or (b) we decide reset should be the default (would only happen if we had a strong story for preserving user edits across overwrite — e.g., a per-file "user-modified" flag the runtime tracks).

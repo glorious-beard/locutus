@@ -31,16 +31,15 @@ func (c *AssimilateCmd) Run(ctx context.Context, cli *CLI) error {
 		return err
 	}
 
-	cwd, err := os.Getwd()
+	fsys, _, err := projectFS()
 	if err != nil {
-		return fmt.Errorf("getwd: %w", err)
+		return err
 	}
-	fsys := specio.NewOSFS(cwd)
 
 	// Dry-run: wrap fsys so writes are discarded while reads still hit the
 	// real filesystem. The pipeline runs to completion and we report what it
 	// would have written.
-	effective := specio.FS(fsys)
+	effective := fsys
 	if c.DryRun {
 		effective = newReadOnlyFS(fsys)
 	}

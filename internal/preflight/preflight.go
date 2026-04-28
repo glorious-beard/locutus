@@ -20,7 +20,6 @@ package preflight
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -260,13 +259,9 @@ func invokePreflight(
 			{Role: "user", Content: prompt.String()},
 		},
 	}
-	resp, err := llm.Generate(ctx, req)
-	if err != nil {
-		return nil, err
-	}
 	var out agentReport
-	if err := json.Unmarshal([]byte(resp.Content), &out); err != nil {
-		return nil, fmt.Errorf("preflight parse: %w", err)
+	if err := agent.GenerateInto(ctx, llm, req, &out); err != nil {
+		return nil, fmt.Errorf("preflight: %w", err)
 	}
 	return &out, nil
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -216,6 +217,29 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 				Severity: "medium",
 				Text:     r.Output,
 			})
+		case "critic_issues", "critique":
+			// Each critic emits CriticIssues JSON. Parse and flatten:
+			// one Concern per issue string, attributed to the critic
+			// that raised it. This makes the downstream revise prompt
+			// readable instead of dumping raw JSON.
+			var ci CriticIssues
+			if err := json.Unmarshal([]byte(r.Output), &ci); err != nil {
+				// Fallback: store the raw output as one concern so we
+				// don't lose the critic's contribution entirely.
+				state.Concerns = append(state.Concerns, Concern{
+					AgentID:  r.AgentID,
+					Severity: "medium",
+					Text:     r.Output,
+				})
+				continue
+			}
+			for _, issue := range ci.Issues {
+				state.Concerns = append(state.Concerns, Concern{
+					AgentID:  r.AgentID,
+					Severity: "medium",
+					Text:     issue,
+				})
+			}
 		case "research":
 			state.ResearchResults = append(state.ResearchResults, Finding{
 				Query:  "investigation",
@@ -225,6 +249,8 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 			state.Revisions = r.Output
 		case "record":
 			state.Record = r.Output
+		case "scout_brief", "survey":
+			state.ScoutBrief = r.Output
 		}
 	}
 }
