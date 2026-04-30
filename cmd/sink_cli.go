@@ -82,7 +82,19 @@ func (s *cliSink) label(e agent.WorkflowEvent) string {
 // event. Called from a single bridge goroutine in GenerateSpec, but
 // guarded with a mutex anyway since pterm spinners hold their own
 // state and a future caller might fan out.
+//
+// Per-agent only. Workflow-level events (iteration markers with no
+// stepID, DAG step lifecycle events with no agentID, convergence
+// completions without a paired started) are skipped — they would
+// either render as orphan spinners that Close() then marks as
+// "interrupted", or as redundant duplicates of the per-agent line.
+// plainSink still receives the full stream because structured logs
+// cope fine with the extra detail.
 func (s *cliSink) OnEvent(e agent.WorkflowEvent) {
+	if e.AgentID == "" {
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
