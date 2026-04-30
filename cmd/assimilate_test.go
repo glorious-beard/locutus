@@ -74,7 +74,7 @@ func TestRunAssimilateProducesSpec(t *testing.T) {
 	fs := setupAssimilateFS(t)
 	llm := mockAssimilationLLM()
 
-	result, err := RunAssimilate(context.Background(), llm, fs, false)
+	result, err := RunAssimilate(context.Background(), llm, fs, false, nil)
 	assert.NoError(t, err)
 	if !assert.NotNil(t, result) {
 		return
@@ -82,11 +82,49 @@ func TestRunAssimilateProducesSpec(t *testing.T) {
 	assert.NotEmpty(t, result.Decisions, "should produce decisions")
 }
 
+// TestRunAssimilateBridgesEventsToSink confirms the assimilation
+// workflow forwards every agent's started/completed event to the
+// supplied EventSink and calls Close on completion. Mirrors the
+// equivalent test for the spec-generation council; both share the
+// same WorkflowExecutor plumbing, but each constructs the sink
+// bridge in its own entry point so a regression in one wouldn't
+// surface in the other.
+func TestRunAssimilateBridgesEventsToSink(t *testing.T) {
+	fs := setupAssimilateFS(t)
+	llm := mockAssimilationLLM()
+
+	sink := &agent.CapturingSink{}
+	_, err := RunAssimilate(context.Background(), llm, fs, false, sink)
+	require.NoError(t, err)
+
+	events := sink.Events()
+	require.NotEmpty(t, events,
+		"sink should have received at least one workflow event from the assimilation council")
+
+	var agentStarted, agentCompleted int
+	for _, e := range events {
+		if e.AgentID == "" {
+			continue
+		}
+		switch e.Status {
+		case "started":
+			agentStarted++
+		case "completed":
+			agentCompleted++
+		}
+	}
+	assert.Equal(t, agentStarted, agentCompleted,
+		"every agent started should pair with a completed in a clean run")
+	assert.Greater(t, agentStarted, 0, "at least one agent should have run")
+	assert.True(t, sink.Closed(),
+		"RunAssimilate must call sink.Close() after the run finishes")
+}
+
 func TestRunAssimilateMissingConfig(t *testing.T) {
 	fs := specio.NewMemFS()
 	llm := agent.NewMockLLM()
 
-	result, err := RunAssimilate(context.Background(), llm, fs, false)
+	result, err := RunAssimilate(context.Background(), llm, fs, false, nil)
 	assert.Error(t, err)
 	assert.Nil(t, result)
 }
@@ -122,7 +160,7 @@ func TestRunAssimilatePersistsInferredSpec(t *testing.T) {
 	fs := setupAssimilateFS(t)
 	llm := mockPersistenceLLM()
 
-	result, err := RunAssimilate(context.Background(), llm, fs, false)
+	result, err := RunAssimilate(context.Background(), llm, fs, false, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -145,7 +183,7 @@ func TestRunAssimilateDryRunDoesNotWrite(t *testing.T) {
 	llm := mockPersistenceLLM()
 
 	ro := newReadOnlyFS(fs)
-	_, err := RunAssimilate(context.Background(), llm, ro, false)
+	_, err := RunAssimilate(context.Background(), llm, ro, false, nil)
 	require.NoError(t, err)
 
 	// Reads go to the underlying fs; but writes should have been dropped.
@@ -171,7 +209,7 @@ func TestRunAssimilateRespectsExistingSpec(t *testing.T) {
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/features/feat-auth", existing, existing.Description))
 
 	llm := mockPersistenceLLM()
-	_, err := RunAssimilate(context.Background(), llm, fs, false)
+	_, err := RunAssimilate(context.Background(), llm, fs, false, nil)
 	require.NoError(t, err)
 
 	// Inspect the first prompt sent to the LLM (scout round). Must mention
@@ -198,7 +236,7 @@ func TestRunAssimilateUpdatesExistingNode(t *testing.T) {
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-go", stale, "stale body"))
 
 	llm := mockPersistenceLLM()
-	_, err := RunAssimilate(context.Background(), llm, fs, false)
+	_, err := RunAssimilate(context.Background(), llm, fs, false, nil)
 	require.NoError(t, err)
 
 	data, err := fs.ReadFile(".borg/spec/decisions/dec-go.json")
@@ -217,7 +255,7 @@ func TestRunAssimilateSentinelCleanup(t *testing.T) {
 	fs := setupAssimilateFS(t)
 	llm := mockPersistenceLLM()
 
-	_, err := RunAssimilate(context.Background(), llm, fs, false)
+	_, err := RunAssimilate(context.Background(), llm, fs, false, nil)
 	require.NoError(t, err)
 
 	_, err = fs.ReadFile(".borg/spec/.assimilating")
@@ -241,7 +279,7 @@ func TestRunAssimilateInferredStatusDefault(t *testing.T) {
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
 	)
 
-	_, err := RunAssimilate(context.Background(), llm, fs, false)
+	_, err := RunAssimilate(context.Background(), llm, fs, false, nil)
 	require.NoError(t, err)
 
 	data, err := fs.ReadFile(".borg/spec/features/feat-nostatus.json")
@@ -285,7 +323,7 @@ func TestAssimilateRunsRemediationByDefault(t *testing.T) {
 	fs := setupAssimilateFS(t)
 	llm := mockAssimilationLLMWithGaps()
 
-	result, err := RunAssimilate(context.Background(), llm, fs, true)
+	result, err := RunAssimilate(context.Background(), llm, fs, true, nil)
 	require.NoError(t, err)
 
 	// Result includes both the inferred Decision (d-go) and the
@@ -309,7 +347,7 @@ func TestAssimilateNoRemediateSkipsRemediation(t *testing.T) {
 	fs := setupAssimilateFS(t)
 	llm := mockAssimilationLLMWithGaps()
 
-	result, err := RunAssimilate(context.Background(), llm, fs, false)
+	result, err := RunAssimilate(context.Background(), llm, fs, false, nil)
 	require.NoError(t, err)
 
 	// Gap is reported in the result but not acted on.
@@ -332,7 +370,7 @@ func TestAssimilateRemediationSkippedWhenNoGaps(t *testing.T) {
 	// runRemediate=true the remediator LLM call is skipped.
 	llm := mockAssimilationLLM()
 
-	result, err := RunAssimilate(context.Background(), llm, fs, true)
+	result, err := RunAssimilate(context.Background(), llm, fs, true, nil)
 	require.NoError(t, err)
 	assert.Empty(t, result.Gaps)
 
@@ -350,7 +388,7 @@ func TestAssimilateRecordsRemediationHistoryEvent(t *testing.T) {
 	fs := setupAssimilateFS(t)
 	llm := mockAssimilationLLMWithGaps()
 
-	_, err := RunAssimilate(context.Background(), llm, fs, true)
+	_, err := RunAssimilate(context.Background(), llm, fs, true, nil)
 	require.NoError(t, err)
 
 	files, err := fs.ListDir(".borg/history")
@@ -384,7 +422,7 @@ func TestAssimilateNoHistoryEventWithoutRemediation(t *testing.T) {
 	fs := setupAssimilateFS(t)
 	llm := mockAssimilationLLMWithGaps()
 
-	_, err := RunAssimilate(context.Background(), llm, fs, false)
+	_, err := RunAssimilate(context.Background(), llm, fs, false, nil)
 	require.NoError(t, err)
 
 	files, _ := fs.ListDir(".borg/history")

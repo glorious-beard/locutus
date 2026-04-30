@@ -7,7 +7,6 @@ import (
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/render"
 	"github.com/chetan/locutus/internal/scaffold"
-	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -161,7 +160,7 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
-		result, err := RunAssimilate(ctx, llm, fsys, true)
+		result, err := RunAssimilate(ctx, llm, fsys, true, newMCPSink(ctx, req))
 		if err != nil {
 			return errorResult(fmt.Sprintf("assimilate failed: %v", err)), nil, nil
 		}
@@ -171,9 +170,13 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 	})
 
 	// --- refine ---
+	// Mirrors the CLI dispatcher: routes by node kind through the same
+	// dispatchRefine that powers `locutus refine`. The MCP sink fires
+	// progress notifications on the originating session for kinds that
+	// drive the council (currently Goals).
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "refine",
-		Description: "Council-driven deliberation on any spec node.",
+		Description: "Council-driven deliberation on any spec node (decision, feature, strategy, bug, approach, or goals).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input refineInput) (*mcp.CallToolResult, any, error) {
 		if input.ID == "" {
 			return errorResult("id is required"), nil, nil
@@ -191,25 +194,15 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 				kind, input.ID, len(br.Decisions), len(br.Strategies), len(br.Approaches))
 			return textResult(msg), nil, nil
 		}
-		if kind != spec.KindDecision {
-			return errorResult(fmt.Sprintf("refine for %s not yet implemented (Phase B/C)", kind)), nil, nil
-		}
-		llm, err := getLLM()
+		llm, _, err := recordingLLM(fsys, dir, "mcp:refine "+input.ID)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
-		result, err := RunRefine(ctx, llm, fsys, input.ID)
+		result, err := dispatchRefine(ctx, llm, fsys, input.ID, kind, newMCPSink(ctx, req))
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
-		c := result.Cascade
-		if c == nil {
-			return textResult(fmt.Sprintf("Refined %s: no changes.", input.ID)), nil, nil
-		}
-		return textResult(fmt.Sprintf(
-			"Refined decision %s: %d feature(s) rewritten, %d strategy(ies) rewritten, %d approach(es) drifted, %d parent(s) already accurate.",
-			input.ID, len(c.UpdatedFeatures), len(c.UpdatedStrategies), len(c.DriftedApproaches), len(c.Skipped),
-		)), nil, nil
+		return textResult(formatRefineResultForMCP(result)), nil, nil
 	})
 
 	// --- adopt ---
@@ -242,6 +235,51 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 	})
 
 	return server
+}
+
+// formatRefineResultForMCP renders a RefineResult as a single text
+// line for return through an MCP tool response. Mirrors what the CLI
+// printRefineSummary writes to stdout but condenses to one line per
+// kind because MCP clients render text content as-is and don't carry
+// the same multi-line affordances as a terminal.
+func formatRefineResultForMCP(r *RefineResult) string {
+	if r == nil {
+		return "Refine: no result."
+	}
+	if r.Cascade != nil {
+		c := r.Cascade
+		return fmt.Sprintf(
+			"Refined decision %s: %d feature(s) rewritten, %d strategy(ies) rewritten, %d approach(es) drifted, %d parent(s) already accurate.",
+			r.NodeID, len(c.UpdatedFeatures), len(c.UpdatedStrategies), len(c.DriftedApproaches), len(c.Skipped),
+		)
+	}
+	if r.Generated != nil {
+		g := r.Generated
+		out := fmt.Sprintf("Refined %s %s: %d feature(s), %d decision(s), %d strategy(ies), %d approach(es).",
+			r.NodeKind, r.NodeID, g.Features, g.Decisions, g.Strategies, g.Approaches)
+		if len(g.IntegrityWarnings) > 0 {
+			out += fmt.Sprintf(" %d dangling reference(s) stripped.", len(g.IntegrityWarnings))
+		}
+		return out
+	}
+	if r.Rewrite == nil {
+		return fmt.Sprintf("Refined %s %s: no action.", r.NodeKind, r.NodeID)
+	}
+	if !r.Rewrite.Updated {
+		out := fmt.Sprintf("Refined %s %s: no changes — already consistent with inputs.", r.NodeKind, r.NodeID)
+		if r.Rewrite.Rationale != "" {
+			out += " " + r.Rewrite.Rationale
+		}
+		return out
+	}
+	out := fmt.Sprintf("Refined %s %s.", r.NodeKind, r.NodeID)
+	if len(r.Rewrite.DriftedApproaches) > 0 {
+		out += fmt.Sprintf(" %d approach(es) drifted.", len(r.Rewrite.DriftedApproaches))
+	}
+	if r.Rewrite.Rationale != "" {
+		out += " " + r.Rewrite.Rationale
+	}
+	return out
 }
 
 // textResult creates a successful CallToolResult with text content.

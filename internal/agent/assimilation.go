@@ -28,6 +28,12 @@ type FileEntry struct {
 type AssimilationRequest struct {
 	Inventory    []FileEntry
 	ExistingSpec *ExistingSpec
+
+	// Sink, when non-nil, receives a WorkflowEvent for every agent
+	// step in the assimilation council. Same contract as
+	// SpecGenRequest.Sink — drives the CLI spinner UI and MCP
+	// progress notifications. Nil sink is silent.
+	Sink EventSink
 }
 
 // ExistingSpec is a snapshot of what the spec store already contains. The
@@ -255,6 +261,28 @@ func Analyze(ctx context.Context, llm LLM, fsys specio.FS, req AssimilationReque
 		AgentDefs: agentDefs,
 		Workflow:  wf,
 	}
+
+	// Bridge workflow events to the caller's sink. Same shape as the
+	// spec-generation council — see GenerateSpec for the rationale on
+	// buffer sizing and the deferred close-then-join.
+	sink := req.Sink
+	if sink == nil {
+		sink = SilentSink{}
+	}
+	events := make(chan WorkflowEvent, 64)
+	exec.Events = events
+	bridgeDone := make(chan struct{})
+	go func() {
+		defer close(bridgeDone)
+		for ev := range events {
+			sink.OnEvent(ev)
+		}
+	}()
+	defer func() {
+		close(events)
+		<-bridgeDone
+		sink.Close()
+	}()
 
 	results, err := exec.Run(ctx, prompt)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/chetan/locutus/internal/agent"
+	"github.com/chetan/locutus/internal/cascade"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -58,6 +59,71 @@ func TestRenderModePrecedence(t *testing.T) {
 	// Default is rich.
 	cli = &CLI{}
 	assert.Equal(t, RenderModeRich, cli.RenderMode())
+}
+
+func TestFormatRefineResultForMCP(t *testing.T) {
+	t.Run("nil result", func(t *testing.T) {
+		assert.Equal(t, "Refine: no result.", formatRefineResultForMCP(nil))
+	})
+
+	t.Run("decision cascade", func(t *testing.T) {
+		r := &RefineResult{
+			NodeID: "dec-1",
+			Cascade: &cascade.Result{
+				UpdatedFeatures:   []string{"feat-a", "feat-b"},
+				UpdatedStrategies: []string{"strat-c"},
+				DriftedApproaches: []string{"app-d", "app-e", "app-f"},
+				Skipped:           []string{"feat-skip"},
+			},
+		}
+		got := formatRefineResultForMCP(r)
+		assert.Contains(t, got, "Refined decision dec-1")
+		assert.Contains(t, got, "2 feature(s) rewritten")
+		assert.Contains(t, got, "1 strategy(ies) rewritten")
+		assert.Contains(t, got, "3 approach(es) drifted")
+		assert.Contains(t, got, "1 parent(s) already accurate")
+	})
+
+	t.Run("goals generation summary", func(t *testing.T) {
+		r := &RefineResult{
+			NodeID:   "goals",
+			NodeKind: "goals",
+			Generated: &GenerationSummary{
+				Features: 2, Decisions: 3, Strategies: 4, Approaches: 5,
+				IntegrityWarnings: []string{"feature feat-x.decisions references unknown id"},
+			},
+		}
+		got := formatRefineResultForMCP(r)
+		assert.Contains(t, got, "Refined goals goals")
+		assert.Contains(t, got, "2 feature(s)")
+		assert.Contains(t, got, "1 dangling reference(s) stripped")
+	})
+
+	t.Run("rewrite no-op", func(t *testing.T) {
+		r := &RefineResult{
+			NodeID:   "feat-a",
+			NodeKind: "feature",
+			Rewrite:  &RewriteSummary{Updated: false, Rationale: "already accurate"},
+		}
+		got := formatRefineResultForMCP(r)
+		assert.Contains(t, got, "no changes")
+		assert.Contains(t, got, "already accurate")
+	})
+
+	t.Run("rewrite updated", func(t *testing.T) {
+		r := &RefineResult{
+			NodeID:   "feat-a",
+			NodeKind: "feature",
+			Rewrite: &RewriteSummary{
+				Updated:           true,
+				Rationale:         "tightened",
+				DriftedApproaches: []string{"app-1", "app-2"},
+			},
+		}
+		got := formatRefineResultForMCP(r)
+		assert.Contains(t, got, "Refined feature feat-a")
+		assert.Contains(t, got, "2 approach(es) drifted")
+	})
 }
 
 func TestPickSinkMatchesMode(t *testing.T) {

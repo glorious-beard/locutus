@@ -44,7 +44,7 @@ func (c *AssimilateCmd) Run(ctx context.Context, cli *CLI) error {
 		effective = newReadOnlyFS(fsys)
 	}
 
-	result, err := RunAssimilate(ctx, llm, effective, !c.NoRemediate)
+	result, err := RunAssimilate(ctx, llm, effective, !c.NoRemediate, pickSink(cli))
 	if err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func (c *AssimilateCmd) Run(ctx context.Context, cli *CLI) error {
 //
 // remediate=true runs the gap-filling pass; remediate=false leaves
 // inference output untouched and reports gaps without acting on them.
-func RunAssimilate(ctx context.Context, llm agent.LLM, fsys specio.FS, runRemediate bool) (*agent.AssimilationResult, error) {
+func RunAssimilate(ctx context.Context, llm agent.LLM, fsys specio.FS, runRemediate bool, sink agent.EventSink) (*agent.AssimilationResult, error) {
 	inventory, err := agent.WalkInventory(fsys)
 	if err != nil {
 		return nil, fmt.Errorf("walking inventory: %w", err)
@@ -87,6 +87,7 @@ func RunAssimilate(ctx context.Context, llm agent.LLM, fsys specio.FS, runRemedi
 	req := agent.AssimilationRequest{
 		Inventory:    inventory,
 		ExistingSpec: existing,
+		Sink:         sink,
 	}
 	result, err := agent.Analyze(ctx, llm, fsys, req)
 	if err != nil {
