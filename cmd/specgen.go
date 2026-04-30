@@ -41,14 +41,15 @@ func runSpecGeneration(ctx context.Context, llm agent.LLM, fsys specio.FS, req a
 	}
 	proposal, err := agent.GenerateSpec(ctx, llm, fsys, req)
 	if err != nil {
+		// Bubble integrity violations up to the CLI handler so it can
+		// format the warning list — the message naming each dangling
+		// reference is more useful than a generic "council failed".
 		return nil, err
 	}
 
-	// Strip dangling references before persistence — the LLM frequently
-	// emits e.g. feature.decisions=["dec-x"] without producing dec-x in
-	// decisions[]. We persist only edges that resolve to a node we
-	// actually have (in the proposal or the existing spec snapshot).
-	warnings := proposal.ValidateAndStrip(req.Existing)
+	// GenerateSpec guarantees referential cleanliness; persistence
+	// proceeds without further filtering. A defensive Validate here
+	// would fire only on a programmer error in the integrity loop.
 
 	result := proposal.ToAssimilationResult()
 	if err := persistAssimilationResult(fsys, result); err != nil {
@@ -58,16 +59,12 @@ func runSpecGeneration(ctx context.Context, llm agent.LLM, fsys specio.FS, req a
 		return nil, err
 	}
 
-	summary := &GenerationSummary{
+	return &GenerationSummary{
 		Features:   len(proposal.Features),
 		Decisions:  len(proposal.Decisions),
 		Strategies: len(proposal.Strategies),
 		Approaches: len(proposal.Approaches),
-	}
-	for _, w := range warnings {
-		summary.IntegrityWarnings = append(summary.IntegrityWarnings, w.String())
-	}
-	return summary, nil
+	}, nil
 }
 
 // persistStrategyBodies writes the .md sidecar for each strategy with its

@@ -76,6 +76,14 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 
 	result, err := dispatchRefine(ctx, llm, fsys, c.ID, kind, pickSink(cli))
 	if err != nil {
+		// Integrity violations are user-actionable: surface the
+		// dangling refs explicitly so they can re-run, switch model,
+		// or hand-edit. Generic kong wrapping would drop the warning
+		// list — useful information the user paid LLM tokens for.
+		if msg, ok := formatIntegrityViolation(err); ok {
+			fmt.Fprintln(os.Stderr, msg)
+			return ExitCode(1)
+		}
 		return err
 	}
 

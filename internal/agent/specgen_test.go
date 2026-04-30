@@ -187,6 +187,119 @@ func TestGenerateSpecBridgesEventsToSink(t *testing.T) {
 		"GenerateSpec must call sink.Close() after the run finishes")
 }
 
+func TestValidateIsPure(t *testing.T) {
+	// Validate must return warnings without mutating the proposal —
+	// callers rely on a clean snapshot for the integrity-revise loop.
+	p := &SpecProposal{
+		Features: []FeatureProposal{
+			{ID: "feat-x", Title: "X", Decisions: []string{"dec-missing"}},
+		},
+	}
+	original := *p
+	originalDecisions := append([]string{}, p.Features[0].Decisions...)
+
+	warnings := p.Validate(nil)
+	require.Len(t, warnings, 1)
+	assert.Equal(t, "dec-missing", warnings[0].MissingID)
+
+	// Proposal must be unchanged.
+	assert.Equal(t, original.Features[0].ID, p.Features[0].ID)
+	assert.Equal(t, originalDecisions, p.Features[0].Decisions,
+		"Validate must not strip refs — Strip is the destructive variant")
+}
+
+func TestStripMutates(t *testing.T) {
+	p := &SpecProposal{
+		Features: []FeatureProposal{
+			{ID: "feat-x", Title: "X", Decisions: []string{"dec-missing", "dec-real"}},
+		},
+		Decisions: []DecisionProposal{
+			{ID: "dec-real", Title: "Real"},
+		},
+	}
+	warnings := p.Strip(nil)
+	require.Len(t, warnings, 1)
+	assert.Equal(t, "dec-missing", warnings[0].MissingID)
+	assert.Equal(t, []string{"dec-real"}, p.Features[0].Decisions,
+		"dangling ref must be stripped, valid ref preserved")
+}
+
+func TestGenerateSpecRetriesOnIntegrityViolation(t *testing.T) {
+	// The proposer first emits a proposal with a dangling decision
+	// reference; the integrity loop then asks the architect (one
+	// extra LLM call labeled integrity_revise) for a corrected
+	// proposal that includes the missing decision. Total calls: 6
+	// council + 1 integrity-revise = 7.
+	dangling := `{
+		"features": [{"id":"feat-x","title":"X","description":"f","decisions":["dec-missing"]}],
+		"decisions": []
+	}`
+	repaired := `{
+		"features": [{"id":"feat-x","title":"X","description":"f","decisions":["dec-missing"]}],
+		"decisions": [{
+			"id":"dec-missing","title":"Missing Decision","rationale":"r",
+			"confidence":0.7,
+			"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]
+		}]
+	}`
+	mock := NewMockLLM(
+		MockResponse{Response: &GenerateResponse{Content: scoutResp, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: dangling, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+		// Integrity-revise call: architect repairs the proposal.
+		MockResponse{Response: &GenerateResponse{Content: repaired, Model: "m"}},
+	)
+	fs := setupSpecGenFixture(t)
+
+	out, err := GenerateSpec(context.Background(), mock, fs, SpecGenRequest{
+		GoalsBody: "Build something.",
+	})
+	require.NoError(t, err)
+	require.Len(t, out.Decisions, 1, "integrity revise should have produced the missing decision")
+	assert.Equal(t, "dec-missing", out.Decisions[0].ID)
+	assert.Equal(t, 7, mock.CallCount(),
+		"council (6 calls) + one integrity-revise = 7")
+}
+
+func TestGenerateSpecErrorsAfterIntegrityRetryCap(t *testing.T) {
+	// The architect is broken: every output has the same dangling
+	// reference. After MaxIntegrityRetries fail attempts,
+	// GenerateSpec must surface IntegrityViolationError rather than
+	// silently strip the bad refs.
+	dangling := `{
+		"features": [{"id":"feat-x","title":"X","description":"f","decisions":["dec-missing"]}],
+		"decisions": []
+	}`
+	mock := NewMockLLM(
+		MockResponse{Response: &GenerateResponse{Content: scoutResp, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: dangling, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+		// Architect fails to repair on every retry.
+		MockResponse{Response: &GenerateResponse{Content: dangling, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: dangling, Model: "m"}},
+	)
+	fs := setupSpecGenFixture(t)
+
+	_, err := GenerateSpec(context.Background(), mock, fs, SpecGenRequest{
+		GoalsBody: "Build something.",
+	})
+	require.Error(t, err)
+	var iv *IntegrityViolationError
+	require.ErrorAs(t, err, &iv,
+		"expected IntegrityViolationError after retries exhausted")
+	assert.Equal(t, MaxIntegrityRetries, iv.Attempts)
+	assert.NotEmpty(t, iv.Warnings)
+	assert.Equal(t, "dec-missing", iv.Warnings[0].MissingID)
+	assert.NotNil(t, iv.Proposal,
+		"caller should be able to inspect the last attempt's output")
+}
+
 func TestGenerateSpecCritiqueRevisesProposal(t *testing.T) {
 	// scout → proposer (dangling ref) → 4 critics (1 flags, 3 empty) →
 	// revise → 7 calls.
@@ -305,7 +418,7 @@ func TestValidateAndStripRemovesDanglingDecisionRefs(t *testing.T) {
 		},
 	}
 
-	warnings := p.ValidateAndStrip(nil)
+	warnings := p.Strip(nil)
 	assert.Equal(t, []string{"dec-real"}, p.Features[0].Decisions, "missing dec ref should be stripped")
 	require.Equal(t, 1, len(warnings))
 	assert.Equal(t, "feature", warnings[0].NodeKind)
@@ -324,7 +437,7 @@ func TestValidateAndStripDropsApproachWithMissingParent(t *testing.T) {
 		},
 	}
 
-	warnings := p.ValidateAndStrip(nil)
+	warnings := p.Strip(nil)
 	require.Equal(t, 1, len(p.Approaches), "orphan approach should be dropped")
 	assert.Equal(t, "app-real", p.Approaches[0].ID)
 
@@ -346,7 +459,7 @@ func TestValidateAndStripResolvesAgainstExistingSpec(t *testing.T) {
 		Decisions: []spec.Decision{{ID: "dec-existing", Title: "Existing"}},
 	}
 
-	warnings := p.ValidateAndStrip(existing)
+	warnings := p.Strip(existing)
 	assert.Empty(t, warnings)
 	assert.Equal(t, []string{"dec-existing"}, p.Features[0].Decisions)
 }

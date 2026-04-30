@@ -131,9 +131,15 @@ type CriticIssues struct {
 // model tier comes from each agent's frontmatter, resolved against
 // .borg/models.yaml at LLM-call time.
 //
-// The returned SpecProposal's referential integrity is best-effort —
-// callers should run ValidateAndStrip before persistence to catch what
-// the critic missed.
+// The returned proposal is guaranteed to be referentially clean —
+// every id referenced in features[].decisions, strategies[].decisions,
+// etc. resolves to either a node in the proposal itself or a node in
+// req.Existing. This is enforced by an integrity-revise loop: when
+// the council's output has dangling refs, the architect agent is
+// invoked one more time with the violations as concerns. After
+// MaxIntegrityRetries failed attempts, GenerateSpec returns an
+// IntegrityViolationError instead of producing a degraded proposal —
+// silent stripping would mask a council failure the user cares about.
 func GenerateSpec(ctx context.Context, llm LLM, fsys specio.FS, req SpecGenRequest) (*SpecProposal, error) {
 	if strings.TrimSpace(req.GoalsBody) == "" {
 		return nil, fmt.Errorf("GenerateSpec: GoalsBody is required")
@@ -201,7 +207,111 @@ func GenerateSpec(ctx context.Context, llm LLM, fsys specio.FS, req SpecGenReque
 	if err := json.Unmarshal([]byte(proposalJSON), &proposal); err != nil {
 		return nil, fmt.Errorf("parse spec proposal: %w (content=%q)", err, proposalJSON)
 	}
+
+	// Integrity gate. If the proposal references node IDs it didn't
+	// emit, ask the architect to repair the proposal rather than
+	// silently dropping the dangling refs. The cap is small because
+	// a model that fails twice in a row is unlikely to comply on the
+	// third try; better to surface a clear error than burn tokens.
+	for attempt := 0; attempt < MaxIntegrityRetries; attempt++ {
+		warnings := proposal.Validate(req.Existing)
+		if len(warnings) == 0 {
+			return &proposal, nil
+		}
+		archDef, ok := agentDefs["spec_architect"]
+		if !ok {
+			// No architect to repair with — surface the violations.
+			return nil, &IntegrityViolationError{
+				Warnings: warnings,
+				Proposal: &proposal,
+				Attempts: attempt,
+			}
+		}
+		repaired, err := reviseForIntegrity(ctx, llm, archDef, prompt, &proposal, warnings)
+		if err != nil {
+			return nil, fmt.Errorf("integrity-revise attempt %d: %w", attempt+1, err)
+		}
+		proposal = *repaired
+	}
+
+	// Final check after the retry budget. Returning the violations as
+	// a typed error lets callers format them clearly and lets users
+	// decide whether to re-run, switch model, or hand-edit.
+	if final := proposal.Validate(req.Existing); len(final) > 0 {
+		return nil, &IntegrityViolationError{
+			Warnings: final,
+			Proposal: &proposal,
+			Attempts: MaxIntegrityRetries,
+		}
+	}
 	return &proposal, nil
+}
+
+// MaxIntegrityRetries caps the number of architect re-roll attempts
+// triggered by the post-workflow integrity gate. Two is the sweet
+// spot: enough to give a stochastic model a second chance, not so
+// many that a stubbornly broken model burns minutes for no value.
+const MaxIntegrityRetries = 2
+
+// IntegrityViolationError is returned by GenerateSpec when the
+// architect produces a proposal with dangling references and the
+// retry budget is exhausted. Callers can format the warning list to
+// guide the user (re-run, switch model, or hand-edit). Proposal is
+// the last attempt's output, retained so callers can inspect what
+// the architect produced even when it wasn't usable.
+type IntegrityViolationError struct {
+	Warnings []IntegrityWarning
+	Proposal *SpecProposal
+	Attempts int
+}
+
+func (e *IntegrityViolationError) Error() string {
+	if e == nil {
+		return "spec integrity violation"
+	}
+	return fmt.Sprintf("spec integrity violation: %d dangling reference(s) after %d revise attempt(s)",
+		len(e.Warnings), e.Attempts)
+}
+
+// reviseForIntegrity asks the architect agent for one corrected
+// SpecProposal given a list of integrity violations. Single LLM call
+// — the violations are mechanical so we don't need critics to
+// re-discover them, just the architect to fix them.
+func reviseForIntegrity(ctx context.Context, llm LLM, archDef AgentDef, originalPrompt string, prev *SpecProposal, warnings []IntegrityWarning) (*SpecProposal, error) {
+	prevJSON, err := json.MarshalIndent(prev, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal previous proposal: %w", err)
+	}
+	var b strings.Builder
+	b.WriteString("Your previous SpecProposal has referential-integrity violations. ")
+	b.WriteString("Every id referenced in features[].decisions, strategies[].decisions, ")
+	b.WriteString("features[].approaches, strategies[].approaches, and approaches[].parent_id ")
+	b.WriteString("MUST resolve to a node either in this proposal or in the existing spec.\n\n")
+	b.WriteString("## Violations to fix\n\n")
+	for _, w := range warnings {
+		fmt.Fprintf(&b, "- %s\n", w.String())
+	}
+	b.WriteString("\n## How to fix\n\n")
+	b.WriteString("For each missing reference, EITHER add the missing node to the proposal ")
+	b.WriteString("(decisions need id, title, rationale, confidence, alternatives, citations; ")
+	b.WriteString("approaches need id, title, parent_id, body) OR remove the dangling reference ")
+	b.WriteString("from the node that emitted it.\n\n")
+	b.WriteString("## Original prompt\n\n")
+	b.WriteString(originalPrompt)
+	b.WriteString("\n\n## Your previous proposal (must be re-emitted in full, corrected)\n\n```json\n")
+	b.Write(prevJSON)
+	b.WriteString("\n```\n\nRe-emit the COMPLETE SpecProposal as a single JSON object — do not return only a diff or a partial object.")
+
+	req := BuildGenerateRequest(archDef, []Message{{Role: "user", Content: b.String()}})
+	resp, err := llm.Generate(WithRole(ctx, "integrity_revise"), req)
+	if err != nil {
+		return nil, err
+	}
+	var out SpecProposal
+	if err := json.Unmarshal([]byte(resp.Content), &out); err != nil {
+		return nil, fmt.Errorf("parse integrity-revise response: %w", err)
+	}
+	return &out, nil
 }
 
 // buildSpecGenPrompt assembles the seed prompt the workflow executor
@@ -285,18 +395,54 @@ func (w IntegrityWarning) String() string {
 	return fmt.Sprintf("%s %s.%s references unknown id %q (stripped)", w.NodeKind, w.NodeID, w.Field, w.MissingID)
 }
 
-// ValidateAndStrip removes references in the proposal that don't resolve
-// to a node in either the proposal itself or the supplied existing spec
-// snapshot. Returns the list of warnings (one per stripped reference) so
-// the caller can surface them. The proposal is mutated in place.
+// Validate detects referential-integrity violations in the proposal
+// without mutating it. Returns one IntegrityWarning per dangling
+// reference. Pure check — callers use this to decide whether to send
+// the proposal back to the architect for repair instead of silently
+// dropping data.
 //
 // Rules:
 //   - Feature.Decisions, Feature.Approaches: each id must resolve.
 //   - Strategy.Decisions, Strategy.Approaches: same.
-//   - Approach.ParentID: must resolve to a feature or strategy. Approaches
-//     with no resolvable parent are removed entirely (an orphan approach
-//     has no anchor in the graph).
-func (p *SpecProposal) ValidateAndStrip(existing *ExistingSpec) []IntegrityWarning {
+//   - Approach.ParentID: must resolve to a feature or strategy.
+func (p *SpecProposal) Validate(existing *ExistingSpec) []IntegrityWarning {
+	if p == nil {
+		return nil
+	}
+	known := indexKnownIDs(p, existing)
+	var warnings []IntegrityWarning
+
+	for _, f := range p.Features {
+		warnings = appendMissingRefs(warnings, f.Decisions, known.decisions, "feature", f.ID, "decisions")
+		warnings = appendMissingRefs(warnings, f.Approaches, known.approaches, "feature", f.ID, "approaches")
+	}
+	for _, s := range p.Strategies {
+		warnings = appendMissingRefs(warnings, s.Decisions, known.decisions, "strategy", s.ID, "decisions")
+		warnings = appendMissingRefs(warnings, s.Approaches, known.approaches, "strategy", s.ID, "approaches")
+	}
+	for _, ap := range p.Approaches {
+		if _, ok := known.parentable[ap.ParentID]; !ok {
+			warnings = append(warnings, IntegrityWarning{
+				NodeKind:  "approach",
+				NodeID:    ap.ID,
+				Field:     "parent_id",
+				MissingID: ap.ParentID,
+			})
+		}
+	}
+	return warnings
+}
+
+// Strip removes references in the proposal that don't resolve to any
+// known node. Mutates the proposal in place and returns the warnings
+// for the dropped refs.
+//
+// Strip is the destructive fallback — preferred behaviour is to call
+// Validate first and ask the architect to repair. Reach for Strip
+// only when the architect has been given a chance to fix the issue
+// and refused, or when the caller has explicitly opted into
+// best-effort persistence over a hard failure.
+func (p *SpecProposal) Strip(existing *ExistingSpec) []IntegrityWarning {
 	if p == nil {
 		return nil
 	}
@@ -328,6 +474,24 @@ func (p *SpecProposal) ValidateAndStrip(existing *ExistingSpec) []IntegrityWarni
 		kept = append(kept, ap)
 	}
 	p.Approaches = kept
+	return warnings
+}
+
+// appendMissingRefs records a warning for every id in refs that does
+// not resolve in known. Used by Validate; equivalent to filterRefs's
+// detection half but without the destructive filtering.
+func appendMissingRefs(warnings []IntegrityWarning, refs []string, known map[string]struct{}, nodeKind, nodeID, field string) []IntegrityWarning {
+	for _, r := range refs {
+		if _, ok := known[r]; ok {
+			continue
+		}
+		warnings = append(warnings, IntegrityWarning{
+			NodeKind:  nodeKind,
+			NodeID:    nodeID,
+			Field:     field,
+			MissingID: r,
+		})
+	}
 	return warnings
 }
 
