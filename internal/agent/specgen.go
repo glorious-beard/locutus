@@ -395,8 +395,12 @@ type IntegrityWarning struct {
 	MissingID string // the id that wasn't found
 }
 
+// String renders a warning without claiming what was done about it.
+// Callers that strip the dangling ref append their own suffix (e.g.
+// " (stripped)"); callers that surface the warning as a hard failure
+// leave the fact-statement standing on its own.
 func (w IntegrityWarning) String() string {
-	return fmt.Sprintf("%s %s.%s references unknown id %q (stripped)", w.NodeKind, w.NodeID, w.Field, w.MissingID)
+	return fmt.Sprintf("%s %s.%s references unknown id %q", w.NodeKind, w.NodeID, w.Field, w.MissingID)
 }
 
 // Validate detects referential-integrity violations in the proposal
