@@ -88,6 +88,12 @@ type SpecGenRequest struct {
 	Capability     CapabilityTier
 	Model          string
 	CritiqueRounds int
+
+	// Sink, when non-nil, receives a WorkflowEvent for every agent
+	// step (started/completed/error). Drives the CLI spinner UI and
+	// MCP progress notifications. Nil sink is silent — same effect as
+	// passing SilentSink{}.
+	Sink EventSink
 }
 
 // ScoutBrief is the structured output of the spec_scout agent. The
@@ -155,6 +161,29 @@ func GenerateSpec(ctx context.Context, llm LLM, fsys specio.FS, req SpecGenReque
 		AgentDefs: agentDefs,
 		Workflow:  wf,
 	}
+
+	// Bridge workflow events to the caller's sink. Buffered generously
+	// since emitEvent now blocks on a full channel — a stuck consumer
+	// would otherwise stall the council. 64 covers the worst case
+	// (every agent fires started+completed in tight succession).
+	sink := req.Sink
+	if sink == nil {
+		sink = SilentSink{}
+	}
+	events := make(chan WorkflowEvent, 64)
+	executor.Events = events
+	bridgeDone := make(chan struct{})
+	go func() {
+		defer close(bridgeDone)
+		for ev := range events {
+			sink.OnEvent(ev)
+		}
+	}()
+	defer func() {
+		close(events)
+		<-bridgeDone
+		sink.Close()
+	}()
 
 	prompt := buildSpecGenPrompt(req)
 

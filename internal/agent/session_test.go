@@ -169,6 +169,103 @@ func TestLoggingLLMRecordsAndDelegates(t *testing.T) {
 	assert.Equal(t, `{"ok":true}`, session.Calls[0].Response)
 }
 
+func TestSessionRecorderBeginWritesInProgressEntry(t *testing.T) {
+	fs := specio.NewMemFS()
+	rec, err := NewSessionRecorder(fs, "test", "")
+	require.NoError(t, err)
+
+	started := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	handle := rec.Begin("proposer",
+		GenerateRequest{
+			Model:    "googleai/gemini-2.5-pro",
+			Messages: []Message{{Role: "user", Content: "go"}},
+		},
+		started,
+	)
+	require.NotNil(t, handle)
+
+	// Tail-of-file behavior: an in-flight call should already be visible
+	// before Finish fires. This is the whole point of the placeholder —
+	// an operator watching the YAML knows what's blocking right now.
+	raw, _ := fs.ReadFile(rec.Path())
+	var session sessionFile
+	require.NoError(t, yaml.Unmarshal(raw, &session))
+	require.Len(t, session.Calls, 1)
+	assert.Equal(t, CallStatusInProgress, session.Calls[0].Status)
+	assert.Equal(t, "proposer", session.Calls[0].Role)
+	assert.Empty(t, session.Calls[0].Response, "response should be empty until Finish")
+	assert.Empty(t, session.Calls[0].CompletedAt)
+	assert.Zero(t, session.Calls[0].DurationMS)
+
+	handle.Finish(&GenerateResponse{
+		Content:      `{"ok":true}`,
+		InputTokens:  120,
+		OutputTokens: 45,
+		TotalTokens:  165,
+	}, nil)
+
+	raw, _ = fs.ReadFile(rec.Path())
+	require.NoError(t, yaml.Unmarshal(raw, &session))
+	require.Len(t, session.Calls, 1, "Finish must update in place, not append")
+	assert.Equal(t, CallStatusCompleted, session.Calls[0].Status)
+	assert.Equal(t, `{"ok":true}`, session.Calls[0].Response)
+	assert.Equal(t, 120, session.Calls[0].InputTokens)
+	assert.Equal(t, 45, session.Calls[0].OutputTokens)
+	assert.Equal(t, 165, session.Calls[0].TotalTokens)
+	assert.NotEmpty(t, session.Calls[0].CompletedAt)
+}
+
+func TestSessionRecorderFinishWithErrorMarksStatus(t *testing.T) {
+	fs := specio.NewMemFS()
+	rec, err := NewSessionRecorder(fs, "test", "")
+	require.NoError(t, err)
+
+	handle := rec.Begin("critic",
+		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
+		time.Now(),
+	)
+	handle.Finish(nil, fmt.Errorf("context canceled"))
+
+	raw, _ := fs.ReadFile(rec.Path())
+	var session sessionFile
+	require.NoError(t, yaml.Unmarshal(raw, &session))
+	require.Len(t, session.Calls, 1)
+	assert.Equal(t, CallStatusError, session.Calls[0].Status)
+	assert.Equal(t, "context canceled", session.Calls[0].Error)
+	assert.Empty(t, session.Calls[0].Response)
+}
+
+func TestLoggingLLMPersistsTokenCounts(t *testing.T) {
+	fs := specio.NewMemFS()
+	rec, err := NewSessionRecorder(fs, "test", "")
+	require.NoError(t, err)
+
+	mock := NewMockLLM(MockResponse{
+		Response: &GenerateResponse{
+			Content:      `{"ok":true}`,
+			Model:        "test-model",
+			InputTokens:  200,
+			OutputTokens: 80,
+			TotalTokens:  280,
+		},
+	})
+	logging := NewLoggingLLM(mock, rec)
+
+	_, err = logging.Generate(context.Background(), GenerateRequest{
+		Model: "test-model", Messages: []Message{{Role: "user", Content: "hi"}},
+	})
+	require.NoError(t, err)
+
+	raw, _ := fs.ReadFile(rec.Path())
+	var session sessionFile
+	require.NoError(t, yaml.Unmarshal(raw, &session))
+	require.Len(t, session.Calls, 1)
+	assert.Equal(t, 200, session.Calls[0].InputTokens)
+	assert.Equal(t, 80, session.Calls[0].OutputTokens)
+	assert.Equal(t, 280, session.Calls[0].TotalTokens)
+	assert.Equal(t, CallStatusCompleted, session.Calls[0].Status)
+}
+
 func TestLoggingLLMRecordsErrorPath(t *testing.T) {
 	fs := specio.NewMemFS()
 	rec, err := NewSessionRecorder(fs, "test", "")

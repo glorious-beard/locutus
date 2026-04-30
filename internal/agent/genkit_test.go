@@ -5,10 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/genai"
 )
 
 func clearProviderEnv(t *testing.T) {
@@ -132,6 +135,67 @@ func TestResolveModel(t *testing.T) {
 			assert.Equal(t, c.want, c.llm.resolveModel(c.requested))
 		})
 	}
+}
+
+func TestBuildProviderConfig(t *testing.T) {
+	t.Run("googleai with no fields returns nil", func(t *testing.T) {
+		got := buildProviderConfig("googleai/gemini-2.5-flash", GenerateRequest{})
+		assert.Nil(t, got)
+	})
+
+	t.Run("googleai populates GenerateContentConfig", func(t *testing.T) {
+		got := buildProviderConfig("googleai/gemini-2.5-flash", GenerateRequest{
+			Temperature: 0.5,
+			MaxTokens:   1024,
+		})
+		cfg, ok := got.(*genai.GenerateContentConfig)
+		require.True(t, ok, "expected *genai.GenerateContentConfig, got %T", got)
+		require.NotNil(t, cfg.Temperature)
+		assert.InDelta(t, 0.5, *cfg.Temperature, 1e-6)
+		assert.Equal(t, int32(1024), cfg.MaxOutputTokens)
+	})
+
+	t.Run("anthropic always sets MaxTokens to satisfy plugin", func(t *testing.T) {
+		got := buildProviderConfig("anthropic/claude-sonnet-4-6", GenerateRequest{})
+		cfg, ok := got.(*anthropicsdk.MessageNewParams)
+		require.True(t, ok, "expected *anthropicsdk.MessageNewParams, got %T", got)
+		assert.Equal(t, int64(defaultAnthropicMaxTokens), cfg.MaxTokens,
+			"plugin rejects MaxTokens == 0; default must kick in when caller omits it")
+	})
+
+	t.Run("anthropic respects explicit MaxTokens", func(t *testing.T) {
+		got := buildProviderConfig("anthropic/claude-sonnet-4-6", GenerateRequest{
+			MaxTokens: 2048,
+		})
+		cfg, ok := got.(*anthropicsdk.MessageNewParams)
+		require.True(t, ok)
+		assert.Equal(t, int64(2048), cfg.MaxTokens)
+	})
+
+	t.Run("unknown provider returns nil", func(t *testing.T) {
+		got := buildProviderConfig("openai/gpt-4o", GenerateRequest{Temperature: 0.5})
+		assert.Nil(t, got)
+	})
+}
+
+func TestLLMCallTimeout(t *testing.T) {
+	t.Run("default when unset", func(t *testing.T) {
+		t.Setenv(EnvKeyLocutusLLMTimeout, "")
+		assert.Equal(t, DefaultLLMCallTimeout, llmCallTimeout())
+	})
+	t.Run("env override", func(t *testing.T) {
+		t.Setenv(EnvKeyLocutusLLMTimeout, "90s")
+		assert.Equal(t, 90*time.Second, llmCallTimeout())
+	})
+	t.Run("zero disables", func(t *testing.T) {
+		t.Setenv(EnvKeyLocutusLLMTimeout, "0")
+		assert.Equal(t, time.Duration(0), llmCallTimeout(),
+			"0 should pass through so callers can opt out of the cap")
+	})
+	t.Run("invalid falls back to default", func(t *testing.T) {
+		t.Setenv(EnvKeyLocutusLLMTimeout, "garbage")
+		assert.Equal(t, DefaultLLMCallTimeout, llmCallTimeout())
+	})
 }
 
 func TestToGenkitRole(t *testing.T) {

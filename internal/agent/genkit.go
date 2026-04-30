@@ -7,23 +7,39 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
+	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/firebase/genkit/go/ai"
 	"github.com/firebase/genkit/go/core/api"
 	"github.com/firebase/genkit/go/genkit"
 	"github.com/firebase/genkit/go/plugins/anthropic"
 	"github.com/firebase/genkit/go/plugins/googlegenai"
+	"google.golang.org/genai"
 )
+
+// defaultAnthropicMaxTokens is used when a request omits MaxTokens.
+// The Anthropic plugin rejects requests with MaxTokens == 0
+// ("maxTokens not set"), so we always supply a value.
+const defaultAnthropicMaxTokens = 4096
 
 // Env-var conventions the Genkit plugins read. Exposed as constants so
 // LLMAvailable and DetectProviders can inspect the environment without
 // stringly-typed literals scattered around.
 const (
-	EnvKeyAnthropicAPI = "ANTHROPIC_API_KEY"
-	EnvKeyGeminiAPI    = "GEMINI_API_KEY"
-	EnvKeyGoogleAPI    = "GOOGLE_API_KEY" // Google AI Studio alternate name
-	EnvKeyLocutusModel = "LOCUTUS_MODEL"
+	EnvKeyAnthropicAPI      = "ANTHROPIC_API_KEY"
+	EnvKeyGeminiAPI         = "GEMINI_API_KEY"
+	EnvKeyGoogleAPI         = "GOOGLE_API_KEY" // Google AI Studio alternate name
+	EnvKeyLocutusModel      = "LOCUTUS_MODEL"
+	EnvKeyLocutusLLMTimeout = "LOCUTUS_LLM_TIMEOUT" // per-call deadline override
 )
+
+// DefaultLLMCallTimeout caps a single Genkit Generate call. 15 minutes
+// is generous enough for Pro/Opus runs on complex constrained-JSON
+// outputs, but short enough that a hung call surfaces as an error
+// instead of an indefinite stall. Override with LOCUTUS_LLM_TIMEOUT.
+const DefaultLLMCallTimeout = 15 * time.Minute
 
 // DetectedProviders records which Genkit plugins were enabled based on
 // env-var presence. Callers can use this to surface diagnostics
@@ -122,7 +138,12 @@ func buildGenKitLLM() (*GenKitLLM, error) {
 		defaultModel = pickDefaultModel(detected)
 	}
 
-	slog.Info("genkit initialized",
+	// Genkit init detail used to live at INFO level; per the new
+	// log-level defaults (WARN), it's now logged at DEBUG so -v / -vv
+	// can surface it without polluting normal output. Callers that
+	// want a user-facing one-liner should print GenKitLLM.Banner()
+	// to stderr.
+	slog.Debug("genkit initialized",
 		"providers", detected.Names(),
 		"default_model", defaultModel,
 	)
@@ -132,6 +153,20 @@ func buildGenKitLLM() (*GenKitLLM, error) {
 		defaultModel: defaultModel,
 		providers:    detected,
 	}, nil
+}
+
+// Banner returns a human-readable startup line describing which
+// providers were registered and which model will be used by default.
+// The CLI prints this to stderr at the start of each invocation that
+// touches an LLM so users always know which model their session is
+// running against.
+func (g *GenKitLLM) Banner() string {
+	providers := g.providers.Names()
+	if len(providers) == 0 {
+		return fmt.Sprintf("locutus: model=%s (no providers configured)", g.defaultModel)
+	}
+	return fmt.Sprintf("locutus: model=%s providers=%s",
+		g.defaultModel, strings.Join(providers, ","))
 }
 
 // pickDefaultModel chooses a sensible fallback model given which
@@ -175,11 +210,8 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 		ai.WithModelName(model),
 		ai.WithMessages(messages...),
 	}
-	if req.Temperature > 0 || req.MaxTokens > 0 {
-		opts = append(opts, ai.WithConfig(&ai.GenerationCommonConfig{
-			Temperature:     req.Temperature,
-			MaxOutputTokens: req.MaxTokens,
-		}))
+	if cfg := buildProviderConfig(model, req); cfg != nil {
+		opts = append(opts, ai.WithConfig(cfg))
 	}
 	// If the caller asked for structured output, push it down to the
 	// provider so the response is constrained at the API level (Anthropic
@@ -190,11 +222,78 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 		opts = append(opts, ai.WithOutputType(req.OutputSchema))
 	}
 
+	if timeout := llmCallTimeout(); timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
 	resp, err := genkit.Generate(ctx, g.g, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("genkit generate (model=%s): %w", model, err)
 	}
-	return &GenerateResponse{Content: resp.Text(), Model: model}, nil
+	out := &GenerateResponse{Content: resp.Text(), Model: model}
+	if u := resp.Usage; u != nil {
+		out.InputTokens = u.InputTokens
+		out.OutputTokens = u.OutputTokens
+		out.TotalTokens = u.TotalTokens
+	}
+	return out, nil
+}
+
+// llmCallTimeout returns the per-call deadline for a Genkit Generate
+// call. Defaults to 15 minutes — long enough that legitimate Pro/Opus
+// runs on a complex constrained-JSON output finish, short enough that
+// a stuck call surfaces as an error rather than burning a session.
+// LOCUTUS_LLM_TIMEOUT accepts any time.ParseDuration string ("0"
+// disables the cap entirely).
+func llmCallTimeout() time.Duration {
+	if v := os.Getenv(EnvKeyLocutusLLMTimeout); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+		slog.Warn("invalid LOCUTUS_LLM_TIMEOUT; using default", "value", v, "default", DefaultLLMCallTimeout)
+	}
+	return DefaultLLMCallTimeout
+}
+
+// buildProviderConfig produces the provider-specific config struct that
+// Genkit's gemini/anthropic plugins expect. They each only accept their
+// own native config type (or a map[string]any with matching JSON tags) —
+// passing ai.GenerationCommonConfig fails with INVALID_ARGUMENT. Returns
+// nil when no config fields apply, in which case the caller should skip
+// ai.WithConfig entirely. The Anthropic plugin requires MaxTokens > 0,
+// so we always supply a default for that provider even if the caller
+// omitted one.
+func buildProviderConfig(model string, req GenerateRequest) any {
+	prefix, _, _ := strings.Cut(model, "/")
+	switch prefix {
+	case "googleai":
+		if req.Temperature == 0 && req.MaxTokens == 0 {
+			return nil
+		}
+		cfg := &genai.GenerateContentConfig{}
+		if req.Temperature > 0 {
+			t := float32(req.Temperature)
+			cfg.Temperature = &t
+		}
+		if req.MaxTokens > 0 {
+			cfg.MaxOutputTokens = int32(req.MaxTokens)
+		}
+		return cfg
+	case "anthropic":
+		maxTokens := int64(req.MaxTokens)
+		if maxTokens == 0 {
+			maxTokens = defaultAnthropicMaxTokens
+		}
+		cfg := &anthropicsdk.MessageNewParams{MaxTokens: maxTokens}
+		if req.Temperature > 0 {
+			cfg.Temperature = param.NewOpt(req.Temperature)
+		}
+		return cfg
+	default:
+		return nil
+	}
 }
 
 // resolveModel picks the model string to pass to Genkit: the request's

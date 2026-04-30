@@ -74,7 +74,7 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 		return err
 	}
 
-	result, err := dispatchRefine(ctx, llm, fsys, c.ID, kind)
+	result, err := dispatchRefine(ctx, llm, fsys, c.ID, kind, pickSink(cli))
 	if err != nil {
 		return err
 	}
@@ -89,8 +89,10 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 
 // dispatchRefine routes a refine by kind. Exported to tests so the Goals
 // branch and unknown-kind branch can be covered without building a full
-// fixture graph.
-func dispatchRefine(ctx context.Context, llm agent.LLM, fsys specio.FS, id string, kind spec.NodeKind) (*RefineResult, error) {
+// fixture graph. The sink argument is only consumed by the council-driven
+// branches (currently Goals); single-call paths ignore it because they
+// don't run a workflow.
+func dispatchRefine(ctx context.Context, llm agent.LLM, fsys specio.FS, id string, kind spec.NodeKind, sink agent.EventSink) (*RefineResult, error) {
 	switch kind {
 	case spec.KindDecision:
 		return RunRefine(ctx, llm, fsys, id)
@@ -103,7 +105,7 @@ func dispatchRefine(ctx context.Context, llm agent.LLM, fsys specio.FS, id strin
 	case spec.KindApproach:
 		return RunRefineApproach(ctx, llm, fsys, id)
 	case spec.KindGoals:
-		return RunRefineGoals(ctx, llm, fsys)
+		return RunRefineGoals(ctx, llm, fsys, sink)
 	default:
 		return nil, fmt.Errorf("refine for %s is not yet implemented", kind)
 	}
@@ -118,7 +120,7 @@ func dispatchRefine(ctx context.Context, llm agent.LLM, fsys specio.FS, id strin
 // updated in place, new IDs land as new files. Quality strategies
 // (testing, observability, deployment) are mandatory in the LLM prompt
 // so engineering best practices show up by construction.
-func RunRefineGoals(ctx context.Context, llm agent.LLM, fsys specio.FS) (*RefineResult, error) {
+func RunRefineGoals(ctx context.Context, llm agent.LLM, fsys specio.FS, sink agent.EventSink) (*RefineResult, error) {
 	goalsBody, found := readGoals(fsys)
 	if !found || strings.TrimSpace(goalsBody) == "" {
 		return nil, fmt.Errorf("refine goals: GOALS.md is empty or missing — populate it before running")
@@ -128,6 +130,7 @@ func RunRefineGoals(ctx context.Context, llm agent.LLM, fsys specio.FS) (*Refine
 	gen, err := runSpecGeneration(ctx, llm, fsys, agent.SpecGenRequest{
 		GoalsBody: goalsBody,
 		Existing:  existing,
+		Sink:      sink,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("refine goals: %w", err)

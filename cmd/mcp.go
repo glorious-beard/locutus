@@ -18,6 +18,12 @@ type McpCmd struct {
 }
 
 func (c *McpCmd) Run(ctx context.Context, cli *CLI) error {
+	// Mark this process as serving MCP so any council path that asks
+	// for a render mode picks the protocol-appropriate sink. Pterm
+	// output to stderr would interleave with MCP framing and confuse
+	// clients that capture the server's stderr.
+	cli.mcpMode = true
+
 	root, err := specio.FindProjectRootFromCwd()
 	if err != nil {
 		return fmt.Errorf("mcp: %w — start `locutus mcp` from inside a Locutus project", err)
@@ -124,7 +130,7 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 				return errorResult(err.Error()), nil, nil
 			}
 		}
-		result, err := RunImport(ctx, llm, fsys, []byte(input.Content), "", kind, input.SkipTriage, input.NoPlan, input.DryRun)
+		result, err := RunImport(ctx, llm, fsys, []byte(input.Content), "", kind, input.SkipTriage, input.NoPlan, input.DryRun, newMCPSink(ctx, req))
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}

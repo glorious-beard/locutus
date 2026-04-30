@@ -171,7 +171,7 @@ type: feature
 Body.
 `)
 
-	result, err := RunImport(context.Background(), nil, fs, input, "", "feature", true, true, false)
+	result, err := RunImport(context.Background(), nil, fs, input, "", "feature", true, true, false, nil)
 	require.NoError(t, err)
 	require.True(t, result.Accepted)
 	assert.Equal(t, "feat-admit", result.FeatureID)
@@ -195,7 +195,7 @@ title: Dry-run
 Body.
 `)
 
-	result, err := RunImport(context.Background(), nil, fs, input, "", "feature", true, true, true)
+	result, err := RunImport(context.Background(), nil, fs, input, "", "feature", true, true, true, nil)
 	require.NoError(t, err)
 	require.True(t, result.Accepted)
 	assert.True(t, result.DryRun)
@@ -222,7 +222,7 @@ Body.
 
 	// skipTriage=true so we don't reach for an LLM. noPlan=true so even
 	// if we did, the planning pass would short-circuit.
-	result, err := RunImport(context.Background(), nil, fs, input, "", "feature", true, true, false)
+	result, err := RunImport(context.Background(), nil, fs, input, "", "feature", true, true, false, nil)
 	require.NoError(t, err)
 	require.True(t, result.Accepted)
 	assert.Equal(t, "feat-noplan", result.FeatureID)
@@ -249,7 +249,7 @@ title: Direct Admit
 Body.
 `)
 
-	result, err := RunImport(context.Background(), nil, fs, input, "", "feature", true, true, false)
+	result, err := RunImport(context.Background(), nil, fs, input, "", "feature", true, true, false, nil)
 	require.NoError(t, err)
 	require.True(t, result.Accepted)
 	assert.Equal(t, "feat-direct", result.FeatureID)

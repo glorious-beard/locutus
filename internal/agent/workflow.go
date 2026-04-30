@@ -72,19 +72,20 @@ func executionRetryConfig() RetryConfig {
 	}
 }
 
-// emitEvent sends a workflow event non-blocking. Safe for concurrent use.
+// emitEvent sends a workflow event. Blocks if the channel is full —
+// dropping council events would silently desynchronise any UI built on
+// top, and the channel is sized generously by the caller (see
+// GenerateSpec). Safe for concurrent use.
 func (e *WorkflowExecutor) emitEvent(stepID, agentID, status, message string) {
-	if e.Events != nil {
-		select {
-		case e.Events <- WorkflowEvent{
-			StepID:    stepID,
-			AgentID:   agentID,
-			Status:    status,
-			Message:   message,
-			Timestamp: time.Now(),
-		}:
-		default:
-		}
+	if e.Events == nil {
+		return
+	}
+	e.Events <- WorkflowEvent{
+		StepID:    stepID,
+		AgentID:   agentID,
+		Status:    status,
+		Message:   message,
+		Timestamp: time.Now(),
 	}
 }
 

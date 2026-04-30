@@ -193,7 +193,7 @@ func TestRefineGoalsRequiresNonEmptyGOALS(t *testing.T) {
 	fs := specio.NewMemFS()
 	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
 	// No GOALS.md present.
-	_, err := RunRefineGoals(context.Background(), nil, fs)
+	_, err := RunRefineGoals(context.Background(), nil, fs, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "GOALS.md is empty or missing")
 }
@@ -246,7 +246,7 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
 	)
 
-	result, err := RunRefineGoals(context.Background(), mock, fs)
+	result, err := RunRefineGoals(context.Background(), mock, fs, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result.Generated)
 	assert.Equal(t, 1, result.Generated.Features)
@@ -290,6 +290,6 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 }
 
 func TestDispatchRefineUnknownKindFailsGracefully(t *testing.T) {
-	_, err := dispatchRefine(context.Background(), nil, nil, "weird", spec.NodeKind("unsupported"))
+	_, err := dispatchRefine(context.Background(), nil, nil, "weird", spec.NodeKind("unsupported"), nil)
 	require.Error(t, err)
 }

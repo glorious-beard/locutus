@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
+	"os"
 	"path"
 	"sync"
 	"time"
@@ -62,16 +64,29 @@ type sessionFile struct {
 	Calls       []recordedCall `yaml:"calls"`
 }
 
+// Call status values written to the YAML transcript. "in_progress"
+// means Begin() has fired but the underlying Generate() has not yet
+// returned — readers tail the file to see what's currently in flight.
+const (
+	CallStatusInProgress = "in_progress"
+	CallStatusCompleted  = "completed"
+	CallStatusError      = "error"
+)
+
 type recordedCall struct {
 	Index        int               `yaml:"index"`
 	Role         string            `yaml:"role,omitempty"`
+	Status       string            `yaml:"status,omitempty"`
 	StartedAt    string            `yaml:"started_at"`
-	DurationMS   int64             `yaml:"duration_ms"`
+	CompletedAt  string            `yaml:"completed_at,omitempty"`
+	DurationMS   int64             `yaml:"duration_ms,omitempty"`
 	Model        string            `yaml:"model"`
 	Messages     []recordedMessage `yaml:"messages"`
 	OutputSchema bool              `yaml:"output_schema,omitempty"`
 	Response     string            `yaml:"response,omitempty"`
-	TokensUsed   int               `yaml:"tokens_used,omitempty"`
+	InputTokens  int               `yaml:"input_tokens,omitempty"`
+	OutputTokens int               `yaml:"output_tokens,omitempty"`
+	TotalTokens  int               `yaml:"total_tokens,omitempty"`
 	Error        string            `yaml:"error,omitempty"`
 }
 
@@ -125,39 +140,97 @@ func (r *SessionRecorder) SessionID() string { return r.session.SessionID }
 // Path returns the FS-relative path of the session file.
 func (r *SessionRecorder) Path() string { return r.path }
 
-// Record stores one LLM call. Safe for concurrent use — workflow
-// executors run agents in parallel.
+// Record stores one LLM call as a single completed entry. Equivalent to
+// Begin(...) immediately followed by Finish(...) and retained for callers
+// that don't need the live placeholder. Safe for concurrent use.
 func (r *SessionRecorder) Record(role string, req GenerateRequest, resp *GenerateResponse, callErr error, started time.Time, duration time.Duration) {
+	h := r.Begin(role, req, started)
+	completedAt := started.Add(duration)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.finalize(h.sliceIdx, resp, callErr, completedAt, duration)
+	_ = r.flush()
+}
+
+// callHandle is returned from Begin and threaded into Finish so the
+// recorder can update the entry it appended at start. Indices are stable
+// because calls only ever append — parallel workflow agents won't shuffle
+// an already-issued index.
+type callHandle struct {
+	recorder *SessionRecorder
+	sliceIdx int
+	started  time.Time
+}
+
+// Begin appends an in-progress entry for this call and flushes
+// immediately so a tail of the YAML reveals what is currently in
+// flight. The caller MUST follow up with Finish (use defer when the
+// surrounding function takes the response/error in one place). Safe
+// for concurrent use.
+func (r *SessionRecorder) Begin(role string, req GenerateRequest, started time.Time) *callHandle {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	call := recordedCall{
 		Index:        len(r.session.Calls) + 1,
 		Role:         role,
+		Status:       CallStatusInProgress,
 		StartedAt:    started.Format(time.RFC3339),
-		DurationMS:   duration.Milliseconds(),
 		Model:        req.Model,
 		OutputSchema: req.OutputSchema != nil,
 	}
 	for _, m := range req.Messages {
 		call.Messages = append(call.Messages, recordedMessage{Role: m.Role, Content: m.Content})
 	}
+	r.session.Calls = append(r.session.Calls, call)
+	idx := len(r.session.Calls) - 1
+
+	// Best-effort flush — see flush comment in Record.
+	_ = r.flush()
+
+	return &callHandle{recorder: r, sliceIdx: idx, started: started}
+}
+
+// Finish completes the entry that Begin appended. Idempotent on a nil
+// handle so callers can defer h.Finish(...) without nil checks even
+// when Begin was never called.
+func (h *callHandle) Finish(resp *GenerateResponse, callErr error) {
+	if h == nil || h.recorder == nil {
+		return
+	}
+	completedAt := time.Now()
+	duration := completedAt.Sub(h.started)
+	r := h.recorder
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.finalize(h.sliceIdx, resp, callErr, completedAt, duration)
+	_ = r.flush()
+}
+
+// finalize writes the response/error/timing fields onto an existing
+// in-progress entry. Caller must hold r.mu.
+func (r *SessionRecorder) finalize(idx int, resp *GenerateResponse, callErr error, completedAt time.Time, duration time.Duration) {
+	if idx < 0 || idx >= len(r.session.Calls) {
+		return
+	}
+	call := &r.session.Calls[idx]
+	call.CompletedAt = completedAt.Format(time.RFC3339)
+	call.DurationMS = duration.Milliseconds()
+	if callErr != nil {
+		call.Status = CallStatusError
+		call.Error = callErr.Error()
+	} else {
+		call.Status = CallStatusCompleted
+	}
 	if resp != nil {
 		call.Response = resp.Content
-		call.TokensUsed = resp.TokensUsed
+		call.InputTokens = resp.InputTokens
+		call.OutputTokens = resp.OutputTokens
+		call.TotalTokens = resp.TotalTokens
 		if call.Model == "" {
 			call.Model = resp.Model
 		}
 	}
-	if callErr != nil {
-		call.Error = callErr.Error()
-	}
-	r.session.Calls = append(r.session.Calls, call)
-
-	// Best-effort: a flush failure shouldn't break the user's flow.
-	// The recorder is a debug artifact; if disk fills, we lose the
-	// transcript, not the user's actual work.
-	_ = r.flush()
 }
 
 func (r *SessionRecorder) flush() error {
@@ -179,25 +252,103 @@ func newShortSessionID() string {
 // LoggingLLM wraps any LLM and routes every Generate call through a
 // SessionRecorder before delegating. The role tag for each call is read
 // from ctx via RoleFromContext (set by callers via WithRole).
+//
+// Heartbeat: when HeartbeatEnabled is true, an in-flight call emits a
+// periodic "still running" log line so an operator watching stderr
+// sees the call hasn't deadlocked. Callers that already render
+// per-call progress through another channel (CLI spinners, MCP
+// progress notifications) should pass false to keep stderr quiet.
 type LoggingLLM struct {
-	inner    LLM
-	recorder *SessionRecorder
+	inner            LLM
+	recorder         *SessionRecorder
+	HeartbeatEnabled bool
 }
 
-// NewLoggingLLM wraps inner with recording.
+// NewLoggingLLM wraps inner with recording. Heartbeat defaults to off
+// — callers turn it on with NewLoggingLLMWithHeartbeat when they
+// don't have a per-call UI of their own. Existing callers that don't
+// pass a heartbeat preference get silent behavior, matching the CLI
+// rich path where the spinner is the visibility surface.
 func NewLoggingLLM(inner LLM, recorder *SessionRecorder) *LoggingLLM {
 	return &LoggingLLM{inner: inner, recorder: recorder}
 }
 
-// Generate delegates to the inner LLM and records the call.
+// NewLoggingLLMWithHeartbeat is the same as NewLoggingLLM but
+// configures the heartbeat. Used by --plain CLI mode and the MCP
+// server, which do not own per-call UI.
+func NewLoggingLLMWithHeartbeat(inner LLM, recorder *SessionRecorder, heartbeat bool) *LoggingLLM {
+	return &LoggingLLM{inner: inner, recorder: recorder, HeartbeatEnabled: heartbeat}
+}
+
+// Generate delegates to the inner LLM and records the call. The
+// recorder gets an in-progress entry at start so a tail of the session
+// YAML reveals what's currently in flight. A heartbeat goroutine logs
+// "still running" every heartbeatInterval so an operator watching
+// stderr knows the call hasn't deadlocked even when the underlying
+// non-streaming Generate produces no output of its own.
 func (l *LoggingLLM) Generate(ctx context.Context, req GenerateRequest) (*GenerateResponse, error) {
 	started := time.Now()
-	resp, err := l.inner.Generate(ctx, req)
-	duration := time.Since(started)
-
 	role := RoleFromContext(ctx)
-	l.recorder.Record(role, req, resp, err, started, duration)
+	handle := l.recorder.Begin(role, req, started)
+
+	var stop func()
+	if l.HeartbeatEnabled {
+		stop = startHeartbeat(role, req.Model, started)
+	} else {
+		stop = func() {}
+	}
+	defer stop()
+
+	resp, err := l.inner.Generate(ctx, req)
+	handle.Finish(resp, err)
 	return resp, err
+}
+
+// EnvKeyLLMHeartbeat overrides the heartbeat interval. Accepts any
+// time.ParseDuration string. "0" disables the heartbeat entirely.
+const EnvKeyLLMHeartbeat = "LOCUTUS_LLM_HEARTBEAT"
+
+// DefaultLLMHeartbeatInterval is the cadence at which an in-flight LLM
+// call emits a "still running" log line. Long enough not to spam an
+// operator watching stderr; short enough that a hung call is obvious
+// well before any timeout fires.
+const DefaultLLMHeartbeatInterval = 30 * time.Second
+
+// startHeartbeat emits a single slog.Info every interval until the
+// returned stop function is called. Callers should `defer stop()`. A
+// returned no-op stop is used when the heartbeat is disabled (interval
+// <= 0) so callers don't need to branch.
+func startHeartbeat(role, model string, started time.Time) (stop func()) {
+	interval := DefaultLLMHeartbeatInterval
+	if v := os.Getenv(EnvKeyLLMHeartbeat); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			interval = d
+		} else {
+			slog.Warn("invalid LOCUTUS_LLM_HEARTBEAT; using default",
+				"value", v, "default", DefaultLLMHeartbeatInterval)
+		}
+	}
+	if interval <= 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case now := <-t.C:
+				slog.Info("LLM call in progress",
+					"role", role,
+					"model", model,
+					"elapsed", now.Sub(started).Round(time.Second).String(),
+				)
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 // Recorder exposes the underlying recorder so callers can read the

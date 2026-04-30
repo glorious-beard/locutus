@@ -70,7 +70,7 @@ func (c *ImportCmd) Run(ctx context.Context, cli *CLI) error {
 		}
 	}
 
-	result, err := RunImport(ctx, llm, fsys, data, c.Path, c.Type, c.SkipTriage, c.NoPlan, c.DryRun)
+	result, err := RunImport(ctx, llm, fsys, data, c.Path, c.Type, c.SkipTriage, c.NoPlan, c.DryRun, pickSink(cli))
 	if err != nil {
 		return err
 	}
@@ -101,7 +101,7 @@ func (c *ImportCmd) Run(ctx context.Context, cli *CLI) error {
 // sourcePath is optional: when present, it's used as a deterministic
 // fallback for id/title when --skip-triage is set or the LLM is
 // unavailable. noPlan suppresses the post-admission planning pass.
-func RunImport(ctx context.Context, llm agent.LLM, fsys specio.FS, data []byte, sourcePath, kind string, skipTriage, noPlan, dryRun bool) (*ImportResult, error) {
+func RunImport(ctx context.Context, llm agent.LLM, fsys specio.FS, data []byte, sourcePath, kind string, skipTriage, noPlan, dryRun bool, sink agent.EventSink) (*ImportResult, error) {
 	result := &ImportResult{DryRun: dryRun, SkippedTriage: skipTriage, SkippedPlan: noPlan}
 
 	// 1. Resolve metadata: frontmatter > LLM intake > filename fallback.
@@ -167,7 +167,7 @@ func RunImport(ctx context.Context, llm agent.LLM, fsys specio.FS, data []byte, 
 		// strategies, and approaches. Skipped on --skip-triage (no LLM
 		// available) and --no-plan (caller wants admission-only).
 		if !skipTriage && !noPlan {
-			gen, err := runFeatureGeneration(ctx, llm, fsys, meta)
+			gen, err := runFeatureGeneration(ctx, llm, fsys, meta, sink)
 			if err != nil {
 				return result, fmt.Errorf("planning pass: %w", err)
 			}
@@ -180,7 +180,7 @@ func RunImport(ctx context.Context, llm agent.LLM, fsys specio.FS, data []byte, 
 // runFeatureGeneration runs the spec-generation LLM call against the
 // admitted feature, treating the feature body as the document and
 // extending the existing spec graph with the LLM's output.
-func runFeatureGeneration(ctx context.Context, llm agent.LLM, fsys specio.FS, meta *importMetadata) (*GenerationSummary, error) {
+func runFeatureGeneration(ctx context.Context, llm agent.LLM, fsys specio.FS, meta *importMetadata, sink agent.EventSink) (*GenerationSummary, error) {
 	if llm == nil {
 		return nil, fmt.Errorf("planning pass: no LLM provided")
 	}
@@ -197,6 +197,7 @@ func runFeatureGeneration(ctx context.Context, llm agent.LLM, fsys specio.FS, me
 		DocumentBody: meta.body,
 		DocumentID:   meta.id,
 		Existing:     existing,
+		Sink:         sink,
 	})
 }
 

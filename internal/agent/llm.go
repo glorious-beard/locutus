@@ -25,10 +25,15 @@ type GenerateRequest struct {
 }
 
 // GenerateResponse holds the result of an LLM generation call.
+// Token counts are reported separately rather than as a single
+// TokensUsed total so session traces can show input vs output split —
+// useful for spotting prompts that have grown unexpectedly large.
 type GenerateResponse struct {
-	Content    string `json:"content"`
-	Model      string `json:"model"`
-	TokensUsed int    `json:"tokens_used,omitempty"`
+	Content      string `json:"content"`
+	Model        string `json:"model"`
+	InputTokens  int    `json:"input_tokens,omitempty"`
+	OutputTokens int    `json:"output_tokens,omitempty"`
+	TotalTokens  int    `json:"total_tokens,omitempty"`
 }
 
 // LLM abstracts LLM generation so callers are decoupled from the provider.

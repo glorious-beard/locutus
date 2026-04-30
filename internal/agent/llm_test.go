@@ -11,14 +11,22 @@ import (
 
 func TestMockLLMBasicResponse(t *testing.T) {
 	mock := NewMockLLM(MockResponse{
-		Response: &GenerateResponse{Content: "hello", Model: "test-model", TokensUsed: 10},
+		Response: &GenerateResponse{
+			Content:      "hello",
+			Model:        "test-model",
+			InputTokens:  6,
+			OutputTokens: 4,
+			TotalTokens:  10,
+		},
 	})
 
 	resp, err := mock.Generate(context.Background(), GenerateRequest{Model: "test-model"})
 	assert.NoError(t, err)
 	assert.Equal(t, "hello", resp.Content)
 	assert.Equal(t, "test-model", resp.Model)
-	assert.Equal(t, 10, resp.TokensUsed)
+	assert.Equal(t, 6, resp.InputTokens)
+	assert.Equal(t, 4, resp.OutputTokens)
+	assert.Equal(t, 10, resp.TotalTokens)
 	assert.Equal(t, 1, mock.CallCount())
 }
 

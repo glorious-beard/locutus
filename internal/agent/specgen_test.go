@@ -127,6 +127,66 @@ func TestGenerateSpecCleanProposalSkipsRevise(t *testing.T) {
 	assert.Equal(t, 6, mock.CallCount(), "six calls when critics return empty: scout + proposer + 4 critics, no revise")
 }
 
+func TestGenerateSpecBridgesEventsToSink(t *testing.T) {
+	// Same six-call clean-proposal flow used elsewhere; we only care
+	// that the workflow's events make it through to the supplied
+	// EventSink. This validates the bridging goroutine in GenerateSpec
+	// (channel → sink) and confirms Close() fires after the run.
+	proposal := `{
+		"features": [{"id":"feat-x","title":"X","description":"a feature","decisions":["dec-x"]}],
+		"decisions": [{"id":"dec-x","title":"D","rationale":"r","confidence":0.8,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]}],
+		"strategies": [{"id":"strat-x","title":"S","kind":"foundational","body":"prose"}],
+		"approaches": [{"id":"app-x","title":"A","parent_id":"feat-x","body":"sketch"}]
+	}`
+	mock := NewMockLLM(
+		MockResponse{Response: &GenerateResponse{Content: scoutResp, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: proposal, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+	)
+	fs := setupSpecGenFixture(t)
+
+	sink := &CapturingSink{}
+	_, err := GenerateSpec(context.Background(), mock, fs, SpecGenRequest{
+		GoalsBody: "Build something useful.",
+		Sink:      sink,
+	})
+	require.NoError(t, err)
+
+	events := sink.Events()
+	require.NotEmpty(t, events, "sink should have received at least one started/completed event")
+
+	// Per-agent events have AgentID set; iteration / DAG step events
+	// don't. Filter to agent-level events so the assertions are stable
+	// regardless of the surrounding workflow scaffolding.
+	var agentStarted, agentCompleted int
+	seenAgents := map[string]bool{}
+	for _, e := range events {
+		if e.AgentID == "" {
+			continue
+		}
+		seenAgents[e.AgentID] = true
+		switch e.Status {
+		case "started":
+			agentStarted++
+		case "completed":
+			agentCompleted++
+		}
+	}
+	assert.Equal(t, agentStarted, agentCompleted,
+		"every agent started should pair with a completed in a clean run")
+	assert.GreaterOrEqual(t, agentStarted, 6,
+		"six agents (scout + proposer + 4 critics) should each emit started+completed")
+	for _, want := range []string{"spec_scout", "spec_architect", "architect_critic", "devops_critic", "sre_critic", "cost_critic"} {
+		assert.True(t, seenAgents[want], "expected events for agent %q", want)
+	}
+
+	assert.True(t, sink.Closed(),
+		"GenerateSpec must call sink.Close() after the run finishes")
+}
+
 func TestGenerateSpecCritiqueRevisesProposal(t *testing.T) {
 	// scout → proposer (dangling ref) → 4 critics (1 flags, 3 empty) →
 	// revise → 7 calls.
