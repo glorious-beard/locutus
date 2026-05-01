@@ -223,9 +223,27 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 		messages = append(messages, ai.NewTextMessage(toGenkitRole(m.Role), m.Content))
 	}
 
+	// Capture middleware: snapshots the raw *ai.ModelResponse before
+	// genkit's format-handler validation runs. Genkit returns (nil, err)
+	// when WithOutputType validation fails (ai/generate.go ~line 381) —
+	// dropping the model's actual bytes on the floor. Without this hook
+	// we can't trace truncated/invalid responses, which is exactly the
+	// case we most need to debug.
+	var captured *ai.ModelResponse
+	captureMW := func(next ai.ModelFunc) ai.ModelFunc {
+		return func(ctx context.Context, mreq *ai.ModelRequest, cb ai.ModelStreamCallback) (*ai.ModelResponse, error) {
+			r, e := next(ctx, mreq, cb)
+			if r != nil {
+				captured = r
+			}
+			return r, e
+		}
+	}
+
 	opts := []ai.GenerateOption{
 		ai.WithModelName(model),
 		ai.WithMessages(messages...),
+		ai.WithMiddleware(captureMW),
 	}
 	if cfg := buildProviderConfig(model, req, g.modelConfig); cfg != nil {
 		opts = append(opts, ai.WithConfig(cfg))
@@ -246,35 +264,49 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 	}
 
 	resp, err := genkit.Generate(ctx, g.g, opts...)
-	if err != nil {
-		// Genkit may still hand back the model's raw text on `resp` even
-		// when structured-output validation fails (e.g. truncated JSON
-		// that didn't pass WithOutputType). Surface it to the caller so
-		// the session recorder writes the partial response into the YAML
-		// transcript — debugging "JSON parse failed at byte N" without
-		// the bytes themselves is impossible. Callers that bail on
-		// err != nil don't change behavior; they just ignore the
-		// partial response, exactly as before.
-		out := &GenerateResponse{Model: model}
-		if resp != nil {
-			out.Content = resp.Text()
-			if u := resp.Usage; u != nil {
-				out.InputTokens = u.InputTokens
-				out.OutputTokens = u.OutputTokens
-				out.ThoughtsTokens = u.ThoughtsTokens
-				out.TotalTokens = u.TotalTokens
-			}
+	// Pick whichever response object actually carries the model bytes:
+	// the genkit-returned `resp` on success, or the captured response on
+	// validation-error failure. The fallback gives us the partial JSON +
+	// reasoning text for the trace even when genkit discards them.
+	source := resp
+	if source == nil {
+		source = captured
+	}
+	out := &GenerateResponse{Model: model}
+	if source != nil {
+		out.Content = source.Text()
+		out.Reasoning = extractReasoning(source)
+		if u := source.Usage; u != nil {
+			out.InputTokens = u.InputTokens
+			out.OutputTokens = u.OutputTokens
+			out.ThoughtsTokens = u.ThoughtsTokens
+			out.TotalTokens = u.TotalTokens
 		}
+	}
+	if err != nil {
 		return out, fmt.Errorf("genkit generate (model=%s): %w", model, err)
 	}
-	out := &GenerateResponse{Content: resp.Text(), Model: model}
-	if u := resp.Usage; u != nil {
-		out.InputTokens = u.InputTokens
-		out.OutputTokens = u.OutputTokens
-		out.ThoughtsTokens = u.ThoughtsTokens
-		out.TotalTokens = u.TotalTokens
-	}
 	return out, nil
+}
+
+// extractReasoning concatenates every PartReasoning text part in the
+// response message. Returns empty when the model produced no reasoning
+// (most common — only thinking-enabled calls populate this).
+func extractReasoning(resp *ai.ModelResponse) string {
+	if resp == nil || resp.Message == nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, p := range resp.Message.Content {
+		if p == nil || !p.IsReasoning() {
+			continue
+		}
+		if sb.Len() > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString(p.Text)
+	}
+	return sb.String()
 }
 
 // llmCallTimeout returns the per-call deadline for a Genkit Generate

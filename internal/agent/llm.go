@@ -40,8 +40,14 @@ type GenerateRequest struct {
 // tokens at output-token rates, so this field is the visibility surface
 // for "how much did thinking cost this call."
 type GenerateResponse struct {
-	Content        string `json:"content"`
-	Model          string `json:"model"`
+	Content string `json:"content"`
+	Model   string `json:"model"`
+	// Reasoning holds the model's extended-thinking text when the call
+	// was made with a non-zero ThinkingBudget (and the provider returns
+	// thinking content; some redact it). Surfaced into the session
+	// trace alongside Content so a debugging operator can see what the
+	// model was thinking, not just how many tokens it spent.
+	Reasoning      string `json:"reasoning,omitempty"`
 	InputTokens    int    `json:"input_tokens,omitempty"`
 	OutputTokens   int    `json:"output_tokens,omitempty"`
 	ThoughtsTokens int    `json:"thoughts_tokens,omitempty"`

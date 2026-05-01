@@ -83,6 +83,7 @@ type recordedCall struct {
 	Model          string            `yaml:"model"`
 	Messages       []recordedMessage `yaml:"messages"`
 	OutputSchema   bool              `yaml:"output_schema,omitempty"`
+	Reasoning      string            `yaml:"reasoning,omitempty"`
 	Response       string            `yaml:"response,omitempty"`
 	InputTokens    int               `yaml:"input_tokens,omitempty"`
 	OutputTokens   int               `yaml:"output_tokens,omitempty"`
@@ -228,6 +229,7 @@ func (r *SessionRecorder) finalize(idx int, resp *GenerateResponse, callErr erro
 	}
 	if resp != nil {
 		call.Response = resp.Content
+		call.Reasoning = resp.Reasoning
 		call.InputTokens = resp.InputTokens
 		call.OutputTokens = resp.OutputTokens
 		call.ThoughtsTokens = resp.ThoughtsTokens
