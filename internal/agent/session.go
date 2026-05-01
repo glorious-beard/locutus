@@ -86,6 +86,33 @@ func AcquiredCallbackFromContext(ctx context.Context) func() {
 	return nil
 }
 
+// retryCallbackKey carries a callback invoked when GenerateWithRetry
+// loops back to retry a failed call (rate-limited or timed out). The
+// workflow executor uses it to flip a spinner to "retrying" so the
+// operator can see that a call isn't making progress on its first
+// attempt — silent retries used to leave the spinner stuck in RUNNING
+// while burning attempts in the background.
+type retryCallbackKey struct{}
+
+// WithRetryCallback returns a context whose retry-eligible LLM call
+// invokes fn(attempt, err) right before each backoff sleep, where
+// `attempt` is the just-failed attempt number (1-indexed) and `err`
+// is the error that triggered the retry. fn fires at most
+// MaxAttempts-1 times per call (no fn invocation when the final
+// attempt fails — that surfaces as a regular error event).
+func WithRetryCallback(ctx context.Context, fn func(attempt int, err error)) context.Context {
+	return context.WithValue(ctx, retryCallbackKey{}, fn)
+}
+
+// RetryCallbackFromContext returns the callback set via
+// WithRetryCallback, or nil if none.
+func RetryCallbackFromContext(ctx context.Context) func(int, error) {
+	if v, ok := ctx.Value(retryCallbackKey{}).(func(int, error)); ok {
+		return v
+	}
+	return nil
+}
+
 // SessionRecorder writes a YAML transcript of every LLM call to
 // .locutus/sessions/<sid>.yaml. The recorder rewrites the file
 // atomically on each Record() so a crash mid-call leaves the previous

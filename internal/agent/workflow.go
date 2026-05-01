@@ -139,6 +139,14 @@ func (e *WorkflowExecutor) executeAgent(ctx context.Context, stepID, agentID str
 	ctx = WithAcquiredCallback(ctx, func() {
 		e.emitEvent(stepID, agentID, "started", "")
 	})
+	ctx = WithRetryCallback(ctx, func(attempt int, retryErr error) {
+		// Surfaces the in-flight backoff state so the operator can
+		// distinguish a slow-running call from one stuck retrying
+		// rate-limit / timeout failures. cliSink renders this by
+		// updating the spinner's text to "· retrying" without
+		// changing its key.
+		e.emitEvent(stepID, agentID, "retrying", fmt.Sprintf("attempt %d failed: %s", attempt, retryErr))
+	})
 
 	messages := ProjectState(stepID, snap)
 	req := BuildGenerateRequest(def, messages)
