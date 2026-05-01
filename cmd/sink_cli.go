@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,28 +12,33 @@ import (
 	"github.com/pterm/pterm"
 )
 
-// cliSink renders council progress as one pterm spinner per agent on
-// stderr. Spinners on stderr is the convention for progress UIs (cargo,
-// docker, npm) and means a stdout pipe stays clean.
+// cliSink renders council progress as one printed line per state
+// change on stderr. Each event prints a colored status prefix, the
+// step/agent label, and (for completions) elapsed time.
+//
+// We previously rendered with pterm's MultiPrinter + Spinner machinery,
+// one spinner per agent with active animation. That works fine for a
+// linear workflow with one in-flight call at a time, but Phase 3
+// fanout fires N concurrent goroutines whose spinners overlap in the
+// MultiPrinter's redraw loop. With WithShowTimer enabled, the result
+// is a thrashing redraw that accumulates duplicate "SUCCESS" lines as
+// new spinners are added. The reliable shape for parallel work is
+// one-line-per-event without active animation.
 type cliSink struct {
-	multi    *pterm.MultiPrinter
-	spinners map[string]*pterm.SpinnerPrinter // keyed by stepID/agentID
-	order    []string                         // insertion order for stable display
-	starts   map[string]time.Time
-	mu       sync.Mutex
-	started  bool
+	w       io.Writer
+	mu      sync.Mutex
+	starts  map[string]time.Time
+	closed  bool
+	pending map[string]struct{} // keys that have emitted started but not completed/error/skipped
 }
 
-// newCLISink starts a pterm MultiPrinter on stderr and returns a sink
-// ready to receive events. Caller must invoke Close to tear down the UI.
+// newCLISink returns a sink ready to receive events. Caller must
+// invoke Close to surface any still-pending items at shutdown.
 func newCLISink() *cliSink {
-	mp := pterm.DefaultMultiPrinter.WithWriter(os.Stderr)
-	mp, _ = mp.Start()
 	return &cliSink{
-		multi:    mp,
-		spinners: map[string]*pterm.SpinnerPrinter{},
-		starts:   map[string]time.Time{},
-		started:  true,
+		w:       os.Stderr,
+		starts:  map[string]time.Time{},
+		pending: map[string]struct{}{},
 	}
 }
 
@@ -78,112 +82,107 @@ func (s *cliSink) label(e agent.WorkflowEvent) string {
 	return e.StepID
 }
 
-// OnEvent updates the spinner state for the agent referenced in the
-// event. Called from a single bridge goroutine in GenerateSpec, but
-// guarded with a mutex anyway since pterm spinners hold their own
-// state and a future caller might fan out.
+// OnEvent prints a single line per state transition. Per-agent events
+// only — workflow-level events (no AgentID) are dropped because their
+// stepID-only labels would clutter without naming the actor.
 //
-// Per-agent only. Workflow-level events (iteration markers with no
-// stepID, DAG step lifecycle events with no agentID, convergence
-// completions without a paired started) are skipped — they would
-// either render as orphan spinners that Close() then marks as
-// "interrupted", or as redundant duplicates of the per-agent line.
-// plainSink still receives the full stream because structured logs
-// cope fine with the extra detail.
-//
-// Lifecycle: a typical workflow agent emits "queued" → "started" →
-// "completed". Queued creates the spinner with a "queued" label so
-// items waiting on the per-model concurrency throttle look distinct
-// from items hitting the provider. Started updates the same spinner
-// to a running label. Direct "started" without a prior "queued" still
-// creates a fresh spinner — preserves backward compatibility with
-// callers that haven't adopted the queued event.
+// Lifecycle:
+//   - queued    → " QUEUED " (item is waiting on the per-model
+//                  concurrency throttle)
+//   - started   → "RUNNING " (call has left the queue and is hitting
+//                  the provider)
+//   - completed → "SUCCESS " (with elapsed time relative to started)
+//   - error     → " ERROR  " (with the error message)
+//   - skipped   → "SKIPPED "
+//   - retrying  → "RETRYING"
 func (s *cliSink) OnEvent(e agent.WorkflowEvent) {
 	if e.AgentID == "" {
 		return
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 
 	key := s.key(e)
+	label := s.label(e)
 	switch e.Status {
 	case "queued":
-		if _, exists := s.spinners[key]; exists {
-			return
-		}
-		sp, err := pterm.DefaultSpinner.
-			WithWriter(s.multi.NewWriter()).
-			WithShowTimer(true).
-			WithRemoveWhenDone(false).
-			Start(fmt.Sprintf("%s · queued", s.label(e)))
-		if err != nil {
-			return
-		}
-		s.spinners[key] = sp
 		s.starts[key] = e.Timestamp
-		s.order = append(s.order, key)
+		s.pending[key] = struct{}{}
+		s.print("QUEUED  ", pterm.NewStyle(pterm.FgGray, pterm.Bold), label, "")
 	case "started":
-		if sp, ok := s.spinners[key]; ok {
-			// Pre-existing spinner from a "queued" event → flip to
-			// running by dropping the queued suffix.
-			sp.UpdateText(s.label(e))
-			return
+		// Mark started time when no prior queued event was seen (e.g.
+		// callers that emit "started" directly). Otherwise preserve
+		// the queued timestamp so elapsed includes wait time — the
+		// operator usually wants total wall-clock, not provider time.
+		if _, ok := s.starts[key]; !ok {
+			s.starts[key] = e.Timestamp
 		}
-		sp, err := pterm.DefaultSpinner.
-			WithWriter(s.multi.NewWriter()).
-			WithShowTimer(true).
-			WithRemoveWhenDone(false).
-			Start(s.label(e))
-		if err != nil {
-			return
-		}
-		s.spinners[key] = sp
-		s.starts[key] = e.Timestamp
-		s.order = append(s.order, key)
+		s.pending[key] = struct{}{}
+		s.print("RUNNING ", pterm.NewStyle(pterm.FgCyan, pterm.Bold), label, "")
 	case "completed":
-		if sp, ok := s.spinners[key]; ok {
-			sp.Success(s.label(e))
-		}
+		delete(s.pending, key)
+		s.print("SUCCESS ", pterm.NewStyle(pterm.FgGreen, pterm.Bold), label, s.elapsed(key, e.Timestamp))
 	case "error":
-		if sp, ok := s.spinners[key]; ok {
-			msg := s.label(e)
-			if e.Message != "" {
-				msg = fmt.Sprintf("%s — %s", msg, e.Message)
+		delete(s.pending, key)
+		extra := s.elapsed(key, e.Timestamp)
+		if e.Message != "" {
+			if extra != "" {
+				extra = extra + " — " + e.Message
+			} else {
+				extra = "— " + e.Message
 			}
-			sp.Fail(msg)
 		}
+		s.print(" ERROR  ", pterm.NewStyle(pterm.FgRed, pterm.Bold), label, extra)
 	case "skipped":
-		if sp, ok := s.spinners[key]; ok {
-			sp.Warning(fmt.Sprintf("%s (skipped)", s.label(e)))
-		}
+		delete(s.pending, key)
+		s.print("SKIPPED ", pterm.NewStyle(pterm.FgYellow, pterm.Bold), label, "")
 	case "retrying":
-		if sp, ok := s.spinners[key]; ok {
-			sp.UpdateText(fmt.Sprintf("%s · retrying", s.label(e)))
+		extra := ""
+		if e.Message != "" {
+			extra = "— " + e.Message
 		}
+		s.print("RETRYING", pterm.NewStyle(pterm.FgYellow, pterm.Bold), label, extra)
 	}
 }
 
-// Close stops every still-running spinner and tears down the
-// MultiPrinter. Safe to call once. Spinners that never received a
-// completed/error event are marked as failed so the UI never leaves
-// a phantom in-flight indicator.
+// print writes one status line. Caller must hold s.mu.
+func (s *cliSink) print(prefix string, style *pterm.Style, label, extra string) {
+	colored := style.Sprintf(" %s ", prefix)
+	if extra != "" {
+		fmt.Fprintf(s.w, "%s %s %s\n", colored, label, extra)
+	} else {
+		fmt.Fprintf(s.w, "%s %s\n", colored, label)
+	}
+}
+
+// elapsed renders a parenthesised "(Xs)" elapsed time relative to the
+// recorded start of this key. Returns empty when no start is tracked.
+func (s *cliSink) elapsed(key string, completedAt time.Time) string {
+	t, ok := s.starts[key]
+	if !ok {
+		return ""
+	}
+	if completedAt.IsZero() {
+		completedAt = time.Now()
+	}
+	return "(" + completedAt.Sub(t).Round(time.Second).String() + ")"
+}
+
+// Close prints a final line for any keys that never reached a terminal
+// state (completed/error/skipped). Helps surface in-flight work that
+// got cut off by a panic / signal.
 func (s *cliSink) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.started {
+	if s.closed {
 		return
 	}
-	// Sort orphan spinners by insertion order for predictable output.
-	keys := make([]string, 0, len(s.order))
-	keys = append(keys, s.order...)
-	sort.SliceStable(keys, func(i, j int) bool { return i < j })
-	for _, k := range keys {
-		sp := s.spinners[k]
-		if sp != nil && sp.IsActive {
-			sp.Fail(fmt.Sprintf("%s · interrupted", k))
-		}
+	style := pterm.NewStyle(pterm.FgRed, pterm.Bold)
+	for key := range s.pending {
+		s.print("INTERRUPT", style, key, s.elapsed(key, time.Now()))
 	}
-	_, _ = s.multi.Stop()
-	s.started = false
+	s.closed = true
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -308,6 +309,18 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 			out.OutputTokens = u.OutputTokens
 			out.ThoughtsTokens = u.ThoughtsTokens
 			out.TotalTokens = u.TotalTokens
+		}
+		// On error, also dump the full message structure to RawMessage
+		// so the trace surfaces non-text parts (tool_use blocks for
+		// Anthropic forced-tool-use schemas, structured-output frames
+		// for Gemini, custom plugin parts, etc.). Text() and
+		// extractReasoning() only cover text + reasoning kinds; a
+		// truncated structured-output response may have its bytes
+		// in a tool_request or custom part instead.
+		if err != nil && source.Message != nil {
+			if data, mErr := json.Marshal(source.Message); mErr == nil {
+				out.RawMessage = string(data)
+			}
 		}
 	}
 	if err != nil {

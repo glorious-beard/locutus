@@ -47,7 +47,15 @@ type GenerateResponse struct {
 	// thinking content; some redact it). Surfaced into the session
 	// trace alongside Content so a debugging operator can see what the
 	// model was thinking, not just how many tokens it spent.
-	Reasoning      string `json:"reasoning,omitempty"`
+	Reasoning string `json:"reasoning,omitempty"`
+	// RawMessage is a JSON dump of the underlying provider message
+	// (every Part — text, reasoning, tool_request, tool_response,
+	// custom). Populated only on error paths where Text() and
+	// Reasoning don't surface the model's bytes — e.g. a truncated
+	// Gemini structured-output response that lives in a non-text part
+	// genkit's format handler then rejected. Diagnostic, not part of
+	// any happy-path contract.
+	RawMessage     string `json:"raw_message,omitempty"`
 	InputTokens    int    `json:"input_tokens,omitempty"`
 	OutputTokens   int    `json:"output_tokens,omitempty"`
 	ThoughtsTokens int    `json:"thoughts_tokens,omitempty"`
