@@ -30,14 +30,16 @@ func TestSessionRecorderWritesToProjectFS(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, rec.SessionID())
 
-	// Nested layout — .locutus/sessions/<YYYYMMDD>/<HHMMSS>/<short>.yaml.
+	// Nested layout — .locutus/sessions/<YYYYMMDD>/<HHMM>/<SS>-<short>.yaml.
+	// Per-minute directory (not per-second) avoids exploding into
+	// single-file directories when sessions don't actually fire that
+	// fast; `rm -rf .locutus/sessions/20260420` still drops a day.
 	// Asserted via regex so we don't pin the test to whatever clock is
-	// active at run time. The nesting matters because housekeeping
-	// ("delete yesterday's logs") is `rm -rf` of one date directory.
+	// active at run time.
 	assert.Regexp(t,
-		`^\.locutus/sessions/\d{8}/\d{6}/[0-9a-f]{6}\.yaml$`,
+		`^\.locutus/sessions/\d{8}/\d{4}/\d{2}-[0-9a-f]{6}\.yaml$`,
 		rec.Path(),
-		"session path must be nested by date and time so each day is one rm -rf away")
+		"session path must be nested by date and HHMM so each day/minute is one rm -rf away")
 
 	data, err := fs.ReadFile(rec.Path())
 	require.NoError(t, err)

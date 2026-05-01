@@ -97,9 +97,11 @@ type recordedMessage struct {
 }
 
 // NewSessionRecorder creates a session file at
-// .locutus/sessions/<YYYYMMDD>/<HHMMSS>/<short>.yaml on fsys. The nested
-// layout makes housekeeping easy — `rm -rf .locutus/sessions/20260420`
-// drops every session from that day, no glob or jq required.
+// .locutus/sessions/<YYYYMMDD>/<HHMM>/<SS>-<short>.yaml on fsys. The
+// per-minute directory keeps housekeeping easy — `rm -rf
+// .locutus/sessions/20260420` drops a day, `rm -rf .../20260420/1407`
+// drops a minute — without exploding into a single-file directory per
+// second when sessions don't actually fire that fast.
 //
 // command is recorded for human reference (e.g. "refine goals",
 // "import docs/foo.md"). projectRoot is informational — included in the
@@ -108,16 +110,17 @@ func NewSessionRecorder(fsys specio.FS, command, projectRoot string) (*SessionRe
 	ts := time.Now()
 	short := newShortSessionID()
 	dateDir := ts.Format("20060102")
-	timeDir := ts.Format("150405")
-	dir := path.Join(".locutus/sessions", dateDir, timeDir)
-	relPath := path.Join(dir, short+".yaml")
+	hourMinDir := ts.Format("1504")
+	secPrefix := ts.Format("05")
+	dir := path.Join(".locutus/sessions", dateDir, hourMinDir)
+	relPath := path.Join(dir, secPrefix+"-"+short+".yaml")
 	if err := fsys.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("session recorder mkdir: %w", err)
 	}
 	// Composite session id retains the full timestamp + short suffix so a
 	// single string identifies the session in logs and matches across
 	// the path components.
-	sid := dateDir + "-" + timeDir + "-" + short
+	sid := dateDir + "-" + hourMinDir + secPrefix + "-" + short
 	rec := &SessionRecorder{
 		fsys: fsys,
 		path: relPath,
