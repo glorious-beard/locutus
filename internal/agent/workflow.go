@@ -61,6 +61,17 @@ type WorkflowExecutor struct {
 	AgentDefs map[string]AgentDef
 	Workflow  *Workflow
 	Events    chan WorkflowEvent // optional; nil disables progress reporting
+
+	// Existing, when non-nil, is threaded onto the workflow's PlanningState
+	// for the spec_reconciler agent to match inline-decision clusters
+	// against existing-spec decisions for ID reuse.
+	Existing *ExistingSpec
+
+	// LastState captures the workflow's final PlanningState. Populated by
+	// Run after the DAG completes so callers (e.g. GenerateSpec) can
+	// inspect the canonical ProposedSpec and the reconciler's conflict
+	// actions for post-workflow cascade rewrites.
+	LastState *PlanningState
 }
 
 // executionRetryConfig returns a retry config for workflow agent calls.
@@ -210,6 +221,31 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 			continue
 		}
 		switch mergeKey {
+		case "raw_proposal":
+			// Phase 2: architect emits a RawSpecProposal; the
+			// reconcile step transforms it into canonical SpecProposal.
+			// Stash the raw on state so the reconciler's projection
+			// can see it; ProposedSpec is left for downstream agents
+			// that expect the canonical shape.
+			state.RawProposal = r.Output
+		case "reconciled_proposal":
+			// Reconcile output is a ReconciliationVerdict. Combine
+			// with the upstream RawProposal via ApplyReconciliation
+			// to produce the canonical SpecProposal. Errors here
+			// (malformed verdict, source out of bounds) are recorded
+			// as a Concern so revise can surface them; the workflow
+			// itself doesn't fail.
+			canonical, applied, err := mergeReconcile(state.RawProposal, r.Output, state.Existing)
+			if err != nil {
+				state.Concerns = append(state.Concerns, Concern{
+					AgentID:  r.AgentID,
+					Severity: "high",
+					Text:     fmt.Sprintf("reconcile: %s", err.Error()),
+				})
+				continue
+			}
+			state.ProposedSpec = canonical
+			state.ConflictActions = appendConflictActions(state.ConflictActions, applied)
 		case "proposed_spec", "propose":
 			state.ProposedSpec = r.Output
 		case "concerns", "challenge":
@@ -221,8 +257,9 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 		case "critic_issues", "critique":
 			// Each critic emits CriticIssues JSON. Parse and flatten:
 			// one Concern per issue string, attributed to the critic
-			// that raised it. This makes the downstream revise prompt
-			// readable instead of dumping raw JSON.
+			// that raised it, with Kind derived from the agent ID so
+			// the revise projection can group findings by lens.
+			kind := critiqueKindFor(r.AgentID)
 			var ci CriticIssues
 			if err := json.Unmarshal([]byte(r.Output), &ci); err != nil {
 				// Fallback: store the raw output as one concern so we
@@ -230,6 +267,7 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 				state.Concerns = append(state.Concerns, Concern{
 					AgentID:  r.AgentID,
 					Severity: "medium",
+					Kind:     kind,
 					Text:     r.Output,
 				})
 				continue
@@ -238,6 +276,7 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 				state.Concerns = append(state.Concerns, Concern{
 					AgentID:  r.AgentID,
 					Severity: "medium",
+					Kind:     kind,
 					Text:     issue,
 				})
 			}
@@ -254,6 +293,69 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 			state.ScoutBrief = r.Output
 		}
 	}
+
+	// Phase 5: mechanical integrity critic. Runs once per critique step
+	// (after all LLM critics merge), reads the post-reconcile ProposedSpec,
+	// and appends any dangling-ref findings as Concerns with Kind="integrity".
+	// Cheap (Go function, no LLM), and load-bearing only on regressions —
+	// Phase 2's reconciler should produce a clean proposal in the common
+	// case. When it doesn't, the integrity critic catches it in-workflow
+	// so revise can address it, instead of falling all the way through to
+	// the post-workflow integrity loop.
+	if mergeKey == "critic_issues" || mergeKey == "critique" {
+		appendIntegrityFindings(state)
+	}
+}
+
+// critiqueKindFor maps a critic agent ID to its lens label for grouping
+// in the revise prompt. Unknown agents fall back to "review" so concerns
+// don't lose their kind tag entirely.
+func critiqueKindFor(agentID string) string {
+	switch agentID {
+	case "architect_critic":
+		return "architecture"
+	case "devops_critic":
+		return "devops"
+	case "sre_critic":
+		return "sre"
+	case "cost_critic":
+		return "cost"
+	default:
+		return "review"
+	}
+}
+
+// appendIntegrityFindings runs Validate against the current canonical
+// proposal and appends any warnings to state.Concerns as integrity-kind
+// findings. The agent ID "integrity_critic" mirrors the LLM-critic naming
+// convention; the revise prompt groups by Kind so the architect sees
+// these alongside the LLM critics' concerns.
+func appendIntegrityFindings(state *PlanningState) {
+	if state == nil || state.ProposedSpec == "" {
+		return
+	}
+	var p SpecProposal
+	if err := json.Unmarshal([]byte(state.ProposedSpec), &p); err != nil {
+		// Malformed canonical proposal — surface as an integrity finding
+		// so revise can re-emit. This shouldn't happen post-Phase-2
+		// because ApplyReconciliation produces structured output, but the
+		// guard catches regressions.
+		state.Concerns = append(state.Concerns, Concern{
+			AgentID:  "integrity_critic",
+			Severity: "high",
+			Kind:     "integrity",
+			Text:     fmt.Sprintf("post-reconcile proposal is malformed JSON: %s", err.Error()),
+		})
+		return
+	}
+	for _, w := range p.Validate(state.Existing) {
+		state.Concerns = append(state.Concerns, Concern{
+			AgentID:  "integrity_critic",
+			Severity: "high",
+			Kind:     "integrity",
+			Text:     w.String(),
+		})
+	}
 }
 
 // Run executes the full council workflow using the generic DAG executor.
@@ -261,9 +363,11 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 // DAG execution (dependency ordering, parallelism) is delegated to executor.Executor.
 func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]RoundResult, error) {
 	state := &PlanningState{
-		Prompt: initialPrompt,
-		Round:  1,
+		Prompt:   initialPrompt,
+		Round:    1,
+		Existing: e.Existing,
 	}
+	defer func() { e.LastState = state }()
 
 	maxRounds := e.Workflow.MaxRounds
 	if maxRounds <= 0 {

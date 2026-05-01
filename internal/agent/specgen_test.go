@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -11,6 +12,21 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSpecProposalNoApproaches(t *testing.T) {
+	// Approaches were removed from the spec-generation council's output
+	// per the council-resilience plan: they're synthesized at adopt
+	// time when real code context exists. A regression here would
+	// silently re-introduce the dangling-reference problem.
+	for _, name := range []string{"Approaches"} {
+		_, ok := reflect.TypeOf(SpecProposal{}).FieldByName(name)
+		assert.False(t, ok, "SpecProposal must not have field %q", name)
+		_, ok = reflect.TypeOf(FeatureProposal{}).FieldByName(name)
+		assert.False(t, ok, "FeatureProposal must not have field %q", name)
+		_, ok = reflect.TypeOf(StrategyProposal{}).FieldByName(name)
+		assert.False(t, ok, "StrategyProposal must not have field %q", name)
+	}
+}
 
 // testWorkflowYAML mirrors internal/scaffold/workflows/spec_generation.yaml
 // at the level of detail the executor cares about — kept inline so tests
@@ -23,17 +39,26 @@ const testWorkflowYAML = `rounds:
   - id: propose
     agent: spec_architect
     depends_on: [survey]
-    merge_as: proposed_spec
+    merge_as: raw_proposal
+  - id: reconcile
+    agent: spec_reconciler
+    depends_on: [propose]
+    merge_as: reconciled_proposal
   - id: critique
     agents: [architect_critic, devops_critic, sre_critic, cost_critic]
     parallel: true
-    depends_on: [propose]
+    depends_on: [reconcile]
     merge_as: critic_issues
   - id: revise
     agent: spec_architect
     depends_on: [critique]
     conditional: has_concerns
-    merge_as: revisions
+    merge_as: raw_proposal
+  - id: reconcile_revise
+    agent: spec_reconciler
+    depends_on: [revise]
+    conditional: has_concerns
+    merge_as: reconciled_proposal
 max_rounds: 1
 `
 
@@ -63,7 +88,8 @@ func setupSpecGenFixture(t *testing.T) specio.FS {
 	require.NoError(t, fs.MkdirAll(".borg/workflows", 0o755))
 	for _, a := range []struct{ id, role, cap, schema string }{
 		{"spec_scout", "survey", "balanced", "ScoutBrief"},
-		{"spec_architect", "planning", "strong", "SpecProposal"},
+		{"spec_architect", "planning", "strong", "RawSpecProposal"},
+		{"spec_reconciler", "reconcile", "balanced", "ReconciliationVerdict"},
 		{"architect_critic", "review", "balanced", "CriticIssues"},
 		{"devops_critic", "review", "balanced", "CriticIssues"},
 		{"sre_critic", "review", "balanced", "CriticIssues"},
@@ -84,6 +110,17 @@ const (
 	scoutResp     = `{"domain_read":"a project","technology_options":["x: a vs b"],"implicit_assumptions":["scale: 100k. Default: 1k concurrent"],"watch_outs":["x"]}`
 	criticEmpty   = `{"issues":[]}`
 	criticDangler = `{"issues":["feature feat-x references dec-missing but it is not generated"]}`
+	// rawProposalCanonical is a RawSpecProposal with one feature + one
+	// strategy, each with one inline decision. After ApplyReconciliation
+	// (with an empty verdict), each inline decision becomes its own
+	// canonical Decision via a slug-derived ID.
+	rawProposalCanonical = `{
+		"features": [{"id":"feat-x","title":"X","description":"a feature","decisions":[{"title":"Use D","rationale":"r","confidence":0.8,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]}]}],
+		"strategies": [{"id":"strat-x","title":"S","kind":"foundational","body":"prose"}]
+	}`
+	// reconcileEmpty is the reconciler's "no merging needed" verdict.
+	// Every inline decision becomes its own canonical Decision.
+	reconcileEmpty = `{"actions":[]}`
 )
 
 func TestGenerateSpecRequiresGoals(t *testing.T) {
@@ -101,16 +138,12 @@ func TestGenerateSpecRequiresFSys(t *testing.T) {
 }
 
 func TestGenerateSpecCleanProposalSkipsRevise(t *testing.T) {
-	// scout → proposer → 4 critics (all empty) → no revise = 6 calls.
-	proposal := `{
-		"features": [{"id":"feat-x","title":"X","description":"a feature","decisions":["dec-x"]}],
-		"decisions": [{"id":"dec-x","title":"D","rationale":"r","confidence":0.8,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]}],
-		"strategies": [{"id":"strat-x","title":"S","kind":"foundational","body":"prose"}],
-		"approaches": [{"id":"app-x","title":"A","parent_id":"feat-x","body":"sketch"}]
-	}`
+	// Phase 2 flow: scout → propose → reconcile → 4 critics (all empty)
+	// → no revise → no reconcile_revise = 7 calls.
 	mock := NewMockLLM(
 		MockResponse{Response: &GenerateResponse{Content: scoutResp, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: proposal, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: rawProposalCanonical, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
@@ -124,23 +157,25 @@ func TestGenerateSpecCleanProposalSkipsRevise(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, len(out.Features))
 	assert.Equal(t, "feat-x", out.Features[0].ID)
-	assert.Equal(t, 6, mock.CallCount(), "six calls when critics return empty: scout + proposer + 4 critics, no revise")
+	require.Equal(t, 1, len(out.Decisions),
+		"empty verdict ⇒ one canonical decision per inline decision; one inline decision in fixture")
+	assert.Equal(t, "dec-use-d", out.Decisions[0].ID,
+		"canonical IDs are slug-derived from the inline decision's title")
+	assert.Equal(t, []string{"dec-use-d"}, out.Features[0].Decisions,
+		"feature should reference the canonical decision id assigned by the reconciler")
+	assert.Equal(t, 7, mock.CallCount(),
+		"seven calls when critics return empty: scout + propose + reconcile + 4 critics, no revise")
 }
 
 func TestGenerateSpecBridgesEventsToSink(t *testing.T) {
-	// Same six-call clean-proposal flow used elsewhere; we only care
-	// that the workflow's events make it through to the supplied
-	// EventSink. This validates the bridging goroutine in GenerateSpec
-	// (channel → sink) and confirms Close() fires after the run.
-	proposal := `{
-		"features": [{"id":"feat-x","title":"X","description":"a feature","decisions":["dec-x"]}],
-		"decisions": [{"id":"dec-x","title":"D","rationale":"r","confidence":0.8,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]}],
-		"strategies": [{"id":"strat-x","title":"S","kind":"foundational","body":"prose"}],
-		"approaches": [{"id":"app-x","title":"A","parent_id":"feat-x","body":"sketch"}]
-	}`
+	// Phase 2 clean-proposal flow used elsewhere; we only care that the
+	// workflow's events make it through to the supplied EventSink. This
+	// validates the bridging goroutine in GenerateSpec (channel → sink)
+	// and confirms Close() fires after the run.
 	mock := NewMockLLM(
 		MockResponse{Response: &GenerateResponse{Content: scoutResp, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: proposal, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: rawProposalCanonical, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
@@ -177,9 +212,9 @@ func TestGenerateSpecBridgesEventsToSink(t *testing.T) {
 	}
 	assert.Equal(t, agentStarted, agentCompleted,
 		"every agent started should pair with a completed in a clean run")
-	assert.GreaterOrEqual(t, agentStarted, 6,
-		"six agents (scout + proposer + 4 critics) should each emit started+completed")
-	for _, want := range []string{"spec_scout", "spec_architect", "architect_critic", "devops_critic", "sre_critic", "cost_critic"} {
+	assert.GreaterOrEqual(t, agentStarted, 7,
+		"seven agents (scout + proposer + reconciler + 4 critics) should each emit started+completed")
+	for _, want := range []string{"spec_scout", "spec_architect", "spec_reconciler", "architect_critic", "devops_critic", "sre_critic", "cost_critic"} {
 		assert.True(t, seenAgents[want], "expected events for agent %q", want)
 	}
 
@@ -224,97 +259,28 @@ func TestStripMutates(t *testing.T) {
 		"dangling ref must be stripped, valid ref preserved")
 }
 
-func TestGenerateSpecRetriesOnIntegrityViolation(t *testing.T) {
-	// The proposer first emits a proposal with a dangling decision
-	// reference; the integrity loop then asks the architect (one
-	// extra LLM call labeled integrity_revise) for a corrected
-	// proposal that includes the missing decision. Total calls: 6
-	// council + 1 integrity-revise = 7.
-	dangling := `{
-		"features": [{"id":"feat-x","title":"X","description":"f","decisions":["dec-missing"]}],
-		"decisions": []
-	}`
-	repaired := `{
-		"features": [{"id":"feat-x","title":"X","description":"f","decisions":["dec-missing"]}],
-		"decisions": [{
-			"id":"dec-missing","title":"Missing Decision","rationale":"r",
-			"confidence":0.7,
-			"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]
-		}]
-	}`
-	mock := NewMockLLM(
-		MockResponse{Response: &GenerateResponse{Content: scoutResp, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: dangling, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		// Integrity-revise call: architect repairs the proposal.
-		MockResponse{Response: &GenerateResponse{Content: repaired, Model: "m"}},
-	)
-	fs := setupSpecGenFixture(t)
-
-	out, err := GenerateSpec(context.Background(), mock, fs, SpecGenRequest{
-		GoalsBody: "Build something.",
-	})
-	require.NoError(t, err)
-	require.Len(t, out.Decisions, 1, "integrity revise should have produced the missing decision")
-	assert.Equal(t, "dec-missing", out.Decisions[0].ID)
-	assert.Equal(t, 7, mock.CallCount(),
-		"council (6 calls) + one integrity-revise = 7")
-}
-
-func TestGenerateSpecErrorsAfterIntegrityRetryCap(t *testing.T) {
-	// The architect is broken: every output has the same dangling
-	// reference. After MaxIntegrityRetries fail attempts,
-	// GenerateSpec must surface IntegrityViolationError rather than
-	// silently strip the bad refs.
-	dangling := `{
-		"features": [{"id":"feat-x","title":"X","description":"f","decisions":["dec-missing"]}],
-		"decisions": []
-	}`
-	mock := NewMockLLM(
-		MockResponse{Response: &GenerateResponse{Content: scoutResp, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: dangling, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		// Architect fails to repair on every retry.
-		MockResponse{Response: &GenerateResponse{Content: dangling, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: dangling, Model: "m"}},
-	)
-	fs := setupSpecGenFixture(t)
-
-	_, err := GenerateSpec(context.Background(), mock, fs, SpecGenRequest{
-		GoalsBody: "Build something.",
-	})
-	require.Error(t, err)
-	var iv *IntegrityViolationError
-	require.ErrorAs(t, err, &iv,
-		"expected IntegrityViolationError after retries exhausted")
-	assert.Equal(t, MaxIntegrityRetries, iv.Attempts)
-	assert.NotEmpty(t, iv.Warnings)
-	assert.Equal(t, "dec-missing", iv.Warnings[0].MissingID)
-	assert.NotNil(t, iv.Proposal,
-		"caller should be able to inspect the last attempt's output")
-}
-
 func TestGenerateSpecCritiqueRevisesProposal(t *testing.T) {
-	// scout → proposer (dangling ref) → 4 critics (1 flags, 3 empty) →
-	// revise → 7 calls.
-	proposerInitial := `{"features":[{"id":"feat-x","title":"X","decisions":["dec-missing"]}],"decisions":[]}`
-	proposerRevised := `{"features":[{"id":"feat-x","title":"X","decisions":["dec-missing"]}],"decisions":[{"id":"dec-missing","title":"Missing","rationale":"r","confidence":0.7,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]}]}`
+	// Phase 2 flow with critic findings:
+	// scout → propose (raw) → reconcile → 4 critics (1 flags, 3 empty)
+	// → revise → reconcile_revise = 9 calls.
+	rawRevised := `{
+		"features": [{"id":"feat-x","title":"X","description":"a feature","decisions":[{"title":"Use D","rationale":"r","confidence":0.8,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]},{"title":"Cache reads","rationale":"r","confidence":0.7,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]}]}],
+		"strategies": [{"id":"strat-x","title":"S","kind":"foundational","body":"prose"}]
+	}`
 	mock := NewMockLLM(
 		MockResponse{Response: &GenerateResponse{Content: scoutResp, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: proposerInitial, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: rawProposalCanonical, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
 		// Four critic responses: one flags, three are empty. Order is
 		// non-deterministic across goroutines, but the count is fixed.
 		MockResponse{Response: &GenerateResponse{Content: criticDangler, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: proposerRevised, Model: "m"}},
+		// revise emits a new RawSpecProposal.
+		MockResponse{Response: &GenerateResponse{Content: rawRevised, Model: "m"}},
+		// reconcile_revise emits an empty verdict (no clusters need merging).
+		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
 	)
 	fs := setupSpecGenFixture(t)
 
@@ -323,11 +289,10 @@ func TestGenerateSpecCritiqueRevisesProposal(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, 1, len(out.Features))
-	require.Equal(t, 1, len(out.Decisions),
-		"critic flagged the missing decision; revise should have generated it")
-	assert.Equal(t, "dec-missing", out.Decisions[0].ID)
-	assert.Equal(t, 7, mock.CallCount(),
-		"seven calls when critics flag issues: scout + proposer + 4 critics + revise")
+	require.Equal(t, 2, len(out.Decisions),
+		"revise added a second inline decision; reconcile_revise minted a separate canonical id for it")
+	assert.Equal(t, 9, mock.CallCount(),
+		"nine calls when critics flag issues: scout + propose + reconcile + 4 critics + revise + reconcile_revise")
 }
 
 func TestGenerateSpecScoutBriefReachesProposer(t *testing.T) {
@@ -341,7 +306,8 @@ func TestGenerateSpecScoutBriefReachesProposer(t *testing.T) {
 	}`
 	mock := NewMockLLM(
 		MockResponse{Response: &GenerateResponse{Content: scout, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: `{"features":[]}`, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: rawProposalCanonical, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
@@ -354,7 +320,7 @@ func TestGenerateSpecScoutBriefReachesProposer(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Find the proposer call. Order: 0=scout, 1=propose, 2-5=critics.
+	// Find the proposer call. Order: 0=scout, 1=propose, 2=reconcile, 3-6=critics.
 	calls := mock.Calls()
 	require.GreaterOrEqual(t, len(calls), 2)
 	proposerUser := calls[1].Request.Messages[len(calls[1].Request.Messages)-1].Content
@@ -368,18 +334,19 @@ func TestGenerateSpecScoutBriefReachesProposer(t *testing.T) {
 
 func TestGenerateSpecCriticIssuesReachReviser(t *testing.T) {
 	// Each critic emits CriticIssues; merge_as=critic_issues flattens
-	// each issue into a Concern entry. The revise call (proposer round
+	// each issue into a Concern entry. The revise call (architect round
 	// 2) should then see the concerns formatted in its user message.
 	scout := `{"domain_read":"x"}`
-	proposerInitial := `{"features":[{"id":"feat-x","title":"X","decisions":["dec-x"]}],"decisions":[{"id":"dec-x","title":"D","rationale":"r","confidence":0.8}]}`
 	mock := NewMockLLM(
 		MockResponse{Response: &GenerateResponse{Content: scout, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: proposerInitial, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: rawProposalCanonical, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: `{"issues":["arch issue"]}`, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: `{"issues":["devops issue"]}`, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: `{"issues":["sre issue"]}`, Model: "m"}},
 		MockResponse{Response: &GenerateResponse{Content: `{"issues":["cost issue"]}`, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: proposerInitial, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: rawProposalCanonical, Model: "m"}},
+		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
 	)
 	fs := setupSpecGenFixture(t)
 
@@ -389,10 +356,12 @@ func TestGenerateSpecCriticIssuesReachReviser(t *testing.T) {
 	require.NoError(t, err)
 
 	calls := mock.Calls()
-	require.Equal(t, 7, len(calls), "scout + proposer + 4 critics + revise")
-	// Last call is the revise; its user content should mention every
-	// critic's issue, with role-based attribution from projectRevise.
-	revise := calls[6].Request.Messages
+	require.Equal(t, 9, len(calls),
+		"scout + propose + reconcile + 4 critics + revise + reconcile_revise = 9")
+	// The revise call is at index 7 (after the 4 critics). Its user
+	// content should mention every critic's issue, with role-based
+	// attribution from projectRevise.
+	revise := calls[7].Request.Messages
 	revisePrompt := strings.Join(messageContents(revise), "\n")
 	assert.Contains(t, revisePrompt, "arch issue")
 	assert.Contains(t, revisePrompt, "devops issue")
@@ -424,27 +393,6 @@ func TestValidateAndStripRemovesDanglingDecisionRefs(t *testing.T) {
 	assert.Equal(t, "feature", warnings[0].NodeKind)
 	assert.Equal(t, "decisions", warnings[0].Field)
 	assert.Equal(t, "dec-missing", warnings[0].MissingID)
-}
-
-func TestValidateAndStripDropsApproachWithMissingParent(t *testing.T) {
-	p := &SpecProposal{
-		Features: []FeatureProposal{
-			{ID: "feat-a", Title: "A"},
-		},
-		Approaches: []ApproachProposal{
-			{ID: "app-real", Title: "Real", ParentID: "feat-a"},
-			{ID: "app-orphan", Title: "Orphan", ParentID: "feat-missing"},
-		},
-	}
-
-	warnings := p.Strip(nil)
-	require.Equal(t, 1, len(p.Approaches), "orphan approach should be dropped")
-	assert.Equal(t, "app-real", p.Approaches[0].ID)
-
-	require.Equal(t, 1, len(warnings))
-	assert.Equal(t, "approach", warnings[0].NodeKind)
-	assert.Equal(t, "parent_id", warnings[0].Field)
-	assert.Equal(t, "feat-missing", warnings[0].MissingID)
 }
 
 func TestValidateAndStripResolvesAgainstExistingSpec(t *testing.T) {
@@ -543,9 +491,6 @@ func TestSpecProposalToAssimilationResultRoundTrip(t *testing.T) {
 		Strategies: []StrategyProposal{
 			{ID: "strat-a", Title: "S", Kind: "foundational", Body: "body"},
 		},
-		Approaches: []ApproachProposal{
-			{ID: "app-a", Title: "A", ParentID: "feat-a", Body: "sketch"},
-		},
 	}
 
 	r := p.ToAssimilationResult()
@@ -556,5 +501,4 @@ func TestSpecProposalToAssimilationResultRoundTrip(t *testing.T) {
 	assert.Equal(t, "dec-a", r.Decisions[0].ID)
 	assert.Equal(t, 0.7, r.Decisions[0].Confidence)
 	assert.Equal(t, spec.StrategyKind("foundational"), r.Strategies[0].Kind)
-	assert.Equal(t, "sketch", r.Approaches[0].Body)
 }

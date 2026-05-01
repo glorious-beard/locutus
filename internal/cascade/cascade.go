@@ -243,6 +243,19 @@ func RewriteBug(
 	return true, result.Rationale, nil
 }
 
+// InvokeRewriter is the in-memory rewriter call. RewriteFeature /
+// RewriteStrategy wrap it with disk I/O for the persisted-spec flow;
+// callers operating on in-memory proposals (e.g. the council's post-
+// reconcile cascade pass before persistence) call this directly.
+func InvokeRewriter(
+	ctx context.Context,
+	llm agent.LLM,
+	parentKind, parentID, parentTitle, currentBody string,
+	applicable, changed []spec.Decision,
+) (*RewriteResult, error) {
+	return invokeRewriter(ctx, llm, parentKind, parentID, parentTitle, currentBody, applicable, changed)
+}
+
 // invokeRewriter assembles the rewriter prompt and runs the LLM call with
 // provider-enforced structured output (via agent.GenerateInto → Genkit
 // WithOutputType). The schema for RewriteResult is derived from the Go

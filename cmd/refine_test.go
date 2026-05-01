@@ -212,34 +212,25 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 	// the loop won't iterate again, just a small extra call.
 	require.NoError(t, fs.Remove(".borg/agents/convergence.md"))
 
-	// Council flow: scout → architect → 4 critics (empty) → no revise.
+	// Phase 2 council flow: scout → architect (raw) → reconcile → 4
+	// critics (empty) → no revise → no reconcile_revise = 7 calls.
 	scoutResp := `{"domain_read":"electoral campaign","technology_options":["x: a vs b"],"implicit_assumptions":["scale: 100k. Default: 1k concurrent"],"watch_outs":[]}`
-	proposalResp := `{
+	rawProposalResp := `{
 		"features": [
-			{"id":"feat-dashboard","title":"Candidate dashboard","description":"At-a-glance campaign view.","decisions":["dec-frontend-stack"]}
-		],
-		"decisions": [
-			{
-				"id":"dec-frontend-stack",
-				"title":"Use TanStack Start",
-				"rationale":"Best balance of SSR and DX",
-				"confidence":0.9,
-				"alternatives":[{"name":"Next.js","rationale":"Mature","rejected_because":"Heavier than needed"}],
-				"citations":[{"kind":"goals","reference":"GOALS.md","span":"lines 6-8","excerpt":"Help candidates win elections."}],
-				"architect_rationale":"GOALS.md framing motivates a low-friction frontend."
-			}
+			{"id":"feat-dashboard","title":"Candidate dashboard","description":"At-a-glance campaign view.","decisions":[
+				{"title":"Use TanStack Start","rationale":"Best balance of SSR and DX","confidence":0.9,"alternatives":[{"name":"Next.js","rationale":"Mature","rejected_because":"Heavier than needed"}],"citations":[{"kind":"goals","reference":"GOALS.md","span":"lines 6-8","excerpt":"Help candidates win elections."}],"architect_rationale":"GOALS.md framing motivates a low-friction frontend."}
+			]}
 		],
 		"strategies": [
-			{"id":"strat-frontend","title":"React + TypeScript","kind":"foundational","body":"Frontend prose","decisions":["dec-frontend-stack"]},
-			{"id":"strat-quality","title":"Test-first","kind":"quality","body":"Testing approach"}
-		],
-		"approaches": [
-			{"id":"app-dashboard","title":"Dashboard scaffold","parent_id":"feat-dashboard","body":"Implementation sketch"}
+			{"id":"strat-frontend","title":"React + TypeScript","kind":"foundational","body":"Frontend prose","decisions":[]},
+			{"id":"strat-quality","title":"Test-first","kind":"quality","body":"Testing approach","decisions":[]}
 		]
 	}`
+	reconcileEmpty := `{"actions":[]}`
 	mock := agent.NewMockLLM(
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: scoutResp, Model: "m"}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: proposalResp, Model: "m"}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: rawProposalResp, Model: "m"}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: reconcileEmpty, Model: "m"}},
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
@@ -250,21 +241,25 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result.Generated)
 	assert.Equal(t, 1, result.Generated.Features)
-	assert.Equal(t, 1, result.Generated.Decisions)
+	assert.Equal(t, 1, result.Generated.Decisions,
+		"reconciler with empty verdict mints one canonical decision per inline decision")
 	assert.Equal(t, 2, result.Generated.Strategies)
-	assert.Equal(t, 1, result.Generated.Approaches)
+	assert.Equal(t, 0, result.Generated.Approaches,
+		"refine no longer emits approaches — they're synthesized at adopt time")
 	assert.Equal(t, spec.KindGoals, result.NodeKind)
 	assert.Equal(t, spec.RootID, result.NodeID)
 
-	// Verify nodes landed on disk.
+	// Verify nodes landed on disk. Decision ID is slug-derived from the
+	// inline decision's title ("Use TanStack Start" → "dec-use-tanstack-start").
 	_, err = fs.ReadFile(".borg/spec/features/feat-dashboard.json")
 	assert.NoError(t, err, "feature JSON should be persisted")
-	_, err = fs.ReadFile(".borg/spec/decisions/dec-frontend-stack.json")
-	assert.NoError(t, err, "decision JSON should be persisted")
+	_, err = fs.ReadFile(".borg/spec/decisions/dec-use-tanstack-start.json")
+	assert.NoError(t, err, "decision JSON should be persisted under reconciler-assigned slug id")
 	_, err = fs.ReadFile(".borg/spec/strategies/strat-frontend.json")
 	assert.NoError(t, err, "strategy JSON should be persisted")
+	// Approaches directory should be untouched — adopt populates it.
 	_, err = fs.ReadFile(".borg/spec/approaches/app-dashboard.md")
-	assert.NoError(t, err, "approach md should be persisted")
+	assert.Error(t, err, "approach md must NOT be persisted by refine")
 
 	// Strategy body should be in the .md sidecar.
 	stratMd, err := fs.ReadFile(".borg/spec/strategies/strat-frontend.md")
@@ -274,7 +269,7 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 	// Provenance must land on the persisted decision JSON, denormalized
 	// per DJ-085 — deleting .locutus/sessions/ never costs the project
 	// its justification record.
-	decJSON, err := fs.ReadFile(".borg/spec/decisions/dec-frontend-stack.json")
+	decJSON, err := fs.ReadFile(".borg/spec/decisions/dec-use-tanstack-start.json")
 	require.NoError(t, err)
 	var persisted spec.Decision
 	require.NoError(t, json.Unmarshal(decJSON, &persisted))

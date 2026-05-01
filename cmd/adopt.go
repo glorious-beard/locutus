@@ -91,6 +91,13 @@ type AdoptReport struct {
 	PrereqsOK       bool                       `json:"prereqs_ok"`
 	Summary         AdoptSummary               `json:"summary"`
 
+	// SynthesizedApproaches lists Approach IDs that adopt produced on
+	// demand for parents (Features/Strategies) that arrived without
+	// any. Approaches are synthesized at adopt time (not refine time)
+	// per the council-resilience plan: real code context exists here
+	// but not during spec generation.
+	SynthesizedApproaches []string `json:"synthesized_approaches,omitempty"`
+
 	// Populated when dispatch actually ran.
 	PlanID             string                      `json:"plan_id,omitempty"`
 	DispatchedWorkstreams []WorkstreamOutcome      `json:"dispatched_workstreams,omitempty"`
@@ -145,14 +152,22 @@ func (c *AdoptCmd) Run(ctx context.Context, cli *CLI) error {
 	// Real dispatch requires an LLM; the CLI attempts to build one if any
 	// provider env var is set. The no-LLM path is still useful (classify +
 	// report) and is exercised by the older unit tests.
-	if agent.LLMAvailable() && !c.DryRun {
+	//
+	// The LLM is also wired on dry-run so the approach synthesizer can
+	// preview what would be generated — its writes are dropped by the
+	// readOnlyFS wrapper but the LLM tokens still spend, matching
+	// assimilate's dry-run shape. Plan + Dispatch stay nil on dry-run
+	// so the planner/dispatcher don't fire.
+	if agent.LLMAvailable() {
 		llm, err := getLLM()
 		if err != nil {
 			return err
 		}
 		cfg.LLM = llm
-		cfg.Plan = realPlan(llm, fsys)
-		cfg.Dispatch = realDispatch(llm, cfg.FS)
+		if !c.DryRun {
+			cfg.Plan = realPlan(llm, fsys)
+			cfg.Dispatch = realDispatch(llm, cfg.FS)
+		}
 	}
 
 	report, err := RunAdoptWithConfig(ctx, cfg)
@@ -216,6 +231,32 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 		return report, err
 	}
 	store := state.NewFileStateStore(cfg.FS, ".locutus/state")
+
+	// --- Phase 0: Synthesize approaches for parents that arrived
+	// without any. Approaches are an adopt-time concern (real code
+	// context exists here, not during refine), so the spec graph may
+	// reach adopt with bare features/strategies — synthesize one
+	// approach per parent on demand. Dry-run still calls the LLM but
+	// routes writes through the read-only wrapper (matching assimilate).
+	synthFS := cfg.FS
+	if cfg.DryRun {
+		synthFS = newReadOnlyFS(cfg.FS)
+	}
+	if synthesized, synthErr := synthesizeMissingApproaches(ctx, cfg.LLM, synthFS, graph, cfg.Scope); synthErr != nil {
+		return report, fmt.Errorf("synthesize approaches: %w", synthErr)
+	} else if len(synthesized) > 0 {
+		report.SynthesizedApproaches = synthesized
+		// Reload the graph so freshly written approaches show up in
+		// classification. On dry-run the writes were dropped; the
+		// reload returns the same pre-synthesis graph and the report
+		// surface still names the would-be Approach IDs.
+		if !cfg.DryRun {
+			graph, err = loadSpecGraph(cfg.FS)
+			if err != nil {
+				return report, err
+			}
+		}
+	}
 
 	// --- Phase 1: Resume protocol (DJ-073 + DJ-074) ---
 	// Default behavior is auto-resume when possible: a leftover plan
@@ -1072,6 +1113,14 @@ func renderAdoptReport(r *AdoptReport) {
 	fmt.Printf("Summary: %d live, %d drifted, %d out_of_spec, %d unplanned, %d failed, %d in_progress. %d candidate(s).\n",
 		r.Summary.Live, r.Summary.Drifted, r.Summary.OutOfSpec,
 		r.Summary.Unplanned, r.Summary.Failed, r.Summary.InProgress, r.Summary.Candidates)
+
+	if len(r.SynthesizedApproaches) > 0 {
+		fmt.Println()
+		fmt.Printf("Synthesized %d approach(es) for parents that had none:\n", len(r.SynthesizedApproaches))
+		for _, id := range r.SynthesizedApproaches {
+			fmt.Printf("  + %s\n", id)
+		}
+	}
 
 	if len(r.PrereqResults) > 0 {
 		fmt.Println()

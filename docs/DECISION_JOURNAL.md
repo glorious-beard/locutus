@@ -1616,3 +1616,81 @@ The four meaningful combinations:
 - It doesn't touch user-content directories (specs, history, manifest, runtime state, GOALS.md).
 
 **Reversal criteria:** DJ-086 reverses only if either (a) the friction of "download finished; run --offline --reset" becomes a real complaint and re-exec ergonomics improve, or (b) we decide reset should be the default (would only happen if we had a strong story for preserving user edits across overwrite — e.g., a per-file "user-modified" flag the runtime tracks).
+
+## DJ-087: Approaches Are Synthesized at Adopt Time, Not Refine Time
+
+**Status:** shipped
+
+**Decision:** The spec-generation council (`refine goals`, `import`) no longer emits Approach nodes. The `SpecProposal` JSON contract drops `approaches[]` entirely, along with `Feature.Approaches` and `Strategy.Approaches` cross-reference arrays. Approach synthesis moves to `adopt`: when the reconciler encounters a Feature or Strategy in scope that has no Approach attached, it invokes the existing single-approach synthesizer to produce one on demand, persists it as `app-<parent-id>.md`, and updates the parent's `approaches[]` slice on disk.
+
+**Why:** A real `refine goals` run on `winplan` (GOALS.md ~8 lines) with `googleai/gemini-3.1-pro-preview` failed three Pro Preview calls in a row to produce a referentially-clean `SpecProposal` even with mechanical, prescriptive integrity-revise prompts. The hard-fail behaviour from `5a42eb2` correctly surfaced the failure but didn't address the root cause: the architect was being asked to emit a single 2k-token JSON blob with ~30 cross-references that JSON Schema cannot enforce, all maintained by attention alone. Stronger models tolerate this; the open-source Gemini Flash / Claude Haiku tier we want to support does not.
+
+Approaches were the worst offenders in that load: every approach needs a `parent_id` resolving to a feature or strategy, and every feature/strategy carries an `approaches[]` cross-ref array. CLAUDE.md already framed approaches as "the synthesis layer for coding agents" — implementation sketches that bridge spec and code. They need code context. During refine that context doesn't exist; the architect invents the sketch, and those invented sketches drive a substantial fraction of the dangling-ref problem.
+
+**How approaches reach disk:** `adopt` already classifies approaches (live/drifted/unplanned/failed). The single-approach synthesizer at [cmd/refine.go](../cmd/refine.go)'s `invokeSynthesizer` already takes a parent's prose plus applicable decisions and returns a `RewriteResult.RevisedBody`. The new path in [cmd/adopt_synthesize.go](../cmd/adopt_synthesize.go) walks the spec graph for parents in scope with empty `Approaches`, calls the synthesizer per parent, persists the result via `specio.SaveMarkdown`, and updates the parent JSON. Re-runs are idempotent: the deterministic ID `app-<parent-id>` collides on re-run and we skip parents whose `Approaches[]` already names the new ID.
+
+**Out of scope:** the on-disk shape under `.borg/spec/` is unchanged (DJ-085 stability). `spec.Feature.Approaches` and `spec.Strategy.Approaches` stay; only the LLM-facing `SpecProposal` types lose them.
+
+**Migration:** existing projects with persisted approaches keep them — `adopt` only synthesizes when `Approaches` is empty for a parent. The architect agent file at `.borg/agents/spec_architect.md` ships via `locutus init` (scaffold). Existing projects keep their old version until they re-init or run `locutus update --offline --reset`.
+
+**Reversal criteria:** revert if (a) per-parent synthesis at adopt time has materially worse cost or wall-clock than the single-call architect path it replaces *and* the architect path becomes reliable on weak models (unlikely without Phase 2's outline → fanout decomposition), or (b) the deterministic `app-<parent-id>` ID scheme collides with user-authored approach IDs in practice — at which point we add a numeric suffix or move ID assignment into the synthesizer agent.
+
+**Reference:** plan at [.claude/plans/council-resilience.md](../.claude/plans/council-resilience.md), Phase 1.
+
+## DJ-088: Architect Emits Inline Decisions; Reconciler Assigns IDs Post-Hoc
+
+**Status:** shipped
+
+**Decision:** The spec-generation council's architect (`spec_architect`) no longer emits a flat `decisions[]` array with shared IDs that features and strategies cross-reference. Instead, it emits a `RawSpecProposal`: features and strategies, each with their decisions **inline** as embedded objects with no IDs. A new reconciler agent (`spec_reconciler`) clusters duplicate or conflicting inline decisions across the proposal and emits a `ReconciliationVerdict` (action kinds: `dedupe`, `resolve_conflict`, `reuse_existing`); a deterministic Go function `ApplyReconciliation` consumes the verdict + raw proposal + existing-spec snapshot and produces the canonical `SpecProposal` with shared, slug-derived IDs that downstream agents and the persistence layer continue to expect.
+
+**Why:** Phase 1 (DJ-087) dropped approaches and fixed half the dangling-ref problem. A post-Phase-1 winplan run on `googleai/gemini-3-flash-preview` confirmed the remaining failure mode: 23 dangling references in the integrity gate, all in `feature.decisions[]` and `strategy.decisions[]` cross-references between separate top-level arrays. The architect was juggling ~20 cross-array references in attention while generating prose — a load weaker models can't keep coherent.
+
+The structural fix is to remove cross-references from the architect's output entirely. Each parent carries the decisions it requires inline. The reconciler's job is the cross-cutting view: where the architect has duplicated itself, dedupe; where it has contradicted itself, resolve. The architect's prompt collapses (half its mandates were referential-integrity rules); cognitive load drops without splitting the call into per-node fanout.
+
+**Why this beats alternatives.** Two were considered and rejected:
+
+- **Decisions-first decomposition** (one architect call for decisions, then one for structure that references them by id) — chicken-and-egg: the architect can't know which decisions to make until it knows what features and strategies need them.
+- **Per-node fanout** (Phase 3 in the plan) — splits the architect call into one elaboration per feature and one per strategy, with a reconciler converging the output. Eliminates cross-call coordination but introduces a new workflow primitive (`fanout`) and a third agent (`spec_outliner`). Phase 2's inline-decisions design solves the cross-reference problem without the additional surgery; fanout becomes a clean escalation if a single architect call still degrades on big projects, since the reconciler doesn't change.
+
+**The flow:**
+
+```
+survey → propose (raw) → reconcile → critique → revise (raw, conditional) → reconcile_revise (conditional)
+```
+
+The architect always emits `RawSpecProposal`; both `propose` and `revise` go through the same reconciler. The integrity-revise loop in `GenerateSpec` becomes a vestigial backstop — there are no cross-references in the architect's output to dangle, and `ApplyReconciliation` is deterministic and structurally cannot produce a malformed proposal.
+
+**ID assignment.** Reconciler-assigned, slug-derived from the canonical decision title (`dec-use-postgres`, `dec-async-ingest`). Collisions across decisions whose titles slugify identically get a numeric suffix (`-2`, `-3`). Architects can't fabricate IDs because the architect contract has no ID field on `InlineDecisionProposal`.
+
+**Existing-spec ID reuse.** When extending a spec, the reconciler sees `Existing.Decisions` and can mark a cluster `reuse_existing` with an existing decision's ID. `ApplyReconciliation` rewrites the parent's `decisions[]` to reference the existing ID without minting a new canonical decision.
+
+**`InfluencedBy` dropped from the architect contract.** The field was an inter-decision reference — the same cross-reference problem inline decisions were designed to eliminate. Influence relationships, when they matter, are added during refine, not greenfield generation.
+
+**Cascade rewrite on conflict.** When the reconciler resolves a conflict, the architect's prose for affected feature/strategy nodes was written under the loser. After persistence, `cmd/specgen.go::cascadeAfterReconcile` reloads each affected node and runs `cascade.InvokeRewriter` (a new exported variant of the rewriter that operates in-memory) to align the prose with the canonical decision set. Best-effort: a rewriter failure logs but doesn't roll back the spec.
+
+**Migration:** the architect agent at `.borg/agents/spec_architect.md` and the workflow YAML at `.borg/workflows/spec_generation.yaml` ship via `locutus init`. Existing projects keep their old versions until they re-init or run `locutus update --offline --reset`. The on-disk spec shape under `.borg/spec/` is unchanged (DJ-085 stability).
+
+**Reversal criteria:** revert if (a) the reconciler routinely over-merges (collapses compatible-but-distinct decisions into one) or under-merges (leaves obvious duplicates separate) at a rate that materially degrades spec quality on `gpt-class` and `claude-sonnet-class` models — at which point the design moves to fanout (Phase 3) where each call's clustering surface is bounded; or (b) the per-run cost of the extra reconcile call (one for clean runs, two when revise fires) outweighs the savings from dropped integrity-revise retries on the model spectrum we care about.
+
+**Reference:** plan at [.claude/plans/council-resilience.md](../.claude/plans/council-resilience.md), Phase 2. Builds on DJ-087.
+
+## DJ-089: Mechanical Integrity Critic + Directive Revise Prompt
+
+**Status:** shipped
+
+**Decision:** The spec-generation council's critique step gains a non-LLM integrity critic (a Go function that runs `SpecProposal.Validate` against the post-reconcile proposal and emits findings as Concerns with `Kind="integrity"`). The revise projection (`projectRevise` in [internal/agent/projection.go](../internal/agent/projection.go)) is rewritten in the directive shape used by the post-workflow integrity-revise prompt: explicit rejection ("STOP. Your previous RawSpecProposal is rejected"), findings grouped by Kind (architecture / cost / devops / integrity / sre), prescriptive per-kind action lists, explicit don'ts, and a directive to re-emit the COMPLETE corrected RawSpecProposal. Critic concerns now carry a `Kind` field on `Concern`, defaulted from the agent ID at merge time (`architect_critic` → "architecture", etc.).
+
+**Why:** Even with Phase 2 (DJ-088) eliminating the structural cause of dangling references, two failure modes remained on the in-workflow critique → revise hop:
+
+1. Free-form prose findings made the architect's job to interpret. The original winplan run had `architect_critic` flag the integrity issue verbatim, and revise ignored it — the prompt was diluted enough that the architect didn't act on it. The directive revise prompt fixes the dilution problem the same way `78da6b5` ("sharper integrity-revise prompt") fixed it for the post-workflow loop: make rejection explicit, enumerate the violations, name the actions.
+2. Integrity violations were only caught after the workflow finished, by the post-workflow integrity loop. That loop runs synchronously, costs LLM tokens for the architect retry, and (per the user's earlier complaint) renders as a silent multi-second pause in the CLI. Catching integrity issues during critique means revise addresses them in the same flow that revise addresses architecture/devops/SRE/cost concerns.
+
+After Phase 2, integrity issues should be rare in the common case — `ApplyReconciliation` produces structurally clean output by construction. The integrity critic is then load-bearing only on regressions: a malformed reconciler verdict, a future code change that re-introduces cross-references, etc. Cheap enough (one Go function call per critique merge) that running it always costs nothing in the common case.
+
+**Why a Go function, not an LLM critic.** Validate is mechanical. An LLM can't do it more accurately than `Validate` can. Spending LLM tokens to re-derive a fact already encoded in code would be wasteful. The integrity critic is a peer to the LLM critics in the workflow's mental model (it appears as a Concern with AgentID="integrity_critic" alongside architect_critic etc.), but its implementation is `appendIntegrityFindings` in [internal/agent/workflow.go](../internal/agent/workflow.go) — invoked from `mergeResults` after the LLM critic results merge.
+
+**Why the architect sees its prior RawProposal in revise, not the canonical SpecProposal.** Phase 2 made the architect's output a `RawSpecProposal` (inline decisions, no IDs). The reconciler transforms that into the canonical `SpecProposal` with assigned IDs. Critics see the canonical. The previous `projectRevise` showed the architect the canonical via the assistant message — implying "you produced this", which the architect did not. The new projection surfaces `state.RawProposal` as the assistant message instead, so the rejection language is unambiguous: "you said X; critics flagged Y; emit X' addressing Y." The architect then emits a corrected RawSpecProposal which goes through `reconcile_revise`.
+
+**Reversal criteria:** revert the integrity critic if it produces noise (false positives) on clean Phase 2 output — that would suggest a bug in `Validate` or `ApplyReconciliation`, not a reason to remove the critic. Revert the directive revise prompt if it materially degrades architect compliance on Pro-class models (unlikely; the directive shape was already proven on `reviseForIntegrity`).
+
+**Reference:** plan at [.claude/plans/council-resilience.md](../.claude/plans/council-resilience.md), Phase 5. Independent of Phases 1–4; lands alongside Phase 2 to keep the in-workflow path tight.

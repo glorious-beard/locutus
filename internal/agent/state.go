@@ -3,9 +3,16 @@ package agent
 import "time"
 
 // Concern is a challenge raised by the critic or stakeholder.
+//
+// Kind groups concerns by the lens that produced them ("integrity",
+// "architecture", "devops", "sre", "cost"). The revise projection
+// renders concerns grouped by Kind so the architect can address each
+// category specifically. Defaulted from AgentID at merge time when not
+// set explicitly.
 type Concern struct {
 	AgentID  string `json:"agent_id"`
 	Severity string `json:"severity"` // "high", "medium", "low"
+	Kind     string `json:"kind,omitempty"`
 	Text     string `json:"text"`
 }
 
@@ -34,6 +41,20 @@ type PlanningState struct {
 	// the raw JSON of an agent.ScoutBrief — projection.go formats it
 	// for human-readable inclusion in the proposer's user message.
 	ScoutBrief string `json:"scout_brief,omitempty"`
+	// RawProposal carries the architect's pre-reconcile output (a
+	// RawSpecProposal JSON) from propose/revise into the reconcile step.
+	// The reconcile step's merge handler runs ApplyReconciliation and
+	// stores the canonical SpecProposal back into ProposedSpec; downstream
+	// agents (critics, reviser) read ProposedSpec as today.
+	RawProposal string `json:"raw_proposal,omitempty"`
+	// ConflictActions records reconciler verdicts that flipped a decision
+	// (resolve_conflict). Surfaced to GenerateSpec so it can fire cascade
+	// rewrites on affected feature/strategy nodes after persistence.
+	ConflictActions []AppliedAction `json:"-"`
+	// Existing is the spec snapshot the reconciler matches inline
+	// decisions against for ID reuse. Set by GenerateSpec before the
+	// workflow runs.
+	Existing *ExistingSpec `json:"-"`
 }
 
 // StateSnapshot is a read-only copy of PlanningState fields relevant to a
@@ -47,6 +68,12 @@ type StateSnapshot struct {
 	Revisions       string
 	OpenConcerns    []string
 	ScoutBrief      string
+	// RawProposal is the architect's pre-reconcile output, projected to
+	// the spec_reconciler agent so it can cluster inline decisions.
+	RawProposal string
+	// Existing is the spec snapshot the reconciler matches inline
+	// decisions against for ID reuse.
+	Existing *ExistingSpec
 }
 
 // Snapshot creates a read-only copy of the current state. Slice fields are
@@ -59,6 +86,8 @@ func (s *PlanningState) Snapshot() StateSnapshot {
 		ProposedSpec: s.ProposedSpec,
 		Revisions:    s.Revisions,
 		ScoutBrief:   s.ScoutBrief,
+		RawProposal:  s.RawProposal,
+		Existing:     s.Existing,
 	}
 	if len(s.Concerns) > 0 {
 		snap.Concerns = make([]Concern, len(s.Concerns))

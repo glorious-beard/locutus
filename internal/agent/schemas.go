@@ -46,6 +46,43 @@ func init() {
 		WatchOuts:           []string{"vendor lock-in to platform X"},
 	})
 
+	// RawSpecProposal is the architect's pre-reconcile output: features and
+	// strategies with inline decisions, no IDs, no cross-array references.
+	// The reconciler agent's verdict + ApplyReconciliation produce the
+	// canonical SpecProposal that downstream agents and persistence consume.
+	exampleInlineDecision := InlineDecisionProposal{
+		Title:      "Example decision",
+		Rationale:  "why this choice",
+		Confidence: 0.8,
+		Alternatives: []spec.Alternative{{
+			Name:            "alternative",
+			Rationale:       "why it was considered",
+			RejectedBecause: "why it was rejected",
+		}},
+		Citations: []spec.Citation{{
+			Kind:      "goals",
+			Reference: "GOALS.md",
+			Span:      "lines 6-8",
+			Excerpt:   "verbatim quoted text from the source",
+		}},
+		ArchitectRationale: "one-sentence summary distinct from the longer rationale",
+	}
+	RegisterSchema("RawSpecProposal", RawSpecProposal{
+		Features: []RawFeatureProposal{{
+			ID:          "feat-example",
+			Title:       "Example feature",
+			Description: "What the feature does in one paragraph.",
+			Decisions:   []InlineDecisionProposal{exampleInlineDecision},
+		}},
+		Strategies: []RawStrategyProposal{{
+			ID:        "strat-example",
+			Title:     "Example strategy",
+			Kind:      "foundational",
+			Body:      "prose body of the strategy",
+			Decisions: []InlineDecisionProposal{exampleInlineDecision},
+		}},
+	})
+
 	RegisterSchema("SpecProposal", SpecProposal{
 		Features: []FeatureProposal{{
 			ID:          "feat-example",
@@ -77,11 +114,16 @@ func init() {
 			Kind:  "foundational",
 			Body:  "prose body of the strategy",
 		}},
-		Approaches: []ApproachProposal{{
-			ID:       "app-example",
-			Title:    "Example approach",
-			ParentID: "feat-example",
-			Body:     "implementation sketch",
+	})
+
+	RegisterSchema("ReconciliationVerdict", ReconciliationVerdict{
+		Actions: []ReconciliationAction{{
+			Kind: "dedupe",
+			Sources: []DecisionSourceRef{
+				{ParentKind: "feature", ParentID: "feat-example", Index: 0},
+				{ParentKind: "strategy", ParentID: "strat-example", Index: 0},
+			},
+			Canonical: &exampleInlineDecision,
 		}},
 	})
 

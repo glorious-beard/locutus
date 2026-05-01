@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
@@ -15,11 +16,22 @@ import (
 // (timestamps, status defaults) the persistence layer fills in. This
 // keeps the architect agent's contract minimal — it proposes content,
 // the persistence layer stamps the rest.
+//
+// Approaches are intentionally absent: per the council-resilience plan,
+// approaches are synthesized at adopt time when real code context exists,
+// not invented during spec generation. The architect produces features,
+// strategies, and decisions; adopt fills in approaches per parent.
 type SpecProposal struct {
 	Features   []FeatureProposal  `json:"features,omitempty"`
 	Decisions  []DecisionProposal `json:"decisions,omitempty"`
 	Strategies []StrategyProposal `json:"strategies,omitempty"`
-	Approaches []ApproachProposal `json:"approaches,omitempty"`
+	// ConflictActions records reconciler conflict resolutions that
+	// flipped a decision under one or more parent feature/strategy.
+	// Populated by GenerateSpec after the workflow runs; consumed by
+	// the persistence caller to fire cascade rewrites once the
+	// affected parents are on disk. Omitted from JSON because it's
+	// workflow telemetry, not part of the proposal's persisted shape.
+	ConflictActions []AppliedAction `json:"-"`
 }
 
 // FeatureProposal is an LLM-friendly subset of spec.Feature.
@@ -29,7 +41,6 @@ type FeatureProposal struct {
 	Description        string   `json:"description"`
 	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
 	Decisions          []string `json:"decisions,omitempty"`
-	Approaches         []string `json:"approaches,omitempty"`
 }
 
 // DecisionProposal is an LLM-friendly subset of spec.Decision. Citations
@@ -51,20 +62,11 @@ type DecisionProposal struct {
 // the prose narrative persisted as the .md body alongside the JSON
 // sidecar.
 type StrategyProposal struct {
-	ID         string   `json:"id"`
-	Title      string   `json:"title"`
-	Kind       string   `json:"kind"`
-	Body       string   `json:"body"`
-	Decisions  []string `json:"decisions,omitempty"`
-	Approaches []string `json:"approaches,omitempty"`
-}
-
-// ApproachProposal is an LLM-friendly subset of spec.Approach.
-type ApproachProposal struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	ParentID string `json:"parent_id"`
-	Body     string `json:"body"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Kind      string   `json:"kind"`
+	Body      string   `json:"body"`
+	Decisions []string `json:"decisions,omitempty"`
 }
 
 // SpecGenRequest holds inputs for GenerateSpec. GoalsBody is required.
@@ -166,6 +168,7 @@ func GenerateSpec(ctx context.Context, llm LLM, fsys specio.FS, req SpecGenReque
 		LLM:       llm,
 		AgentDefs: agentDefs,
 		Workflow:  wf,
+		Existing:  req.Existing,
 	}
 
 	// Bridge workflow events to the caller's sink. Buffered generously
@@ -193,12 +196,20 @@ func GenerateSpec(ctx context.Context, llm LLM, fsys specio.FS, req SpecGenReque
 
 	prompt := buildSpecGenPrompt(req)
 
-	results, err := executor.Run(ctx, prompt)
-	if err != nil {
+	if _, err := executor.Run(ctx, prompt); err != nil {
 		return nil, fmt.Errorf("spec-generation council: %w", err)
 	}
 
-	proposalJSON := lastProposalOutput(results)
+	// Phase 2: the canonical SpecProposal is the post-reconcile output
+	// stored on PlanningState.ProposedSpec. Read it from the executor's
+	// final state rather than walking RoundResults — RoundResult.Output
+	// holds the raw agent text (verdict JSON for reconcile, raw proposal
+	// JSON for propose/revise), neither of which is the canonical shape
+	// downstream callers expect.
+	if executor.LastState == nil {
+		return nil, fmt.Errorf("spec-generation council produced no final state")
+	}
+	proposalJSON := executor.LastState.ProposedSpec
 	if proposalJSON == "" {
 		return nil, fmt.Errorf("spec-generation council produced no proposer output")
 	}
@@ -207,12 +218,20 @@ func GenerateSpec(ctx context.Context, llm LLM, fsys specio.FS, req SpecGenReque
 	if err := json.Unmarshal([]byte(proposalJSON), &proposal); err != nil {
 		return nil, fmt.Errorf("parse spec proposal: %w (content=%q)", err, proposalJSON)
 	}
+	proposal.ConflictActions = executor.LastState.ConflictActions
 
 	// Integrity gate. If the proposal references node IDs it didn't
 	// emit, ask the architect to repair the proposal rather than
-	// silently dropping the dangling refs. The cap is small because
-	// a model that fails twice in a row is unlikely to comply on the
-	// third try; better to surface a clear error than burn tokens.
+	// silently dropping the dangling refs. After Phase 2 the architect's
+	// output is reconciler-built and structurally clean; this loop is
+	// a backstop for rare failures (e.g. a malformed reconciler verdict
+	// that surfaced as a parse error). The cap is small because a model
+	// that fails twice in a row is unlikely to comply on the third try.
+	//
+	// Events are bridged through the live workflow events channel so
+	// the CLI spinner reflects integrity-revise activity in real time
+	// — without this the user sees a stalled prompt for tens of seconds
+	// while the architect retries.
 	for attempt := 0; attempt < MaxIntegrityRetries; attempt++ {
 		warnings := proposal.Validate(req.Existing)
 		if len(warnings) == 0 {
@@ -227,9 +246,30 @@ func GenerateSpec(ctx context.Context, llm LLM, fsys specio.FS, req SpecGenReque
 				Attempts: attempt,
 			}
 		}
+		stepID := fmt.Sprintf("integrity-revise (%d/%d)", attempt+1, MaxIntegrityRetries)
+		events <- WorkflowEvent{
+			StepID:    stepID,
+			AgentID:   "spec_architect",
+			Status:    "started",
+			Message:   fmt.Sprintf("repairing %d dangling reference(s)", len(warnings)),
+			Timestamp: time.Now(),
+		}
 		repaired, err := reviseForIntegrity(ctx, llm, archDef, prompt, &proposal, warnings)
 		if err != nil {
+			events <- WorkflowEvent{
+				StepID:    stepID,
+				AgentID:   "spec_architect",
+				Status:    "error",
+				Message:   err.Error(),
+				Timestamp: time.Now(),
+			}
 			return nil, fmt.Errorf("integrity-revise attempt %d: %w", attempt+1, err)
+		}
+		events <- WorkflowEvent{
+			StepID:    stepID,
+			AgentID:   "spec_architect",
+			Status:    "completed",
+			Timestamp: time.Now(),
 		}
 		proposal = *repaired
 	}
@@ -284,9 +324,8 @@ func reviseForIntegrity(ctx context.Context, llm LLM, archDef AgentDef, original
 	}
 	var b strings.Builder
 	b.WriteString("STOP. Your previous SpecProposal is rejected because it references node IDs that you did not define.\n\n")
-	b.WriteString("This is not a stylistic note. Every id in features[].decisions, strategies[].decisions, ")
-	b.WriteString("features[].approaches, strategies[].approaches, and approaches[].parent_id MUST resolve ")
-	b.WriteString("to a node that exists in this proposal or in the existing spec snapshot. ")
+	b.WriteString("This is not a stylistic note. Every id in features[].decisions and strategies[].decisions ")
+	b.WriteString("MUST resolve to a node that exists in this proposal or in the existing spec snapshot. ")
 	b.WriteString("If it does not, the proposal is invalid and will be rejected again.\n\n")
 	b.WriteString("## Specific violations\n\n")
 	for _, w := range warnings {
@@ -294,8 +333,7 @@ func reviseForIntegrity(ctx context.Context, llm LLM, archDef AgentDef, original
 	}
 	b.WriteString("\nFor each violation above, you must take exactly one of these two actions:\n\n")
 	b.WriteString("  1. ADD the missing node to the proposal. Decisions need id, title, rationale, ")
-	b.WriteString("confidence, alternatives, citations. Approaches need id, title, parent_id, body. ")
-	b.WriteString("Strategies need id, title, kind, body.\n")
+	b.WriteString("confidence, alternatives, citations. Strategies need id, title, kind, body.\n")
 	b.WriteString("  2. REMOVE the dangling reference from the node that emitted it.\n\n")
 	b.WriteString("Do not paraphrase the violations. Do not acknowledge them in prose. ")
 	b.WriteString("Do not re-emit the same broken structure with cosmetic edits. ")
@@ -339,23 +377,6 @@ func buildSpecGenPrompt(req SpecGenRequest) string {
 	return b.String()
 }
 
-// lastProposalOutput walks the executor results in reverse and returns
-// the most recent SpecProposal-shaped output: revise wins over propose
-// (the council's last word), propose wins when no revise fired (clean
-// proposal didn't need revision).
-func lastProposalOutput(results []RoundResult) string {
-	for i := len(results) - 1; i >= 0; i-- {
-		r := results[i]
-		if r.Err != nil || r.Output == "" {
-			continue
-		}
-		if r.StepID == "revise" || r.StepID == "propose" {
-			return r.Output
-		}
-	}
-	return ""
-}
-
 func summarizeExistingSpec(b *strings.Builder, e *ExistingSpec) {
 	if len(e.Features) > 0 {
 		b.WriteString("Features:\n")
@@ -389,9 +410,9 @@ func summarizeExistingSpec(b *strings.Builder, e *ExistingSpec) {
 // reference is stripped from the proposal so persistence proceeds with
 // only valid edges.
 type IntegrityWarning struct {
-	NodeKind  string // "feature", "strategy", "approach"
+	NodeKind  string // "feature", "strategy"
 	NodeID    string // the node carrying the dangling reference
-	Field     string // "decisions", "approaches", "parent_id"
+	Field     string // "decisions"
 	MissingID string // the id that wasn't found
 }
 
@@ -410,9 +431,8 @@ func (w IntegrityWarning) String() string {
 // dropping data.
 //
 // Rules:
-//   - Feature.Decisions, Feature.Approaches: each id must resolve.
-//   - Strategy.Decisions, Strategy.Approaches: same.
-//   - Approach.ParentID: must resolve to a feature or strategy.
+//   - Feature.Decisions: each id must resolve.
+//   - Strategy.Decisions: same.
 func (p *SpecProposal) Validate(existing *ExistingSpec) []IntegrityWarning {
 	if p == nil {
 		return nil
@@ -422,21 +442,9 @@ func (p *SpecProposal) Validate(existing *ExistingSpec) []IntegrityWarning {
 
 	for _, f := range p.Features {
 		warnings = appendMissingRefs(warnings, f.Decisions, known.decisions, "feature", f.ID, "decisions")
-		warnings = appendMissingRefs(warnings, f.Approaches, known.approaches, "feature", f.ID, "approaches")
 	}
 	for _, s := range p.Strategies {
 		warnings = appendMissingRefs(warnings, s.Decisions, known.decisions, "strategy", s.ID, "decisions")
-		warnings = appendMissingRefs(warnings, s.Approaches, known.approaches, "strategy", s.ID, "approaches")
-	}
-	for _, ap := range p.Approaches {
-		if _, ok := known.parentable[ap.ParentID]; !ok {
-			warnings = append(warnings, IntegrityWarning{
-				NodeKind:  "approach",
-				NodeID:    ap.ID,
-				Field:     "parent_id",
-				MissingID: ap.ParentID,
-			})
-		}
 	}
 	return warnings
 }
@@ -460,28 +468,10 @@ func (p *SpecProposal) Strip(existing *ExistingSpec) []IntegrityWarning {
 
 	for i := range p.Features {
 		p.Features[i].Decisions, warnings = filterRefs(p.Features[i].Decisions, known.decisions, warnings, "feature", p.Features[i].ID, "decisions")
-		p.Features[i].Approaches, warnings = filterRefs(p.Features[i].Approaches, known.approaches, warnings, "feature", p.Features[i].ID, "approaches")
 	}
 	for i := range p.Strategies {
 		p.Strategies[i].Decisions, warnings = filterRefs(p.Strategies[i].Decisions, known.decisions, warnings, "strategy", p.Strategies[i].ID, "decisions")
-		p.Strategies[i].Approaches, warnings = filterRefs(p.Strategies[i].Approaches, known.approaches, warnings, "strategy", p.Strategies[i].ID, "approaches")
 	}
-
-	// Approaches with unresolvable parents have no anchor — drop them.
-	kept := p.Approaches[:0]
-	for _, ap := range p.Approaches {
-		if _, ok := known.parentable[ap.ParentID]; !ok {
-			warnings = append(warnings, IntegrityWarning{
-				NodeKind:  "approach",
-				NodeID:    ap.ID,
-				Field:     "parent_id",
-				MissingID: ap.ParentID,
-			})
-			continue
-		}
-		kept = append(kept, ap)
-	}
-	p.Approaches = kept
 	return warnings
 }
 
@@ -504,43 +494,19 @@ func appendMissingRefs(warnings []IntegrityWarning, refs []string, known map[str
 }
 
 type knownIDs struct {
-	decisions  map[string]struct{}
-	approaches map[string]struct{}
-	// parentable holds ids that an Approach.ParentID is allowed to point
-	// at — features and strategies, since approaches hang off either.
-	parentable map[string]struct{}
+	decisions map[string]struct{}
 }
 
 func indexKnownIDs(p *SpecProposal, existing *ExistingSpec) knownIDs {
 	k := knownIDs{
-		decisions:  map[string]struct{}{},
-		approaches: map[string]struct{}{},
-		parentable: map[string]struct{}{},
+		decisions: map[string]struct{}{},
 	}
 	for _, d := range p.Decisions {
 		k.decisions[d.ID] = struct{}{}
 	}
-	for _, a := range p.Approaches {
-		k.approaches[a.ID] = struct{}{}
-	}
-	for _, f := range p.Features {
-		k.parentable[f.ID] = struct{}{}
-	}
-	for _, s := range p.Strategies {
-		k.parentable[s.ID] = struct{}{}
-	}
 	if existing != nil {
 		for _, d := range existing.Decisions {
 			k.decisions[d.ID] = struct{}{}
-		}
-		for _, a := range existing.Approaches {
-			k.approaches[a.ID] = struct{}{}
-		}
-		for _, f := range existing.Features {
-			k.parentable[f.ID] = struct{}{}
-		}
-		for _, s := range existing.Strategies {
-			k.parentable[s.ID] = struct{}{}
 		}
 	}
 	return k
@@ -584,7 +550,6 @@ func (p *SpecProposal) ToAssimilationResult() *AssimilationResult {
 			Description:        fp.Description,
 			AcceptanceCriteria: fp.AcceptanceCriteria,
 			Decisions:          fp.Decisions,
-			Approaches:         fp.Approaches,
 		})
 	}
 	for _, dp := range p.Decisions {
@@ -611,20 +576,11 @@ func (p *SpecProposal) ToAssimilationResult() *AssimilationResult {
 	}
 	for _, sp := range p.Strategies {
 		r.Strategies = append(r.Strategies, spec.Strategy{
-			ID:         sp.ID,
-			Title:      sp.Title,
-			Kind:       spec.StrategyKind(sp.Kind),
-			Status:     "proposed",
-			Decisions:  sp.Decisions,
-			Approaches: sp.Approaches,
-		})
-	}
-	for _, ap := range p.Approaches {
-		r.Approaches = append(r.Approaches, spec.Approach{
-			ID:       ap.ID,
-			Title:    ap.Title,
-			ParentID: ap.ParentID,
-			Body:     ap.Body,
+			ID:        sp.ID,
+			Title:     sp.Title,
+			Kind:      spec.StrategyKind(sp.Kind),
+			Status:    "proposed",
+			Decisions: sp.Decisions,
 		})
 	}
 	return r

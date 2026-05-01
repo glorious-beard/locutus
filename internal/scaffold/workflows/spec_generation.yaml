@@ -2,22 +2,26 @@
 # and `locutus import <doc>` (post-admission planning pass).
 #
 # The flow:
-#   1. survey   — a senior-engineer scout brief: domain read, tech options,
-#                 the implicit assumptions GOALS.md leaves out (scale, cost,
-#                 ops model, deployment posture, availability, compliance).
-#   2. propose  — the architect commits to a SpecProposal, honoring the
-#                 scout's implicit_assumptions as strategy+decision pairs.
-#   3. critique — four specialist critics run in parallel: architecture,
-#                 DevOps, SRE, cost. Each emits CriticIssues from its own
-#                 lens. The orchestrator merges issues into state.Concerns.
-#   4. revise   — fires only when there ARE concerns. The architect
-#                 emits a complete corrected SpecProposal addressing every
-#                 issue. Output overwrites the prior proposal.
+#   1. survey    — a senior-engineer scout brief: domain read, tech options,
+#                  the implicit assumptions GOALS.md leaves out (scale, cost,
+#                  ops model, deployment posture, availability, compliance).
+#   2. propose   — the architect commits to a RawSpecProposal: features and
+#                  strategies with inline decisions (no IDs, no cross-array
+#                  references). Eliminates the dangling-ref class by
+#                  construction — there are no IDs to dangle.
+#   3. reconcile — clusters the inline decisions across the proposal and
+#                  emits a verdict (dedupe / resolve_conflict / reuse_existing).
+#                  Go surgery (ApplyReconciliation) assigns canonical IDs and
+#                  produces the SpecProposal that downstream agents consume.
+#   4. critique  — four specialist critics run in parallel against the
+#                  reconciled proposal: architecture, DevOps, SRE, cost.
+#   5. revise    — fires only when there ARE concerns. The architect emits a
+#                  corrected RawSpecProposal addressing every issue.
+#   6. reconcile_revise — same reconciler against the revised raw proposal,
+#                         conditional on revisions having fired.
 #
 # max_rounds=1 because there is no convergence agent in this workflow —
-# the executor will break after one full pass. Increase it (and add a
-# convergence agent) only if multi-round critique is genuinely needed;
-# at six LLM calls per iteration the cost adds up fast.
+# the executor breaks after one full pass.
 rounds:
   - id: survey
     agent: spec_scout
@@ -27,16 +31,27 @@ rounds:
     agent: spec_architect
     parallel: false
     depends_on: [survey]
-    merge_as: proposed_spec
+    merge_as: raw_proposal
+  - id: reconcile
+    agent: spec_reconciler
+    parallel: false
+    depends_on: [propose]
+    merge_as: reconciled_proposal
   - id: critique
     agents: [architect_critic, devops_critic, sre_critic, cost_critic]
     parallel: true
-    depends_on: [propose]
+    depends_on: [reconcile]
     merge_as: critic_issues
   - id: revise
     agent: spec_architect
     parallel: false
     depends_on: [critique]
     conditional: has_concerns
-    merge_as: revisions
+    merge_as: raw_proposal
+  - id: reconcile_revise
+    agent: spec_reconciler
+    parallel: false
+    depends_on: [revise]
+    conditional: has_concerns
+    merge_as: reconciled_proposal
 max_rounds: 1

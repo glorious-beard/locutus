@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -13,6 +14,8 @@ func ProjectState(stepID string, snap StateSnapshot) []Message {
 	switch stepID {
 	case "propose":
 		return projectPropose(snap)
+	case "reconcile", "reconcile_revise":
+		return projectReconcile(snap)
 	case "challenge", "critique":
 		return projectChallenge(snap)
 	case "research":
@@ -24,6 +27,39 @@ func ProjectState(stepID string, snap StateSnapshot) []Message {
 	default:
 		// Fallback: provide the prompt and any existing spec.
 		return projectDefault(snap)
+	}
+}
+
+// projectReconcile builds the reconciler's user message: the raw proposal
+// from the upstream propose/revise step plus the existing-spec snapshot
+// (when present) so the agent can mark clusters for ID reuse rather than
+// minting new IDs.
+func projectReconcile(snap StateSnapshot) []Message {
+	var b strings.Builder
+	b.WriteString("## Raw proposal (inline decisions, no IDs)\n\n")
+	if snap.RawProposal != "" {
+		b.WriteString(snap.RawProposal)
+	} else {
+		// Defensive: if the upstream propose merge didn't populate
+		// RawProposal, fall back to ProposedSpec so the reconciler
+		// gets *something* to work on. This shouldn't happen in
+		// production wiring; kept as a soft fallback for tests.
+		b.WriteString(snap.ProposedSpec)
+	}
+	if snap.Existing != nil && !snap.Existing.IsEmpty() {
+		b.WriteString("\n\n## Existing spec snapshot (decisions you may reuse via reuse_existing)\n\n")
+		formatExistingDecisions(&b, snap.Existing)
+	}
+	b.WriteString("\n\nEmit a ReconciliationVerdict naming the clusters that need dedupe / resolve_conflict / reuse_existing. Inline decisions you do not mention are kept as separate canonical decisions.")
+	return []Message{{Role: "user", Content: b.String()}}
+}
+
+func formatExistingDecisions(b *strings.Builder, e *ExistingSpec) {
+	for _, d := range e.Decisions {
+		fmt.Fprintf(b, "- %s — %s (%s, confidence=%.2f)\n", d.ID, d.Title, d.Status, d.Confidence)
+		if d.Rationale != "" {
+			fmt.Fprintf(b, "  rationale: %s\n", d.Rationale)
+		}
 	}
 }
 
@@ -126,40 +162,84 @@ func projectRevise(snap StateSnapshot) []Message {
 	msgs := []Message{
 		{Role: "user", Content: snap.Prompt},
 	}
-	if snap.ProposedSpec != "" {
+
+	// Show the architect its prior raw proposal (what it actually
+	// produced) as the assistant message, so the rejection language
+	// is unambiguous: "your prior proposal is rejected; here are the
+	// findings; emit a corrected one." Falls back to the canonical
+	// ProposedSpec for legacy paths where RawProposal isn't populated.
+	prior := snap.RawProposal
+	if prior == "" {
+		prior = snap.ProposedSpec
+	}
+	if prior != "" {
 		msgs = append(msgs, Message{
 			Role:    "assistant",
-			Content: snap.ProposedSpec,
+			Content: prior,
 		})
 	}
 
-	// Include concerns and research for the planner to address.
-	if len(snap.Concerns) > 0 {
-		var lines []string
-		for _, c := range snap.Concerns {
-			lines = append(lines, fmt.Sprintf("- [%s/%s] %s", c.AgentID, c.Severity, c.Text))
-		}
+	if len(snap.Concerns) > 0 || len(snap.ResearchResults) > 0 {
 		msgs = append(msgs, Message{
 			Role:    "user",
-			Content: fmt.Sprintf("Concerns raised:\n%s", strings.Join(lines, "\n")),
+			Content: buildRevisePrompt(snap.Concerns, snap.ResearchResults),
 		})
 	}
-	if len(snap.ResearchResults) > 0 {
-		var lines []string
-		for _, f := range snap.ResearchResults {
-			lines = append(lines, fmt.Sprintf("Q: %s\nA: %s", f.Query, f.Result))
-		}
-		msgs = append(msgs, Message{
-			Role:    "user",
-			Content: fmt.Sprintf("Research findings:\n%s", strings.Join(lines, "\n---\n")),
-		})
-	}
-
-	msgs = append(msgs, Message{
-		Role:    "user",
-		Content: "Address the concerns and findings above.",
-	})
 	return msgs
+}
+
+// buildRevisePrompt assembles the directive-shape rejection message used
+// in revise rounds. Matches the reviseForIntegrity prompt's structure
+// (`78da6b5`): explicit rejection, enumerated findings grouped by kind,
+// prescriptive actions, explicit don'ts. Critic findings emitted as
+// `- {text}` under per-kind headings — no agent_id/severity noise that
+// the architect has to filter out.
+func buildRevisePrompt(concerns []Concern, research []Finding) string {
+	var b strings.Builder
+	b.WriteString("STOP. Your previous RawSpecProposal is rejected. The council critics flagged issues that must be addressed before this proposal can be accepted.\n\n")
+	b.WriteString("This is not a stylistic note. Every finding below describes a specific defect. Address every one in your revised RawSpecProposal.\n\n")
+
+	if len(concerns) > 0 {
+		b.WriteString("## Specific findings\n\n")
+		// Group concerns by Kind so the architect addresses each lens
+		// (integrity / architecture / devops / sre / cost) explicitly.
+		byKind := make(map[string][]Concern)
+		for _, c := range concerns {
+			k := c.Kind
+			if k == "" {
+				k = "review"
+			}
+			byKind[k] = append(byKind[k], c)
+		}
+		kinds := make([]string, 0, len(byKind))
+		for k := range byKind {
+			kinds = append(kinds, k)
+		}
+		sort.Strings(kinds)
+		for _, k := range kinds {
+			fmt.Fprintf(&b, "### %s (%d)\n", k, len(byKind[k]))
+			for _, c := range byKind[k] {
+				fmt.Fprintf(&b, "- %s\n", c.Text)
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	if len(research) > 0 {
+		b.WriteString("## Research findings\n\n")
+		for _, f := range research {
+			fmt.Fprintf(&b, "- Q: %s\n  A: %s\n", f.Query, f.Result)
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("## Required actions\n\n")
+	b.WriteString("For each finding above, take one of these actions in your revised RawSpecProposal:\n\n")
+	b.WriteString("1. **integrity** findings: add the missing inline decision under the relevant feature/strategy, OR remove the offending reference. The reconciler rebuilds canonical IDs from your output, so you do not need to invent IDs.\n")
+	b.WriteString("2. **architecture / devops / sre / cost** findings: revise the affected feature, strategy, or inline decision content to address the critic's specific concern. If a decision in your prior proposal contradicted GOALS.md or a scout-brief mandate, emit a corrected inline decision (with rationale, alternatives, and citations) under the same parent.\n\n")
+	b.WriteString("Do not paraphrase the findings. Do not acknowledge them in prose. Do not re-emit the same broken structure with cosmetic edits.\n\n")
+	b.WriteString("Re-emit the COMPLETE corrected RawSpecProposal as a single JSON object. No diff. No partial object. No prose.")
+	return b.String()
 }
 
 func projectRecord(snap StateSnapshot) []Message {
