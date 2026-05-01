@@ -231,11 +231,15 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 		"decisions":[]
 	}`
 	reconcileEmpty := `{"actions":[]}`
+	// elaborate_features and elaborate_strategies run in parallel
+	// (workflow YAML has parallel: true); the mock would race on
+	// positional consumption otherwise. Agent-tagged responses match
+	// the source agent regardless of arrival order at the mock.
 	mock := agent.NewMockLLM(
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: scoutResp, Model: "m"}},
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: outlineResp, Model: "m"}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: featureElaborateResp, Model: "m"}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: strategyElaborateResp, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_feature_elaborator", Response: &agent.GenerateResponse{Content: featureElaborateResp, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_strategy_elaborator", Response: &agent.GenerateResponse{Content: strategyElaborateResp, Model: "m"}},
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: reconcileEmpty, Model: "m"}},
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},

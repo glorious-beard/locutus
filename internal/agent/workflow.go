@@ -600,16 +600,23 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 		ds := executor.Step{
 			ID:        ws.ID,
 			DependsOn: ws.DependsOn,
-			// Steps are sequential at the DAG level — the executor resolves
-			// dependency ordering. Multi-agent parallelism (e.g. critic +
-			// stakeholder running concurrently) is handled inside ExecuteRound,
-			// which fans out goroutines per agent within a single step.
-			// These are distinct concerns: step ordering vs. agent fan-out.
+			// Two distinct concerns share the Parallel flag, both
+			// honored from the workflow YAML:
 			//
-			// TODO: if step-level parallelism is needed (e.g. two independent
-			// council rounds running in parallel), set Parallel based on the
-			// workflow step and ensure ExecuteRound is reentrant-safe.
-			Parallel: false,
+			//   - Step-level: independent steps with their dependencies
+			//     met run concurrently. Phase 3 elaborate_features and
+			//     elaborate_strategies both depend on outline; setting
+			//     parallel: true on both lets them interleave (subject
+			//     to per-model concurrency caps in models.yaml) instead
+			//     of features-then-strategies in series.
+			//   - Agent-level (inside ExecuteRound): when the step lists
+			//     multiple agents, parallel: true fans them out as
+			//     goroutines (the four critics, etc.).
+			//
+			// ExecuteRound handles per-step concurrency safely because
+			// each invocation gets a snapshot taken at step entry and
+			// the merge runs serially after parallel steps complete.
+			Parallel: ws.Parallel,
 		}
 		if ws.Conditional != "" {
 			cond := ws.Conditional // capture for closure

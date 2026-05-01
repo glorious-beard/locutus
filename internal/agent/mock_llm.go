@@ -12,9 +12,21 @@ type MockCall struct {
 
 // MockResponse is a scripted response for the mock LLM. If Err is non-nil,
 // Generate returns that error instead of the response.
+//
+// AgentID, when set, scopes the response to a specific source agent —
+// the mock matches against AgentIDFromContext at call time and only
+// serves agent-tagged responses to matching callers. This keeps tests
+// deterministic when steps run in parallel (Phase 3 fanout fires
+// concurrent goroutines whose mutex-acquisition order is non-
+// deterministic; positional ordering would race). Mixing tagged and
+// untagged responses works: tagged responses match only their agent;
+// untagged responses fall back to positional consumption for callers
+// with no agent id, or no matching tagged response.
 type MockResponse struct {
+	AgentID  string
 	Response *GenerateResponse
 	Err      error
+	consumed bool
 }
 
 // MockLLM implements LLM with scripted responses for testing. Responses are
@@ -49,22 +61,51 @@ func (m *MockLLM) Generate(ctx context.Context, req GenerateRequest) (*GenerateR
 		cb()
 	}
 
+	agentID := AgentIDFromContext(ctx)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.calls = append(m.calls, MockCall{Request: req})
 
-	if m.pos >= len(m.responses) {
-		return nil, ErrTimeout
+	// Agent-id-scoped match takes precedence: a response tagged with
+	// AgentID is served only to that agent. Lets parallel tests script
+	// a deterministic per-agent response without depending on the
+	// goroutine arrival order at the mutex.
+	if agentID != "" {
+		for i := range m.responses {
+			r := &m.responses[i]
+			if r.consumed || r.AgentID == "" || r.AgentID != agentID {
+				continue
+			}
+			r.consumed = true
+			if r.Err != nil {
+				return nil, r.Err
+			}
+			return r.Response, nil
+		}
 	}
 
-	r := m.responses[m.pos]
-	m.pos++
-
-	if r.Err != nil {
-		return nil, r.Err
+	// Untagged responses fall back to positional consumption,
+	// preserving existing test fixtures that don't care about
+	// agent routing.
+	for m.pos < len(m.responses) {
+		r := &m.responses[m.pos]
+		m.pos++
+		if r.consumed {
+			continue
+		}
+		if r.AgentID != "" && r.AgentID != agentID {
+			// A different agent's tagged response — skip past it.
+			continue
+		}
+		r.consumed = true
+		if r.Err != nil {
+			return nil, r.Err
+		}
+		return r.Response, nil
 	}
-	return r.Response, nil
+	return nil, ErrTimeout
 }
 
 // Calls returns all recorded calls.
