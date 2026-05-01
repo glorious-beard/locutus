@@ -232,18 +232,40 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 		messages = append(messages, ai.NewTextMessage(toGenkitRole(m.Role), m.Content))
 	}
 
-	// Capture middleware: snapshots the raw *ai.ModelResponse before
-	// genkit's format-handler validation runs. Genkit returns (nil, err)
-	// when WithOutputType validation fails (ai/generate.go ~line 381) —
-	// dropping the model's actual bytes on the floor. Without this hook
-	// we can't trace truncated/invalid responses, which is exactly the
-	// case we most need to debug.
-	var captured *ai.ModelResponse
+	// Capture middleware: snapshots the model's raw output before
+	// genkit's format-handler validation runs. Two complications:
+	//
+	//  1. Genkit returns (nil, err) when WithOutputType validation
+	//     fails (ai/generate.go ~line 381) — dropping the response
+	//     entirely from the caller's perspective.
+	//  2. The format handler MUTATES resp.Message in place on its
+	//     parse path (resp.Message, err = formatHandler.ParseMessage(...)),
+	//     so even capturing the *ai.ModelResponse pointer and
+	//     reading captured.Message afterward sees nil — the same
+	//     struct the format handler nilled out.
+	//
+	// To survive both, the middleware snapshots Text/Reasoning/Usage/
+	// Message-as-JSON immediately, before unwinding back into genkit's
+	// post-processing. The error path falls back to these snapshots so
+	// the trace records what the model actually returned.
+	var (
+		capturedText       string
+		capturedReasoning  string
+		capturedMessageRaw string
+		capturedUsage      *ai.GenerationUsage
+	)
 	captureMW := func(next ai.ModelFunc) ai.ModelFunc {
 		return func(ctx context.Context, mreq *ai.ModelRequest, cb ai.ModelStreamCallback) (*ai.ModelResponse, error) {
 			r, e := next(ctx, mreq, cb)
 			if r != nil {
-				captured = r
+				capturedText = r.Text()
+				capturedReasoning = extractReasoning(r)
+				capturedUsage = r.Usage
+				if r.Message != nil {
+					if data, mErr := json.Marshal(r.Message); mErr == nil {
+						capturedMessageRaw = string(data)
+					}
+				}
 			}
 			return r, e
 		}
@@ -292,35 +314,35 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 	}
 
 	resp, err := genkit.Generate(ctx, g.g, opts...)
-	// Pick whichever response object actually carries the model bytes:
-	// the genkit-returned `resp` on success, or the captured response on
-	// validation-error failure. The fallback gives us the partial JSON +
-	// reasoning text for the trace even when genkit discards them.
-	source := resp
-	if source == nil {
-		source = captured
-	}
 	out := &GenerateResponse{Model: model}
-	if source != nil {
-		out.Content = source.Text()
-		out.Reasoning = extractReasoning(source)
-		if u := source.Usage; u != nil {
+	if resp != nil {
+		// Success path: the post-format-handler resp is the canonical
+		// source for Content / Reasoning / Usage.
+		out.Content = resp.Text()
+		out.Reasoning = extractReasoning(resp)
+		if u := resp.Usage; u != nil {
 			out.InputTokens = u.InputTokens
 			out.OutputTokens = u.OutputTokens
 			out.ThoughtsTokens = u.ThoughtsTokens
 			out.TotalTokens = u.TotalTokens
 		}
-		// On error, also dump the full message structure to RawMessage
-		// so the trace surfaces non-text parts (tool_use blocks for
-		// Anthropic forced-tool-use schemas, structured-output frames
-		// for Gemini, custom plugin parts, etc.). Text() and
-		// extractReasoning() only cover text + reasoning kinds; a
-		// truncated structured-output response may have its bytes
-		// in a tool_request or custom part instead.
-		if err != nil && source.Message != nil {
-			if data, mErr := json.Marshal(source.Message); mErr == nil {
-				out.RawMessage = string(data)
-			}
+	} else if err != nil {
+		// Error path: genkit dropped the response (likely format-
+		// handler rejection). Fall back to the snapshots taken inside
+		// the middleware before genkit's post-processing nilled out
+		// resp.Message. RawMessage carries the full message JSON so
+		// non-text parts (Anthropic forced-tool-use blocks, Gemini
+		// structured frames, custom plugin parts) surface in the
+		// trace even when Text() returns empty on a truncated
+		// structured response.
+		out.Content = capturedText
+		out.Reasoning = capturedReasoning
+		out.RawMessage = capturedMessageRaw
+		if u := capturedUsage; u != nil {
+			out.InputTokens = u.InputTokens
+			out.OutputTokens = u.OutputTokens
+			out.ThoughtsTokens = u.ThoughtsTokens
+			out.TotalTokens = u.TotalTokens
 		}
 	}
 	if err != nil {
