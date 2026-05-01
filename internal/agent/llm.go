@@ -34,12 +34,18 @@ type GenerateRequest struct {
 // Token counts are reported separately rather than as a single
 // TokensUsed total so session traces can show input vs output split —
 // useful for spotting prompts that have grown unexpectedly large.
+//
+// ThoughtsTokens reports tokens spent on extended thinking (Claude
+// extended thinking, Gemini thinking budgets). Providers bill thinking
+// tokens at output-token rates, so this field is the visibility surface
+// for "how much did thinking cost this call."
 type GenerateResponse struct {
-	Content      string `json:"content"`
-	Model        string `json:"model"`
-	InputTokens  int    `json:"input_tokens,omitempty"`
-	OutputTokens int    `json:"output_tokens,omitempty"`
-	TotalTokens  int    `json:"total_tokens,omitempty"`
+	Content        string `json:"content"`
+	Model          string `json:"model"`
+	InputTokens    int    `json:"input_tokens,omitempty"`
+	OutputTokens   int    `json:"output_tokens,omitempty"`
+	ThoughtsTokens int    `json:"thoughts_tokens,omitempty"`
+	TotalTokens    int    `json:"total_tokens,omitempty"`
 }
 
 // LLM abstracts LLM generation so callers are decoupled from the provider.

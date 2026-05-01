@@ -261,6 +261,7 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 			if u := resp.Usage; u != nil {
 				out.InputTokens = u.InputTokens
 				out.OutputTokens = u.OutputTokens
+				out.ThoughtsTokens = u.ThoughtsTokens
 				out.TotalTokens = u.TotalTokens
 			}
 		}
@@ -270,6 +271,7 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 	if u := resp.Usage; u != nil {
 		out.InputTokens = u.InputTokens
 		out.OutputTokens = u.OutputTokens
+		out.ThoughtsTokens = u.ThoughtsTokens
 		out.TotalTokens = u.TotalTokens
 	}
 	return out, nil

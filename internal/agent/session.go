@@ -74,20 +74,21 @@ const (
 )
 
 type recordedCall struct {
-	Index        int               `yaml:"index"`
-	Role         string            `yaml:"role,omitempty"`
-	Status       string            `yaml:"status,omitempty"`
-	StartedAt    string            `yaml:"started_at"`
-	CompletedAt  string            `yaml:"completed_at,omitempty"`
-	DurationMS   int64             `yaml:"duration_ms,omitempty"`
-	Model        string            `yaml:"model"`
-	Messages     []recordedMessage `yaml:"messages"`
-	OutputSchema bool              `yaml:"output_schema,omitempty"`
-	Response     string            `yaml:"response,omitempty"`
-	InputTokens  int               `yaml:"input_tokens,omitempty"`
-	OutputTokens int               `yaml:"output_tokens,omitempty"`
-	TotalTokens  int               `yaml:"total_tokens,omitempty"`
-	Error        string            `yaml:"error,omitempty"`
+	Index          int               `yaml:"index"`
+	Role           string            `yaml:"role,omitempty"`
+	Status         string            `yaml:"status,omitempty"`
+	StartedAt      string            `yaml:"started_at"`
+	CompletedAt    string            `yaml:"completed_at,omitempty"`
+	DurationMS     int64             `yaml:"duration_ms,omitempty"`
+	Model          string            `yaml:"model"`
+	Messages       []recordedMessage `yaml:"messages"`
+	OutputSchema   bool              `yaml:"output_schema,omitempty"`
+	Response       string            `yaml:"response,omitempty"`
+	InputTokens    int               `yaml:"input_tokens,omitempty"`
+	OutputTokens   int               `yaml:"output_tokens,omitempty"`
+	ThoughtsTokens int               `yaml:"thoughts_tokens,omitempty"`
+	TotalTokens    int               `yaml:"total_tokens,omitempty"`
+	Error          string            `yaml:"error,omitempty"`
 }
 
 type recordedMessage struct {
@@ -226,6 +227,7 @@ func (r *SessionRecorder) finalize(idx int, resp *GenerateResponse, callErr erro
 		call.Response = resp.Content
 		call.InputTokens = resp.InputTokens
 		call.OutputTokens = resp.OutputTokens
+		call.ThoughtsTokens = resp.ThoughtsTokens
 		call.TotalTokens = resp.TotalTokens
 		if call.Model == "" {
 			call.Model = resp.Model
