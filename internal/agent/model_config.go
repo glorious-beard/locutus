@@ -38,12 +38,38 @@ func EmbeddedModelsYAML() []byte {
 	return out
 }
 
-// ModelConfig maps each CapabilityTier to an ordered list of candidate
-// model strings. ResolveTier walks the list and returns the first entry
-// whose provider prefix is enabled in the given DetectedProviders.
-// List order is the user's preference when multiple providers match.
+// ModelConfig is the project-tunable model configuration:
+//   - Tiers maps each CapabilityTier to an ordered list of candidate
+//     model strings.
+//   - Models holds per-model knobs (currently MaxOutputTokens) so
+//     model-side idiosyncrasies — like Gemini's 8k API default being
+//     too small for spec-generation output — live in YAML the user can
+//     override, not in compiled code.
 type ModelConfig struct {
-	Tiers map[CapabilityTier][]string `yaml:"tiers"`
+	Tiers  map[CapabilityTier][]string `yaml:"tiers"`
+	Models map[string]ModelKnobs       `yaml:"models,omitempty"`
+}
+
+// ModelKnobs are per-model defaults applied when a GenerateRequest
+// doesn't override them. Each model's idiosyncrasies — output-token
+// cap defaults, future fields like thinking budget — live here so
+// users can tune per-project via .borg/models.yaml without rebuilding.
+type ModelKnobs struct {
+	// MaxOutputTokens is the default token cap when the request omits
+	// MaxTokens. Zero means "no project-level default" — the provider
+	// plugin's own default applies. For Anthropic, where the plugin
+	// rejects MaxTokens == 0, code falls back to defaultAnthropicMaxTokens
+	// only when neither request nor knob supplies a value.
+	MaxOutputTokens int `yaml:"max_output_tokens,omitempty"`
+}
+
+// KnobsFor returns the ModelKnobs configured for a model string, or a
+// zero-value ModelKnobs when the model is not listed. Safe on nil.
+func (c *ModelConfig) KnobsFor(model string) ModelKnobs {
+	if c == nil {
+		return ModelKnobs{}
+	}
+	return c.Models[model]
 }
 
 // parseModelConfig unmarshals YAML bytes into a ModelConfig. Returns an

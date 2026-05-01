@@ -19,16 +19,6 @@ import (
 	"google.golang.org/genai"
 )
 
-// defaultGoogleAIMaxOutputTokens is used when a request omits MaxTokens
-// for a googleai/* model. Gemini's API default (~8k for Pro Preview at
-// time of writing) is too small for the spec-generation architect once
-// the proposal carries inline decisions for several deliverables — the
-// model truncates mid-JSON and the structured-output validator rejects
-// the response. 32k is a comfortable headroom that still leaves
-// budget for prompt tokens. Callers that want a different cap pass
-// MaxTokens explicitly.
-const defaultGoogleAIMaxOutputTokens = 32768
-
 // defaultAnthropicMaxTokens is used when a request omits MaxTokens.
 // The Anthropic plugin rejects requests with MaxTokens == 0
 // ("maxTokens not set"), so we always supply a value.
@@ -100,6 +90,12 @@ type GenKitLLM struct {
 	g            *genkit.Genkit
 	defaultModel string
 	providers    DetectedProviders
+	// modelConfig holds per-model knobs (currently MaxOutputTokens
+	// defaults) loaded once at construction. Looked up in
+	// buildProviderConfig so request-level config inherits sensible
+	// per-model defaults from .borg/models.yaml without recomputing
+	// per Generate.
+	modelConfig *ModelConfig
 }
 
 // initOnce guards genkit.Init against being called more than once per
@@ -148,6 +144,16 @@ func buildGenKitLLM() (*GenKitLLM, error) {
 		defaultModel = pickDefaultModel(detected)
 	}
 
+	// Load the model config once at startup so per-model knobs
+	// (max_output_tokens, etc.) are available to buildProviderConfig
+	// without re-parsing YAML on every Generate. A load error here is
+	// non-fatal — fall back to a nil config (zero-valued knobs) so
+	// the LLM still works against provider-default caps.
+	modelConfig, mcErr := LoadModelConfig()
+	if mcErr != nil {
+		slog.Warn("model config load failed; using provider defaults", "error", mcErr)
+	}
+
 	// Genkit init detail used to live at INFO level; per the new
 	// log-level defaults (WARN), it's now logged at DEBUG so -v / -vv
 	// can surface it without polluting normal output. Callers that
@@ -162,6 +168,7 @@ func buildGenKitLLM() (*GenKitLLM, error) {
 		g:            g,
 		defaultModel: defaultModel,
 		providers:    detected,
+		modelConfig:  modelConfig,
 	}, nil
 }
 
@@ -220,7 +227,7 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 		ai.WithModelName(model),
 		ai.WithMessages(messages...),
 	}
-	if cfg := buildProviderConfig(model, req); cfg != nil {
+	if cfg := buildProviderConfig(model, req, g.modelConfig); cfg != nil {
 		opts = append(opts, ai.WithConfig(cfg))
 	}
 	// If the caller asked for structured output, push it down to the
@@ -292,19 +299,36 @@ func llmCallTimeout() time.Duration {
 // ai.WithConfig entirely. The Anthropic plugin requires MaxTokens > 0,
 // so we always supply a default for that provider even if the caller
 // omitted one.
-func buildProviderConfig(model string, req GenerateRequest) any {
+// buildProviderConfig produces the provider-specific config struct that
+// Genkit's gemini/anthropic plugins expect. Precedence for MaxOutputTokens:
+//
+//  1. req.MaxTokens (caller-explicit) wins.
+//  2. Per-model knob from the supplied ModelConfig (e.g. .borg/models.yaml
+//     entry under `models.<model-string>.max_output_tokens`).
+//  3. Provider-side fallback — for googleai/* this is the Gemini API
+//     default; for anthropic/* the SDK rejects 0 so we substitute
+//     defaultAnthropicMaxTokens.
+//
+// Idiosyncrasies like "Gemini's 8k default truncates the spec architect"
+// belong as YAML knobs the user can tune per project, not as compiled-in
+// constants.
+func buildProviderConfig(model string, req GenerateRequest, mcfg *ModelConfig) any {
 	prefix, _, _ := strings.Cut(model, "/")
+	knobs := mcfg.KnobsFor(model)
 	switch prefix {
 	case "googleai":
-		// Always supply MaxOutputTokens (defaulting to
-		// defaultGoogleAIMaxOutputTokens) so the architect's structured
-		// output doesn't truncate at Gemini's 8k API default.
 		maxTokens := req.MaxTokens
 		if maxTokens == 0 {
-			maxTokens = defaultGoogleAIMaxOutputTokens
+			maxTokens = knobs.MaxOutputTokens
 		}
-		cfg := &genai.GenerateContentConfig{
-			MaxOutputTokens: int32(maxTokens),
+		// Gemini accepts MaxOutputTokens == 0 as "use API default"; we
+		// only set the field when we have a concrete value to apply.
+		if maxTokens == 0 && req.Temperature == 0 {
+			return nil
+		}
+		cfg := &genai.GenerateContentConfig{}
+		if maxTokens > 0 {
+			cfg.MaxOutputTokens = int32(maxTokens)
 		}
 		if req.Temperature > 0 {
 			t := float32(req.Temperature)
@@ -313,6 +337,9 @@ func buildProviderConfig(model string, req GenerateRequest) any {
 		return cfg
 	case "anthropic":
 		maxTokens := int64(req.MaxTokens)
+		if maxTokens == 0 {
+			maxTokens = int64(knobs.MaxOutputTokens)
+		}
 		if maxTokens == 0 {
 			maxTokens = defaultAnthropicMaxTokens
 		}

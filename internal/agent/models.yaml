@@ -1,14 +1,14 @@
 # Model tier configuration: maps a CapabilityTier to an ordered list of
-# candidate models. At Generate time, the resolver walks the list for
-# the requested tier and returns the first entry whose provider prefix
-# is enabled in the environment (ANTHROPIC_API_KEY / GEMINI_API_KEY /
-# GOOGLE_API_KEY). List position reflects preference when multiple
-# providers are configured.
+# candidate models, plus per-model knobs (max_output_tokens, etc.).
+# At Generate time, the resolver walks the list for the requested tier
+# and returns the first entry whose provider prefix is enabled in the
+# environment (ANTHROPIC_API_KEY / GEMINI_API_KEY / GOOGLE_API_KEY).
+# List position reflects preference when multiple providers are configured.
 #
 # This file is embedded in the locutus binary; locutus update refreshes
 # it when the SDK pulls in new model names. Users who want to override
 # per-project can set LOCUTUS_MODELS_CONFIG to a YAML file with the
-# same shape.
+# same shape, or edit .borg/models.yaml.
 #
 # Provider prefixes required: "anthropic/" or "googleai/". Strings
 # without a prefix are ignored — Genkit needs the prefix to route.
@@ -36,3 +36,38 @@ tiers:
   strong:
     - anthropic/claude-opus-4-7
     - googleai/gemini-2.5-pro
+
+# Per-model knobs. Applied when a GenerateRequest doesn't override the
+# field. Add entries here for any model whose provider-default behavior
+# is wrong for spec-generation workloads — most importantly, Gemini's
+# ~8k API-default MaxOutputTokens, which truncates the architect's
+# structured output once the proposal carries inline decisions for
+# several deliverables.
+#
+# max_output_tokens precedence: req.MaxTokens > this knob > provider
+# default. Anthropic plugins reject MaxTokens == 0 — the runtime falls
+# back to a small built-in only when neither request nor knob applies.
+models:
+  # Gemini caps. The 32k/65k figures are well below the model's actual
+  # context-output ceiling but high enough for the architect's spec
+  # output without bloating prompts that don't need the headroom.
+  googleai/gemini-2.5-flash-lite:
+    max_output_tokens: 16384
+  googleai/gemini-2.5-flash:
+    max_output_tokens: 32768
+  googleai/gemini-2.5-pro:
+    max_output_tokens: 65536
+  googleai/gemini-3-flash-preview:
+    max_output_tokens: 32768
+  googleai/gemini-3.1-pro-preview:
+    max_output_tokens: 65536
+
+  # Anthropic caps. Smaller defaults than Gemini because Claude models
+  # tend to be more efficient with output tokens; bump per-project if
+  # your spec is unusually large.
+  anthropic/claude-haiku-4-5-20251001:
+    max_output_tokens: 8192
+  anthropic/claude-sonnet-4-6:
+    max_output_tokens: 16384
+  anthropic/claude-opus-4-7:
+    max_output_tokens: 16384

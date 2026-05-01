@@ -138,48 +138,71 @@ func TestResolveModel(t *testing.T) {
 }
 
 func TestBuildProviderConfig(t *testing.T) {
-	t.Run("googleai always sets MaxOutputTokens to default", func(t *testing.T) {
-		// Gemini's API default is too small for the spec-generation
-		// architect once the proposal has multiple deliverables; we
-		// always supply a default cap so structured-output validation
-		// doesn't reject truncated JSON.
-		got := buildProviderConfig("googleai/gemini-2.5-flash", GenerateRequest{})
+	// embeddedCfg pulls the real models.yaml so tests cover the
+	// per-model knobs the binary actually ships with.
+	embeddedCfg, err := DefaultModelConfig()
+	require.NoError(t, err)
+
+	t.Run("googleai inherits per-model max_output_tokens from config", func(t *testing.T) {
+		got := buildProviderConfig("googleai/gemini-2.5-flash", GenerateRequest{}, embeddedCfg)
 		cfg, ok := got.(*genai.GenerateContentConfig)
 		require.True(t, ok, "expected *genai.GenerateContentConfig, got %T", got)
-		assert.Equal(t, int32(defaultGoogleAIMaxOutputTokens), cfg.MaxOutputTokens)
+		assert.Equal(t, int32(embeddedCfg.KnobsFor("googleai/gemini-2.5-flash").MaxOutputTokens), cfg.MaxOutputTokens,
+			"Gemini default cap should come from models.yaml, not a compiled-in constant")
 	})
 
-	t.Run("googleai populates GenerateContentConfig", func(t *testing.T) {
+	t.Run("googleai with no knob and no request returns nil", func(t *testing.T) {
+		// A model not listed in the config and no explicit request
+		// fields means Gemini's API default applies — no config struct
+		// needed.
+		got := buildProviderConfig("googleai/gemini-not-listed", GenerateRequest{}, embeddedCfg)
+		assert.Nil(t, got)
+	})
+
+	t.Run("googleai request MaxTokens overrides knob", func(t *testing.T) {
 		got := buildProviderConfig("googleai/gemini-2.5-flash", GenerateRequest{
 			Temperature: 0.5,
 			MaxTokens:   1024,
-		})
+		}, embeddedCfg)
 		cfg, ok := got.(*genai.GenerateContentConfig)
 		require.True(t, ok, "expected *genai.GenerateContentConfig, got %T", got)
 		require.NotNil(t, cfg.Temperature)
 		assert.InDelta(t, 0.5, *cfg.Temperature, 1e-6)
-		assert.Equal(t, int32(1024), cfg.MaxOutputTokens)
+		assert.Equal(t, int32(1024), cfg.MaxOutputTokens,
+			"explicit request MaxTokens must win over the per-model config knob")
 	})
 
-	t.Run("anthropic always sets MaxTokens to satisfy plugin", func(t *testing.T) {
-		got := buildProviderConfig("anthropic/claude-sonnet-4-6", GenerateRequest{})
+	t.Run("anthropic falls back to plugin-required default when no knob and no request", func(t *testing.T) {
+		// Use an empty config so neither request nor knob supplies a
+		// value — code must still produce a non-zero MaxTokens because
+		// the Anthropic plugin rejects zero.
+		got := buildProviderConfig("anthropic/claude-sonnet-4-6", GenerateRequest{}, &ModelConfig{})
 		cfg, ok := got.(*anthropicsdk.MessageNewParams)
 		require.True(t, ok, "expected *anthropicsdk.MessageNewParams, got %T", got)
 		assert.Equal(t, int64(defaultAnthropicMaxTokens), cfg.MaxTokens,
-			"plugin rejects MaxTokens == 0; default must kick in when caller omits it")
+			"plugin rejects MaxTokens == 0; built-in fallback must kick in when neither request nor knob applies")
+	})
+
+	t.Run("anthropic inherits per-model knob from config", func(t *testing.T) {
+		got := buildProviderConfig("anthropic/claude-sonnet-4-6", GenerateRequest{}, embeddedCfg)
+		cfg, ok := got.(*anthropicsdk.MessageNewParams)
+		require.True(t, ok)
+		want := int64(embeddedCfg.KnobsFor("anthropic/claude-sonnet-4-6").MaxOutputTokens)
+		require.NotZero(t, want, "embedded models.yaml should list claude-sonnet-4-6")
+		assert.Equal(t, want, cfg.MaxTokens)
 	})
 
 	t.Run("anthropic respects explicit MaxTokens", func(t *testing.T) {
 		got := buildProviderConfig("anthropic/claude-sonnet-4-6", GenerateRequest{
 			MaxTokens: 2048,
-		})
+		}, embeddedCfg)
 		cfg, ok := got.(*anthropicsdk.MessageNewParams)
 		require.True(t, ok)
 		assert.Equal(t, int64(2048), cfg.MaxTokens)
 	})
 
 	t.Run("unknown provider returns nil", func(t *testing.T) {
-		got := buildProviderConfig("openai/gpt-4o", GenerateRequest{Temperature: 0.5})
+		got := buildProviderConfig("openai/gpt-4o", GenerateRequest{Temperature: 0.5}, embeddedCfg)
 		assert.Nil(t, got)
 	})
 }
