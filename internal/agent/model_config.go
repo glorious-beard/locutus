@@ -52,8 +52,9 @@ type ModelConfig struct {
 
 // ModelKnobs are per-model defaults applied when a GenerateRequest
 // doesn't override them. Each model's idiosyncrasies — output-token
-// cap defaults, future fields like thinking budget — live here so
-// users can tune per-project via .borg/models.yaml without rebuilding.
+// cap defaults, concurrency throttles, future fields like thinking
+// budget — live here so users can tune per-project via
+// .borg/models.yaml without rebuilding.
 type ModelKnobs struct {
 	// MaxOutputTokens is the default token cap when the request omits
 	// MaxTokens. Zero means "no project-level default" — the provider
@@ -61,6 +62,16 @@ type ModelKnobs struct {
 	// rejects MaxTokens == 0, code falls back to defaultAnthropicMaxTokens
 	// only when neither request nor knob supplies a value.
 	MaxOutputTokens int `yaml:"max_output_tokens,omitempty"`
+	// ConcurrentRequests caps how many in-flight Generate calls may
+	// target this model simultaneously. Zero means "unlimited"; any
+	// positive value is enforced by GenKitLLM via a per-model
+	// semaphore. Set this lower for free-tier quotas (Gemini 2.5
+	// flash-lite at 15 RPM) or preview models with strict caps; set
+	// it higher for paid tiers with generous limits. Without a cap,
+	// fanout-shaped workloads (Phase 3 elaborate steps) can fire 10+
+	// concurrent calls and trip provider 429s, which then stall the
+	// whole workflow on backoff.
+	ConcurrentRequests int `yaml:"concurrent_requests,omitempty"`
 }
 
 // KnobsFor returns the ModelKnobs configured for a model string, or a

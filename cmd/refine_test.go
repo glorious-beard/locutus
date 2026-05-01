@@ -212,24 +212,30 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 	// the loop won't iterate again, just a small extra call.
 	require.NoError(t, fs.Remove(".borg/agents/convergence.md"))
 
-	// Phase 2 council flow: scout → architect (raw) → reconcile → 4
-	// critics (empty) → no revise → no reconcile_revise = 7 calls.
+	// Phase 3 council flow: scout → outline → 1 elaborate_features +
+	// 1 elaborate_strategies (fanout) → reconcile → 4 critics (empty)
+	// → no revise → no reconcile_revise = 9 calls.
 	scoutResp := `{"domain_read":"electoral campaign","technology_options":["x: a vs b"],"implicit_assumptions":["scale: 100k. Default: 1k concurrent"],"watch_outs":[]}`
-	rawProposalResp := `{
-		"features": [
-			{"id":"feat-dashboard","title":"Candidate dashboard","description":"At-a-glance campaign view.","decisions":[
-				{"title":"Use TanStack Start","rationale":"Best balance of SSR and DX","confidence":0.9,"alternatives":[{"name":"Next.js","rationale":"Mature","rejected_because":"Heavier than needed"}],"citations":[{"kind":"goals","reference":"GOALS.md","span":"lines 6-8","excerpt":"Help candidates win elections."}],"architect_rationale":"GOALS.md framing motivates a low-friction frontend."}
-			]}
-		],
-		"strategies": [
-			{"id":"strat-frontend","title":"React + TypeScript","kind":"foundational","body":"Frontend prose","decisions":[]},
-			{"id":"strat-quality","title":"Test-first","kind":"quality","body":"Testing approach","decisions":[]}
+	outlineResp := `{
+		"features": [{"id":"feat-dashboard","title":"Candidate dashboard","summary":"At-a-glance campaign view"}],
+		"strategies": [{"id":"strat-frontend","title":"React + TypeScript","kind":"foundational","summary":"frontend stack"}]
+	}`
+	featureElaborateResp := `{
+		"id":"feat-dashboard","title":"Candidate dashboard","description":"At-a-glance campaign view.",
+		"decisions":[
+			{"title":"Use TanStack Start","rationale":"Best balance of SSR and DX","confidence":0.9,"alternatives":[{"name":"Next.js","rationale":"Mature","rejected_because":"Heavier than needed"}],"citations":[{"kind":"goals","reference":"GOALS.md","span":"lines 6-8","excerpt":"Help candidates win elections."}],"architect_rationale":"GOALS.md framing motivates a low-friction frontend."}
 		]
+	}`
+	strategyElaborateResp := `{
+		"id":"strat-frontend","title":"React + TypeScript","kind":"foundational","body":"Frontend prose",
+		"decisions":[]
 	}`
 	reconcileEmpty := `{"actions":[]}`
 	mock := agent.NewMockLLM(
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: scoutResp, Model: "m"}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: rawProposalResp, Model: "m"}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: outlineResp, Model: "m"}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: featureElaborateResp, Model: "m"}},
+		agent.MockResponse{Response: &agent.GenerateResponse{Content: strategyElaborateResp, Model: "m"}},
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: reconcileEmpty, Model: "m"}},
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
 		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
@@ -243,7 +249,8 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 	assert.Equal(t, 1, result.Generated.Features)
 	assert.Equal(t, 1, result.Generated.Decisions,
 		"reconciler with empty verdict mints one canonical decision per inline decision")
-	assert.Equal(t, 2, result.Generated.Strategies)
+	assert.Equal(t, 1, result.Generated.Strategies,
+		"outline named one strategy; fanout produced one elaborate_strategies output")
 	assert.Equal(t, 0, result.Generated.Approaches,
 		"refine no longer emits approaches — they're synthesized at adopt time")
 	assert.Equal(t, spec.KindGoals, result.NodeKind)

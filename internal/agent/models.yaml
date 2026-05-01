@@ -51,23 +51,37 @@ models:
   # Gemini caps. The 32k/65k figures are well below the model's actual
   # context-output ceiling but high enough for the architect's spec
   # output without bloating prompts that don't need the headroom.
+  #
+  # concurrent_requests caps in-flight calls to that model. Tuned to
+  # avoid Gemini's per-minute RPM ceilings on free / preview tiers
+  # under fanout-shaped workloads (Phase 3 elaborate steps fire one
+  # call per outlined node). Bump higher on paid tiers with generous
+  # quotas; lower if you hit 429s.
   googleai/gemini-2.5-flash-lite:
     max_output_tokens: 16384
+    concurrent_requests: 4
   googleai/gemini-2.5-flash:
     max_output_tokens: 32768
+    concurrent_requests: 4
   googleai/gemini-2.5-pro:
     max_output_tokens: 65536
+    concurrent_requests: 2
   googleai/gemini-3-flash-preview:
     max_output_tokens: 32768
+    concurrent_requests: 2
   googleai/gemini-3.1-pro-preview:
     max_output_tokens: 65536
+    concurrent_requests: 2
 
   # Anthropic caps. Smaller defaults than Gemini because Claude models
   # tend to be more efficient with output tokens; bump per-project if
   # your spec is unusually large.
   anthropic/claude-haiku-4-5-20251001:
     max_output_tokens: 8192
+    concurrent_requests: 5
   anthropic/claude-sonnet-4-6:
     max_output_tokens: 16384
+    concurrent_requests: 4
   anthropic/claude-opus-4-7:
     max_output_tokens: 16384
+    concurrent_requests: 3

@@ -271,6 +271,70 @@ func TestBuildProviderConfig(t *testing.T) {
 	})
 }
 
+func TestAcquireConcurrency(t *testing.T) {
+	// Hand-build a GenKitLLM with a tiny model config — bypasses the
+	// shared genkit.Init path so the test doesn't need real provider
+	// credentials.
+	cfg := &ModelConfig{
+		Models: map[string]ModelKnobs{
+			"capped":    {ConcurrentRequests: 2},
+			"unlimited": {ConcurrentRequests: 0},
+		},
+	}
+	llm := &GenKitLLM{modelConfig: cfg}
+
+	t.Run("uncapped models return nil release", func(t *testing.T) {
+		release, err := llm.acquireConcurrency(context.Background(), "unlimited")
+		require.NoError(t, err)
+		assert.Nil(t, release, "no cap should mean no semaphore overhead")
+	})
+
+	t.Run("third concurrent request blocks until a slot frees", func(t *testing.T) {
+		ctx := context.Background()
+		// Hold two slots — the cap.
+		r1, err := llm.acquireConcurrency(ctx, "capped")
+		require.NoError(t, err)
+		require.NotNil(t, r1)
+		r2, err := llm.acquireConcurrency(ctx, "capped")
+		require.NoError(t, err)
+		require.NotNil(t, r2)
+
+		// Third call must block. Verify by issuing it on a goroutine
+		// with a short context deadline; the deadline should fire
+		// before the semaphore frees up.
+		blockedCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		release, err := llm.acquireConcurrency(blockedCtx, "capped")
+		require.Error(t, err, "third concurrent request should block past a 50ms deadline")
+		assert.Nil(t, release)
+
+		// Release one slot. Now a fresh acquire succeeds immediately.
+		r1()
+		r3, err := llm.acquireConcurrency(ctx, "capped")
+		require.NoError(t, err)
+		require.NotNil(t, r3)
+		r2()
+		r3()
+	})
+
+	t.Run("per-model semaphores are independent", func(t *testing.T) {
+		ctx := context.Background()
+		// Capped model holds two slots.
+		r1, _ := llm.acquireConcurrency(ctx, "capped")
+		r2, _ := llm.acquireConcurrency(ctx, "capped")
+		require.NotNil(t, r1)
+		require.NotNil(t, r2)
+		// Unlimited model isn't blocked by capped's exhaustion.
+		blockedCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		release, err := llm.acquireConcurrency(blockedCtx, "unlimited")
+		require.NoError(t, err, "unlimited model must not share capped's semaphore")
+		assert.Nil(t, release)
+		r1()
+		r2()
+	})
+}
+
 func TestLLMCallTimeout(t *testing.T) {
 	t.Run("default when unset", func(t *testing.T) {
 		t.Setenv(EnvKeyLocutusLLMTimeout, "")

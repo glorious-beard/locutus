@@ -55,6 +55,19 @@ type PlanningState struct {
 	// decisions against for ID reuse. Set by GenerateSpec before the
 	// workflow runs.
 	Existing *ExistingSpec `json:"-"`
+	// Phase 3: outline + per-node elaborate fanout state.
+	//
+	// Outline holds the spec_outliner's JSON output (used by the
+	// fanout step to spawn per-element elaborator calls, and by the
+	// elaborator's projection to give each call situational
+	// awareness of sibling features/strategies).
+	// ElaboratedFeatures and ElaboratedStrategies accumulate the
+	// fanout outputs (raw JSON of RawFeatureProposal /
+	// RawStrategyProposal). Once both are populated, the merge
+	// handler assembles them into RawProposal for the reconciler.
+	Outline              string   `json:"outline,omitempty"`
+	ElaboratedFeatures   []string `json:"elaborated_features,omitempty"`
+	ElaboratedStrategies []string `json:"elaborated_strategies,omitempty"`
 }
 
 // StateSnapshot is a read-only copy of PlanningState fields relevant to a
@@ -74,6 +87,12 @@ type StateSnapshot struct {
 	// Existing is the spec snapshot the reconciler matches inline
 	// decisions against for ID reuse.
 	Existing *ExistingSpec
+	// Phase 3 fanout: Outline carries the slim feature/strategy
+	// outline so per-node elaborators see sibling shape; FanoutItem
+	// is the raw JSON of the specific outline element this elaborator
+	// call is responsible for (only set on fanout-spawned snapshots).
+	Outline    string
+	FanoutItem string
 }
 
 // Snapshot creates a read-only copy of the current state. Slice fields are
@@ -88,6 +107,7 @@ func (s *PlanningState) Snapshot() StateSnapshot {
 		ScoutBrief:   s.ScoutBrief,
 		RawProposal:  s.RawProposal,
 		Existing:     s.Existing,
+		Outline:      s.Outline,
 	}
 	if len(s.Concerns) > 0 {
 		snap.Concerns = make([]Concern, len(s.Concerns))

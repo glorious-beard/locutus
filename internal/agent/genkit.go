@@ -96,6 +96,14 @@ type GenKitLLM struct {
 	// per-model defaults from .borg/models.yaml without recomputing
 	// per Generate.
 	modelConfig *ModelConfig
+	// concurrencyLimits maps a model string to a buffered channel
+	// acting as a semaphore. Generate acquires before calling the
+	// provider and releases on return; configured per-model via the
+	// concurrent_requests knob in models.yaml. Lazy-initialised on
+	// first request to a given model so models without a cap incur
+	// no overhead.
+	concurrencyMu     sync.Mutex
+	concurrencyLimits map[string]chan struct{}
 }
 
 // initOnce guards genkit.Init against being called more than once per
@@ -263,6 +271,16 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 		defer cancel()
 	}
 
+	// Per-model concurrency throttle: acquire before the call, release
+	// after. Honors ctx cancellation so a stuck queue surfaces as a
+	// timeout rather than a deadlock. Models without a configured
+	// concurrent_requests cap return a nil semaphore — no-op.
+	if release, err := g.acquireConcurrency(ctx, model); err != nil {
+		return nil, err
+	} else if release != nil {
+		defer release()
+	}
+
 	resp, err := genkit.Generate(ctx, g.g, opts...)
 	// Pick whichever response object actually carries the model bytes:
 	// the genkit-returned `resp` on success, or the captured response on
@@ -307,6 +325,45 @@ func extractReasoning(resp *ai.ModelResponse) string {
 		sb.WriteString(p.Text)
 	}
 	return sb.String()
+}
+
+// acquireConcurrency claims one slot in the per-model semaphore. The
+// returned release closure must be called when the LLM call returns,
+// or the slot leaks and subsequent calls eventually deadlock. Returns
+// (nil, nil) when no cap is configured for the model — caller treats
+// the absent release as a no-op. Honors ctx cancellation so a stuck
+// queue surfaces as the caller's timeout, not a hung goroutine.
+func (g *GenKitLLM) acquireConcurrency(ctx context.Context, model string) (release func(), err error) {
+	cap := g.modelConfig.KnobsFor(model).ConcurrentRequests
+	if cap <= 0 {
+		return nil, nil
+	}
+	sem := g.semaphoreFor(model, cap)
+	select {
+	case sem <- struct{}{}:
+		return func() { <-sem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// semaphoreFor returns the per-model semaphore channel, creating it
+// on first request. The channel is buffered to `cap`, so up to `cap`
+// in-flight calls can hold a slot simultaneously. Subsequent lookups
+// reuse the same channel even if the user later edits the cap in
+// .borg/models.yaml — the runtime cap is fixed at process start.
+func (g *GenKitLLM) semaphoreFor(model string, cap int) chan struct{} {
+	g.concurrencyMu.Lock()
+	defer g.concurrencyMu.Unlock()
+	if g.concurrencyLimits == nil {
+		g.concurrencyLimits = map[string]chan struct{}{}
+	}
+	sem, ok := g.concurrencyLimits[model]
+	if !ok {
+		sem = make(chan struct{}, cap)
+		g.concurrencyLimits[model] = sem
+	}
+	return sem
 }
 
 // llmCallTimeout returns the per-call deadline for a Genkit Generate

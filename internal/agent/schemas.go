@@ -116,6 +116,35 @@ func init() {
 		}},
 	})
 
+	RegisterSchema("Outline", Outline{
+		Features: []OutlineFeature{{
+			ID:      "feat-example",
+			Title:   "Example feature",
+			Summary: "one-line summary of what this feature does",
+		}},
+		Strategies: []OutlineStrategy{{
+			ID:      "strat-example",
+			Title:   "Example strategy",
+			Kind:    "foundational",
+			Summary: "one-line summary of the cross-cutting choice",
+		}},
+	})
+
+	RegisterSchema("RawFeatureProposal", RawFeatureProposal{
+		ID:          "feat-example",
+		Title:       "Example feature",
+		Description: "What the feature does in one paragraph.",
+		Decisions:   []InlineDecisionProposal{exampleInlineDecision},
+	})
+
+	RegisterSchema("RawStrategyProposal", RawStrategyProposal{
+		ID:        "strat-example",
+		Title:     "Example strategy",
+		Kind:      "foundational",
+		Body:      "prose body of the strategy",
+		Decisions: []InlineDecisionProposal{exampleInlineDecision},
+	})
+
 	RegisterSchema("ReconciliationVerdict", ReconciliationVerdict{
 		Actions: []ReconciliationAction{{
 			Kind: "dedupe",

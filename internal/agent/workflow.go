@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,15 @@ import (
 )
 
 // WorkflowStep defines a single step in the council workflow.
+//
+// Fanout, when set, names a slice on PlanningState (currently
+// "outline.features" or "outline.strategies") whose elements drive
+// per-element parallel agent calls — Phase 3's per-node elaborate.
+// Each element is exposed to the agent's projection function via
+// StateSnapshot.FanoutItem (raw JSON) so the projection can render
+// the element-specific prompt. Set together with Parallel: true
+// when calls should run concurrently (subject to per-model
+// concurrency caps configured in models.yaml).
 type WorkflowStep struct {
 	ID          string   `yaml:"id"`
 	Agent       string   `yaml:"agent,omitempty"`
@@ -23,6 +33,7 @@ type WorkflowStep struct {
 	DependsOn   []string `yaml:"depends_on,omitempty"`
 	Conditional string   `yaml:"conditional,omitempty"` // condition tag: "has_concerns", "has_open_questions", or custom keyword
 	MergeAs     string   `yaml:"merge_as,omitempty"`    // state field to merge into: "proposed_spec", "concerns", "research", "revisions", "record"
+	Fanout      string   `yaml:"fanout,omitempty"`      // Phase 3: dotted state path to a slice of items; one agent call per item
 }
 
 // Workflow defines the full council workflow DAG.
@@ -143,6 +154,57 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 
 	snap := state.Snapshot()
 
+	// Phase 3 fanout: spawn one agent invocation per element of the
+	// named state slice. Each invocation gets its own snapshot with
+	// FanoutItem populated so the agent's projection can render the
+	// per-element prompt. Per-model concurrency caps in
+	// LLM (models.yaml's concurrent_requests) bound the actual
+	// parallelism — even with `parallel: true`, fanout never floods
+	// a model past its configured slot count.
+	if step.Fanout != "" {
+		if len(agents) != 1 {
+			return nil, fmt.Errorf("fanout step %q must declare exactly one agent (got %d)", step.ID, len(agents))
+		}
+		items, err := extractFanoutItems(state, step.Fanout)
+		if err != nil {
+			return nil, fmt.Errorf("fanout %s: %w", step.ID, err)
+		}
+		if len(items) == 0 {
+			// No items to elaborate — return cleanly. Subsequent steps
+			// see an empty merged result and treat it as no-op.
+			return nil, nil
+		}
+		results := make([]RoundResult, len(items))
+		if step.Parallel {
+			var wg sync.WaitGroup
+			wg.Add(len(items))
+			for i, item := range items {
+				go func(idx int, raw string) {
+					defer wg.Done()
+					itemSnap := snap
+					itemSnap.FanoutItem = raw
+					results[idx] = e.executeAgent(ctx, step.ID, agents[0], itemSnap)
+				}(i, item)
+			}
+			wg.Wait()
+		} else {
+			for i, item := range items {
+				itemSnap := snap
+				itemSnap.FanoutItem = item
+				results[i] = e.executeAgent(ctx, step.ID, agents[0], itemSnap)
+				if results[i].Err != nil {
+					return results, results[i].Err
+				}
+			}
+		}
+		for _, r := range results {
+			if r.Err != nil {
+				return results, r.Err
+			}
+		}
+		return results, nil
+	}
+
 	// Parallel multi-agent execution.
 	if step.Parallel && len(agents) > 1 {
 		results := make([]RoundResult, len(agents))
@@ -174,6 +236,52 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 		}
 	}
 	return results, nil
+}
+
+// extractFanoutItems resolves a dotted state path (e.g. "outline.features")
+// to a slice of raw-JSON strings, one per element. Each returned string is
+// the JSON encoding of a single element so the elaborator's projection can
+// re-parse it into the right typed shape.
+//
+// Supported paths today: "outline.features", "outline.strategies". Adding
+// new fanout sources means parsing the corresponding state field here —
+// kept narrow to avoid hand-rolling a generic JSON-path resolver against
+// the typed PlanningState struct.
+func extractFanoutItems(state *PlanningState, path string) ([]string, error) {
+	if state == nil {
+		return nil, nil
+	}
+	switch path {
+	case "outline.features", "outline.strategies":
+		if strings.TrimSpace(state.Outline) == "" {
+			return nil, nil
+		}
+		var outline Outline
+		if err := json.Unmarshal([]byte(state.Outline), &outline); err != nil {
+			return nil, fmt.Errorf("parse outline: %w", err)
+		}
+		var items []any
+		if path == "outline.features" {
+			for _, f := range outline.Features {
+				items = append(items, f)
+			}
+		} else {
+			for _, s := range outline.Strategies {
+				items = append(items, s)
+			}
+		}
+		out := make([]string, 0, len(items))
+		for _, it := range items {
+			data, err := json.Marshal(it)
+			if err != nil {
+				return nil, fmt.Errorf("marshal fanout item: %w", err)
+			}
+			out = append(out, string(data))
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unsupported fanout path %q (want outline.features or outline.strategies)", path)
+	}
 }
 
 // shouldRunConditional checks whether a conditional step should execute.
@@ -221,6 +329,20 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 			continue
 		}
 		switch mergeKey {
+		case "outline":
+			// Phase 3: outliner emits an Outline JSON. Stashed for the
+			// downstream fanout (extractFanoutItems reads it) and for
+			// each elaborator's projection (sibling situational
+			// awareness). Last writer wins on multi-call merges, but
+			// outline is a single-agent step so this is benign.
+			state.Outline = r.Output
+		case "elaborated_features":
+			// Phase 3 fanout: each elaborator emits one
+			// RawFeatureProposal. Accumulate; assembly into RawProposal
+			// happens after both fanouts complete (see post-loop hook).
+			state.ElaboratedFeatures = append(state.ElaboratedFeatures, r.Output)
+		case "elaborated_strategies":
+			state.ElaboratedStrategies = append(state.ElaboratedStrategies, r.Output)
 		case "raw_proposal":
 			// Phase 2: architect emits a RawSpecProposal; the
 			// reconcile step transforms it into canonical SpecProposal.
@@ -305,6 +427,56 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 	if mergeKey == "critic_issues" || mergeKey == "critique" {
 		appendIntegrityFindings(state)
 	}
+
+	// Phase 3 assembly: when either fanout merge completes, attempt
+	// to assemble a full RawSpecProposal from whatever has accumulated
+	// (the other fanout may have already finished or be empty). Order-
+	// independent — both branches converge on the same RawProposal as
+	// soon as the data is available. Reconcile reads state.RawProposal
+	// for both its prompt and the ApplyReconciliation merge.
+	if mergeKey == "elaborated_features" || mergeKey == "elaborated_strategies" {
+		if assembled, ok := assembleRawProposal(state); ok {
+			state.RawProposal = assembled
+		}
+	}
+}
+
+// assembleRawProposal stitches the per-element fanout outputs into a
+// single RawSpecProposal JSON. Returns (assembled, true) when at least
+// one of the elaborated slices has entries. Best-effort: items that
+// fail to parse are skipped with a slog.Warn rather than failing the
+// whole assembly — a single bad elaborator output shouldn't poison
+// the rest. Safe to call repeatedly as fanouts merge incrementally.
+func assembleRawProposal(state *PlanningState) (string, bool) {
+	if state == nil {
+		return "", false
+	}
+	if len(state.ElaboratedFeatures) == 0 && len(state.ElaboratedStrategies) == 0 {
+		return "", false
+	}
+	out := RawSpecProposal{}
+	for _, raw := range state.ElaboratedFeatures {
+		var f RawFeatureProposal
+		if err := json.Unmarshal([]byte(raw), &f); err != nil {
+			slog.Warn("assemble raw proposal: skipping malformed feature elaborator output", "error", err)
+			continue
+		}
+		out.Features = append(out.Features, f)
+	}
+	for _, raw := range state.ElaboratedStrategies {
+		var s RawStrategyProposal
+		if err := json.Unmarshal([]byte(raw), &s); err != nil {
+			slog.Warn("assemble raw proposal: skipping malformed strategy elaborator output", "error", err)
+			continue
+		}
+		out.Strategies = append(out.Strategies, s)
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		slog.Warn("assemble raw proposal: marshal failed", "error", err)
+		return "", false
+	}
+	return string(data), true
 }
 
 // critiqueKindFor maps a critic agent ID to its lens label for grouping

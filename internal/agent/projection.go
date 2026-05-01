@@ -14,6 +14,12 @@ func ProjectState(stepID string, snap StateSnapshot) []Message {
 	switch stepID {
 	case "propose":
 		return projectPropose(snap)
+	case "outline":
+		return projectOutline(snap)
+	case "elaborate_features":
+		return projectElaborateFeature(snap)
+	case "elaborate_strategies":
+		return projectElaborateStrategy(snap)
 	case "reconcile", "reconcile_revise":
 		return projectReconcile(snap)
 	case "challenge", "critique":
@@ -28,6 +34,91 @@ func ProjectState(stepID string, snap StateSnapshot) []Message {
 		// Fallback: provide the prompt and any existing spec.
 		return projectDefault(snap)
 	}
+}
+
+// projectOutline renders the outliner's user message: GOALS.md +
+// scout brief in human-readable form. Same scout-brief formatting
+// projectPropose uses, since the outliner has the same orientation
+// (read GOALS, react to scout, list features and strategies).
+func projectOutline(snap StateSnapshot) []Message {
+	prompt := snap.Prompt
+	if snap.ScoutBrief != "" {
+		if formatted := formatScoutBrief(snap.ScoutBrief); formatted != "" {
+			prompt = prompt + "\n\n## Scout brief\n\n" + formatted
+		}
+	}
+	return []Message{{Role: "user", Content: prompt}}
+}
+
+// projectElaborateFeature builds the per-feature elaborator's user
+// message: GOALS + scout + the full outline (so siblings are in
+// situational context) + the specific feature being elaborated. The
+// fanout dispatcher set snap.FanoutItem to the JSON of one
+// OutlineFeature; we surface it as a labeled section the elaborator
+// reads literally.
+func projectElaborateFeature(snap StateSnapshot) []Message {
+	return projectElaborateOne(snap, "feature")
+}
+
+// projectElaborateStrategy is the strategy counterpart.
+func projectElaborateStrategy(snap StateSnapshot) []Message {
+	return projectElaborateOne(snap, "strategy")
+}
+
+func projectElaborateOne(snap StateSnapshot, kind string) []Message {
+	var b strings.Builder
+	b.WriteString(snap.Prompt)
+	if snap.ScoutBrief != "" {
+		if formatted := formatScoutBrief(snap.ScoutBrief); formatted != "" {
+			b.WriteString("\n\n## Scout brief\n\n")
+			b.WriteString(formatted)
+		}
+	}
+	if snap.Outline != "" {
+		b.WriteString("\n\n## Outline (sibling features and strategies for situational context)\n\n")
+		b.WriteString(formatOutlineForElaborator(snap.Outline))
+	}
+	b.WriteString(fmt.Sprintf("\n\n## %s to elaborate\n\n", kind))
+	if snap.FanoutItem != "" {
+		b.WriteString(snap.FanoutItem)
+	} else {
+		b.WriteString("(missing — fanout did not populate FanoutItem)")
+	}
+	b.WriteString("\n\nProduce the full Raw")
+	if kind == "feature" {
+		b.WriteString("FeatureProposal")
+	} else {
+		b.WriteString("StrategyProposal")
+	}
+	b.WriteString(" for the item above. Preserve its id and title verbatim. Decisions are inline; the reconciler downstream dedupes across siblings.")
+	return []Message{{Role: "user", Content: b.String()}}
+}
+
+// formatOutlineForElaborator renders the Outline JSON as a compact
+// human-readable list — feeding the elaborator the raw JSON would
+// inflate prompts unnecessarily.
+func formatOutlineForElaborator(raw string) string {
+	var outline Outline
+	if err := json.Unmarshal([]byte(raw), &outline); err != nil {
+		return raw
+	}
+	var b strings.Builder
+	if len(outline.Features) > 0 {
+		b.WriteString("**Features:**\n")
+		for _, f := range outline.Features {
+			fmt.Fprintf(&b, "- %s — %s: %s\n", f.ID, f.Title, f.Summary)
+		}
+	}
+	if len(outline.Strategies) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("**Strategies:**\n")
+		for _, s := range outline.Strategies {
+			fmt.Fprintf(&b, "- %s (%s) — %s: %s\n", s.ID, s.Kind, s.Title, s.Summary)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // projectReconcile builds the reconciler's user message: the raw proposal

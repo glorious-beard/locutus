@@ -1,41 +1,76 @@
 # Spec-generation council workflow. Driven by `locutus refine goals`
 # and `locutus import <doc>` (post-admission planning pass).
 #
-# The flow:
-#   1. survey    — a senior-engineer scout brief: domain read, tech options,
-#                  the implicit assumptions GOALS.md leaves out (scale, cost,
-#                  ops model, deployment posture, availability, compliance).
-#   2. propose   — the architect commits to a RawSpecProposal: features and
-#                  strategies with inline decisions (no IDs, no cross-array
-#                  references). Eliminates the dangling-ref class by
-#                  construction — there are no IDs to dangle.
-#   3. reconcile — clusters the inline decisions across the proposal and
-#                  emits a verdict (dedupe / resolve_conflict / reuse_existing).
-#                  Go surgery (ApplyReconciliation) assigns canonical IDs and
-#                  produces the SpecProposal that downstream agents consume.
-#   4. critique  — four specialist critics run in parallel against the
-#                  reconciled proposal: architecture, DevOps, SRE, cost.
-#   5. revise    — fires only when there ARE concerns. The architect emits a
-#                  corrected RawSpecProposal addressing every issue.
-#   6. reconcile_revise — same reconciler against the revised raw proposal,
-#                         conditional on revisions having fired.
+# The flow (Phase 3 outline + elaborate fanout):
+#   1. survey       — a senior-engineer scout brief: domain read, tech
+#                     options, the implicit assumptions GOALS.md leaves
+#                     out (scale, cost, ops model, deployment posture,
+#                     availability, compliance, multi-deliverable
+#                     coordination, etc.).
+#   2. outline      — the outliner emits an Outline: feature and
+#                     strategy titles + one-line summaries only. No
+#                     decisions, no detailed descriptions. The
+#                     outline IS the spec's structural skeleton; what
+#                     it lists gets elaborated, what it omits won't
+#                     exist in the spec.
+#   3. elaborate_features    — fanout: one per outlined feature, each
+#                              produces a full RawFeatureProposal with
+#                              inline decisions. Per-call output is
+#                              bounded by node complexity, not project
+#                              size — fixes the truncation failure mode
+#                              the single-architect-call had on big
+#                              specs.
+#   4. elaborate_strategies  — fanout: same shape, for strategies.
+#   5. reconcile    — clusters inline decisions across the assembled
+#                     proposal and emits a verdict (dedupe /
+#                     resolve_conflict / reuse_existing). Go surgery
+#                     (ApplyReconciliation) assigns canonical IDs and
+#                     produces the SpecProposal that downstream agents
+#                     consume.
+#   6. critique     — four specialist critics run in parallel against
+#                     the reconciled proposal: architecture, DevOps,
+#                     SRE, cost.
+#   7. revise       — fires only when there ARE concerns. The architect
+#                     emits a corrected RawSpecProposal addressing every
+#                     issue. Single call (revise rounds typically
+#                     address specific findings, not regenerate the
+#                     whole graph).
+#   8. reconcile_revise — same reconciler against the revised raw
+#                          proposal, conditional on revisions firing.
 #
 # max_rounds=1 because there is no convergence agent in this workflow —
 # the executor breaks after one full pass.
+#
+# Per-model concurrency caps live in models.yaml's `concurrent_requests`
+# field. Even with `parallel: true` on the elaborate steps, the actual
+# concurrency is bounded so fanout never floods a model past its
+# configured slot count.
 rounds:
   - id: survey
     agent: spec_scout
     parallel: false
     merge_as: scout_brief
-  - id: propose
-    agent: spec_architect
+  - id: outline
+    agent: spec_outliner
     parallel: false
     depends_on: [survey]
-    merge_as: raw_proposal
+    merge_as: outline
+  - id: elaborate_features
+    agent: spec_feature_elaborator
+    parallel: true
+    fanout: outline.features
+    depends_on: [outline]
+    merge_as: elaborated_features
+  - id: elaborate_strategies
+    agent: spec_strategy_elaborator
+    parallel: true
+    fanout: outline.strategies
+    depends_on: [outline]
+    merge_as: elaborated_strategies
   - id: reconcile
     agent: spec_reconciler
     parallel: false
-    depends_on: [propose]
+    depends_on: [elaborate_features, elaborate_strategies]
     merge_as: reconciled_proposal
   - id: critique
     agents: [architect_critic, devops_critic, sre_critic, cost_critic]
