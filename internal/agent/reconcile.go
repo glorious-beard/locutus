@@ -199,6 +199,9 @@ func ApplyReconciliation(raw *RawSpecProposal, verdict ReconciliationVerdict, ex
 			if action.Canonical == nil {
 				return nil, applied, fmt.Errorf("reconcile action %d (%s): canonical decision missing", i, action.Kind)
 			}
+			if isEmptyInlineDecision(*action.Canonical) {
+				return nil, applied, fmt.Errorf("reconcile action %d (%s): canonical decision has empty title", i, action.Kind)
+			}
 			id := mintDecisionID(action.Canonical.Title, usedIDs)
 			usedIDs[id] = struct{}{}
 			canonical := canonicalDecisionFromInline(*action.Canonical, id)
@@ -246,10 +249,22 @@ func ApplyReconciliation(raw *RawSpecProposal, verdict ReconciliationVerdict, ex
 
 	// Implicit keep-separate pass: every inline decision not claimed
 	// by an action becomes its own canonical Decision with a fresh ID.
+	//
+	// Inline decisions whose Title is empty are treated as architect
+	// placeholder noise (Gemini Flash has been observed emitting
+	// `decisions: [{}]` on strategies — empty objects that satisfy
+	// schema shape but carry no content). Drop them rather than minting
+	// `dec-untitled` IDs that pollute the spec graph. The integrity
+	// critic flags downstream impact (a feature that ends up with zero
+	// decisions because its inline entries were all empty) so revise
+	// can re-emit real content.
 	for _, f := range raw.Features {
 		for idx, d := range f.Decisions {
 			ref := DecisionSourceRef{ParentKind: "feature", ParentID: f.ID, Index: idx}
 			if _, ok := claimed[claimKey(ref)]; ok {
+				continue
+			}
+			if isEmptyInlineDecision(d) {
 				continue
 			}
 			id := mintDecisionID(d.Title, usedIDs)
@@ -262,6 +277,9 @@ func ApplyReconciliation(raw *RawSpecProposal, verdict ReconciliationVerdict, ex
 		for idx, d := range s.Decisions {
 			ref := DecisionSourceRef{ParentKind: "strategy", ParentID: s.ID, Index: idx}
 			if _, ok := claimed[claimKey(ref)]; ok {
+				continue
+			}
+			if isEmptyInlineDecision(d) {
 				continue
 			}
 			id := mintDecisionID(d.Title, usedIDs)
@@ -309,16 +327,11 @@ func canonicalDecisionFromInline(d InlineDecisionProposal, id string) DecisionPr
 }
 
 // mintDecisionID derives a stable id from a decision title. Collisions
-// against `used` get a numeric suffix appended.
+// against `used` get a numeric suffix appended. Caller MUST guard
+// against empty titles via isEmptyInlineDecision; minting from an empty
+// title would produce a `dec-` slug that pollutes the spec graph.
 func mintDecisionID(title string, used map[string]struct{}) string {
 	base := "dec-" + slugify(title)
-	if base == "dec-" {
-		// Empty title — fall back to a generic placeholder slot. This
-		// shouldn't happen in production (the architect's contract
-		// requires titles), but covers test fixtures and fail-soft
-		// against malformed verdicts.
-		base = "dec-untitled"
-	}
 	if _, taken := used[base]; !taken {
 		return base
 	}
@@ -328,6 +341,17 @@ func mintDecisionID(title string, used map[string]struct{}) string {
 			return candidate
 		}
 	}
+}
+
+// isEmptyInlineDecision reports whether the inline decision is a
+// placeholder with no usable content. The architect's contract requires
+// title + rationale + at least one alternative + at least one citation;
+// empty objects (`{}`) and title-only stubs are dropped at apply time
+// rather than persisted as `dec-untitled` noise. Title is the load-
+// bearing field — the slug ID derives from it, and a decision with no
+// title is meaningless to a coding agent or auditor.
+func isEmptyInlineDecision(d InlineDecisionProposal) bool {
+	return strings.TrimSpace(d.Title) == ""
 }
 
 var nonAlphaNum = regexp.MustCompile(`[^a-z0-9]+`)

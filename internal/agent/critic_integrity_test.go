@@ -155,6 +155,32 @@ func TestBuildRevisePromptDirectiveShape(t *testing.T) {
 		"must direct the architect to re-emit the full proposal, not a diff")
 }
 
+// TestIntegrityCriticFlagsFeatureWithNoDecisions — the architect's
+// contract requires every feature to commit to at least one decision.
+// When inline placeholders get dropped (empty `{}` objects from a weak
+// model) the feature can end up with zero decisions; the integrity
+// critic surfaces this so revise can re-emit real content.
+func TestIntegrityCriticFlagsFeatureWithNoDecisions(t *testing.T) {
+	bare := SpecProposal{
+		Features: []FeatureProposal{
+			{ID: "feat-bare", Title: "Bare"}, // no decisions
+		},
+	}
+	raw, err := json.Marshal(bare)
+	require.NoError(t, err)
+
+	state := &PlanningState{ProposedSpec: string(raw)}
+	step := WorkflowStep{ID: "critique", MergeAs: "critic_issues"}
+	mergeResults(state, step, nil)
+
+	require.Len(t, state.Concerns, 1, "feature with no decisions should produce one finding")
+	c := state.Concerns[0]
+	assert.Equal(t, "integrity_critic", c.AgentID)
+	assert.Equal(t, "integrity", c.Kind)
+	assert.Contains(t, c.Text, "feat-bare")
+	assert.Contains(t, c.Text, "no decisions")
+}
+
 // TestProjectReviseShowsRawProposalToArchitect — the revise projection
 // surfaces RawProposal (what the architect actually produced) rather
 // than the canonical ProposedSpec (the reconciler's transform), so the

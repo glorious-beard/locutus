@@ -404,16 +404,19 @@ func summarizeExistingSpec(b *strings.Builder, e *ExistingSpec) {
 	}
 }
 
-// IntegrityWarning describes a single referential-integrity violation
-// detected in a SpecProposal: a node that references an id that doesn't
-// exist in either the proposal itself or the existing spec. The
-// reference is stripped from the proposal so persistence proceeds with
-// only valid edges.
+// IntegrityWarning describes a structural defect in a SpecProposal —
+// either a dangling reference (a node references an id that doesn't
+// exist in either the proposal itself or the existing spec) or a
+// missing required field (a feature with no decisions, etc.).
+//
+// MissingID is populated for dangling-ref warnings; Reason is populated
+// for shape violations (no decisions, etc.). String() formats both.
 type IntegrityWarning struct {
 	NodeKind  string // "feature", "strategy"
-	NodeID    string // the node carrying the dangling reference
+	NodeID    string // the node carrying the violation
 	Field     string // "decisions"
-	MissingID string // the id that wasn't found
+	MissingID string // the id that wasn't found (dangling-ref warnings)
+	Reason    string // describes the violation when MissingID is empty
 }
 
 // String renders a warning without claiming what was done about it.
@@ -421,18 +424,25 @@ type IntegrityWarning struct {
 // " (stripped)"); callers that surface the warning as a hard failure
 // leave the fact-statement standing on its own.
 func (w IntegrityWarning) String() string {
-	return fmt.Sprintf("%s %s.%s references unknown id %q", w.NodeKind, w.NodeID, w.Field, w.MissingID)
+	if w.MissingID != "" {
+		return fmt.Sprintf("%s %s.%s references unknown id %q", w.NodeKind, w.NodeID, w.Field, w.MissingID)
+	}
+	if w.Reason != "" {
+		return fmt.Sprintf("%s %s.%s: %s", w.NodeKind, w.NodeID, w.Field, w.Reason)
+	}
+	return fmt.Sprintf("%s %s.%s violation", w.NodeKind, w.NodeID, w.Field)
 }
 
-// Validate detects referential-integrity violations in the proposal
-// without mutating it. Returns one IntegrityWarning per dangling
-// reference. Pure check — callers use this to decide whether to send
-// the proposal back to the architect for repair instead of silently
-// dropping data.
+// Validate detects structural defects in the proposal without mutating
+// it. Returns one IntegrityWarning per violation. Pure check — callers
+// use this to decide whether to send the proposal back to the architect
+// for repair instead of silently dropping data.
 //
 // Rules:
 //   - Feature.Decisions: each id must resolve.
-//   - Strategy.Decisions: same.
+//   - Strategy.Decisions: each id must resolve.
+//   - Feature: must have at least one decision (architect contract;
+//     a feature with no decisions has no architectural commitment).
 func (p *SpecProposal) Validate(existing *ExistingSpec) []IntegrityWarning {
 	if p == nil {
 		return nil
@@ -442,6 +452,12 @@ func (p *SpecProposal) Validate(existing *ExistingSpec) []IntegrityWarning {
 
 	for _, f := range p.Features {
 		warnings = appendMissingRefs(warnings, f.Decisions, known.decisions, "feature", f.ID, "decisions")
+		if len(f.Decisions) == 0 {
+			warnings = append(warnings, IntegrityWarning{
+				NodeKind: "feature", NodeID: f.ID, Field: "decisions",
+				Reason: "feature has no decisions; every feature must commit to at least one architectural choice",
+			})
+		}
 	}
 	for _, s := range p.Strategies {
 		warnings = appendMissingRefs(warnings, s.Decisions, known.decisions, "strategy", s.ID, "decisions")

@@ -285,6 +285,70 @@ func TestApplyReconciliationRejectsBadSourceParent(t *testing.T) {
 	assert.Contains(t, err.Error(), "feat-not-in-proposal")
 }
 
+// TestApplyReconciliationDropsEmptyInlineDecisions — Gemini Flash has
+// been observed emitting `decisions: [{}]` on strategies (empty objects
+// satisfying schema shape but carrying no content). ApplyReconciliation
+// must drop these silently rather than minting `dec-untitled` IDs.
+// Real inline decisions on the same parent are preserved.
+func TestApplyReconciliationDropsEmptyInlineDecisions(t *testing.T) {
+	raw := &RawSpecProposal{
+		Features: []RawFeatureProposal{{
+			ID:    "feat-x",
+			Title: "X",
+			Decisions: []InlineDecisionProposal{
+				{Title: "Use Postgres", Rationale: "OLTP"},
+				{}, // empty placeholder
+				{Title: " ", Rationale: "still empty after trim"}, // whitespace-only title
+			},
+		}},
+		Strategies: []RawStrategyProposal{{
+			ID:    "strat-database",
+			Title: "Database",
+			Kind:  "foundational",
+			Body:  "We need a database.",
+			// Architect emitted [{}] — empty placeholder.
+			Decisions: []InlineDecisionProposal{{}},
+		}},
+	}
+
+	out, _, err := ApplyReconciliation(raw, ReconciliationVerdict{}, nil)
+	require.NoError(t, err)
+
+	require.Len(t, out.Decisions, 1, "exactly one canonical decision; the two empties dropped")
+	assert.Equal(t, "dec-use-postgres", out.Decisions[0].ID)
+	assert.NotContains(t, out.Decisions[0].ID, "dec-untitled",
+		"empty placeholders must NEVER produce dec-untitled ids")
+
+	require.Len(t, out.Features, 1)
+	assert.Equal(t, []string{"dec-use-postgres"}, out.Features[0].Decisions,
+		"feature.decisions only references the real canonical decision")
+	require.Len(t, out.Strategies, 1)
+	assert.Empty(t, out.Strategies[0].Decisions,
+		"strategy with only empty placeholders ends up with no decisions; integrity critic will flag")
+}
+
+func TestApplyReconciliationRejectsEmptyCanonicalInVerdict(t *testing.T) {
+	// A reconciler that emits a dedupe action with an empty canonical
+	// is malformed. ApplyReconciliation must error rather than silently
+	// minting dec-untitled.
+	raw := &RawSpecProposal{
+		Features: []RawFeatureProposal{{
+			ID: "feat-x", Title: "X",
+			Decisions: []InlineDecisionProposal{{Title: "Use Postgres"}},
+		}},
+	}
+	verdict := ReconciliationVerdict{
+		Actions: []ReconciliationAction{{
+			Kind:      "dedupe",
+			Sources:   []DecisionSourceRef{{ParentKind: "feature", ParentID: "feat-x", Index: 0}},
+			Canonical: &InlineDecisionProposal{}, // empty title
+		}},
+	}
+	_, _, err := ApplyReconciliation(raw, verdict, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty title")
+}
+
 func TestSlugify(t *testing.T) {
 	cases := []struct {
 		in, want string
