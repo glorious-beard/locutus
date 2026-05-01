@@ -15,14 +15,18 @@ Review the SpecProposal under "## Proposal under review" against GOALS.md, the e
 
 1. **GOALS.md mandates honored verbatim.** Any contradiction is a flag.
 2. **Foundational strategies commit to NAMED technology, not requirements.** A strategy body that says "the database must support geospatial queries" or "the system needs auto-scaling infrastructure" is a flag — that's a requirements restatement, not a commitment. The committing form names a specific vendor and configuration ("Use PostgreSQL 16 with PostGIS on AWS RDS Multi-AZ"). If a strategy body uses the words "must support", "must handle", "needs to be able to", or "should provide" without naming what was chosen, flag it.
-3. **Mandatory foundational coverage for the project's shape.** First, identify what KIND of project this is from GOALS.md and the proposal — read literally, don't assume SaaS. Then check that the spec commits on the major axes of variability that the shape implies, and flag any missing axis:
-   - Hosted code (web apps, APIs, services): compute platform, data layer, packaging/deployment, authentication (when users), frontend stack (when UI).
+3. **Mandatory foundational coverage for every deliverable in the project.** First, identify what the project's deliverables are from GOALS.md and the proposal. Many real projects are multi-deliverable: a wearable typically has hardware (PCB + enclosure), firmware, a mobile companion app, sometimes a cloud backend, and product documentation. For each deliverable, the spec must commit on the major axes of variability that the deliverable's shape implies. Flag any missing axis for any deliverable:
+   - Hosted code: compute platform, data layer, packaging/deployment, authentication (when users), frontend stack (when UI).
+   - Mobile app: target platforms, implementation stack, distribution channel, backend connectivity protocol, build tooling.
    - Firmware / embedded: hardware target, RTOS or runtime, toolchain, connectivity stack (when applicable), firmware-update mechanism.
    - Hardware (PCB / mechanical): manufacturing process and vendor, component-sourcing strategy, mechanical-design tool, certification path (when applicable), test/DFT strategy.
    - CLI / library: distribution mechanism, versioning policy, supported platforms.
-   - Monorepo / multi-product: workspace tool, dependency strategy, release-coordination strategy.
+   - Documentation: authoring tool, publishing target, versioning relative to product release.
+   - Multi-deliverable coordination: workspace tool, cross-deliverable dependency strategy, release-coordination strategy.
 
-   Hybrid projects (e.g., a hardware product with a SaaS companion) pull from multiple shapes. Don't flag axes that don't fit the shape — a firmware spec doesn't need a "compute platform" decision.
+   **Cross-deliverable integration is itself a foundational commitment.** When deliverables communicate (firmware ↔ mobile app over BLE, mobile ↔ cloud over REST, etc.), the protocol and where its schema lives must be named explicitly. Underspecified interfaces are a flag — that's where deliverables drift apart.
+
+   Don't flag axes that don't fit the deliverable's shape — a firmware spec doesn't need a "compute platform" decision. A pure CLI doesn't need cross-deliverable integration.
 4. **Tech coherence.** Are the named technologies known to integrate well? Flag known impedance mismatches (e.g. "PostGIS over Vercel Edge Runtime requires Neon's specific HTTP driver; other Postgres providers don't have an edge story").
 5. **Deployment coherence.** For every persistent service in the proposal, where does it run, and how do components communicate? Flag a hosting platform claimed to host services it can't (e.g. "Vercel deploys the Next.js app but does not host PostgreSQL or BigQuery — the strategy doesn't say where those run").
 6. **Referential integrity.** Every id referenced exists as a real node in the proposal or existing spec.

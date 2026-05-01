@@ -33,8 +33,12 @@ Identify primary and secondary programming languages. Use file extensions as the
 - `.ts`/`.tsx` files + `tsconfig.json` = TypeScript (high confidence)
 - `.py` files + `pyproject.toml` or `setup.py` = Python (high confidence)
 - `.js` files alone (without framework config) = JavaScript (medium confidence -- could be build output)
+- `.swift` files + `*.xcodeproj/` or `Package.swift` = Swift (high confidence)
+- `.kt`/`.kts` files + `settings.gradle.kts` or `build.gradle.kts` = Kotlin (high confidence)
+- `.c`/`.cpp`/`.h` + embedded toolchain markers (`platformio.ini`, `*.ioc` STM32CubeMX, `west.yml` Zephyr, `Kconfig`, `*.uvprojx` Keil, `arduino.json`) = C/C++ for firmware (high confidence)
+- `.rs` + `Cargo.toml` with embedded targets (`embassy-*`, `cortex-m`, `riscv`) or `memory.x` linker script = Rust for embedded (high confidence)
 
-A language is "primary" if it accounts for the majority of source files. "Secondary" if present but not dominant.
+A language is "primary" if it accounts for the majority of source files. "Secondary" if present but not dominant. **Multi-deliverable projects often have multiple primary languages** — a wearable product can have Swift (iOS app) + C (firmware) + minimal JS (build scripts) and all three are "primary" in their respective deliverable.
 
 ## 2. Frameworks
 
@@ -55,6 +59,21 @@ Classify the project structure:
 - Multiple `go.mod` files or top-level directories with independent dependency files = monorepo
 - `apps/` + `packages/` or `libs/` = monorepo (Nx/Turborepo style)
 - Single flat directory = simple/script project
+- Top-level directories scoped by deliverable type (e.g. `firmware/`, `app/`, `hardware/`, `mechanical/`, `docs/`, `cloud/`, `shared/`) = multi-deliverable product (one repo, multiple shipping artifacts of different shapes — common for hardware+firmware+app products)
+
+## 3a. Deliverables
+
+For multi-deliverable repos, identify each shipping artifact and classify it. A single repo may contain several. Use directory naming and toolchain-marker presence as signals:
+
+- **Hosted code** (web app, API, backend service): `package.json` with web framework, `Dockerfile`, `cloudformation.yml`, `serverless.yml`, `vercel.json`, `fly.toml`, etc.
+- **Mobile app** (iOS / Android / cross-platform): `*.xcodeproj/`, `*.xcworkspace/`, `Podfile`, `Package.swift`, `AndroidManifest.xml`, `build.gradle.kts`, `App.tsx` + `metro.config.js` (React Native), `pubspec.yaml` (Flutter).
+- **Firmware / embedded**: `platformio.ini`, `*.ioc` (STM32CubeMX), `west.yml` (Zephyr), `Kconfig`, `*.uvprojx` (Keil µVision), `*.ino` (Arduino), `sdkconfig.*` (ESP-IDF), `memory.x` (Rust embedded), `arm-none-eabi-*` references in Makefile.
+- **Hardware (PCB schematics + layouts)**: `*.kicad_pcb`, `*.kicad_sch`, `*.kicad_pro` (KiCad), `*.sch` + `*.brd` (Eagle), `*.PrjPcb` + `*.SchDoc` (Altium), `*.brd` + gerber outputs (`*.gbr`, `*.drl`), `bom.csv` next to a board file.
+- **Mechanical / 3D CAD**: `*.f3d`/`*.f3z` (Fusion 360), `*.step`/`*.stp`/`*.iges`, `*.stl` (often build output), `*.scad` (OpenSCAD source), `*.FCStd` (FreeCAD), `*.SLDPRT`/`*.SLDASM` (SolidWorks), `*.3dm` (Rhino).
+- **CLI / library**: language toolchain manifest (`Cargo.toml`, `setup.py`, `package.json` with `bin` field) without a deployment target; `goreleaser.yml`, `homebrew-*` taps, `cargo-dist` config.
+- **Documentation deliverable** (user-facing, not in-source comments): `docs/` with `mkdocs.yml`, `docusaurus.config.js`, `astro.config.mjs` (Starlight), `antora.yml`, `conf.py` (Sphinx), `*.adoc` files; `*.indd` (InDesign for print datasheets); `manual/`, `datasheet/` directories.
+
+Each detected deliverable is a node in the spec; downstream analyzers attach decisions and strategies per deliverable. Flag the deliverable's directory root and toolchain markers as evidence.
 
 ## 4. Build system
 

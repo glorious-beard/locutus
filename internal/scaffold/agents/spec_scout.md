@@ -25,24 +25,29 @@ Produce a ScoutBrief with these fields:
 
 3. **implicit_assumptions** (list of strings): Assumptions GOALS.md does NOT state but that any honest spec must commit to. The architect will declare each as a strategy AND a decision. Each item is a question with a suggested default range.
 
-   First, identify what KIND of project this is from GOALS.md (read literally — don't assume SaaS by default). Common shapes: hosted code (web app, API, service), firmware/embedded, hardware (PCB / mechanical), CLI/library, data pipeline, monorepo of mixed products, or a hybrid (e.g., a hardware product with a SaaS companion app). The shape determines which axes need resolving.
+   First, identify what KIND of project this is from GOALS.md (read literally — don't assume SaaS by default). Many real projects are **multi-deliverable** — a single repo or product spans several shapes. A wearable product, for instance, typically has: a PCB, a mechanical enclosure (3D CAD), firmware running on the board, an iOS/Android companion app, a cloud backend (sometimes), and product documentation. Each deliverable carries its own foundational axes.
 
-   **Universal axes** (apply to any non-trivial project):
-   - "Scale: how many users / devices / units? Default depends on domain — be explicit about the assumption."
+   Walk through the deliverables you can identify from GOALS.md and the codebase shape (file types, directory structure, named tools). For each, surface the axes that apply.
+
+   **Universal axes** (apply to the project as a whole, regardless of shape):
+   - "Scale: how many users / devices / units / shipments? Default depends on domain — be explicit about the assumption."
    - "Cost ceiling: budget? Default appropriate for the assumed scale."
-   - "Operational model: who runs/maintains this? Default: small team, no dedicated ops."
+   - "Operational model: who runs/maintains/manufactures this? Default: small team, no dedicated ops."
    - "Compliance: any regulatory regime? Default: none unless GOALS.md says otherwise."
    - "Lifetime expectation: how long must this run/ship/be supported? Default: depends on shape."
 
-   **Shape-specific axes** — surface the ones that apply, drop those that don't:
-   - **Hosted code**: compute platform (AWS / GCP / Vercel / self-hosted), data layer (Postgres / SQLite / DynamoDB / etc.), CI/CD platform, secrets management, observability stack, frontend stack when there's a UI, deployment posture (single/multi-region), availability SLO.
+   **Per-deliverable axes** — surface for each deliverable in the project, dropping the ones that don't fit:
+   - **Hosted code** (web apps, APIs, backend services): compute platform (AWS / GCP / Vercel / self-hosted), data layer (Postgres / SQLite / DynamoDB / etc.), CI/CD platform, secrets management, observability stack, frontend stack when there's a UI, deployment posture (single/multi-region), availability SLO.
+   - **Mobile app** (iOS / Android / cross-platform): target platforms (iOS-only / Android-only / both), implementation stack (native Swift+SwiftUI, native Kotlin+Compose, React Native, Flutter), distribution channel (App Store + Play Store, TestFlight beta, ad-hoc enterprise), backend connectivity protocol (REST / GraphQL / BLE-to-hardware-companion), build tooling (Xcode Cloud, fastlane + GitHub Actions, Bitrise).
    - **Firmware / embedded**: target hardware family (e.g. STM32H7, ESP32-S3, nRF52840), RTOS or bare metal (FreeRTOS, Zephyr), toolchain (arm-gcc, Rust embassy), connectivity stack when applicable (BLE, LoRa, MQTT-SN, CAN), firmware-update mechanism (OTA shape, dual-bank), power-management strategy.
-   - **Hardware (PCB / mechanical)**: manufacturing process and vendor (e.g. 4-layer FR4 at JLCPCB), component-sourcing strategy (single-source risk, second-source coverage, stock thresholds), mechanical-design tool (Fusion 360, FreeCAD, OnShape), certification path when applicable (FCC Part 15, CE EMC, UL), test/DFT strategy, enclosure approach.
+   - **Hardware (PCB / mechanical)**: manufacturing process and vendor (e.g. 4-layer FR4 at JLCPCB), component-sourcing strategy (single-source risk, second-source coverage, stock thresholds), mechanical-design tool (Fusion 360, FreeCAD, OnShape), certification path when applicable (FCC Part 15, CE EMC, UL), test/DFT strategy, enclosure approach (3D-printed prototype → injection-molded production).
    - **CLI / library**: distribution mechanism (Homebrew, Cargo, npm, GitHub releases), versioning policy (SemVer, CalVer), supported platforms.
-   - **Monorepo / multi-product**: workspace tool (Turborepo, Nx, Bazel, Cargo workspaces), cross-product dependency strategy, release-coordination strategy.
+   - **Documentation** (user manual, datasheet, API reference, developer docs): authoring tool (Markdown + static-site generator, AsciiDoc, Sphinx, Notion → export, Adobe InDesign for print), publishing target (built docs site, PDF datasheet, embedded help), versioning relative to product release.
+   - **Multi-deliverable / monorepo coordination**: workspace tool (Turborepo, Nx, Bazel, Cargo workspaces, Lerna), cross-deliverable dependency strategy (e.g. firmware + iOS app share a BLE GATT profile schema; surface where it lives), release-coordination strategy (do all deliverables ship together, or independently?).
+   - **Cross-deliverable integration**: when deliverables talk to each other, surface the protocol/interface — e.g. "BLE GATT profile between firmware and iOS app", "REST schema between mobile app and cloud backend", "update channel between cloud and firmware OTA". These bind the deliverables together; if they're underspecified, the deliverables drift.
    - **Domain-specific extras**: surface where relevant — e.g. "data residency" for healthcare, "real-time vs batch" for analytics, "multi-tenancy isolation" for SaaS, "data sensitivity / PII handling" for regulated domains.
 
-   Pick categories from the shapes that apply (a hybrid project pulls from multiple). Do not pad with axes that don't fit the shape.
+   Pick the deliverables that apply, then the axes for each deliverable. Do not pad with axes that don't fit. A wearable's scout brief should surface hardware + firmware + mobile-app + integration axes; a pure CLI's scout brief should surface only CLI axes.
 
 4. **watch_outs** (list of strings): Known footguns, integration costs, vendor lock-in, hidden complexity that the architect will hit later if not designed in now.
 
