@@ -323,7 +323,7 @@ func buildProviderConfig(model string, req GenerateRequest, mcfg *ModelConfig) a
 		}
 		// Gemini accepts MaxOutputTokens == 0 as "use API default"; we
 		// only set the field when we have a concrete value to apply.
-		if maxTokens == 0 && req.Temperature == 0 {
+		if maxTokens == 0 && req.Temperature == 0 && req.ThinkingBudget <= 0 {
 			return nil
 		}
 		cfg := &genai.GenerateContentConfig{}
@@ -333,6 +333,12 @@ func buildProviderConfig(model string, req GenerateRequest, mcfg *ModelConfig) a
 		if req.Temperature > 0 {
 			t := float32(req.Temperature)
 			cfg.Temperature = &t
+		}
+		if req.ThinkingBudget > 0 {
+			budget := int32(req.ThinkingBudget)
+			cfg.ThinkingConfig = &genai.ThinkingConfig{
+				ThinkingBudget: &budget,
+			}
 		}
 		return cfg
 	case "anthropic":
@@ -346,6 +352,20 @@ func buildProviderConfig(model string, req GenerateRequest, mcfg *ModelConfig) a
 		cfg := &anthropicsdk.MessageNewParams{MaxTokens: maxTokens}
 		if req.Temperature > 0 {
 			cfg.Temperature = param.NewOpt(req.Temperature)
+		}
+		if req.ThinkingBudget > 0 {
+			// Anthropic requires budget_tokens >= 1024 and < max_tokens.
+			// Clamp on both ends so a misconfigured budget doesn't
+			// surface as a provider 400 the user has to debug from a
+			// stack trace.
+			budget := int64(req.ThinkingBudget)
+			if budget < 1024 {
+				budget = 1024
+			}
+			if budget >= maxTokens {
+				budget = maxTokens - 1
+			}
+			cfg.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
 		}
 		return cfg
 	default:

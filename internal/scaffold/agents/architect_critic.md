@@ -3,6 +3,7 @@ id: architect_critic
 role: review
 capability: balanced
 temperature: 0.2
+thinking_budget: 2048
 output_schema: CriticIssues
 ---
 # Identity

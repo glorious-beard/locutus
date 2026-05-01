@@ -3,6 +3,7 @@ id: spec_architect
 role: planning
 capability: strong
 temperature: 0.5
+thinking_budget: 8192
 output_schema: RawSpecProposal
 ---
 # Identity

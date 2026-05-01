@@ -28,14 +28,30 @@ const (
 const DefaultModel = "anthropic/claude-sonnet-4-6"
 
 // AgentDef is an agent definition loaded from a .md file.
+//
+// MaxTokens and ThinkingBudget are per-agent overrides for the
+// equivalent fields on GenerateRequest. Their precedence at request-
+// build time:
+//
+//   - MaxTokens: agent value > models.yaml per-model knob > provider
+//     fallback. Set on agents whose output is bounded (e.g. critics
+//     that emit a few short issues) to keep responses tight without
+//     editing call sites.
+//   - ThinkingBudget: agent value > 0 enables provider-side extended
+//     thinking with that many reasoning tokens; 0 leaves it off.
+//     Worth turning on for judgment-heavy agents (scout, architect,
+//     reconciler, critics); waste of tokens on mechanical agents
+//     (rewriter, synthesizer).
 type AgentDef struct {
-	ID           string         `yaml:"id"`
-	Role         string         `yaml:"role"`
-	Model        string         `yaml:"model,omitempty"`
-	Capability   CapabilityTier `yaml:"capability,omitempty"`
-	Temperature  float64        `yaml:"temperature,omitempty"`
-	OutputSchema string         `yaml:"output_schema,omitempty"` // type name for JSON schema injection
-	SystemPrompt string         // the markdown body (not from YAML)
+	ID             string         `yaml:"id"`
+	Role           string         `yaml:"role"`
+	Model          string         `yaml:"model,omitempty"`
+	Capability     CapabilityTier `yaml:"capability,omitempty"`
+	Temperature    float64        `yaml:"temperature,omitempty"`
+	MaxTokens      int            `yaml:"max_tokens,omitempty"`
+	ThinkingBudget int            `yaml:"thinking_budget,omitempty"`
+	OutputSchema   string         `yaml:"output_schema,omitempty"` // type name for JSON schema injection
+	SystemPrompt   string         // the markdown body (not from YAML)
 }
 
 // LoadAgentDefs reads all .md files from the given directory on the FS.
@@ -108,10 +124,12 @@ func BuildGenerateRequest(def AgentDef, messages []Message) GenerateRequest {
 	msgs = append(msgs, messages...)
 
 	return GenerateRequest{
-		Model:        model,
-		Messages:     msgs,
-		Temperature:  def.Temperature,
-		OutputSchema: schemaValue,
+		Model:          model,
+		Messages:       msgs,
+		Temperature:    def.Temperature,
+		MaxTokens:      def.MaxTokens,
+		ThinkingBudget: def.ThinkingBudget,
+		OutputSchema:   schemaValue,
 	}
 }
 

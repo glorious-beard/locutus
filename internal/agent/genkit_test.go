@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -204,6 +205,69 @@ func TestBuildProviderConfig(t *testing.T) {
 	t.Run("unknown provider returns nil", func(t *testing.T) {
 		got := buildProviderConfig("openai/gpt-4o", GenerateRequest{Temperature: 0.5}, embeddedCfg)
 		assert.Nil(t, got)
+	})
+
+	t.Run("googleai threads ThinkingBudget into ThinkingConfig", func(t *testing.T) {
+		got := buildProviderConfig("googleai/gemini-2.5-pro", GenerateRequest{
+			ThinkingBudget: 4096,
+		}, embeddedCfg)
+		cfg, ok := got.(*genai.GenerateContentConfig)
+		require.True(t, ok, "expected *genai.GenerateContentConfig, got %T", got)
+		require.NotNil(t, cfg.ThinkingConfig, "ThinkingBudget > 0 must populate ThinkingConfig")
+		require.NotNil(t, cfg.ThinkingConfig.ThinkingBudget)
+		assert.Equal(t, int32(4096), *cfg.ThinkingConfig.ThinkingBudget)
+	})
+
+	t.Run("googleai zero ThinkingBudget leaves ThinkingConfig nil", func(t *testing.T) {
+		got := buildProviderConfig("googleai/gemini-2.5-pro", GenerateRequest{
+			Temperature: 0.5,
+		}, embeddedCfg)
+		cfg, ok := got.(*genai.GenerateContentConfig)
+		require.True(t, ok)
+		assert.Nil(t, cfg.ThinkingConfig,
+			"zero ThinkingBudget must NOT enable thinking — billing is per token")
+	})
+
+	t.Run("anthropic threads ThinkingBudget via ThinkingConfigParamOfEnabled", func(t *testing.T) {
+		got := buildProviderConfig("anthropic/claude-opus-4-7", GenerateRequest{
+			MaxTokens:      8192,
+			ThinkingBudget: 4096,
+		}, embeddedCfg)
+		cfg, ok := got.(*anthropicsdk.MessageNewParams)
+		require.True(t, ok)
+		// The union type's OfEnabled field carries the budget; ensure
+		// it round-trips. ThinkingConfigParamUnion is opaque, so we
+		// inspect via JSON marshal.
+		data, err := json.Marshal(cfg.Thinking)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"budget_tokens":4096`)
+		assert.Contains(t, string(data), `"type":"enabled"`)
+	})
+
+	t.Run("anthropic clamps ThinkingBudget below SDK minimum to 1024", func(t *testing.T) {
+		got := buildProviderConfig("anthropic/claude-opus-4-7", GenerateRequest{
+			MaxTokens:      8192,
+			ThinkingBudget: 256, // below SDK minimum
+		}, embeddedCfg)
+		cfg, ok := got.(*anthropicsdk.MessageNewParams)
+		require.True(t, ok)
+		data, err := json.Marshal(cfg.Thinking)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"budget_tokens":1024`,
+			"a misconfigured budget below SDK minimum must clamp, not produce a 400 from the provider")
+	})
+
+	t.Run("anthropic clamps ThinkingBudget above MaxTokens", func(t *testing.T) {
+		got := buildProviderConfig("anthropic/claude-opus-4-7", GenerateRequest{
+			MaxTokens:      4096,
+			ThinkingBudget: 8192, // above MaxTokens
+		}, embeddedCfg)
+		cfg, ok := got.(*anthropicsdk.MessageNewParams)
+		require.True(t, ok)
+		data, err := json.Marshal(cfg.Thinking)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"budget_tokens":4095`,
+			"budget >= max_tokens fails the API; clamp to max-1")
 	})
 }
 

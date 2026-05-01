@@ -3,6 +3,7 @@ id: spec_scout
 role: survey
 capability: strong
 temperature: 0.4
+thinking_budget: 4096
 output_schema: ScoutBrief
 ---
 # Identity

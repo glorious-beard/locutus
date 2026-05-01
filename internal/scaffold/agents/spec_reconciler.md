@@ -3,6 +3,7 @@ id: spec_reconciler
 role: reconcile
 capability: balanced
 temperature: 0.2
+thinking_budget: 4096
 output_schema: ReconciliationVerdict
 ---
 # Identity

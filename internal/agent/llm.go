@@ -19,6 +19,12 @@ type GenerateRequest struct {
 	Messages    []Message `json:"messages"`
 	Temperature float64   `json:"temperature,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
+	// ThinkingBudget, when > 0, requests provider-side extended-thinking
+	// (Claude extended thinking, Gemini thinking budget) with this many
+	// reasoning tokens. 0 leaves thinking off. Both providers bill
+	// thinking tokens at output rates; setting this for short-prompt
+	// agents is wasted spend, so most agents leave it at zero.
+	ThinkingBudget int `json:"thinking_budget,omitempty"`
 	// OutputSchema, if non-nil, requests structured JSON output conforming
 	// to the given schema. The value should be a JSON Schema object.
 	OutputSchema any `json:"output_schema,omitempty"`
