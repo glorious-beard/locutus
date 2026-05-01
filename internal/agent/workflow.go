@@ -175,6 +175,18 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 			return nil, nil
 		}
 		results := make([]RoundResult, len(items))
+		// Each fanout call gets a per-item stepID so progress sinks
+		// (cliSink spinners, MCP progress) surface one entry per item
+		// instead of collapsing N parallel goroutines into a single
+		// spinner. The merge handler keys on step.MergeAs, not the
+		// per-item stepID, so this rename only affects observability.
+		fanoutStepID := func(item string) string {
+			id := fanoutItemID(item)
+			if id == "" {
+				return step.ID
+			}
+			return step.ID + " (" + id + ")"
+		}
 		if step.Parallel {
 			var wg sync.WaitGroup
 			wg.Add(len(items))
@@ -183,7 +195,7 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 					defer wg.Done()
 					itemSnap := snap
 					itemSnap.FanoutItem = raw
-					results[idx] = e.executeAgent(ctx, step.ID, agents[0], itemSnap)
+					results[idx] = e.executeAgent(ctx, fanoutStepID(raw), agents[0], itemSnap)
 				}(i, item)
 			}
 			wg.Wait()
@@ -191,7 +203,7 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 			for i, item := range items {
 				itemSnap := snap
 				itemSnap.FanoutItem = item
-				results[i] = e.executeAgent(ctx, step.ID, agents[0], itemSnap)
+				results[i] = e.executeAgent(ctx, fanoutStepID(item), agents[0], itemSnap)
 				if results[i].Err != nil {
 					return results, results[i].Err
 				}
@@ -236,6 +248,21 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 		}
 	}
 	return results, nil
+}
+
+// fanoutItemID extracts the `id` field from a fanout item's raw JSON
+// for per-item event labeling. Returns empty when the item shape has
+// no `id` (or the JSON is malformed); callers fall back to the bare
+// step ID, which preserves correctness — the dedup-key collision is a
+// progress-rendering issue, not a correctness one.
+func fanoutItemID(rawJSON string) string {
+	var v struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &v); err != nil {
+		return ""
+	}
+	return v.ID
 }
 
 // extractFanoutItems resolves a dotted state path (e.g. "outline.features")

@@ -10,8 +10,18 @@ import (
 // ProjectState builds the LLM messages for a specific agent role, drawing only
 // the fields from the snapshot that are relevant to that agent's job. This keeps
 // each agent's context window focused and avoids leaking irrelevant information.
+//
+// Fanout steps (Phase 3) tag each call with a per-item suffix in the
+// stepID — e.g. "elaborate_features (feat-dashboard)" — so progress
+// sinks render one entry per item. We strip the suffix before routing
+// to the projection switch so all per-item calls land in the same
+// projection function.
 func ProjectState(stepID string, snap StateSnapshot) []Message {
-	switch stepID {
+	base := stepID
+	if i := strings.Index(base, " ("); i > 0 {
+		base = base[:i]
+	}
+	switch base {
 	case "propose":
 		return projectPropose(snap)
 	case "outline":
