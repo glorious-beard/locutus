@@ -90,6 +90,14 @@ func (s *cliSink) label(e agent.WorkflowEvent) string {
 // "interrupted", or as redundant duplicates of the per-agent line.
 // plainSink still receives the full stream because structured logs
 // cope fine with the extra detail.
+//
+// Lifecycle: a typical workflow agent emits "queued" → "started" →
+// "completed". Queued creates the spinner with a "queued" label so
+// items waiting on the per-model concurrency throttle look distinct
+// from items hitting the provider. Started updates the same spinner
+// to a running label. Direct "started" without a prior "queued" still
+// creates a fresh spinner — preserves backward compatibility with
+// callers that haven't adopted the queued event.
 func (s *cliSink) OnEvent(e agent.WorkflowEvent) {
 	if e.AgentID == "" {
 		return
@@ -100,9 +108,27 @@ func (s *cliSink) OnEvent(e agent.WorkflowEvent) {
 
 	key := s.key(e)
 	switch e.Status {
-	case "started":
+	case "queued":
 		if _, exists := s.spinners[key]; exists {
-			return // duplicate started — ignore
+			return
+		}
+		sp, err := pterm.DefaultSpinner.
+			WithWriter(s.multi.NewWriter()).
+			WithShowTimer(true).
+			WithRemoveWhenDone(false).
+			Start(fmt.Sprintf("%s · queued", s.label(e)))
+		if err != nil {
+			return
+		}
+		s.spinners[key] = sp
+		s.starts[key] = e.Timestamp
+		s.order = append(s.order, key)
+	case "started":
+		if sp, ok := s.spinners[key]; ok {
+			// Pre-existing spinner from a "queued" event → flip to
+			// running by dropping the queued suffix.
+			sp.UpdateText(s.label(e))
+			return
 		}
 		sp, err := pterm.DefaultSpinner.
 			WithWriter(s.multi.NewWriter()).

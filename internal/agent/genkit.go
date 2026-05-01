@@ -280,6 +280,15 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 	} else if release != nil {
 		defer release()
 	}
+	// Notify any caller-supplied "I just left the queue" callback. The
+	// workflow executor uses this to flip a "queued" spinner to a
+	// "running" one in the CLI sink. Fires regardless of whether the
+	// model was actually throttled — a callback that gets invoked
+	// nearly-instantly on unthrottled models is harmless; the cliSink's
+	// "queued" → "started" transition is idempotent.
+	if cb := AcquiredCallbackFromContext(ctx); cb != nil {
+		cb()
+	}
 
 	resp, err := genkit.Generate(ctx, g.g, opts...)
 	// Pick whichever response object actually carries the model bytes:

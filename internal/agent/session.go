@@ -38,6 +38,54 @@ func RoleFromContext(ctx context.Context) string {
 	return ""
 }
 
+// agentIDContextKey carries the source-agent identifier for an LLM
+// call (e.g. "spec_feature_elaborator"). Distinct from role: a single
+// agent may participate in multiple roles (architect runs on propose
+// and revise, etc.). Trace consumers want to know "which .md file
+// produced this output," which is the agent id.
+type agentIDContextKey struct{}
+
+// WithAgentID tags subsequent LLM calls with the source agent id so
+// the session recorder can write it onto every recordedCall. Workflow
+// executors call this before dispatching each agent's call; ad-hoc
+// LLM call sites that aren't workflow agents (synthesizer, rewriter,
+// integrity_revise) leave it unset and the trace shows agent_id: "".
+func WithAgentID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, agentIDContextKey{}, id)
+}
+
+// AgentIDFromContext returns the agent id set via WithAgentID, or ""
+// if none.
+func AgentIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(agentIDContextKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// acquiredCallbackKey carries a callback invoked when a throttled LLM
+// call leaves the per-model semaphore queue and actually begins. The
+// workflow executor uses it to flip a "queued" spinner to "running" in
+// the CLI sink so the operator can tell waiting items from in-flight.
+type acquiredCallbackKey struct{}
+
+// WithAcquiredCallback returns a context whose LLM call invokes fn at
+// the moment it leaves the per-model concurrency queue and starts
+// hitting the provider. Used by the workflow executor to surface a
+// "queued → running" transition; ad-hoc call sites can ignore it.
+func WithAcquiredCallback(ctx context.Context, fn func()) context.Context {
+	return context.WithValue(ctx, acquiredCallbackKey{}, fn)
+}
+
+// AcquiredCallbackFromContext returns the callback set via
+// WithAcquiredCallback, or nil if none.
+func AcquiredCallbackFromContext(ctx context.Context) func() {
+	if v, ok := ctx.Value(acquiredCallbackKey{}).(func()); ok {
+		return v
+	}
+	return nil
+}
+
 // SessionRecorder writes a YAML transcript of every LLM call to
 // .locutus/sessions/<sid>.yaml. The recorder rewrites the file
 // atomically on each Record() so a crash mid-call leaves the previous
@@ -75,6 +123,7 @@ const (
 
 type recordedCall struct {
 	Index          int               `yaml:"index"`
+	AgentID        string            `yaml:"agent_id,omitempty"`
 	Role           string            `yaml:"role,omitempty"`
 	Status         string            `yaml:"status,omitempty"`
 	StartedAt      string            `yaml:"started_at"`
@@ -148,8 +197,8 @@ func (r *SessionRecorder) Path() string { return r.path }
 // Record stores one LLM call as a single completed entry. Equivalent to
 // Begin(...) immediately followed by Finish(...) and retained for callers
 // that don't need the live placeholder. Safe for concurrent use.
-func (r *SessionRecorder) Record(role string, req GenerateRequest, resp *GenerateResponse, callErr error, started time.Time, duration time.Duration) {
-	h := r.Begin(role, req, started)
+func (r *SessionRecorder) Record(role, agentID string, req GenerateRequest, resp *GenerateResponse, callErr error, started time.Time, duration time.Duration) {
+	h := r.Begin(role, agentID, req, started)
 	completedAt := started.Add(duration)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -172,12 +221,13 @@ type callHandle struct {
 // flight. The caller MUST follow up with Finish (use defer when the
 // surrounding function takes the response/error in one place). Safe
 // for concurrent use.
-func (r *SessionRecorder) Begin(role string, req GenerateRequest, started time.Time) *callHandle {
+func (r *SessionRecorder) Begin(role, agentID string, req GenerateRequest, started time.Time) *callHandle {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	call := recordedCall{
 		Index:        len(r.session.Calls) + 1,
+		AgentID:      agentID,
 		Role:         role,
 		Status:       CallStatusInProgress,
 		StartedAt:    started.Format(time.RFC3339),
@@ -296,7 +346,8 @@ func NewLoggingLLMWithHeartbeat(inner LLM, recorder *SessionRecorder, heartbeat 
 func (l *LoggingLLM) Generate(ctx context.Context, req GenerateRequest) (*GenerateResponse, error) {
 	started := time.Now()
 	role := RoleFromContext(ctx)
-	handle := l.recorder.Begin(role, req, started)
+	agentID := AgentIDFromContext(ctx)
+	handle := l.recorder.Begin(role, agentID, req, started)
 
 	var stop func()
 	if l.HeartbeatEnabled {

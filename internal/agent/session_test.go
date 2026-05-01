@@ -56,7 +56,7 @@ func TestSessionRecorderRecordsCallsInOrder(t *testing.T) {
 	require.NoError(t, err)
 
 	t1 := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
-	rec.Record("proposer",
+	rec.Record("proposer", "spec_architect",
 		GenerateRequest{
 			Model: "googleai/gemini-2.5-pro",
 			Messages: []Message{
@@ -67,7 +67,7 @@ func TestSessionRecorderRecordsCallsInOrder(t *testing.T) {
 		&GenerateResponse{Content: `{"features":[]}`, Model: "googleai/gemini-2.5-pro"},
 		nil, t1, 1234*time.Millisecond,
 	)
-	rec.Record("critic",
+	rec.Record("critic", "architect_critic",
 		GenerateRequest{
 			Model: "googleai/gemini-2.5-pro",
 			Messages: []Message{
@@ -87,9 +87,12 @@ func TestSessionRecorderRecordsCallsInOrder(t *testing.T) {
 	require.Len(t, session.Calls, 2)
 	assert.Equal(t, 1, session.Calls[0].Index)
 	assert.Equal(t, "proposer", session.Calls[0].Role)
+	assert.Equal(t, "spec_architect", session.Calls[0].AgentID,
+		"agent_id must be recorded so trace consumers can identify the source agent")
 	assert.Equal(t, int64(1234), session.Calls[0].DurationMS)
 	assert.Equal(t, 2, session.Calls[1].Index)
 	assert.Equal(t, "critic", session.Calls[1].Role)
+	assert.Equal(t, "architect_critic", session.Calls[1].AgentID)
 }
 
 func TestSessionRecorderEmitsLiteralBlocksForMultilineContent(t *testing.T) {
@@ -97,7 +100,7 @@ func TestSessionRecorderEmitsLiteralBlocksForMultilineContent(t *testing.T) {
 	rec, err := NewSessionRecorder(fs, "test", "")
 	require.NoError(t, err)
 
-	rec.Record("proposer",
+	rec.Record("proposer", "spec_architect",
 		GenerateRequest{
 			Model: "test-model",
 			Messages: []Message{
@@ -128,7 +131,7 @@ func TestSessionRecorderRecordsErrors(t *testing.T) {
 	rec, err := NewSessionRecorder(fs, "test", "")
 	require.NoError(t, err)
 
-	rec.Record("proposer",
+	rec.Record("proposer", "spec_architect",
 		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
 		nil,
 		fmt.Errorf("model unavailable"),
@@ -177,7 +180,7 @@ func TestSessionRecorderBeginWritesInProgressEntry(t *testing.T) {
 	require.NoError(t, err)
 
 	started := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
-	handle := rec.Begin("proposer",
+	handle := rec.Begin("proposer", "spec_architect",
 		GenerateRequest{
 			Model:    "googleai/gemini-2.5-pro",
 			Messages: []Message{{Role: "user", Content: "go"}},
@@ -222,7 +225,7 @@ func TestSessionRecorderFinishWithErrorMarksStatus(t *testing.T) {
 	rec, err := NewSessionRecorder(fs, "test", "")
 	require.NoError(t, err)
 
-	handle := rec.Begin("critic",
+	handle := rec.Begin("critic", "architect_critic",
 		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
 		time.Now(),
 	)

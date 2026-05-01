@@ -40,6 +40,15 @@ func (m *MockLLM) Generate(ctx context.Context, req GenerateRequest) (*GenerateR
 		return nil, ErrTimeout
 	}
 
+	// Honor the acquired-callback contract real LLMs implement (see
+	// GenKitLLM.Generate after acquireConcurrency). Workflow tests
+	// exercising the queued → started transition need the mock to
+	// invoke the callback at the moment the call "leaves the queue."
+	// Mock has no semaphore, so we fire it immediately.
+	if cb := AcquiredCallbackFromContext(ctx); cb != nil {
+		cb()
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

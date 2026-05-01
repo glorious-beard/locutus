@@ -113,13 +113,32 @@ func (e *WorkflowExecutor) emitEvent(stepID, agentID, status, message string) {
 
 // executeAgent runs a single agent against a state snapshot. Safe for
 // concurrent use — reads only from the snapshot and immutable AgentDef.
+//
+// Emits three lifecycle events to the workflow events channel:
+//
+//   - "queued"    — the goroutine has been scheduled. The actual LLM
+//                   call may be sitting in the per-model concurrency
+//                   queue (models.yaml's concurrent_requests cap).
+//   - "started"   — the call left the queue and is hitting the
+//                   provider. Driven by an acquired-callback the LLM
+//                   wrapper invokes after its semaphore acquire.
+//   - "completed" — the call returned (success or final retry failure
+//                   reported separately as "error").
+//
+// The cliSink renders "queued" with a distinct visual ("queued" prefix)
+// and updates the same spinner to "running" on the started event, so
+// the operator can tell waiting items from in-flight ones.
 func (e *WorkflowExecutor) executeAgent(ctx context.Context, stepID, agentID string, snap StateSnapshot) RoundResult {
 	def, ok := e.AgentDefs[agentID]
 	if !ok {
 		return RoundResult{StepID: stepID, AgentID: agentID, Err: fmt.Errorf("agent %q not found", agentID)}
 	}
 
-	e.emitEvent(stepID, agentID, "started", "")
+	e.emitEvent(stepID, agentID, "queued", "")
+	ctx = WithAgentID(ctx, agentID)
+	ctx = WithAcquiredCallback(ctx, func() {
+		e.emitEvent(stepID, agentID, "started", "")
+	})
 
 	messages := ProjectState(stepID, snap)
 	req := BuildGenerateRequest(def, messages)
