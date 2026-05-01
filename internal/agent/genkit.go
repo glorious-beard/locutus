@@ -19,6 +19,16 @@ import (
 	"google.golang.org/genai"
 )
 
+// defaultGoogleAIMaxOutputTokens is used when a request omits MaxTokens
+// for a googleai/* model. Gemini's API default (~8k for Pro Preview at
+// time of writing) is too small for the spec-generation architect once
+// the proposal carries inline decisions for several deliverables — the
+// model truncates mid-JSON and the structured-output validator rejects
+// the response. 32k is a comfortable headroom that still leaves
+// budget for prompt tokens. Callers that want a different cap pass
+// MaxTokens explicitly.
+const defaultGoogleAIMaxOutputTokens = 32768
+
 // defaultAnthropicMaxTokens is used when a request omits MaxTokens.
 // The Anthropic plugin rejects requests with MaxTokens == 0
 // ("maxTokens not set"), so we always supply a value.
@@ -230,7 +240,24 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 
 	resp, err := genkit.Generate(ctx, g.g, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("genkit generate (model=%s): %w", model, err)
+		// Genkit may still hand back the model's raw text on `resp` even
+		// when structured-output validation fails (e.g. truncated JSON
+		// that didn't pass WithOutputType). Surface it to the caller so
+		// the session recorder writes the partial response into the YAML
+		// transcript — debugging "JSON parse failed at byte N" without
+		// the bytes themselves is impossible. Callers that bail on
+		// err != nil don't change behavior; they just ignore the
+		// partial response, exactly as before.
+		out := &GenerateResponse{Model: model}
+		if resp != nil {
+			out.Content = resp.Text()
+			if u := resp.Usage; u != nil {
+				out.InputTokens = u.InputTokens
+				out.OutputTokens = u.OutputTokens
+				out.TotalTokens = u.TotalTokens
+			}
+		}
+		return out, fmt.Errorf("genkit generate (model=%s): %w", model, err)
 	}
 	out := &GenerateResponse{Content: resp.Text(), Model: model}
 	if u := resp.Usage; u != nil {
@@ -269,16 +296,19 @@ func buildProviderConfig(model string, req GenerateRequest) any {
 	prefix, _, _ := strings.Cut(model, "/")
 	switch prefix {
 	case "googleai":
-		if req.Temperature == 0 && req.MaxTokens == 0 {
-			return nil
+		// Always supply MaxOutputTokens (defaulting to
+		// defaultGoogleAIMaxOutputTokens) so the architect's structured
+		// output doesn't truncate at Gemini's 8k API default.
+		maxTokens := req.MaxTokens
+		if maxTokens == 0 {
+			maxTokens = defaultGoogleAIMaxOutputTokens
 		}
-		cfg := &genai.GenerateContentConfig{}
+		cfg := &genai.GenerateContentConfig{
+			MaxOutputTokens: int32(maxTokens),
+		}
 		if req.Temperature > 0 {
 			t := float32(req.Temperature)
 			cfg.Temperature = &t
-		}
-		if req.MaxTokens > 0 {
-			cfg.MaxOutputTokens = int32(req.MaxTokens)
 		}
 		return cfg
 	case "anthropic":

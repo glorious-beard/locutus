@@ -138,9 +138,15 @@ func TestResolveModel(t *testing.T) {
 }
 
 func TestBuildProviderConfig(t *testing.T) {
-	t.Run("googleai with no fields returns nil", func(t *testing.T) {
+	t.Run("googleai always sets MaxOutputTokens to default", func(t *testing.T) {
+		// Gemini's API default is too small for the spec-generation
+		// architect once the proposal has multiple deliverables; we
+		// always supply a default cap so structured-output validation
+		// doesn't reject truncated JSON.
 		got := buildProviderConfig("googleai/gemini-2.5-flash", GenerateRequest{})
-		assert.Nil(t, got)
+		cfg, ok := got.(*genai.GenerateContentConfig)
+		require.True(t, ok, "expected *genai.GenerateContentConfig, got %T", got)
+		assert.Equal(t, int32(defaultGoogleAIMaxOutputTokens), cfg.MaxOutputTokens)
 	})
 
 	t.Run("googleai populates GenerateContentConfig", func(t *testing.T) {
