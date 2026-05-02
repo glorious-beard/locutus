@@ -356,13 +356,32 @@ func reviseForIntegrity(ctx context.Context, llm LLM, archDef AgentDef, original
 	return &out, nil
 }
 
+// numberLines prefixes every line of body with "L<n>: " (1-indexed)
+// so the architect / elaborator agents can reference exact lines in
+// `goals` citation `span` fields. Without explicit line numbers,
+// observed Gemini Pro Preview behavior is to either fabricate line
+// ranges or — worse — degenerate into looped spans like "lines 3-4
+// 段1句1-2 段2句1-2 段3句1-2 ..." (Chinese paragraph/sentence
+// enumeration) until output_tokens exhausts.
+func numberLines(body string) string {
+	if body == "" {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	var b strings.Builder
+	for i, line := range lines {
+		fmt.Fprintf(&b, "L%d: %s\n", i+1, line)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // buildSpecGenPrompt assembles the seed prompt the workflow executor
 // passes to every agent (each agent's projection function picks what it
 // needs out of this).
 func buildSpecGenPrompt(req SpecGenRequest) string {
 	var b strings.Builder
-	b.WriteString("## GOALS.md\n\n")
-	b.WriteString(req.GoalsBody)
+	b.WriteString("## GOALS.md (with line numbers — use these in `goals` citation `span` fields)\n\n")
+	b.WriteString(numberLines(req.GoalsBody))
 	if strings.TrimSpace(req.DocumentBody) != "" {
 		b.WriteString("\n\n## Feature document\n\n")
 		if req.DocumentID != "" {

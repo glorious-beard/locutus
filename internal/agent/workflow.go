@@ -231,16 +231,20 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 				itemSnap := snap
 				itemSnap.FanoutItem = item
 				results[i] = e.executeAgent(ctx, fanoutStepID(item), agents[0], itemSnap)
-				if results[i].Err != nil {
-					return results, results[i].Err
-				}
 			}
 		}
-		for _, r := range results {
-			if r.Err != nil {
-				return results, r.Err
-			}
-		}
+		// Per-node failure isolation: a fanout step is the *only*
+		// place where partial success is meaningful. One bad
+		// elaborator should not abort the proposal — the merge
+		// handler accepts whatever results came back, the assembler
+		// stitches the surviving outputs into the RawSpecProposal,
+		// and the reconciler runs against what we have. Failed items
+		// surface as already-emitted "error" events on the
+		// per-item stepID so the operator sees which nodes are
+		// missing without losing the rest of the work. A single
+		// failure used to short-circuit the whole pipeline (16 of
+		// 17 elaborators succeeding, all discarded), which defeated
+		// Phase 3's failure-isolation promise.
 		return results, nil
 	}
 
