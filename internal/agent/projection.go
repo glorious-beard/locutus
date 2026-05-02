@@ -90,7 +90,16 @@ func projectElaborateOne(snap StateSnapshot, kind string) []Message {
 	}
 	b.WriteString(fmt.Sprintf("\n\n## %s to elaborate\n\n", kind))
 	if snap.FanoutItem != "" {
-		b.WriteString(snap.FanoutItem)
+		// Plain key-value, NOT raw JSON. The fanout item used to be
+		// dumped as `{"id":...,"title":...}` directly above the
+		// "Produce the full Raw...Proposal" instruction, which made
+		// the input JSON structurally adjacent to the output JSON
+		// shape. Models on schema-constrained output (Gemini Pro
+		// Preview specifically) blurred the distinction between
+		// "context I read" vs "shape I extend" and were observed
+		// looping on field values they couldn't decide how to fill.
+		// Plain-text presentation removes the ambiguity.
+		b.WriteString(formatFanoutItem(snap.FanoutItem, kind))
 	} else {
 		b.WriteString("(missing — fanout did not populate FanoutItem)")
 	}
@@ -102,6 +111,25 @@ func projectElaborateOne(snap StateSnapshot, kind string) []Message {
 	}
 	b.WriteString(" for the item above. Preserve its id and title verbatim. Decisions are inline; the reconciler downstream dedupes across siblings.")
 	return []Message{{Role: "user", Content: b.String()}}
+}
+
+// formatFanoutItem renders a single OutlineFeature or OutlineStrategy
+// JSON as plain key-value lines. Falls back to the raw JSON only if
+// parsing fails — shouldn't happen in production wiring (the same
+// JSON came from the outliner via extractFanoutItems).
+func formatFanoutItem(raw, kind string) string {
+	if kind == "feature" {
+		var f OutlineFeature
+		if err := json.Unmarshal([]byte(raw), &f); err != nil {
+			return raw
+		}
+		return fmt.Sprintf("- **ID:** `%s`\n- **Title:** %s\n- **Summary:** %s", f.ID, f.Title, f.Summary)
+	}
+	var s OutlineStrategy
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		return raw
+	}
+	return fmt.Sprintf("- **ID:** `%s`\n- **Title:** %s\n- **Kind:** %s\n- **Summary:** %s", s.ID, s.Title, s.Kind, s.Summary)
 }
 
 // formatOutlineForElaborator renders the Outline JSON as a compact
