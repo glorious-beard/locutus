@@ -62,7 +62,6 @@ func init() {
 		Citations: []spec.Citation{{
 			Kind:      "goals",
 			Reference: "GOALS.md",
-			Span:      "lines 6-8",
 			Excerpt:   "verbatim quoted text from the source",
 		}},
 		ArchitectRationale: "one-sentence summary distinct from the longer rationale",
@@ -103,7 +102,6 @@ func init() {
 			Citations: []spec.Citation{{
 				Kind:      "goals",
 				Reference: "GOALS.md",
-				Span:      "lines 6-8",
 				Excerpt:   "verbatim quoted text from the source",
 			}},
 			ArchitectRationale: "one-sentence summary distinct from the longer rationale",

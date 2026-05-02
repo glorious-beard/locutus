@@ -428,7 +428,6 @@ func TestToAssimilationResultDenormalizesProvenance(t *testing.T) {
 			Citations: []spec.Citation{{
 				Kind:      "goals",
 				Reference: "GOALS.md",
-				Span:      "lines 6-8",
 				Excerpt:   "Use Tanstack Start, Tanstack Query, Tanstack Table",
 			}},
 			ArchitectRationale: "GOALS.md mandates TanStack Start.",
@@ -443,7 +442,6 @@ func TestToAssimilationResultDenormalizesProvenance(t *testing.T) {
 	require.Equal(t, 1, len(d.Provenance.Citations))
 	assert.Equal(t, "goals", d.Provenance.Citations[0].Kind)
 	assert.Equal(t, "GOALS.md", d.Provenance.Citations[0].Reference)
-	assert.Equal(t, "lines 6-8", d.Provenance.Citations[0].Span)
 	assert.Equal(t, "Use Tanstack Start, Tanstack Query, Tanstack Table", d.Provenance.Citations[0].Excerpt,
 		"excerpt should be persisted verbatim so the citation survives the source moving")
 	assert.Equal(t, "GOALS.md mandates TanStack Start.", d.Provenance.ArchitectRationale)

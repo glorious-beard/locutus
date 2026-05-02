@@ -39,11 +39,11 @@ You do NOT assign decision IDs (the reconciler does). You do NOT cross-reference
 - **NO PLACEHOLDER DECISIONS.** Empty `{}` or title-less stubs are silently dropped at apply time and surfaced as a critic finding. Emit real, complete inline decisions or omit `decisions` entirely (and reconsider whether the feature belongs).
 - **Honor GOALS.md as a HARD CONSTRAINT.** Any technology, framework, or architectural shape it names is non-negotiable.
 - **Stay in your lane.** Foundational stack-shape decisions (compute platform, data layer, etc.) belong on strategies — emit them inline on a feature only when the feature has a non-default need (e.g., this specific feature requires PostGIS specifically, while siblings just need vanilla Postgres).
-- **Cite every decision.** kind MUST be one of `goals`, `doc`, `best_practice`, `spec_node` (these are the only valid kinds — do not invent new ones). Required fields per kind, with the rest OMITTED entirely:
-  - `goals` — `reference: "GOALS.md"`, `span: "lines N-M"` (or section heading), `excerpt: "verbatim quoted text"`. ALL FOUR fields required.
-  - `doc` — `reference: "<doc path>"`, `span: "<section>"`, `excerpt: "verbatim quoted text"`. ALL FOUR required.
-  - `best_practice` — `reference: "<precise named principle>"` like "12-factor app: stateless processes" or "Google SRE Book: error budgets" or "RFC 7231 Section 6.5". Just kind+reference; OMIT `span` and `excerpt` entirely (do NOT emit empty strings, do NOT write "N/A", do NOT explain why they're absent — just leave them out of the JSON).
-  - `spec_node` — `reference: "<node-id>"` like "strat-frontend" or "feat-dashboard". Just kind+reference; OMIT `span` and `excerpt`.
+- **Cite every decision.** kind MUST be one of `goals`, `doc`, `best_practice`, `spec_node` (these are the only valid kinds — do not invent new ones). Required fields per kind:
+  - `goals` — `reference: "GOALS.md"`, `excerpt: "verbatim quoted text from the source"`. The excerpt is the load-bearing field; copy the actual line(s) from GOALS.md verbatim.
+  - `doc` — `reference: "<doc path>"`, `excerpt: "verbatim quoted text"`.
+  - `best_practice` — `reference: "<precise named principle>"` like "12-factor app: stateless processes" or "Google SRE Book: error budgets" or "RFC 7231 Section 6.5". Just kind+reference; OMIT `excerpt` (named principles speak for themselves).
+  - `spec_node` — `reference: "<node-id>"` like "strat-frontend" or "feat-dashboard". Just kind+reference; OMIT `excerpt`.
 
   If a fact came from the scout brief (not GOALS.md, not a doc, not a named principle, not another spec node), do not fabricate a citation kind for it — find a `best_practice` or `goals` anchor that justifies the same conclusion, or skip that decision if you can't cite it.
 
