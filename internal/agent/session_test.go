@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path"
+	"sort"
 	"testing"
 	"time"
 
@@ -24,30 +26,61 @@ func TestRoleContextRoundTrip(t *testing.T) {
 		"WithRole should overwrite the prior role on the chain")
 }
 
+// loadSessionManifest unmarshals the manifest at <rec.Path()>/session.yaml.
+// Test helper so individual cases don't repeat the read+unmarshal dance.
+func loadSessionManifest(t *testing.T, fs specio.FS, rec *SessionRecorder) sessionManifest {
+	t.Helper()
+	data, err := fs.ReadFile(rec.ManifestPath())
+	require.NoError(t, err, "manifest must be on disk")
+	var m sessionManifest
+	require.NoError(t, yaml.Unmarshal(data, &m))
+	return m
+}
+
+// loadSessionCalls reads every per-call file under <rec.Path()>/calls/,
+// returning them sorted by index. Stitches the per-file shape back into
+// the slice that the old single-file tests used.
+func loadSessionCalls(t *testing.T, fs specio.FS, rec *SessionRecorder) []recordedCall {
+	t.Helper()
+	dir := path.Join(rec.Path(), CallsDirName)
+	files, err := fs.ListDir(dir)
+	require.NoError(t, err, "calls dir must exist")
+	calls := make([]recordedCall, 0, len(files))
+	for _, p := range files {
+		data, err := fs.ReadFile(p)
+		require.NoError(t, err)
+		var c recordedCall
+		require.NoError(t, yaml.Unmarshal(data, &c), "decode %s", p)
+		calls = append(calls, c)
+	}
+	sort.Slice(calls, func(i, j int) bool { return calls[i].Index < calls[j].Index })
+	return calls
+}
+
 func TestSessionRecorderWritesToProjectFS(t *testing.T) {
 	fs := specio.NewMemFS()
 	rec, err := NewSessionRecorder(fs, "refine goals", "/test/project")
 	require.NoError(t, err)
 	require.NotEmpty(t, rec.SessionID())
 
-	// Nested layout — .locutus/sessions/<YYYYMMDD>/<HHMM>/<SS>-<short>.yaml.
+	// Nested layout — .locutus/sessions/<YYYYMMDD>/<HHMM>/<SS>-<short>/.
 	// Per-minute directory (not per-second) avoids exploding into
 	// single-file directories when sessions don't actually fire that
 	// fast; `rm -rf .locutus/sessions/20260420` still drops a day.
 	// Asserted via regex so we don't pin the test to whatever clock is
-	// active at run time.
+	// active at run time. Note: a directory now, not a single file.
 	assert.Regexp(t,
-		`^\.locutus/sessions/\d{8}/\d{4}/\d{2}-[0-9a-f]{6}\.yaml$`,
+		`^\.locutus/sessions/\d{8}/\d{4}/\d{2}-[0-9a-f]{6}$`,
 		rec.Path(),
-		"session path must be nested by date and HHMM so each day/minute is one rm -rf away")
+		"session path must be a directory nested by date and HHMM so each day/minute is one rm -rf away")
 
-	data, err := fs.ReadFile(rec.Path())
-	require.NoError(t, err)
-	var session sessionFile
-	require.NoError(t, yaml.Unmarshal(data, &session))
-	assert.Equal(t, "refine goals", session.Command)
-	assert.Equal(t, "/test/project", session.ProjectRoot)
-	assert.Empty(t, session.Calls)
+	manifest := loadSessionManifest(t, fs, rec)
+	assert.Equal(t, "refine goals", manifest.Command)
+	assert.Equal(t, "/test/project", manifest.ProjectRoot)
+	assert.Empty(t, manifest.CompletedAt,
+		"completed_at must remain empty until Close so tooling can detect interrupted sessions")
+	calls := loadSessionCalls(t, fs, rec)
+	assert.Empty(t, calls, "no calls flushed before Begin/Record")
 }
 
 func TestSessionRecorderRecordsCallsInOrder(t *testing.T) {
@@ -79,20 +112,24 @@ func TestSessionRecorderRecordsCallsInOrder(t *testing.T) {
 		nil, t1.Add(2*time.Second), 500*time.Millisecond,
 	)
 
-	data, err := fs.ReadFile(rec.Path())
-	require.NoError(t, err)
-	var session sessionFile
-	require.NoError(t, yaml.Unmarshal(data, &session))
-
-	require.Len(t, session.Calls, 2)
-	assert.Equal(t, 1, session.Calls[0].Index)
-	assert.Equal(t, "proposer", session.Calls[0].Role)
-	assert.Equal(t, "spec_architect", session.Calls[0].AgentID,
+	calls := loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 2)
+	assert.Equal(t, 1, calls[0].Index)
+	assert.Equal(t, "proposer", calls[0].Role)
+	assert.Equal(t, "spec_architect", calls[0].AgentID,
 		"agent_id must be recorded so trace consumers can identify the source agent")
-	assert.Equal(t, int64(1234), session.Calls[0].DurationMS)
-	assert.Equal(t, 2, session.Calls[1].Index)
-	assert.Equal(t, "critic", session.Calls[1].Role)
-	assert.Equal(t, "architect_critic", session.Calls[1].AgentID)
+	assert.Equal(t, int64(1234), calls[0].DurationMS)
+	assert.Equal(t, 2, calls[1].Index)
+	assert.Equal(t, "critic", calls[1].Role)
+	assert.Equal(t, "architect_critic", calls[1].AgentID)
+
+	// agent_id is also encoded into the per-call filename so `ls calls/`
+	// is a useful at-a-glance view of what happened in the session.
+	files, err := fs.ListDir(path.Join(rec.Path(), CallsDirName))
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+	assert.Contains(t, files[0], "0001-spec_architect")
+	assert.Contains(t, files[1], "0002-architect_critic")
 }
 
 func TestSessionRecorderEmitsLiteralBlocksForMultilineContent(t *testing.T) {
@@ -112,7 +149,10 @@ func TestSessionRecorderEmitsLiteralBlocksForMultilineContent(t *testing.T) {
 		nil, time.Now(), 0,
 	)
 
-	raw, err := fs.ReadFile(rec.Path())
+	files, err := fs.ListDir(path.Join(rec.Path(), CallsDirName))
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	raw, err := fs.ReadFile(files[0])
 	require.NoError(t, err)
 	out := string(raw)
 
@@ -138,12 +178,11 @@ func TestSessionRecorderRecordsErrors(t *testing.T) {
 		time.Now(), 0,
 	)
 
-	raw, _ := fs.ReadFile(rec.Path())
-	var session sessionFile
-	require.NoError(t, yaml.Unmarshal(raw, &session))
-	require.Len(t, session.Calls, 1)
-	assert.Equal(t, "model unavailable", session.Calls[0].Error)
-	assert.Empty(t, session.Calls[0].Response)
+	calls := loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 1)
+	assert.Equal(t, "model unavailable", calls[0].Error)
+	assert.Empty(t, calls[0].Response)
+	assert.Equal(t, CallStatusError, calls[0].Status)
 }
 
 func TestLoggingLLMRecordsAndDelegates(t *testing.T) {
@@ -165,13 +204,11 @@ func TestLoggingLLMRecordsAndDelegates(t *testing.T) {
 	assert.Equal(t, `{"ok":true}`, resp.Content)
 	assert.Equal(t, 1, mock.CallCount(), "inner LLM should still be called exactly once")
 
-	raw, _ := fs.ReadFile(rec.Path())
-	var session sessionFile
-	require.NoError(t, yaml.Unmarshal(raw, &session))
-	require.Len(t, session.Calls, 1)
-	assert.Equal(t, "proposer", session.Calls[0].Role,
+	calls := loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 1)
+	assert.Equal(t, "proposer", calls[0].Role,
 		"role from context should land on the recorded call")
-	assert.Equal(t, `{"ok":true}`, session.Calls[0].Response)
+	assert.Equal(t, `{"ok":true}`, calls[0].Response)
 }
 
 func TestSessionRecorderBeginWritesInProgressEntry(t *testing.T) {
@@ -189,18 +226,22 @@ func TestSessionRecorderBeginWritesInProgressEntry(t *testing.T) {
 	)
 	require.NotNil(t, handle)
 
-	// Tail-of-file behavior: an in-flight call should already be visible
-	// before Finish fires. This is the whole point of the placeholder —
-	// an operator watching the YAML knows what's blocking right now.
-	raw, _ := fs.ReadFile(rec.Path())
-	var session sessionFile
-	require.NoError(t, yaml.Unmarshal(raw, &session))
-	require.Len(t, session.Calls, 1)
-	assert.Equal(t, CallStatusInProgress, session.Calls[0].Status)
-	assert.Equal(t, "proposer", session.Calls[0].Role)
-	assert.Empty(t, session.Calls[0].Response, "response should be empty until Finish")
-	assert.Empty(t, session.Calls[0].CompletedAt)
-	assert.Zero(t, session.Calls[0].DurationMS)
+	// Tail-of-file behavior: an in-flight call's per-call file is on
+	// disk before Begin returns. This is the whole point of the
+	// placeholder — an operator watching the directory knows what's
+	// blocking right now. With per-call files the property is even
+	// stronger: a SIGKILL between Begin and Finish leaves the input
+	// messages on disk so the operator can debug "why did this call
+	// take forever?" without losing the prompt.
+	calls := loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 1)
+	assert.Equal(t, CallStatusInProgress, calls[0].Status)
+	assert.Equal(t, "proposer", calls[0].Role)
+	assert.Empty(t, calls[0].Response, "response should be empty until Finish")
+	assert.Empty(t, calls[0].CompletedAt)
+	assert.Zero(t, calls[0].DurationMS)
+	assert.Equal(t, 1, rec.inFlightCount(),
+		"the call must be tracked as in-flight until Finish drops it")
 
 	handle.Finish(&GenerateResponse{
 		Content:      `{"ok":true}`,
@@ -209,15 +250,16 @@ func TestSessionRecorderBeginWritesInProgressEntry(t *testing.T) {
 		TotalTokens:  165,
 	}, nil)
 
-	raw, _ = fs.ReadFile(rec.Path())
-	require.NoError(t, yaml.Unmarshal(raw, &session))
-	require.Len(t, session.Calls, 1, "Finish must update in place, not append")
-	assert.Equal(t, CallStatusCompleted, session.Calls[0].Status)
-	assert.Equal(t, `{"ok":true}`, session.Calls[0].Response)
-	assert.Equal(t, 120, session.Calls[0].InputTokens)
-	assert.Equal(t, 45, session.Calls[0].OutputTokens)
-	assert.Equal(t, 165, session.Calls[0].TotalTokens)
-	assert.NotEmpty(t, session.Calls[0].CompletedAt)
+	calls = loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 1, "Finish must update the same per-call file, not append a new one")
+	assert.Equal(t, CallStatusCompleted, calls[0].Status)
+	assert.Equal(t, `{"ok":true}`, calls[0].Response)
+	assert.Equal(t, 120, calls[0].InputTokens)
+	assert.Equal(t, 45, calls[0].OutputTokens)
+	assert.Equal(t, 165, calls[0].TotalTokens)
+	assert.NotEmpty(t, calls[0].CompletedAt)
+	assert.Zero(t, rec.inFlightCount(),
+		"Finish must release the in-flight slot so the call's payload is GC-eligible")
 }
 
 func TestSessionRecorderFinishWithErrorMarksStatus(t *testing.T) {
@@ -231,13 +273,11 @@ func TestSessionRecorderFinishWithErrorMarksStatus(t *testing.T) {
 	)
 	handle.Finish(nil, fmt.Errorf("context canceled"))
 
-	raw, _ := fs.ReadFile(rec.Path())
-	var session sessionFile
-	require.NoError(t, yaml.Unmarshal(raw, &session))
-	require.Len(t, session.Calls, 1)
-	assert.Equal(t, CallStatusError, session.Calls[0].Status)
-	assert.Equal(t, "context canceled", session.Calls[0].Error)
-	assert.Empty(t, session.Calls[0].Response)
+	calls := loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 1)
+	assert.Equal(t, CallStatusError, calls[0].Status)
+	assert.Equal(t, "context canceled", calls[0].Error)
+	assert.Empty(t, calls[0].Response)
 }
 
 func TestLoggingLLMPersistsTokenCounts(t *testing.T) {
@@ -261,14 +301,12 @@ func TestLoggingLLMPersistsTokenCounts(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	raw, _ := fs.ReadFile(rec.Path())
-	var session sessionFile
-	require.NoError(t, yaml.Unmarshal(raw, &session))
-	require.Len(t, session.Calls, 1)
-	assert.Equal(t, 200, session.Calls[0].InputTokens)
-	assert.Equal(t, 80, session.Calls[0].OutputTokens)
-	assert.Equal(t, 280, session.Calls[0].TotalTokens)
-	assert.Equal(t, CallStatusCompleted, session.Calls[0].Status)
+	calls := loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 1)
+	assert.Equal(t, 200, calls[0].InputTokens)
+	assert.Equal(t, 80, calls[0].OutputTokens)
+	assert.Equal(t, 280, calls[0].TotalTokens)
+	assert.Equal(t, CallStatusCompleted, calls[0].Status)
 }
 
 func TestLoggingLLMRecordsErrorPath(t *testing.T) {
@@ -284,9 +322,141 @@ func TestLoggingLLMRecordsErrorPath(t *testing.T) {
 	})
 	require.Error(t, err)
 
-	raw, _ := fs.ReadFile(rec.Path())
-	var session sessionFile
-	require.NoError(t, yaml.Unmarshal(raw, &session))
-	require.Len(t, session.Calls, 1)
-	assert.Equal(t, "rate limited", session.Calls[0].Error)
+	calls := loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 1)
+	assert.Equal(t, "rate limited", calls[0].Error)
+}
+
+// TestSessionRecorderSurvivesCrashMidCall is the load-bearing assertion
+// for Phase 1's crash-safety property: when Begin fires but Finish never
+// runs (process killed mid-call), the input messages must still be on
+// disk under status: in_progress so an operator can debug "why did this
+// call take forever?" without losing the prompt.
+func TestSessionRecorderSurvivesCrashMidCall(t *testing.T) {
+	fs := specio.NewMemFS()
+	rec, err := NewSessionRecorder(fs, "test", "")
+	require.NoError(t, err)
+
+	// Begin a call but DO NOT call Finish. Simulates a SIGKILL mid-call.
+	rec.Begin("proposer", "spec_architect",
+		GenerateRequest{
+			Model: "test-model",
+			Messages: []Message{
+				{Role: "system", Content: "elaborate this strategy"},
+				{Role: "user", Content: "the prompt that hung"},
+			},
+		},
+		time.Now(),
+	)
+
+	// Discard the recorder reference — the in-memory state is gone, the
+	// way it would be after a process restart. The on-disk state is all
+	// we have.
+	calls := loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 1, "in-progress call must be on disk even without Finish")
+	assert.Equal(t, CallStatusInProgress, calls[0].Status)
+	assert.Equal(t, "spec_architect", calls[0].AgentID)
+	require.Len(t, calls[0].Messages, 2,
+		"both input messages must be on disk so an operator can read the prompt that hung")
+	assert.Equal(t, "the prompt that hung", calls[0].Messages[1].Content)
+}
+
+// TestSessionRecorderInFlightDoesNotGrow is the memory-bound assertion:
+// after each Finish, the recorder's in-flight set returns to zero so
+// completed calls' payloads become GC-eligible. Without this,
+// a 100-call session would hoard 100 calls' worth of YAML in memory.
+func TestSessionRecorderInFlightDoesNotGrow(t *testing.T) {
+	fs := specio.NewMemFS()
+	rec, err := NewSessionRecorder(fs, "test", "")
+	require.NoError(t, err)
+
+	for i := 0; i < 50; i++ {
+		h := rec.Begin("proposer", "spec_architect",
+			GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
+			time.Now(),
+		)
+		assert.Equal(t, 1, rec.inFlightCount(),
+			"in-flight count climbs to 1 during the call")
+		h.Finish(&GenerateResponse{Content: "ok"}, nil)
+		assert.Equal(t, 0, rec.inFlightCount(),
+			"in-flight count must drop to 0 after each Finish")
+	}
+
+	calls := loadSessionCalls(t, fs, rec)
+	assert.Len(t, calls, 50, "all 50 calls must be persisted to per-call files")
+}
+
+// TestSessionRecorderPerCallFileIsAtomic checks the bounded-write
+// property: a Begin/Finish pair touches exactly one per-call file,
+// leaving sibling per-call files byte-identical. This is the structural
+// reason memory and disk I/O scale O(1) per call instead of O(N).
+func TestSessionRecorderPerCallFileIsAtomic(t *testing.T) {
+	fs := specio.NewMemFS()
+	rec, err := NewSessionRecorder(fs, "test", "")
+	require.NoError(t, err)
+
+	rec.Record("proposer", "spec_architect",
+		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "first"}}},
+		&GenerateResponse{Content: "first reply"},
+		nil, time.Now(), 0,
+	)
+	files1, err := fs.ListDir(path.Join(rec.Path(), CallsDirName))
+	require.NoError(t, err)
+	require.Len(t, files1, 1)
+	firstSnapshot, err := fs.ReadFile(files1[0])
+	require.NoError(t, err)
+
+	rec.Record("critic", "architect_critic",
+		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "second"}}},
+		&GenerateResponse{Content: "second reply"},
+		nil, time.Now(), 0,
+	)
+	files2, err := fs.ListDir(path.Join(rec.Path(), CallsDirName))
+	require.NoError(t, err)
+	require.Len(t, files2, 2)
+
+	// First call's file is byte-identical — the second call's flush
+	// must not touch any prior call's file. Without this property the
+	// recorder would still be O(N) on every flush.
+	firstUnchanged, err := fs.ReadFile(files1[0])
+	require.NoError(t, err)
+	assert.Equal(t, firstSnapshot, firstUnchanged,
+		"flushing call N must not rewrite call N-1's file")
+}
+
+// TestSessionRecorderCloseStampsManifestAndInterrupted verifies the
+// clean-shutdown path: Close stamps completed_at on the manifest and
+// flips any still-in-flight calls to status: interrupted on disk so
+// post-mortem tooling can tell "session ended cleanly" from "session
+// ended cleanly but had stragglers" from "session crashed."
+func TestSessionRecorderCloseStampsManifestAndInterrupted(t *testing.T) {
+	fs := specio.NewMemFS()
+	rec, err := NewSessionRecorder(fs, "test", "")
+	require.NoError(t, err)
+
+	// Two calls: one finished normally, one left in flight to test the
+	// straggler path.
+	h1 := rec.Begin("proposer", "spec_architect",
+		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "a"}}},
+		time.Now(),
+	)
+	h1.Finish(&GenerateResponse{Content: "ok"}, nil)
+
+	rec.Begin("critic", "architect_critic",
+		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "b"}}},
+		time.Now(),
+	)
+	// Note: no Finish — Close should stamp this as interrupted.
+
+	require.NoError(t, rec.Close())
+
+	manifest := loadSessionManifest(t, fs, rec)
+	assert.NotEmpty(t, manifest.CompletedAt,
+		"completed_at must be stamped after Close so post-mortem can detect clean shutdown")
+
+	calls := loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 2)
+	assert.Equal(t, CallStatusCompleted, calls[0].Status)
+	assert.Equal(t, CallStatusInterrupted, calls[1].Status,
+		"calls still in flight at Close must be flipped to interrupted on disk")
 }

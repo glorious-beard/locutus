@@ -80,7 +80,8 @@ func (c *ImportCmd) Run(ctx context.Context, cli *CLI) error {
 	}
 	printImportResult(result)
 	if rec != nil {
-		fmt.Printf("Session: %s\n", rec.Path())
+		_ = rec.Close()
+		fmt.Printf("Session: %s/ (per-call YAML under calls/)\n", rec.Path())
 	}
 	if !result.Accepted {
 		return ExitCode(1)

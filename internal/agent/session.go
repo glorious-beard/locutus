@@ -113,39 +113,53 @@ func RetryCallbackFromContext(ctx context.Context) func(int, error) {
 	return nil
 }
 
-// SessionRecorder writes a YAML transcript of every LLM call to
-// .locutus/sessions/<sid>.yaml. The recorder rewrites the file
-// atomically on each Record() so a crash mid-call leaves the previous
-// N-1 calls intact; only the in-flight call is at risk.
+// SessionRecorder writes a YAML transcript of every LLM call as a
+// directory tree under .locutus/sessions/<sid>/, with a small manifest
+// file (`session.yaml`) and one file per call under `calls/`.
 //
-// The file format is human-readable: prompts and responses are emitted
-// as YAML literal blocks (|) so newlines and markdown survive verbatim
-// — the file IS the readable transcript, no parallel summary.md needed.
+// Per-call files mean each Begin/Finish flushes only that one call's
+// content (bounded by node complexity), not the whole session. Memory
+// at runtime tracks only the in-flight working set, not cumulative
+// session size — important for fanout-heavy workflows that emit 20+
+// calls. A SIGKILL between Begin (input on disk) and Finish (output
+// not yet on disk) leaves the in-progress call's input file readable
+// so an operator can debug "why did this call take forever?"
+//
+// Each call file is written atomically (tmp + rename on OSFS), so a
+// crash mid-flush leaves either the prior version or the new version
+// of that one file — never partial.
 type SessionRecorder struct {
 	fsys specio.FS
-	path string
+	dir  string // .locutus/sessions/<sid>/
 
-	mu      sync.Mutex
-	session sessionFile
+	mu        sync.Mutex
+	manifest  sessionManifest
+	inFlight  map[int]*callHandle
+	nextIndex int
 }
 
-// sessionFile is the on-disk YAML shape. Keep field tags ordered as you
-// want them rendered — yaml.v3 honors struct order.
-type sessionFile struct {
-	SessionID   string         `yaml:"session_id"`
-	StartedAt   string         `yaml:"started_at"`
-	Command     string         `yaml:"command"`
-	ProjectRoot string         `yaml:"project_root,omitempty"`
-	Calls       []recordedCall `yaml:"calls"`
+// sessionManifest is the on-disk shape of <dir>/session.yaml.
+// Intentionally small and stable: it's written once at construction
+// and updated only on clean Close. The directory listing of calls/
+// IS the calls list; no count or per-call summary is persisted here.
+type sessionManifest struct {
+	SessionID   string `yaml:"session_id"`
+	StartedAt   string `yaml:"started_at"`
+	CompletedAt string `yaml:"completed_at,omitempty"`
+	Command     string `yaml:"command"`
+	ProjectRoot string `yaml:"project_root,omitempty"`
 }
 
-// Call status values written to the YAML transcript. "in_progress"
+// Call status values written to per-call YAML files. "in_progress"
 // means Begin() has fired but the underlying Generate() has not yet
 // returned — readers tail the file to see what's currently in flight.
+// "interrupted" means Close() ran while the call was still in flight
+// (e.g. the process is shutting down without waiting for the call).
 const (
 	CallStatusInProgress = "in_progress"
 	CallStatusCompleted  = "completed"
 	CallStatusError      = "error"
+	CallStatusInterrupted = "interrupted"
 )
 
 type recordedCall struct {
@@ -174,25 +188,37 @@ type recordedMessage struct {
 	Content string `yaml:"content"`
 }
 
-// NewSessionRecorder creates a session file at
-// .locutus/sessions/<YYYYMMDD>/<HHMM>/<SS>-<short>.yaml on fsys. The
+// CallsDirName is the subdirectory under a session directory that
+// holds per-call YAML files. Exported for tools that walk a session.
+const CallsDirName = "calls"
+
+// SessionManifestFile is the manifest filename within a session
+// directory. Exported for tools that walk a session.
+const SessionManifestFile = "session.yaml"
+
+// NewSessionRecorder creates a session directory at
+// .locutus/sessions/<YYYYMMDD>/<HHMM>/<SS>-<short>/ on fsys. The
 // per-minute directory keeps housekeeping easy — `rm -rf
 // .locutus/sessions/20260420` drops a day, `rm -rf .../20260420/1407`
 // drops a minute — without exploding into a single-file directory per
-// second when sessions don't actually fire that fast.
+// second when sessions don't actually fire that fast. Within the
+// session directory, `session.yaml` is the manifest and `calls/`
+// holds one YAML file per recorded LLM call.
 //
 // command is recorded for human reference (e.g. "refine goals",
-// "import docs/foo.md"). projectRoot is informational — included in the
-// file metadata but not used for path resolution (fsys is already rooted).
+// "import docs/foo.md"). projectRoot is informational — included in
+// the manifest but not used for path resolution (fsys is already
+// rooted).
 func NewSessionRecorder(fsys specio.FS, command, projectRoot string) (*SessionRecorder, error) {
 	ts := time.Now()
 	short := newShortSessionID()
 	dateDir := ts.Format("20060102")
 	hourMinDir := ts.Format("1504")
 	secPrefix := ts.Format("05")
-	dir := path.Join(".locutus/sessions", dateDir, hourMinDir)
-	relPath := path.Join(dir, secPrefix+"-"+short+".yaml")
-	if err := fsys.MkdirAll(dir, 0o755); err != nil {
+	parent := path.Join(".locutus/sessions", dateDir, hourMinDir)
+	dir := path.Join(parent, secPrefix+"-"+short)
+	callsDir := path.Join(dir, CallsDirName)
+	if err := fsys.MkdirAll(callsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("session recorder mkdir: %w", err)
 	}
 	// Composite session id retains the full timestamp + short suffix so a
@@ -201,60 +227,72 @@ func NewSessionRecorder(fsys specio.FS, command, projectRoot string) (*SessionRe
 	sid := dateDir + "-" + hourMinDir + secPrefix + "-" + short
 	rec := &SessionRecorder{
 		fsys: fsys,
-		path: relPath,
-		session: sessionFile{
+		dir:  dir,
+		manifest: sessionManifest{
 			SessionID:   sid,
 			StartedAt:   ts.Format(time.RFC3339),
 			Command:     command,
 			ProjectRoot: projectRoot,
 		},
+		inFlight: make(map[int]*callHandle),
 	}
-	if err := rec.flush(); err != nil {
+	if err := rec.writeManifest(); err != nil {
 		return nil, err
 	}
 	return rec, nil
 }
 
-// SessionID returns the session ID (also the file basename without
-// extension).
-func (r *SessionRecorder) SessionID() string { return r.session.SessionID }
+// SessionID returns the session ID (also the directory basename).
+func (r *SessionRecorder) SessionID() string { return r.manifest.SessionID }
 
-// Path returns the FS-relative path of the session file.
-func (r *SessionRecorder) Path() string { return r.path }
+// Path returns the FS-relative path of the session directory. Tools
+// that want to enumerate calls should look under <Path()>/calls/.
+func (r *SessionRecorder) Path() string { return r.dir }
 
-// Record stores one LLM call as a single completed entry. Equivalent to
-// Begin(...) immediately followed by Finish(...) and retained for callers
-// that don't need the live placeholder. Safe for concurrent use.
+// ManifestPath returns the FS-relative path of the session manifest
+// file. Provided for tooling and tests; production callers shouldn't
+// need it.
+func (r *SessionRecorder) ManifestPath() string {
+	return path.Join(r.dir, SessionManifestFile)
+}
+
+// Record stores one LLM call as a single completed entry. Equivalent
+// to Begin(...) immediately followed by Finish(...) and retained for
+// callers that don't need the live placeholder. Safe for concurrent
+// use.
 func (r *SessionRecorder) Record(role, agentID string, req GenerateRequest, resp *GenerateResponse, callErr error, started time.Time, duration time.Duration) {
 	h := r.Begin(role, agentID, req, started)
 	completedAt := started.Add(duration)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.finalize(h.sliceIdx, resp, callErr, completedAt, duration)
-	_ = r.flush()
+	h.finishAt(resp, callErr, completedAt, duration)
 }
 
 // callHandle is returned from Begin and threaded into Finish so the
-// recorder can update the entry it appended at start. Indices are stable
-// because calls only ever append — parallel workflow agents won't shuffle
-// an already-issued index.
+// recorder can update the call's per-call file. Each handle owns its
+// path and the in-memory recordedCall struct that gets mutated then
+// flushed on Finish; after Finish the handle drops out of inFlight
+// and its memory is GC-eligible.
 type callHandle struct {
 	recorder *SessionRecorder
-	sliceIdx int
+	index    int
+	filePath string
 	started  time.Time
+	call     recordedCall
 }
 
-// Begin appends an in-progress entry for this call and flushes
-// immediately so a tail of the YAML reveals what is currently in
-// flight. The caller MUST follow up with Finish (use defer when the
-// surrounding function takes the response/error in one place). Safe
-// for concurrent use.
+// Begin assigns the next call index, writes the per-call file with
+// `status: in_progress` and the input messages, and returns a handle
+// for Finish. The file is on disk before Begin returns so a tail of
+// the session directory reveals what's currently in flight; a
+// SIGKILL between Begin and Finish preserves the input messages but
+// loses the output. Safe for concurrent use.
 func (r *SessionRecorder) Begin(role, agentID string, req GenerateRequest, started time.Time) *callHandle {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.nextIndex++
+	idx := r.nextIndex
+	r.mu.Unlock()
 
 	call := recordedCall{
-		Index:        len(r.session.Calls) + 1,
+		Index:        idx,
 		AgentID:      agentID,
 		Role:         role,
 		Status:       CallStatusInProgress,
@@ -265,66 +303,146 @@ func (r *SessionRecorder) Begin(role, agentID string, req GenerateRequest, start
 	for _, m := range req.Messages {
 		call.Messages = append(call.Messages, recordedMessage{Role: m.Role, Content: m.Content})
 	}
-	r.session.Calls = append(r.session.Calls, call)
-	idx := len(r.session.Calls) - 1
 
-	// Best-effort flush — see flush comment in Record.
-	_ = r.flush()
+	h := &callHandle{
+		recorder: r,
+		index:    idx,
+		filePath: r.callFilePath(idx, agentID),
+		started:  started,
+		call:     call,
+	}
 
-	return &callHandle{recorder: r, sliceIdx: idx, started: started}
+	r.mu.Lock()
+	r.inFlight[idx] = h
+	r.mu.Unlock()
+
+	// Best-effort flush: if the per-call write fails, log and proceed.
+	// The recorder is observability — a full failure path would mask
+	// the actual LLM error the operator is trying to trace.
+	if err := h.flush(); err != nil {
+		slog.Warn("session recorder: in-progress call flush failed",
+			"session", r.manifest.SessionID, "index", idx, "error", err)
+	}
+	return h
 }
 
-// Finish completes the entry that Begin appended. Idempotent on a nil
-// handle so callers can defer h.Finish(...) without nil checks even
-// when Begin was never called.
+// Finish completes the call this handle was issued for. Idempotent
+// on a nil handle so callers can defer h.Finish(...) without nil
+// checks even when Begin was never called.
 func (h *callHandle) Finish(resp *GenerateResponse, callErr error) {
 	if h == nil || h.recorder == nil {
 		return
 	}
 	completedAt := time.Now()
-	duration := completedAt.Sub(h.started)
-	r := h.recorder
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.finalize(h.sliceIdx, resp, callErr, completedAt, duration)
-	_ = r.flush()
+	h.finishAt(resp, callErr, completedAt, completedAt.Sub(h.started))
 }
 
-// finalize writes the response/error/timing fields onto an existing
-// in-progress entry. Caller must hold r.mu.
-func (r *SessionRecorder) finalize(idx int, resp *GenerateResponse, callErr error, completedAt time.Time, duration time.Duration) {
-	if idx < 0 || idx >= len(r.session.Calls) {
-		return
-	}
-	call := &r.session.Calls[idx]
-	call.CompletedAt = completedAt.Format(time.RFC3339)
-	call.DurationMS = duration.Milliseconds()
+// finishAt is the shared backend for Finish (real-time) and Record
+// (synthetic time). Mutates the handle's recordedCall, flushes the
+// per-call file, then drops the handle from the recorder's in-flight
+// set so the call's payload becomes GC-eligible.
+func (h *callHandle) finishAt(resp *GenerateResponse, callErr error, completedAt time.Time, duration time.Duration) {
+	h.call.CompletedAt = completedAt.Format(time.RFC3339)
+	h.call.DurationMS = duration.Milliseconds()
 	if callErr != nil {
-		call.Status = CallStatusError
-		call.Error = callErr.Error()
+		h.call.Status = CallStatusError
+		h.call.Error = callErr.Error()
 	} else {
-		call.Status = CallStatusCompleted
+		h.call.Status = CallStatusCompleted
 	}
 	if resp != nil {
-		call.Response = resp.Content
-		call.Reasoning = resp.Reasoning
-		call.RawMessage = resp.RawMessage
-		call.InputTokens = resp.InputTokens
-		call.OutputTokens = resp.OutputTokens
-		call.ThoughtsTokens = resp.ThoughtsTokens
-		call.TotalTokens = resp.TotalTokens
-		if call.Model == "" {
-			call.Model = resp.Model
+		h.call.Response = resp.Content
+		h.call.Reasoning = resp.Reasoning
+		h.call.RawMessage = resp.RawMessage
+		h.call.InputTokens = resp.InputTokens
+		h.call.OutputTokens = resp.OutputTokens
+		h.call.ThoughtsTokens = resp.ThoughtsTokens
+		h.call.TotalTokens = resp.TotalTokens
+		if h.call.Model == "" {
+			h.call.Model = resp.Model
 		}
 	}
+	if err := h.flush(); err != nil {
+		slog.Warn("session recorder: finish flush failed",
+			"session", h.recorder.manifest.SessionID, "index", h.index, "error", err)
+	}
+	h.recorder.mu.Lock()
+	delete(h.recorder.inFlight, h.index)
+	h.recorder.mu.Unlock()
 }
 
-func (r *SessionRecorder) flush() error {
-	data, err := yaml.Marshal(&r.session)
+// Close stamps the manifest's completed_at and marks any still-in-flight
+// calls as interrupted on disk. Safe to call multiple times; idempotent
+// past the first call. Optional — sessions left without Close still have
+// their per-call files on disk; the manifest just lacks completed_at,
+// which itself is a useful "this session never finished cleanly"
+// diagnostic.
+func (r *SessionRecorder) Close() error {
+	r.mu.Lock()
+	r.manifest.CompletedAt = time.Now().Format(time.RFC3339)
+	stragglers := make([]*callHandle, 0, len(r.inFlight))
+	for _, h := range r.inFlight {
+		stragglers = append(stragglers, h)
+	}
+	r.inFlight = make(map[int]*callHandle)
+	r.mu.Unlock()
+
+	for _, h := range stragglers {
+		h.call.Status = CallStatusInterrupted
+		if err := h.flush(); err != nil {
+			slog.Warn("session recorder: close flush failed",
+				"session", r.manifest.SessionID, "index", h.index, "error", err)
+		}
+	}
+	return r.writeManifest()
+}
+
+// callFilePath builds the per-call file path:
+//   <dir>/calls/<NNNN>-<agent>.yaml  when agent is set
+//   <dir>/calls/<NNNN>.yaml          when agent is empty
+// 4-digit zero-padded index sorts lexically out of the box; 9999 calls
+// per session is more headroom than any realistic workflow needs.
+func (r *SessionRecorder) callFilePath(idx int, agentID string) string {
+	name := fmt.Sprintf("%04d", idx)
+	if agentID != "" {
+		name = name + "-" + agentID
+	}
+	return path.Join(r.dir, CallsDirName, name+".yaml")
+}
+
+// flush writes the call's current state to its per-call file. Atomic
+// on OSFS; straight write on MemFS.
+func (h *callHandle) flush() error {
+	data, err := yaml.Marshal(&h.call)
 	if err != nil {
 		return err
 	}
-	return specio.AtomicWriteFile(r.fsys, r.path, data, 0o644)
+	return specio.AtomicWriteFile(h.recorder.fsys, h.filePath, data, 0o644)
+}
+
+// writeManifest atomically rewrites <dir>/session.yaml. Called once
+// at construction and again on Close. Cheap — manifest is small and
+// stable.
+func (r *SessionRecorder) writeManifest() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.writeManifestLocked()
+}
+
+func (r *SessionRecorder) writeManifestLocked() error {
+	data, err := yaml.Marshal(&r.manifest)
+	if err != nil {
+		return err
+	}
+	return specio.AtomicWriteFile(r.fsys, path.Join(r.dir, SessionManifestFile), data, 0o644)
+}
+
+// inFlightCount returns the number of calls that have started but not
+// yet finished. Test-only observability for the memory-bound assertion.
+func (r *SessionRecorder) inFlightCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.inFlight)
 }
 
 // newShortSessionID returns 6 hex chars from crypto/rand, distinguishing
@@ -367,8 +485,8 @@ func NewLoggingLLMWithHeartbeat(inner LLM, recorder *SessionRecorder, heartbeat 
 }
 
 // Generate delegates to the inner LLM and records the call. The
-// recorder gets an in-progress entry at start so a tail of the session
-// YAML reveals what's currently in flight. A heartbeat goroutine logs
+// recorder gets an in-progress entry at start so a tail of the per-call
+// file reveals what's currently in flight. A heartbeat goroutine logs
 // "still running" every heartbeatInterval so an operator watching
 // stderr knows the call hasn't deadlocked even when the underlying
 // non-streaming Generate produces no output of its own.

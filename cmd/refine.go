@@ -91,7 +91,8 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 	printRefineSummary(result)
-	fmt.Printf("Session: %s\n", rec.Path())
+	_ = rec.Close()
+	fmt.Printf("Session: %s/ (per-call YAML under calls/)\n", rec.Path())
 	return nil
 }
 
