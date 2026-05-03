@@ -158,6 +158,24 @@ func init() {
 		Issues: []string{"feature feat-x references dec-y but dec-y is not generated"},
 	})
 
+	// RevisionPlan is the spec_revision_triager agent's output. Each
+	// actionable critic finding is routed to one of three buckets:
+	// per-feature revisions, per-strategy revisions, or proposed
+	// additions. Drives the per-node revise fanout (Phase 1 of
+	// council-tools-and-revise-fanout). Non-actionable findings are
+	// silently omitted — only consumed fields belong in the schema.
+	RegisterSchema("RevisionPlan", RevisionPlan{
+		FeatureRevisions: []NodeRevision{{
+			NodeID:   "feat-example",
+			Concerns: []string{"verbatim text of the critic finding targeting this feature"},
+		}},
+		StrategyRevisions: []NodeRevision{{
+			NodeID:   "strat-example",
+			Concerns: []string{"verbatim text of the critic finding targeting this strategy"},
+		}},
+		Additions: []string{"verbatim text of a critic finding proposing a missing feature or strategy"},
+	})
+
 	RegisterSchema("Concern", Concern{
 		AgentID:  "critic",
 		Severity: "high",

@@ -281,19 +281,25 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 	return results, nil
 }
 
-// fanoutItemID extracts the `id` field from a fanout item's raw JSON
-// for per-item event labeling. Returns empty when the item shape has
-// no `id` (or the JSON is malformed); callers fall back to the bare
-// step ID, which preserves correctness — the dedup-key collision is a
-// progress-rendering issue, not a correctness one.
+// fanoutItemID extracts an identifier from a fanout item's raw JSON
+// for per-item event labeling. Tries `id` first (OutlineFeature /
+// OutlineStrategy shape) and falls back to `node_id` (NodeRevision
+// shape used by the revise fanouts). Returns empty when neither is
+// present; callers fall back to the bare step ID, which preserves
+// correctness — the dedup-key collision is a progress-rendering
+// issue, not a correctness one.
 func fanoutItemID(rawJSON string) string {
 	var v struct {
-		ID string `json:"id"`
+		ID     string `json:"id"`
+		NodeID string `json:"node_id"`
 	}
 	if err := json.Unmarshal([]byte(rawJSON), &v); err != nil {
 		return ""
 	}
-	return v.ID
+	if v.ID != "" {
+		return v.ID
+	}
+	return v.NodeID
 }
 
 // extractFanoutItems resolves a dotted state path (e.g. "outline.features")
@@ -301,10 +307,14 @@ func fanoutItemID(rawJSON string) string {
 // the JSON encoding of a single element so the elaborator's projection can
 // re-parse it into the right typed shape.
 //
-// Supported paths today: "outline.features", "outline.strategies". Adding
-// new fanout sources means parsing the corresponding state field here —
-// kept narrow to avoid hand-rolling a generic JSON-path resolver against
-// the typed PlanningState struct.
+// Supported paths:
+//   - "outline.features", "outline.strategies"           — Phase 3 elaborate
+//   - "revision_plan.feature_revisions"                  — revise fanout (features)
+//   - "revision_plan.strategy_revisions"                 — revise fanout (strategies)
+//
+// Adding new fanout sources means parsing the corresponding state field
+// here — kept narrow to avoid hand-rolling a generic JSON-path resolver
+// against the typed PlanningState struct.
 func extractFanoutItems(state *PlanningState, path string) ([]string, error) {
 	if state == nil {
 		return nil, nil
@@ -328,18 +338,41 @@ func extractFanoutItems(state *PlanningState, path string) ([]string, error) {
 				items = append(items, s)
 			}
 		}
-		out := make([]string, 0, len(items))
-		for _, it := range items {
-			data, err := json.Marshal(it)
-			if err != nil {
-				return nil, fmt.Errorf("marshal fanout item: %w", err)
-			}
-			out = append(out, string(data))
+		return marshalFanoutItems(items)
+	case "revision_plan.feature_revisions", "revision_plan.strategy_revisions":
+		if strings.TrimSpace(state.RevisionPlan) == "" {
+			return nil, nil
 		}
-		return out, nil
+		var plan RevisionPlan
+		if err := json.Unmarshal([]byte(state.RevisionPlan), &plan); err != nil {
+			return nil, fmt.Errorf("parse revision plan: %w", err)
+		}
+		var items []any
+		if path == "revision_plan.feature_revisions" {
+			for _, r := range plan.FeatureRevisions {
+				items = append(items, r)
+			}
+		} else {
+			for _, r := range plan.StrategyRevisions {
+				items = append(items, r)
+			}
+		}
+		return marshalFanoutItems(items)
 	default:
-		return nil, fmt.Errorf("unsupported fanout path %q (want outline.features or outline.strategies)", path)
+		return nil, fmt.Errorf("unsupported fanout path %q", path)
 	}
+}
+
+func marshalFanoutItems(items []any) ([]string, error) {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		data, err := json.Marshal(it)
+		if err != nil {
+			return nil, fmt.Errorf("marshal fanout item: %w", err)
+		}
+		out = append(out, string(data))
+	}
+	return out, nil
 }
 
 // shouldRunConditional checks whether a conditional step should execute.
@@ -355,6 +388,19 @@ func shouldRunConditional(cond string, state *PlanningState) bool {
 		return state.ProposedSpec != ""
 	case "has_revisions":
 		return state.Revisions != ""
+	case "has_additions":
+		// True when the triager bucketed at least one finding as a
+		// proposed addition (a new feature/strategy missing from the
+		// proposal). Gates the revise_additions step so we don't ask
+		// the architect to invent additions when none are needed.
+		if state.RevisionPlan == "" {
+			return false
+		}
+		var plan RevisionPlan
+		if err := json.Unmarshal([]byte(state.RevisionPlan), &plan); err != nil {
+			return false
+		}
+		return len(plan.Additions) > 0
 	}
 
 	// Fallback: keyword presence scan for custom/legacy conditionals.
@@ -467,6 +513,25 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 			})
 		case "revisions", "revise":
 			state.Revisions = r.Output
+		case "revision_plan":
+			// spec_revision_triager emits a RevisionPlan that buckets
+			// each critic finding into per-node revisions or proposed
+			// additions. Drives the revise fanouts and the additions
+			// step (gated by has_additions).
+			state.RevisionPlan = r.Output
+		case "revised_features":
+			// Per-node revise fanout: each call emits one revised
+			// RawFeatureProposal. Accumulated; merging into the final
+			// RawProposal happens via assembleRevisedRawProposal below
+			// once revise activity completes.
+			state.RevisedFeatures = append(state.RevisedFeatures, r.Output)
+		case "revised_strategies":
+			state.RevisedStrategies = append(state.RevisedStrategies, r.Output)
+		case "addition_proposals":
+			// Architect's revise_additions output: a partial
+			// RawSpecProposal containing only new features/strategies
+			// addressing addition concerns.
+			state.AdditionProposals = r.Output
 		case "record":
 			state.Record = r.Output
 		case "scout_brief", "survey":
@@ -492,9 +557,27 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 	// independent — both branches converge on the same RawProposal as
 	// soon as the data is available. Reconcile reads state.RawProposal
 	// for both its prompt and the ApplyReconciliation merge.
+	//
+	// OriginalRawProposal mirrors RawProposal at this point so the
+	// downstream revise fanout has a stable pre-revise snapshot to
+	// look up prior node content from. RawProposal itself gets
+	// rewritten by the revised-assembly path below once revise
+	// activity completes.
 	if mergeKey == "elaborated_features" || mergeKey == "elaborated_strategies" {
 		if assembled, ok := assembleRawProposal(state); ok {
 			state.RawProposal = assembled
+			state.OriginalRawProposal = assembled
+		}
+	}
+
+	// Revise assembly: when any revise-related merge completes,
+	// rebuild RawProposal from the original + the per-node revisions
+	// + the additions. Idempotent and order-independent — multiple
+	// revise merges converge on the same merged proposal as new data
+	// arrives. Reconcile_revise reads state.RawProposal unchanged.
+	if mergeKey == "revised_features" || mergeKey == "revised_strategies" || mergeKey == "addition_proposals" {
+		if merged, ok := assembleRevisedRawProposal(state); ok {
+			state.RawProposal = merged
 		}
 	}
 }

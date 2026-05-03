@@ -38,6 +38,14 @@ func ProjectState(stepID string, snap StateSnapshot) []Message {
 		return projectResearch(snap)
 	case "revise":
 		return projectRevise(snap)
+	case "triage":
+		return projectTriage(snap)
+	case "revise_features":
+		return projectReviseNode(snap, "feature")
+	case "revise_strategies":
+		return projectReviseNode(snap, "strategy")
+	case "revise_additions":
+		return projectReviseAdditions(snap)
 	case "record":
 		return projectRecord(snap)
 	default:
@@ -159,10 +167,209 @@ func formatOutlineForElaborator(raw string) string {
 	return strings.TrimSpace(b.String())
 }
 
-// projectReconcile builds the reconciler's user message: the raw proposal
-// from the upstream propose/revise step plus the existing-spec snapshot
-// (when present) so the agent can mark clusters for ID reuse rather than
-// minting new IDs.
+// projectTriage builds the spec_revision_triager's user message:
+// the list of node ids in the current proposal + the critic findings
+// (one per concern, grouped by kind for readability). The triager
+// emits a RevisionPlan routing each finding to a feature/strategy
+// revision, an addition, or discarded.
+//
+// The triager does NOT see the full proposal content — only the node
+// id list. Routing is a pure mapping from finding text → node id, not
+// an authoring task.
+func projectTriage(snap StateSnapshot) []Message {
+	var b strings.Builder
+	b.WriteString("## Existing nodes in the proposal\n\n")
+	features, strategies := proposalNodeIDs(snap.RawProposal)
+	if len(features) == 0 && len(strategies) == 0 {
+		b.WriteString("(none — the proposal is empty; route every finding to additions[] or discarded[])\n")
+	} else {
+		if len(features) > 0 {
+			b.WriteString("**Features:**\n")
+			for _, f := range features {
+				fmt.Fprintf(&b, "- %s\n", f)
+			}
+			b.WriteString("\n")
+		}
+		if len(strategies) > 0 {
+			b.WriteString("**Strategies:**\n")
+			for _, s := range strategies {
+				fmt.Fprintf(&b, "- %s\n", s)
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	if len(snap.Concerns) > 0 {
+		b.WriteString("## Critic findings to route\n\n")
+		// Group by kind so the triager sees lens labels next to each
+		// finding — useful when judging whether a finding is a node
+		// targeting one or a proposed addition.
+		byKind := make(map[string][]Concern)
+		for _, c := range snap.Concerns {
+			k := c.Kind
+			if k == "" {
+				k = "review"
+			}
+			byKind[k] = append(byKind[k], c)
+		}
+		kinds := make([]string, 0, len(byKind))
+		for k := range byKind {
+			kinds = append(kinds, k)
+		}
+		sort.Strings(kinds)
+		for _, k := range kinds {
+			fmt.Fprintf(&b, "### %s (%d)\n", k, len(byKind[k]))
+			for _, c := range byKind[k] {
+				fmt.Fprintf(&b, "- %s\n", c.Text)
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("Emit a RevisionPlan routing each actionable finding above to feature_revisions, strategy_revisions, or additions. Findings you judge non-actionable (off-topic, already addressed, pure observations) are simply omitted. Use the verbatim finding text in the concerns/additions arrays — do not paraphrase.")
+	return []Message{{Role: "user", Content: b.String()}}
+}
+
+// projectReviseNode builds the per-node revise elaborator's user
+// message. The fanout dispatcher set snap.FanoutItem to the JSON of
+// one NodeRevision; we look up the prior RawFeatureProposal /
+// RawStrategyProposal from snap.OriginalRawProposal and present both
+// the prior content and the targeted concerns to the elaborator.
+//
+// This routes through the same elaborator agent (spec_feature_elaborator
+// / spec_strategy_elaborator) that handled the initial elaborate
+// fanout — the agent's job is identical (produce a Raw*Proposal for
+// one node) and the projection just supplies different context.
+func projectReviseNode(snap StateSnapshot, kind string) []Message {
+	var b strings.Builder
+	b.WriteString(snap.Prompt)
+	if snap.ScoutBrief != "" {
+		if formatted := formatScoutBrief(snap.ScoutBrief); formatted != "" {
+			b.WriteString("\n\n## Scout brief\n\n")
+			b.WriteString(formatted)
+		}
+	}
+
+	var rev NodeRevision
+	if snap.FanoutItem != "" {
+		_ = json.Unmarshal([]byte(snap.FanoutItem), &rev)
+	}
+
+	fmt.Fprintf(&b, "\n\n## %s to revise\n\n", kind)
+	if rev.NodeID == "" {
+		b.WriteString("(missing — fanout did not populate a NodeRevision)\n")
+		return []Message{{Role: "user", Content: b.String()}}
+	}
+	fmt.Fprintf(&b, "- **Node ID:** `%s`\n\n", rev.NodeID)
+
+	b.WriteString("## Prior content (rejected — re-emit a corrected version)\n\n")
+	switch kind {
+	case "feature":
+		if prior, ok := findRawFeature(snap.OriginalRawProposal, rev.NodeID); ok {
+			data, err := json.MarshalIndent(prior, "", "  ")
+			if err == nil {
+				b.WriteString("```json\n")
+				b.Write(data)
+				b.WriteString("\n```\n")
+			}
+		} else {
+			fmt.Fprintf(&b, "(prior feature %q not found in the original proposal)\n", rev.NodeID)
+		}
+	case "strategy":
+		if prior, ok := findRawStrategy(snap.OriginalRawProposal, rev.NodeID); ok {
+			data, err := json.MarshalIndent(prior, "", "  ")
+			if err == nil {
+				b.WriteString("```json\n")
+				b.Write(data)
+				b.WriteString("\n```\n")
+			}
+		} else {
+			fmt.Fprintf(&b, "(prior strategy %q not found in the original proposal)\n", rev.NodeID)
+		}
+	}
+
+	b.WriteString("\n## Concerns targeting this node\n\n")
+	if len(rev.Concerns) == 0 {
+		b.WriteString("(none — fanout was spawned without concerns; treat as a no-op re-emission of the prior content)\n")
+	} else {
+		for _, c := range rev.Concerns {
+			fmt.Fprintf(&b, "- %s\n", c)
+		}
+	}
+
+	fmt.Fprintf(&b, "\nProduce the corrected Raw%sProposal for the node above. Address every concern. Preserve the id verbatim. Decisions are inline; the reconciler downstream dedupes across siblings. Re-emit the FULL node — do not emit a delta.\n", titleize(kind))
+
+	return []Message{{Role: "user", Content: b.String()}}
+}
+
+// projectReviseAdditions builds the architect's revise_additions
+// user message. The architect emits a partial RawSpecProposal
+// containing ONLY the new features/strategies that address each
+// addition concern from the RevisionPlan.
+func projectReviseAdditions(snap StateSnapshot) []Message {
+	var b strings.Builder
+	b.WriteString(snap.Prompt)
+	if snap.ScoutBrief != "" {
+		if formatted := formatScoutBrief(snap.ScoutBrief); formatted != "" {
+			b.WriteString("\n\n## Scout brief\n\n")
+			b.WriteString(formatted)
+		}
+	}
+
+	var plan RevisionPlan
+	if snap.RevisionPlan != "" {
+		_ = json.Unmarshal([]byte(snap.RevisionPlan), &plan)
+	}
+
+	features, strategies := proposalNodeIDs(snap.OriginalRawProposal)
+
+	b.WriteString("\n\n## Existing nodes (do NOT re-emit)\n\n")
+	if len(features) == 0 && len(strategies) == 0 {
+		b.WriteString("(none)\n")
+	} else {
+		if len(features) > 0 {
+			b.WriteString("**Features:**\n")
+			for _, f := range features {
+				fmt.Fprintf(&b, "- %s\n", f)
+			}
+			b.WriteString("\n")
+		}
+		if len(strategies) > 0 {
+			b.WriteString("**Strategies:**\n")
+			for _, s := range strategies {
+				fmt.Fprintf(&b, "- %s\n", s)
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("## Additions to propose\n\n")
+	if len(plan.Additions) == 0 {
+		b.WriteString("(none in the revision plan — emit `{\"features\": [], \"strategies\": []}`)\n")
+	} else {
+		for _, c := range plan.Additions {
+			fmt.Fprintf(&b, "- %s\n", c)
+		}
+	}
+
+	b.WriteString("\nEmit a RawSpecProposal containing ONLY new features and strategies that address each addition concern above. Do NOT re-emit any existing node listed above. Each new feature/strategy must carry the same inline-decision structure (real titles, rationales, alternatives, citations) as the architect's full RawSpecProposal — the reconciler downstream will assign canonical decision IDs.\n")
+
+	return []Message{{Role: "user", Content: b.String()}}
+}
+
+func titleize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// projectReconcile builds the reconciler's user message: the raw
+// proposal from the upstream propose/revise step. The existing spec
+// is no longer inlined — the reconciler agent navigates it lazily via
+// the spec_list_manifest / spec_get tools (registered against the
+// Genkit runtime in cmd/llm.go). Inlining the snapshot was an
+// O(N)-prompt-size scaling problem that motivated DJ-094.
 func projectReconcile(snap StateSnapshot) []Message {
 	var b strings.Builder
 	b.WriteString("## Raw proposal (inline decisions, no IDs)\n\n")
@@ -175,21 +382,11 @@ func projectReconcile(snap StateSnapshot) []Message {
 		// production wiring; kept as a soft fallback for tests.
 		b.WriteString(snap.ProposedSpec)
 	}
-	if snap.Existing != nil && !snap.Existing.IsEmpty() {
-		b.WriteString("\n\n## Existing spec snapshot (decisions you may reuse via reuse_existing)\n\n")
-		formatExistingDecisions(&b, snap.Existing)
-	}
 	b.WriteString("\n\nEmit a ReconciliationVerdict naming the clusters that need dedupe / resolve_conflict / reuse_existing. Inline decisions you do not mention are kept as separate canonical decisions.")
-	return []Message{{Role: "user", Content: b.String()}}
-}
-
-func formatExistingDecisions(b *strings.Builder, e *ExistingSpec) {
-	for _, d := range e.Decisions {
-		fmt.Fprintf(b, "- %s — %s (%s, confidence=%.2f)\n", d.ID, d.Title, d.Status, d.Confidence)
-		if d.Rationale != "" {
-			fmt.Fprintf(b, "  rationale: %s\n", d.Rationale)
-		}
+	if snap.Existing != nil && !snap.Existing.IsEmpty() {
+		b.WriteString("\n\nThe project has an existing persisted spec. Use the `spec_list_manifest` tool to see what's already there, then `spec_get(id)` to fetch a specific node when you suspect an inline decision matches one already on disk (and should be a `reuse_existing` action). Do not call the tools for greenfield runs — they will return empty.")
 	}
+	return []Message{{Role: "user", Content: b.String()}}
 }
 
 func projectPropose(snap StateSnapshot) []Message {

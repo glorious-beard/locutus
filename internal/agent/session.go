@@ -180,7 +180,30 @@ type recordedCall struct {
 	OutputTokens   int               `yaml:"output_tokens,omitempty"`
 	ThoughtsTokens int               `yaml:"thoughts_tokens,omitempty"`
 	TotalTokens    int               `yaml:"total_tokens,omitempty"`
-	Error          string            `yaml:"error,omitempty"`
+	// Rounds is populated only for multi-round tool-use calls
+	// (Genkit's tool-dispatch loop drives multiple model invocations
+	// for one Generate call). Each entry records what the model
+	// emitted that round — including any tool_request parts in the
+	// raw message — so an operator can see the full conversation, not
+	// just the final response after the loop completed. Single-round
+	// calls leave this nil and rely on the top-level Reasoning /
+	// Response / RawMessage fields.
+	Rounds []recordedRound `yaml:"rounds,omitempty"`
+	Error  string          `yaml:"error,omitempty"`
+}
+
+// recordedRound is one model invocation inside a tool-use loop. Mirror
+// of GenerateRound with YAML tags. Message holds the JSON of the
+// model's *ai.Message for that round (text + reasoning + tool_request
+// parts).
+type recordedRound struct {
+	Index          int    `yaml:"index"`
+	Reasoning      string `yaml:"reasoning,omitempty"`
+	Text           string `yaml:"text,omitempty"`
+	Message        string `yaml:"message,omitempty"`
+	InputTokens    int    `yaml:"input_tokens,omitempty"`
+	OutputTokens   int    `yaml:"output_tokens,omitempty"`
+	ThoughtsTokens int    `yaml:"thoughts_tokens,omitempty"`
 }
 
 type recordedMessage struct {
@@ -360,6 +383,26 @@ func (h *callHandle) finishAt(resp *GenerateResponse, callErr error, completedAt
 		h.call.TotalTokens = resp.TotalTokens
 		if h.call.Model == "" {
 			h.call.Model = resp.Model
+		}
+		// Multi-round tool-use captures: copy each round's snapshot
+		// into the per-call file so the trace shows what the model
+		// emitted in each round (including tool_request parts), not
+		// just the final response. Single-round calls leave Rounds
+		// nil — the top-level Reasoning/Response/RawMessage already
+		// carry that round's data.
+		if len(resp.Rounds) > 0 {
+			h.call.Rounds = make([]recordedRound, len(resp.Rounds))
+			for i, r := range resp.Rounds {
+				h.call.Rounds[i] = recordedRound{
+					Index:          r.Index,
+					Reasoning:      r.Reasoning,
+					Text:           r.Text,
+					Message:        r.Message,
+					InputTokens:    r.InputTokens,
+					OutputTokens:   r.OutputTokens,
+					ThoughtsTokens: r.ThoughtsTokens,
+				}
+			}
 		}
 	}
 	if err := h.flush(); err != nil {

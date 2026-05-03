@@ -6,6 +6,7 @@ import (
 
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const agentDir = ".borg/agents"
@@ -135,6 +136,52 @@ func TestBuildGenerateRequest(t *testing.T) {
 	assert.Equal(t, "What features should we build?", req.Messages[1].Content)
 	assert.Equal(t, "user", req.Messages[2].Role)
 	assert.Equal(t, "Focus on the MVP scope.", req.Messages[2].Content)
+}
+
+func TestBuildGenerateRequestThreadsGrounding(t *testing.T) {
+	def := AgentDef{
+		ID:           "spec_scout",
+		Role:         "survey",
+		Model:        "googleai/gemini-2.5-pro",
+		Grounding:    true,
+		SystemPrompt: "You are the scout.",
+	}
+	req := BuildGenerateRequest(def, []Message{{Role: "user", Content: "x"}})
+	assert.True(t, req.Grounding,
+		"Grounding from frontmatter must surface on GenerateRequest so the provider config can attach GoogleSearch")
+}
+
+func TestLoadAgentDefsParsesGrounding(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, fsys.MkdirAll(".borg/agents", 0o755))
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec_scout.md", []byte(`---
+id: spec_scout
+role: survey
+capability: strong
+grounding: true
+---
+You are the scout.
+`), 0o644))
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec_architect.md", []byte(`---
+id: spec_architect
+role: planning
+capability: strong
+---
+You are the architect.
+`), 0o644))
+
+	defs, err := LoadAgentDefs(fsys, ".borg/agents")
+	require.NoError(t, err)
+	require.Len(t, defs, 2)
+
+	byID := make(map[string]AgentDef, len(defs))
+	for _, d := range defs {
+		byID[d.ID] = d
+	}
+	assert.True(t, byID["spec_scout"].Grounding,
+		"frontmatter grounding: true must round-trip via yaml.Unmarshal")
+	assert.False(t, byID["spec_architect"].Grounding,
+		"missing grounding key must default to false; agents not opted-in stay ungrounded")
 }
 
 func TestBuildGenerateRequestDefaultModel(t *testing.T) {

@@ -21,6 +21,8 @@ You receive as user messages:
 - **Strategy to elaborate** — the specific outline item you're elaborating: id, title, kind, summary.
 - **Existing spec** (optional) — the persisted spec snapshot when extending.
 
+You may also be invoked in **revise mode** to correct a strategy that critic findings flagged. In that case the user message includes a "Prior content (rejected — re-emit a corrected version)" block with the previous RawStrategyProposal and a "Concerns targeting this node" block listing the verbatim findings. Re-emit the FULL corrected RawStrategyProposal: address every concern, preserve the id and kind verbatim, do not emit a delta. The reconciler reuses ids on its own — you do not need to track decision IDs.
+
 # Task
 
 Produce a single `RawStrategyProposal` JSON object: id (preserve the outline's id verbatim), title (preserve), kind (preserve — one of `foundational`, `derived`, `quality`), body (a paragraph or two of prose committing to the choice), decisions [] — inline decision objects this strategy commits to.

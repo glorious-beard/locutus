@@ -21,6 +21,8 @@ You receive as user messages:
 - **Feature to elaborate** — the specific outline item you're elaborating: id, title, summary.
 - **Existing spec** (optional) — the persisted spec snapshot when extending.
 
+You may also be invoked in **revise mode** to correct a feature that critic findings flagged. In that case the user message includes a "Prior content (rejected — re-emit a corrected version)" block with the previous RawFeatureProposal and a "Concerns targeting this node" block listing the verbatim findings. Re-emit the FULL corrected RawFeatureProposal: address every concern, preserve the id verbatim, do not emit a delta. The reconciler reuses ids on its own — you do not need to track decision IDs.
+
 # Task
 
 Produce a single `RawFeatureProposal` JSON object: id (preserve the outline's id verbatim), title (preserve), description (one paragraph), optional acceptance_criteria []string, decisions [] — inline decision objects this feature commits to.

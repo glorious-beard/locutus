@@ -40,6 +40,13 @@ func getLLM() (agent.LLM, error) {
 // The heartbeat is off by default — the caller flips it on via
 // recordingLLMForMode when there's no per-call UI to take its place.
 //
+// Spec-lookup tools (spec_list_manifest / spec_get) are registered
+// against the underlying Genkit runtime so the spec_reconciler agent
+// can navigate the persisted spec lazily instead of inlining the full
+// ExistingSpec into its prompt. Registration is bound to fsys so tool
+// calls read from the same filesystem the rest of the command operates
+// on (OSFS in production; MemFS in tests via the same path).
+//
 // Returns the wrapped LLM, the recorder (so callers can log the session
 // path to stdout), and any error from constructing either.
 func recordingLLM(fsys specio.FS, root, command string) (agent.LLM, *agent.SessionRecorder, error) {
@@ -47,11 +54,33 @@ func recordingLLM(fsys specio.FS, root, command string) (agent.LLM, *agent.Sessi
 	if err != nil {
 		return nil, nil, err
 	}
+	registerSpecToolsOnce(inner, fsys)
 	rec, err := agent.NewSessionRecorder(fsys, command, root)
 	if err != nil {
 		return nil, nil, err
 	}
 	return agent.NewLoggingLLMWithHeartbeat(inner, rec, heartbeatEnabledForMode()), rec, nil
+}
+
+// specToolsOnce gates Genkit's DefineTool against double registration —
+// the runtime panics on duplicate names, and the shared GenKitLLM
+// instance lives for the process lifetime. Tied to the inner LLM so a
+// future per-LLM scope (e.g. tests that build their own GenKitLLM)
+// would re-register cleanly.
+var specToolsOnce sync.Once
+
+func registerSpecToolsOnce(inner agent.LLM, fsys specio.FS) {
+	gk, ok := inner.(*agent.GenKitLLM)
+	if !ok {
+		// Mock LLMs in tests don't have a Genkit runtime; nothing to
+		// register against. The agents that reference tools by name
+		// will simply not have the tool dispatch path engaged — the
+		// mocked response returns the verdict directly.
+		return
+	}
+	specToolsOnce.Do(func() {
+		agent.RegisterSpecTools(gk.Genkit(), fsys)
+	})
 }
 
 // heartbeatEnabledForMode reports whether the LoggingLLM heartbeat

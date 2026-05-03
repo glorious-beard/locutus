@@ -424,6 +424,68 @@ func TestSessionRecorderPerCallFileIsAtomic(t *testing.T) {
 		"flushing call N must not rewrite call N-1's file")
 }
 
+// TestSessionRecorderPersistsRoundsForToolUseCalls — when the
+// GenerateResponse carries per-round captures (multi-round tool-use
+// loop), they must land in the per-call YAML so an operator debugging
+// "what did the model ask the tools to do" can read each round's
+// emitted message instead of seeing only the final response. Single-
+// round calls leave Rounds nil — the top-level fields suffice and a
+// one-element slice would just duplicate.
+func TestSessionRecorderPersistsRoundsForToolUseCalls(t *testing.T) {
+	fs := specio.NewMemFS()
+	rec, err := NewSessionRecorder(fs, "test", "")
+	require.NoError(t, err)
+
+	rec.Record("reconciler", "spec_reconciler",
+		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
+		&GenerateResponse{
+			Content: `{"actions":[]}`,
+			Rounds: []GenerateRound{
+				{Index: 1, Text: "", Message: `{"tool_request":{"name":"spec_list_manifest"}}`, OutputTokens: 50},
+				{Index: 2, Text: `{"actions":[]}`, Message: `{"text":"actions=[]"}`, OutputTokens: 80},
+			},
+		},
+		nil, time.Now(), 0,
+	)
+
+	calls := loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 1)
+	require.Len(t, calls[0].Rounds, 2,
+		"per-round captures must round-trip into the per-call YAML for tool-use traces")
+	assert.Equal(t, 1, calls[0].Rounds[0].Index)
+	assert.Contains(t, calls[0].Rounds[0].Message, "spec_list_manifest",
+		"round 1 must carry the tool_request part — without this an operator can't see what tools the model invoked")
+	assert.Equal(t, `{"actions":[]}`, calls[0].Rounds[1].Text,
+		"round 2 carries the model's final text answer")
+	assert.Equal(t, 80, calls[0].Rounds[1].OutputTokens,
+		"per-round token counts must persist so cost-per-round is debuggable")
+}
+
+// TestSessionRecorderOmitsRoundsForSingleRoundCalls — keep traces tight
+// for the common single-round case. The top-level Reasoning/Response/
+// RawMessage fields already carry the data; emitting a one-entry
+// Rounds slice would double the YAML for no information.
+func TestSessionRecorderOmitsRoundsForSingleRoundCalls(t *testing.T) {
+	fs := specio.NewMemFS()
+	rec, err := NewSessionRecorder(fs, "test", "")
+	require.NoError(t, err)
+
+	rec.Record("proposer", "spec_architect",
+		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
+		&GenerateResponse{
+			Content: `{"ok":true}`,
+			// No Rounds — single-round call (the GenKit Generate path
+			// only sets Rounds when len > 1).
+		},
+		nil, time.Now(), 0,
+	)
+
+	calls := loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 1)
+	assert.Empty(t, calls[0].Rounds,
+		"single-round calls must NOT emit a Rounds field; the top-level Response carries the same data")
+}
+
 // TestSessionRecorderCloseStampsManifestAndInterrupted verifies the
 // clean-shutdown path: Close stamps completed_at on the manifest and
 // flips any still-in-flight calls to status: interrupted on disk so

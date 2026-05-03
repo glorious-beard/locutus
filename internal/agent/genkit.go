@@ -214,6 +214,12 @@ func pickDefaultModel(p DetectedProviders) string {
 // Providers reports which Genkit plugins this LLM was initialized with.
 func (g *GenKitLLM) Providers() DetectedProviders { return g.providers }
 
+// Genkit returns the underlying *genkit.Genkit instance so callers can
+// register tools, flows, or schemas against the same runtime the LLM
+// uses for Generate. Used by cmd/llm.go to register the spec_lookup
+// tools after construction.
+func (g *GenKitLLM) Genkit() *genkit.Genkit { return g.g }
+
 // DefaultModel returns the model string this LLM will use when a
 // GenerateRequest omits Model.
 func (g *GenKitLLM) DefaultModel() string { return g.defaultModel }
@@ -253,11 +259,16 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 		capturedReasoning  string
 		capturedMessageRaw string
 		capturedUsage      *ai.GenerationUsage
+		capturedRounds     []GenerateRound
 	)
 	captureMW := func(next ai.ModelFunc) ai.ModelFunc {
 		return func(ctx context.Context, mreq *ai.ModelRequest, cb ai.ModelStreamCallback) (*ai.ModelResponse, error) {
 			r, e := next(ctx, mreq, cb)
 			if r != nil {
+				// Overwriting captures hold the most-recent round's
+				// data — used by the error path below to surface what
+				// the model emitted last when genkit drops resp on a
+				// format-handler rejection.
 				capturedText = r.Text()
 				capturedReasoning = extractReasoning(r)
 				capturedUsage = r.Usage
@@ -266,6 +277,25 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 						capturedMessageRaw = string(data)
 					}
 				}
+				// Per-round append: in tool-use loops the middleware
+				// fires once per model invocation. Accumulate each
+				// round's snapshot so the trace shows what the model
+				// emitted at every step (including tool_request parts
+				// in raw Message), not just the final response after
+				// the loop completed. Single-round calls produce a
+				// one-element slice we drop below to keep traces tight.
+				round := GenerateRound{
+					Index:     len(capturedRounds) + 1,
+					Text:      capturedText,
+					Reasoning: capturedReasoning,
+					Message:   capturedMessageRaw,
+				}
+				if u := capturedUsage; u != nil {
+					round.InputTokens = u.InputTokens
+					round.OutputTokens = u.OutputTokens
+					round.ThoughtsTokens = u.ThoughtsTokens
+				}
+				capturedRounds = append(capturedRounds, round)
 			}
 			return r, e
 		}
@@ -286,6 +316,25 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 	// output in markdown fences that downstream parsers reject.
 	if req.OutputSchema != nil {
 		opts = append(opts, ai.WithOutputType(req.OutputSchema))
+	}
+
+	// Tool-call attachments. Each entry is the registered tool name;
+	// ai.ToolName satisfies ai.ToolRef without requiring the caller to
+	// look the tool up first. Genkit's tool-use loop dispatches the
+	// model's tool_request blocks to the registered handler and feeds
+	// the response back until the model emits a final answer.
+	//
+	// On Gemini, attaching tools disables API-level JSON mode (see
+	// plugins/googlegenai/gemini.go:311): the schema-as-prompt-doc
+	// still applies, but downstream parsers must tolerate markdown
+	// fences and other non-strict shapes. The reconciler's merge
+	// handler strips fences for this reason.
+	if len(req.Tools) > 0 {
+		toolRefs := make([]ai.ToolRef, len(req.Tools))
+		for i, name := range req.Tools {
+			toolRefs[i] = ai.ToolName(name)
+		}
+		opts = append(opts, ai.WithTools(toolRefs...))
 	}
 
 	if timeout := llmCallTimeout(); timeout > 0 {
@@ -315,6 +364,13 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 
 	resp, err := genkit.Generate(ctx, g.g, opts...)
 	out := &GenerateResponse{Model: model}
+	// Only surface per-round captures when there were multiple rounds —
+	// a single-round call's data is already on the top-level
+	// Reasoning/Content/RawMessage fields, and emitting a one-entry
+	// Rounds slice would duplicate without informing.
+	if len(capturedRounds) > 1 {
+		out.Rounds = capturedRounds
+	}
 	if resp != nil {
 		// Success path: the post-format-handler resp is the canonical
 		// source for Content / Reasoning / Usage.
@@ -458,7 +514,9 @@ func buildProviderConfig(model string, req GenerateRequest, mcfg *ModelConfig) a
 		}
 		// Gemini accepts MaxOutputTokens == 0 as "use API default"; we
 		// only set the field when we have a concrete value to apply.
-		if maxTokens == 0 && req.Temperature == 0 && req.ThinkingBudget <= 0 {
+		// Grounding always materializes a config (we need to attach
+		// the GoogleSearch tool), so it can't take the early return.
+		if maxTokens == 0 && req.Temperature == 0 && req.ThinkingBudget <= 0 && !req.Grounding {
 			return nil
 		}
 		cfg := &genai.GenerateContentConfig{}
@@ -475,8 +533,31 @@ func buildProviderConfig(model string, req GenerateRequest, mcfg *ModelConfig) a
 				ThinkingBudget: &budget,
 			}
 		}
+		if req.Grounding {
+			// Attach the GoogleSearch tool so the model can verify
+			// claims against current web results. The googlegenai
+			// plugin merges this with any framework-side tools, but
+			// note: Gemini's API rejects GoogleSearch + Genkit
+			// function-call tools simultaneously — see the test at
+			// plugins/googlegenai/googleai_live_test.go:241. Agents
+			// that combine `grounding: true` with custom tools won't
+			// work today; not a collision in our council (scout uses
+			// grounding only; reconciler uses tools only).
+			cfg.Tools = append(cfg.Tools, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
+		}
 		return cfg
 	case "anthropic":
+		if req.Grounding {
+			// Genkit Go's anthropic plugin doesn't yet expose
+			// web_search; signaling the gap loudly so an operator
+			// running on Anthropic only knows the scout brief was
+			// produced ungrounded. The call still proceeds — falling
+			// back to ungrounded is a quality regression, not a
+			// failure. Wire web_search through here when upstream
+			// lands it, gated on the same Grounding flag.
+			slog.Warn("grounding requested but unsupported on Anthropic; proceeding ungrounded",
+				"model", model)
+		}
 		maxTokens := int64(req.MaxTokens)
 		if maxTokens == 0 {
 			maxTokens = int64(knobs.MaxOutputTokens)

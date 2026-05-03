@@ -29,13 +29,22 @@ import (
 // verdict, runs ApplyReconciliation, and returns the canonical
 // SpecProposal as JSON (for state.ProposedSpec) plus the applied actions
 // (so callers can fire cascade rewrites for conflict resolutions).
+//
+// The verdict JSON is stripped of any markdown code fences before
+// parsing — a defensive measure for the post-DJ-094 reconciler. When
+// tools are attached on Gemini routes, the API silently disables JSON
+// mode (plugins/googlegenai/gemini.go:311), so the model may wrap its
+// output in ```json ... ``` despite the schema being injected as
+// prompt documentation. Stripping fences keeps the parse strict
+// downstream without forcing the model to comply with a constraint
+// the API isn't enforcing.
 func mergeReconcile(rawProposalJSON, verdictJSON string, existing *ExistingSpec) (string, []AppliedAction, error) {
 	var raw RawSpecProposal
 	if err := json.Unmarshal([]byte(rawProposalJSON), &raw); err != nil {
 		return "", nil, fmt.Errorf("parse raw proposal: %w", err)
 	}
 	var verdict ReconciliationVerdict
-	if err := json.Unmarshal([]byte(verdictJSON), &verdict); err != nil {
+	if err := json.Unmarshal([]byte(stripJSONFences(verdictJSON)), &verdict); err != nil {
 		return "", nil, fmt.Errorf("parse verdict: %w", err)
 	}
 	canonical, applied, err := ApplyReconciliation(&raw, verdict, existing)
@@ -48,6 +57,33 @@ func mergeReconcile(rawProposalJSON, verdictJSON string, existing *ExistingSpec)
 		return "", nil, fmt.Errorf("marshal canonical proposal: %w", err)
 	}
 	return string(out), applied, nil
+}
+
+// stripJSONFences removes leading/trailing markdown code fences from s
+// (```json ... ``` or ``` ... ```). The middle is returned as-is, with
+// a defensive fallback to the original string when no fence is
+// detected so well-formed JSON passes through untouched. Handles the
+// common Gemini-with-tools case where the API drops JSON-mode and the
+// model wraps in fences out of training-distribution habit.
+func stripJSONFences(s string) string {
+	t := strings.TrimSpace(s)
+	if !strings.HasPrefix(t, "```") {
+		return s
+	}
+	// Drop the opening fence line (might be ``` or ```json or ```JSON).
+	if i := strings.Index(t, "\n"); i > 0 {
+		t = t[i+1:]
+	} else {
+		// Single-line fence wrap is degenerate — return original so
+		// the parser surfaces the error with the real bytes.
+		return s
+	}
+	// Drop a trailing closing fence if present.
+	t = strings.TrimRight(t, " \n\t")
+	if strings.HasSuffix(t, "```") {
+		t = strings.TrimSuffix(t, "```")
+	}
+	return strings.TrimSpace(t)
 }
 
 // appendConflictActions filters the applied actions for conflict

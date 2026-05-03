@@ -269,6 +269,60 @@ func TestBuildProviderConfig(t *testing.T) {
 		assert.Contains(t, string(data), `"budget_tokens":4095`,
 			"budget >= max_tokens fails the API; clamp to max-1")
 	})
+
+	t.Run("googleai grounding attaches GoogleSearch tool", func(t *testing.T) {
+		got := buildProviderConfig("googleai/gemini-2.5-pro", GenerateRequest{
+			Grounding: true,
+		}, embeddedCfg)
+		cfg, ok := got.(*genai.GenerateContentConfig)
+		require.True(t, ok, "expected *genai.GenerateContentConfig, got %T", got)
+		require.NotEmpty(t, cfg.Tools, "Grounding=true must populate Tools")
+		var sawSearch bool
+		for _, tool := range cfg.Tools {
+			if tool != nil && tool.GoogleSearch != nil {
+				sawSearch = true
+			}
+		}
+		assert.True(t, sawSearch,
+			"Grounding=true must attach a GoogleSearch tool so the model can verify against current web results")
+	})
+
+	t.Run("googleai grounding off leaves Tools empty", func(t *testing.T) {
+		got := buildProviderConfig("googleai/gemini-2.5-pro", GenerateRequest{
+			Temperature: 0.5,
+		}, embeddedCfg)
+		cfg, ok := got.(*genai.GenerateContentConfig)
+		require.True(t, ok)
+		assert.Empty(t, cfg.Tools,
+			"default Grounding=false must NOT attach GoogleSearch — billing is per-grounded-call")
+	})
+
+	t.Run("googleai grounding materializes a config even with no other knobs", func(t *testing.T) {
+		// Without Grounding the early-return at the top of the googleai
+		// branch returns nil when there are no other config fields. With
+		// Grounding=true that must be overridden — otherwise we'd lose
+		// the GoogleSearch tool attachment.
+		got := buildProviderConfig("googleai/gemini-not-listed", GenerateRequest{
+			Grounding: true,
+		}, embeddedCfg)
+		require.NotNil(t, got, "Grounding=true must always produce a config so the tool attachment lands")
+		cfg, ok := got.(*genai.GenerateContentConfig)
+		require.True(t, ok)
+		require.NotEmpty(t, cfg.Tools)
+	})
+
+	t.Run("anthropic grounding does NOT crash and produces valid config", func(t *testing.T) {
+		// Genkit Go's anthropic plugin doesn't expose web_search. Code
+		// logs a warning and proceeds ungrounded — verified by the
+		// resulting MessageNewParams being well-formed (the LLM call
+		// would still succeed against Anthropic).
+		got := buildProviderConfig("anthropic/claude-sonnet-4-6", GenerateRequest{
+			Grounding: true,
+		}, embeddedCfg)
+		cfg, ok := got.(*anthropicsdk.MessageNewParams)
+		require.True(t, ok, "Anthropic grounding path must still return a usable config")
+		assert.NotZero(t, cfg.MaxTokens, "MaxTokens default still applied; grounding flag is logged-and-dropped, not fatal")
+	})
 }
 
 func TestAcquireConcurrency(t *testing.T) {

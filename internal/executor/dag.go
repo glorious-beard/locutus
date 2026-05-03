@@ -227,13 +227,22 @@ func (e *Executor[S]) executeOnce(ctx context.Context, state *S, g dgraph.Graph[
 
 		// Execute parallel steps with bounded concurrency.
 		if len(parallel) > 0 {
-			results, err := e.runParallel(ctx, state, parallel)
+			results, skipped, err := e.runParallel(ctx, state, parallel)
 			for _, r := range results {
 				if e.cfg.Merge != nil {
 					e.cfg.Merge(state, r)
 				}
 				allResults = append(allResults, r)
 				completed[r.StepID] = true
+			}
+			// Conditional-skipped parallel steps must also be marked
+			// completed so the wave loop converges. Without this the
+			// outer loop infinite-loops because skipped steps are
+			// neither executed nor recorded as done — they stay in
+			// `ready` forever. The sequential branch already handles
+			// this via runSingle's skip return.
+			for _, id := range skipped {
+				completed[id] = true
 			}
 			if err != nil {
 				return allResults, err
@@ -315,21 +324,28 @@ func (e *Executor[S]) runSingle(ctx context.Context, state *S, step Step) (StepR
 // runParallel executes steps concurrently with bounded concurrency.
 // All parallel steps receive the same snapshot (taken before any start).
 // Results are collected, then the caller merges them sequentially.
-func (e *Executor[S]) runParallel(ctx context.Context, state *S, steps []Step) ([]StepResult, error) {
+//
+// Returns (results, skipped, err) — `skipped` lists step IDs whose
+// conditional returned false. The caller MUST mark those IDs completed
+// so the wave loop converges; otherwise skipped steps stay in `ready`
+// indefinitely and the executor loops forever.
+func (e *Executor[S]) runParallel(ctx context.Context, state *S, steps []Step) ([]StepResult, []string, error) {
 	snap := e.snapshot(state)
 
 	// Filter out conditional-skipped steps.
 	var toRun []Step
+	var skipped []string
 	for _, s := range steps {
 		if s.Conditional != nil && !s.Conditional(state) {
 			e.emit(s.ID, "skipped", "")
+			skipped = append(skipped, s.ID)
 			continue
 		}
 		toRun = append(toRun, s)
 	}
 
 	if len(toRun) == 0 {
-		return nil, nil
+		return nil, skipped, nil
 	}
 
 	results := make([]StepResult, len(toRun))
@@ -394,7 +410,7 @@ func (e *Executor[S]) runParallel(ctx context.Context, state *S, steps []Step) (
 	}
 
 	wg.Wait()
-	return results, firstErr
+	return results, skipped, firstErr
 }
 
 func (e *Executor[S]) snapshot(state *S) S {

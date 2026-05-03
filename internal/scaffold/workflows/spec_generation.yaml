@@ -1,7 +1,8 @@
 # Spec-generation council workflow. Driven by `locutus refine goals`
 # and `locutus import <doc>` (post-admission planning pass).
 #
-# The flow (Phase 3 outline + elaborate fanout):
+# The flow (Phase 3 outline + elaborate fanout, Phase-1 council-tools
+# revise fanout):
 #   1. survey       — a senior-engineer scout brief: domain read, tech
 #                     options, the implicit assumptions GOALS.md leaves
 #                     out (scale, cost, ops model, deployment posture,
@@ -29,20 +30,37 @@
 #                     consume.
 #   6. critique     — four specialist critics run in parallel against
 #                     the reconciled proposal: architecture, DevOps,
-#                     SRE, cost.
-#   7. revise       — fires only when there ARE concerns. The architect
-#                     emits a corrected RawSpecProposal addressing every
-#                     issue. Single call (revise rounds typically
-#                     address specific findings, not regenerate the
-#                     whole graph).
-#   8. reconcile_revise — same reconciler against the revised raw
-#                          proposal, conditional on revisions firing.
+#                     SRE, cost. Plus the in-workflow integrity critic
+#                     (mechanical Go check, no LLM call).
+#   7. triage       — fast-tier router that maps each critic finding
+#                     to a per-node revision, an addition, or
+#                     discarded. Bounded call (small input: concerns;
+#                     small output: routing plan). Conditional: only
+#                     fires when has_concerns.
+#   8. revise_features       — fanout: one elaborator call per affected
+#                              feature, scoped to its concerns. Reuses
+#                              spec_feature_elaborator with revise-mode
+#                              projection. Replaces the single architect
+#                              call that used to short-circuit to empty
+#                              `decisions: [{}]` placeholders under
+#                              critic-finding pressure.
+#   9. revise_strategies     — fanout: same shape, for strategies.
+#  10. revise_additions      — single architect call, conditional on
+#                              has_additions. Emits a partial
+#                              RawSpecProposal containing ONLY new
+#                              features/strategies addressing addition
+#                              concerns. Existing nodes are NOT
+#                              re-emitted — they're untouched by this
+#                              step.
+#  11. reconcile_revise      — same reconciler against the merged
+#                              raw proposal (original + revised + added).
+#                              Conditional on has_concerns.
 #
 # max_rounds=1 because there is no convergence agent in this workflow —
 # the executor breaks after one full pass.
 #
 # Per-model concurrency caps live in models.yaml's `concurrent_requests`
-# field. Even with `parallel: true` on the elaborate steps, the actual
+# field. Even with `parallel: true` on fanout steps, the actual
 # concurrency is bounded so fanout never floods a model past its
 # configured slot count.
 rounds:
@@ -77,16 +95,36 @@ rounds:
     parallel: true
     depends_on: [reconcile]
     merge_as: critic_issues
-  - id: revise
-    agent: spec_architect
+  - id: triage
+    agent: spec_revision_triager
     parallel: false
     depends_on: [critique]
     conditional: has_concerns
-    merge_as: raw_proposal
+    merge_as: revision_plan
+  - id: revise_features
+    agent: spec_feature_elaborator
+    parallel: true
+    fanout: revision_plan.feature_revisions
+    depends_on: [triage]
+    conditional: has_concerns
+    merge_as: revised_features
+  - id: revise_strategies
+    agent: spec_strategy_elaborator
+    parallel: true
+    fanout: revision_plan.strategy_revisions
+    depends_on: [triage]
+    conditional: has_concerns
+    merge_as: revised_strategies
+  - id: revise_additions
+    agent: spec_architect
+    parallel: false
+    depends_on: [triage]
+    conditional: has_additions
+    merge_as: addition_proposals
   - id: reconcile_revise
     agent: spec_reconciler
     parallel: false
-    depends_on: [revise]
+    depends_on: [revise_features, revise_strategies, revise_additions]
     conditional: has_concerns
     merge_as: reconciled_proposal
 max_rounds: 1

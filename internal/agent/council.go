@@ -51,7 +51,22 @@ type AgentDef struct {
 	MaxTokens      int            `yaml:"max_tokens,omitempty"`
 	ThinkingBudget int            `yaml:"thinking_budget,omitempty"`
 	OutputSchema   string         `yaml:"output_schema,omitempty"` // type name for JSON schema injection
-	SystemPrompt   string         // the markdown body (not from YAML)
+	// Grounding, when true, enables provider-native search-grounding
+	// for this agent's calls (Gemini's GoogleSearch tool today;
+	// Anthropic web_search when Genkit Go's plugin exposes it).
+	// Worth turning on for survey/research agents whose value depends
+	// on current state of practice; pure judgment agents leave it off.
+	Grounding bool `yaml:"grounding,omitempty"`
+	// Tools names Genkit-registered tools this agent may call during
+	// generation. The runtime threads them into the request's
+	// ai.WithTools option. Currently used by spec_reconciler to
+	// navigate the persisted spec via spec_list_manifest / spec_get
+	// instead of receiving the entire ExistingSpec inlined into its
+	// prompt. Tools and grounding are mutually exclusive on Gemini;
+	// frontmatter that combines both will silently lose grounding
+	// when the model rejects the combination at API time.
+	Tools        []string `yaml:"tools,omitempty"`
+	SystemPrompt string   // the markdown body (not from YAML)
 }
 
 // LoadAgentDefs reads all .md files from the given directory on the FS.
@@ -130,6 +145,8 @@ func BuildGenerateRequest(def AgentDef, messages []Message) GenerateRequest {
 		MaxTokens:      def.MaxTokens,
 		ThinkingBudget: def.ThinkingBudget,
 		OutputSchema:   schemaValue,
+		Grounding:      def.Grounding,
+		Tools:          def.Tools,
 	}
 }
 

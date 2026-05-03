@@ -68,6 +68,31 @@ type PlanningState struct {
 	Outline              string   `json:"outline,omitempty"`
 	ElaboratedFeatures   []string `json:"elaborated_features,omitempty"`
 	ElaboratedStrategies []string `json:"elaborated_strategies,omitempty"`
+
+	// Revise-fanout state (Phase 1 of council-tools-and-revise-fanout).
+	//
+	// OriginalRawProposal is the post-elaborate, pre-revise assembly of
+	// the elaborate fanout outputs. Preserved separately from RawProposal
+	// so the revise merge can swap in revised nodes by ID without losing
+	// the untouched ones. RawProposal itself gets rewritten to the
+	// merged version (original + revised + additions) before
+	// reconcile_revise consumes it.
+	//
+	// RevisionPlan is the spec_revision_triager agent's JSON output —
+	// drives the revise_features / revise_strategies fanouts.
+	//
+	// RevisedFeatures and RevisedStrategies accumulate per-node
+	// elaborator outputs from the revise fanouts (raw JSON of
+	// RawFeatureProposal / RawStrategyProposal).
+	//
+	// AdditionProposals is the architect's revise_additions output —
+	// a partial RawSpecProposal containing only the new features /
+	// strategies that address triage-bucketed addition concerns.
+	OriginalRawProposal string   `json:"original_raw_proposal,omitempty"`
+	RevisionPlan        string   `json:"revision_plan,omitempty"`
+	RevisedFeatures     []string `json:"revised_features,omitempty"`
+	RevisedStrategies   []string `json:"revised_strategies,omitempty"`
+	AdditionProposals   string   `json:"addition_proposals,omitempty"`
 }
 
 // StateSnapshot is a read-only copy of PlanningState fields relevant to a
@@ -93,6 +118,18 @@ type StateSnapshot struct {
 	// call is responsible for (only set on fanout-spawned snapshots).
 	Outline    string
 	FanoutItem string
+	// OriginalRawProposal carries the pre-revise assembled raw
+	// proposal so the revise-fanout projections can look up the
+	// prior content of the node they're revising. The revise
+	// elaborator's prompt cites the prior RawFeatureProposal /
+	// RawStrategyProposal verbatim so the model has full context
+	// for the requested change.
+	OriginalRawProposal string
+	// RevisionPlan is the spec_revision_triager's JSON output, threaded
+	// to the revise_additions projection so the architect sees the
+	// addition concerns directly (the additions step is not a fanout
+	// and can't read them via FanoutItem).
+	RevisionPlan string
 }
 
 // Snapshot creates a read-only copy of the current state. Slice fields are
@@ -100,14 +137,16 @@ type StateSnapshot struct {
 // continues to mutate the original.
 func (s *PlanningState) Snapshot() StateSnapshot {
 	snap := StateSnapshot{
-		Round:        s.Round,
-		Prompt:       s.Prompt,
-		ProposedSpec: s.ProposedSpec,
-		Revisions:    s.Revisions,
-		ScoutBrief:   s.ScoutBrief,
-		RawProposal:  s.RawProposal,
-		Existing:     s.Existing,
-		Outline:      s.Outline,
+		Round:               s.Round,
+		Prompt:              s.Prompt,
+		ProposedSpec:        s.ProposedSpec,
+		Revisions:           s.Revisions,
+		ScoutBrief:          s.ScoutBrief,
+		RawProposal:         s.RawProposal,
+		Existing:            s.Existing,
+		Outline:             s.Outline,
+		OriginalRawProposal: s.OriginalRawProposal,
+		RevisionPlan:        s.RevisionPlan,
 	}
 	if len(s.Concerns) > 0 {
 		snap.Concerns = make([]Concern, len(s.Concerns))
