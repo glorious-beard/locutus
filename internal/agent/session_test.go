@@ -89,7 +89,7 @@ func TestSessionRecorderRecordsCallsInOrder(t *testing.T) {
 	require.NoError(t, err)
 
 	t1 := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
-	rec.Record("proposer", "spec_architect",
+	rec.Record("proposer", "spec_architect", "",
 		GenerateRequest{
 			Model: "googleai/gemini-2.5-pro",
 			Messages: []Message{
@@ -100,7 +100,7 @@ func TestSessionRecorderRecordsCallsInOrder(t *testing.T) {
 		&GenerateResponse{Content: `{"features":[]}`, Model: "googleai/gemini-2.5-pro"},
 		nil, t1, 1234*time.Millisecond,
 	)
-	rec.Record("critic", "architect_critic",
+	rec.Record("critic", "architect_critic", "",
 		GenerateRequest{
 			Model: "googleai/gemini-2.5-pro",
 			Messages: []Message{
@@ -137,7 +137,7 @@ func TestSessionRecorderEmitsLiteralBlocksForMultilineContent(t *testing.T) {
 	rec, err := NewSessionRecorder(fs, "test", "")
 	require.NoError(t, err)
 
-	rec.Record("proposer", "spec_architect",
+	rec.Record("proposer", "spec_architect", "",
 		GenerateRequest{
 			Model: "test-model",
 			Messages: []Message{
@@ -171,7 +171,7 @@ func TestSessionRecorderRecordsErrors(t *testing.T) {
 	rec, err := NewSessionRecorder(fs, "test", "")
 	require.NoError(t, err)
 
-	rec.Record("proposer", "spec_architect",
+	rec.Record("proposer", "spec_architect", "",
 		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
 		nil,
 		fmt.Errorf("model unavailable"),
@@ -217,7 +217,7 @@ func TestSessionRecorderBeginWritesInProgressEntry(t *testing.T) {
 	require.NoError(t, err)
 
 	started := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
-	handle := rec.Begin("proposer", "spec_architect",
+	handle := rec.Begin("proposer", "spec_architect", "",
 		GenerateRequest{
 			Model:    "googleai/gemini-2.5-pro",
 			Messages: []Message{{Role: "user", Content: "go"}},
@@ -267,7 +267,7 @@ func TestSessionRecorderFinishWithErrorMarksStatus(t *testing.T) {
 	rec, err := NewSessionRecorder(fs, "test", "")
 	require.NoError(t, err)
 
-	handle := rec.Begin("critic", "architect_critic",
+	handle := rec.Begin("critic", "architect_critic", "",
 		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
 		time.Now(),
 	)
@@ -338,7 +338,7 @@ func TestSessionRecorderSurvivesCrashMidCall(t *testing.T) {
 	require.NoError(t, err)
 
 	// Begin a call but DO NOT call Finish. Simulates a SIGKILL mid-call.
-	rec.Begin("proposer", "spec_architect",
+	rec.Begin("proposer", "spec_architect", "",
 		GenerateRequest{
 			Model: "test-model",
 			Messages: []Message{
@@ -371,7 +371,7 @@ func TestSessionRecorderInFlightDoesNotGrow(t *testing.T) {
 	require.NoError(t, err)
 
 	for i := 0; i < 50; i++ {
-		h := rec.Begin("proposer", "spec_architect",
+		h := rec.Begin("proposer", "spec_architect", "",
 			GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
 			time.Now(),
 		)
@@ -395,7 +395,7 @@ func TestSessionRecorderPerCallFileIsAtomic(t *testing.T) {
 	rec, err := NewSessionRecorder(fs, "test", "")
 	require.NoError(t, err)
 
-	rec.Record("proposer", "spec_architect",
+	rec.Record("proposer", "spec_architect", "",
 		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "first"}}},
 		&GenerateResponse{Content: "first reply"},
 		nil, time.Now(), 0,
@@ -406,7 +406,7 @@ func TestSessionRecorderPerCallFileIsAtomic(t *testing.T) {
 	firstSnapshot, err := fs.ReadFile(files1[0])
 	require.NoError(t, err)
 
-	rec.Record("critic", "architect_critic",
+	rec.Record("critic", "architect_critic", "",
 		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "second"}}},
 		&GenerateResponse{Content: "second reply"},
 		nil, time.Now(), 0,
@@ -436,7 +436,7 @@ func TestSessionRecorderPersistsRoundsForToolUseCalls(t *testing.T) {
 	rec, err := NewSessionRecorder(fs, "test", "")
 	require.NoError(t, err)
 
-	rec.Record("reconciler", "spec_reconciler",
+	rec.Record("reconciler", "spec_reconciler", "",
 		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
 		&GenerateResponse{
 			Content: `{"actions":[]}`,
@@ -470,7 +470,7 @@ func TestSessionRecorderOmitsRoundsForSingleRoundCalls(t *testing.T) {
 	rec, err := NewSessionRecorder(fs, "test", "")
 	require.NoError(t, err)
 
-	rec.Record("proposer", "spec_architect",
+	rec.Record("proposer", "spec_architect", "",
 		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
 		&GenerateResponse{
 			Content: `{"ok":true}`,
@@ -486,6 +486,104 @@ func TestSessionRecorderOmitsRoundsForSingleRoundCalls(t *testing.T) {
 		"single-round calls must NOT emit a Rounds field; the top-level Response carries the same data")
 }
 
+// TestCallTagContextRoundTrip — the WithCallTag context helper
+// behaves the same way WithRole / WithAgentID do.
+func TestCallTagContextRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	assert.Equal(t, "", CallTagFromContext(ctx))
+	ctx = WithCallTag(ctx, "feat-dashboard")
+	assert.Equal(t, "feat-dashboard", CallTagFromContext(ctx))
+	ctx = WithCallTag(ctx, "feat-other")
+	assert.Equal(t, "feat-other", CallTagFromContext(ctx),
+		"WithCallTag should overwrite the prior tag on the chain")
+}
+
+// TestSessionRecorderAppendsCallTagToFilename — when callTag is set,
+// the per-call filename gets `-<tag>` appended after the agent id so
+// `ls .locutus/sessions/<sid>/calls/` reads as named nodes rather
+// than indistinguishable per-agent siblings. The agent_id field
+// inside the YAML stays as the bare agent name.
+func TestSessionRecorderAppendsCallTagToFilename(t *testing.T) {
+	fs := specio.NewMemFS()
+	rec, err := NewSessionRecorder(fs, "test", "")
+	require.NoError(t, err)
+
+	rec.Record("planning", "spec_feature_elaborator", "feat-dashboard",
+		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
+		&GenerateResponse{Content: `{"id":"feat-dashboard"}`},
+		nil, time.Now(), 0,
+	)
+	rec.Record("planning", "spec_feature_elaborator", "feat-export",
+		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
+		&GenerateResponse{Content: `{"id":"feat-export"}`},
+		nil, time.Now(), 0,
+	)
+
+	files, err := fs.ListDir(path.Join(rec.Path(), CallsDirName))
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+
+	// Filename suffix carries the tag — tells siblings apart at a
+	// glance without having to grep messages content.
+	assert.Contains(t, files[0], "0001-spec_feature_elaborator-feat-dashboard")
+	assert.Contains(t, files[1], "0002-spec_feature_elaborator-feat-export")
+
+	// The recordedCall.AgentID stays as the bare agent name; the tag
+	// is filename-only (it's already in the call's messages content).
+	calls := loadSessionCalls(t, fs, rec)
+	require.Len(t, calls, 2)
+	assert.Equal(t, "spec_feature_elaborator", calls[0].AgentID,
+		"AgentID inside the YAML must NOT carry the per-call tag — that's filename-only metadata")
+}
+
+// TestSessionRecorderEmptyCallTagBehavesLikePriorVersion — the
+// callTag parameter is optional. Empty produces the original
+// `<NNNN>-<agent>.yaml` naming so non-fanout calls are unchanged.
+func TestSessionRecorderEmptyCallTagBehavesLikePriorVersion(t *testing.T) {
+	fs := specio.NewMemFS()
+	rec, err := NewSessionRecorder(fs, "test", "")
+	require.NoError(t, err)
+
+	rec.Record("proposer", "spec_architect", "",
+		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}},
+		&GenerateResponse{Content: `{"ok":true}`},
+		nil, time.Now(), 0,
+	)
+
+	files, err := fs.ListDir(path.Join(rec.Path(), CallsDirName))
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Contains(t, files[0], "0001-spec_architect.yaml")
+	assert.NotContains(t, files[0], "spec_architect-",
+		"empty callTag must NOT produce a trailing dash on the filename")
+}
+
+// TestLoggingLLMReadsCallTagFromContext — production wiring: the
+// LoggingLLM reads the tag from context (the workflow's fanout
+// dispatcher sets it via WithCallTag). Without this, the per-call
+// filename suffix never reaches the recorder.
+func TestLoggingLLMReadsCallTagFromContext(t *testing.T) {
+	fs := specio.NewMemFS()
+	rec, err := NewSessionRecorder(fs, "test", "")
+	require.NoError(t, err)
+
+	mock := NewMockLLM(MockResponse{
+		Response: &GenerateResponse{Content: `{"ok":true}`, Model: "m"},
+	})
+	logging := NewLoggingLLM(mock, rec)
+
+	ctx := WithAgentID(context.Background(), "spec_feature_elaborator")
+	ctx = WithCallTag(ctx, "feat-dashboard")
+	_, err = logging.Generate(ctx, GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "x"}}})
+	require.NoError(t, err)
+
+	files, err := fs.ListDir(path.Join(rec.Path(), CallsDirName))
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Contains(t, files[0], "spec_feature_elaborator-feat-dashboard",
+		"LoggingLLM must thread the call-tag from ctx into the recorder so the filename carries the tag")
+}
+
 // TestSessionRecorderCloseStampsManifestAndInterrupted verifies the
 // clean-shutdown path: Close stamps completed_at on the manifest and
 // flips any still-in-flight calls to status: interrupted on disk so
@@ -498,13 +596,13 @@ func TestSessionRecorderCloseStampsManifestAndInterrupted(t *testing.T) {
 
 	// Two calls: one finished normally, one left in flight to test the
 	// straggler path.
-	h1 := rec.Begin("proposer", "spec_architect",
+	h1 := rec.Begin("proposer", "spec_architect", "",
 		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "a"}}},
 		time.Now(),
 	)
 	h1.Finish(&GenerateResponse{Content: "ok"}, nil)
 
-	rec.Begin("critic", "architect_critic",
+	rec.Begin("critic", "architect_critic", "",
 		GenerateRequest{Model: "m", Messages: []Message{{Role: "user", Content: "b"}}},
 		time.Now(),
 	)

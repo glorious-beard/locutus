@@ -136,6 +136,15 @@ func (e *WorkflowExecutor) executeAgent(ctx context.Context, stepID, agentID str
 
 	e.emitEvent(stepID, agentID, "queued", "")
 	ctx = WithAgentID(ctx, agentID)
+	// Per-call filename suffix for fanout dispatches: stepID has the
+	// shape "elaborate_features (feat-x)" when this is a fanout call.
+	// Extract the parenthetical so the recorder appends "-feat-x" to
+	// the per-call YAML filename — `ls calls/` then reads as named
+	// nodes instead of indistinguishable per-agent siblings. Empty
+	// for non-fanout calls; recorder leaves the filename agent-only.
+	if tag := stepIDFanoutTag(stepID); tag != "" {
+		ctx = WithCallTag(ctx, tag)
+	}
 	ctx = WithAcquiredCallback(ctx, func() {
 		e.emitEvent(stepID, agentID, "started", "")
 	})
@@ -279,6 +288,24 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 		}
 	}
 	return results, nil
+}
+
+// stepIDFanoutTag extracts the per-item id from a fanout step's
+// composite stepID. The dispatcher names fanout invocations as
+// `"elaborate_features (feat-dashboard)"`; this returns
+// `"feat-dashboard"`. Returns empty for non-fanout step IDs (which
+// have no parenthetical suffix), in which case the recorder writes
+// the per-call filename without a tag suffix.
+func stepIDFanoutTag(stepID string) string {
+	open := strings.Index(stepID, " (")
+	if open < 0 {
+		return ""
+	}
+	close := strings.LastIndex(stepID, ")")
+	if close <= open+2 {
+		return ""
+	}
+	return stepID[open+2 : close]
 }
 
 // fanoutItemID extracts an identifier from a fanout item's raw JSON

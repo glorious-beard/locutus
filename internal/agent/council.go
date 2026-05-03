@@ -3,8 +3,10 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/chetan/locutus/internal/frontmatter"
 	"github.com/chetan/locutus/internal/specio"
@@ -65,8 +67,22 @@ type AgentDef struct {
 	// prompt. Tools and grounding are mutually exclusive on Gemini;
 	// frontmatter that combines both will silently lose grounding
 	// when the model rejects the combination at API time.
-	Tools        []string `yaml:"tools,omitempty"`
-	SystemPrompt string   // the markdown body (not from YAML)
+	Tools []string `yaml:"tools,omitempty"`
+	// Timeout caps per-call wall-clock duration as a Go duration
+	// string (e.g. "5m", "30s"). Empty falls back to the global
+	// LOCUTUS_LLM_TIMEOUT (default 15m). Worth setting tight on
+	// fanout-bounded agents (elaborators emit one node's worth of
+	// JSON per call — a 9-minute call is almost certainly a
+	// degenerate loop). Architect / triager / reconciler do larger
+	// per-call work and stay at the global default.
+	//
+	// Cancelled calls surface as a regular error through the per-node
+	// failure-isolation path (DJ-090): one missing feature/strategy
+	// in the spec, not a workflow abort. The trace records the
+	// cancel reason via the recorded "error" field on the per-call
+	// YAML.
+	Timeout      string `yaml:"timeout,omitempty"`
+	SystemPrompt string // the markdown body (not from YAML)
 }
 
 // LoadAgentDefs reads all .md files from the given directory on the FS.
@@ -147,7 +163,28 @@ func BuildGenerateRequest(def AgentDef, messages []Message) GenerateRequest {
 		OutputSchema:   schemaValue,
 		Grounding:      def.Grounding,
 		Tools:          def.Tools,
+		Timeout:        parseAgentTimeout(def),
 	}
+}
+
+// parseAgentTimeout converts AgentDef.Timeout (a Go duration string
+// like "5m" or "30s") to a time.Duration. Empty returns 0, which the
+// Generate path treats as "use the global LOCUTUS_LLM_TIMEOUT default."
+// A malformed value logs a warning and returns 0 so the call still
+// runs against the global default rather than failing at request-build
+// time — losing per-agent timeout enforcement on a typo is preferable
+// to refusing to call the model at all.
+func parseAgentTimeout(def AgentDef) time.Duration {
+	if def.Timeout == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(def.Timeout)
+	if err != nil {
+		slog.Warn("invalid agent timeout; falling back to global default",
+			"agent", def.ID, "value", def.Timeout, "error", err)
+		return 0
+	}
+	return d
 }
 
 // resolveModel determines the model string for an agent.

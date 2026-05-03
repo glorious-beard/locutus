@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // Message represents a single message in an LLM conversation.
@@ -54,6 +55,14 @@ type GenerateRequest struct {
 	// but no provider-side enforcement; the merge handler must parse
 	// defensively (strip markdown fences, etc.).
 	Tools []string `json:"tools,omitempty"`
+	// Timeout caps the per-call wall-clock duration. Zero falls back
+	// to the global LOCUTUS_LLM_TIMEOUT (default 15m). Set tight on
+	// fanout-bounded agents (elaborators) to bound the cost of a
+	// degenerate loop without aborting the workflow — the cancelled
+	// call surfaces as a regular error through per-node failure
+	// isolation. Threaded from AgentDef.Timeout via
+	// BuildGenerateRequest after string→Duration parse.
+	Timeout time.Duration `json:"timeout,omitempty"`
 }
 
 // GenerateResponse holds the result of an LLM generation call.

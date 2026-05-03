@@ -337,7 +337,16 @@ func (g *GenKitLLM) Generate(ctx context.Context, req GenerateRequest) (*Generat
 		opts = append(opts, ai.WithTools(toolRefs...))
 	}
 
-	if timeout := llmCallTimeout(); timeout > 0 {
+	// Per-call timeout precedence: explicit req.Timeout (per-agent
+	// frontmatter) wins; falling through to the global default (15m
+	// or LOCUTUS_LLM_TIMEOUT). Set tight on fanout-bounded agents so
+	// degenerate loops surface as a regular cancellation error within
+	// minutes instead of burning thinking tokens to the 15m global cap.
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = llmCallTimeout()
+	}
+	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
@@ -531,6 +540,18 @@ func buildProviderConfig(model string, req GenerateRequest, mcfg *ModelConfig) a
 			budget := int32(req.ThinkingBudget)
 			cfg.ThinkingConfig = &genai.ThinkingConfig{
 				ThinkingBudget: &budget,
+				// IncludeThoughts: true asks Gemini to surface the
+				// thought summary in the response. Default is false,
+				// which means the model still spends thinking tokens
+				// (you get billed via thoughts_tokens) but the response
+				// contains no reasoning parts — extractReasoning walks
+				// resp.Message.Content for IsReasoning() parts and
+				// finds none, so the trace's reasoning: field stays
+				// empty. Per SDK comment "thoughts are returned only
+				// if the model supports thought and thoughts are
+				// available" — variants that redact will still redact;
+				// this is the closest the API lets us get.
+				IncludeThoughts: true,
 			}
 		}
 		if req.Grounding {

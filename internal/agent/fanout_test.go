@@ -204,6 +204,30 @@ func TestAssembleRawProposalSkipsMalformed(t *testing.T) {
 	require.Len(t, assembled.Features, 2, "malformed entry dropped; valid entries survive")
 }
 
+// TestStepIDFanoutTag — the tag extractor pulls the per-item id out of
+// the composite stepID the fanout dispatcher builds
+// ("elaborate_features (feat-x)") and returns empty for plain step
+// IDs. The tag becomes the per-call YAML filename suffix so
+// `ls calls/` reads as named nodes, not indistinguishable per-agent
+// siblings.
+func TestStepIDFanoutTag(t *testing.T) {
+	cases := []struct {
+		stepID string
+		want   string
+	}{
+		{"elaborate_features (feat-dashboard)", "feat-dashboard"},
+		{"revise_strategies (strat-frontend)", "strat-frontend"},
+		{"reconcile", ""},
+		{"triage", ""},
+		{"elaborate_features ()", ""}, // degenerate empty parenthetical → empty tag
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := stepIDFanoutTag(c.stepID)
+		assert.Equal(t, c.want, got, "stepIDFanoutTag(%q)", c.stepID)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || (len(sub) > 0 && indexOfStr(s, sub) >= 0))
 }

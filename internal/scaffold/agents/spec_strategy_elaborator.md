@@ -4,6 +4,7 @@ role: planning
 capability: strong
 temperature: 0.5
 thinking_budget: 4096
+timeout: 5m
 output_schema: RawStrategyProposal
 ---
 # Identity

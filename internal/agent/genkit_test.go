@@ -216,6 +216,8 @@ func TestBuildProviderConfig(t *testing.T) {
 		require.NotNil(t, cfg.ThinkingConfig, "ThinkingBudget > 0 must populate ThinkingConfig")
 		require.NotNil(t, cfg.ThinkingConfig.ThinkingBudget)
 		assert.Equal(t, int32(4096), *cfg.ThinkingConfig.ThinkingBudget)
+		assert.True(t, cfg.ThinkingConfig.IncludeThoughts,
+			"IncludeThoughts must be set so Gemini surfaces the thought summary in the response — without it the model still bills thoughts_tokens but extractReasoning finds no reasoning parts to capture")
 	})
 
 	t.Run("googleai zero ThinkingBudget leaves ThinkingConfig nil", func(t *testing.T) {

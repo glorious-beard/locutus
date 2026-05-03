@@ -63,6 +63,34 @@ func AgentIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// callTagContextKey carries an optional per-call tag the recorder
+// appends to the filename. Used by the workflow's fanout dispatcher to
+// stamp `feat-x` onto a per-element elaborator call so that
+// `ls .locutus/sessions/<sid>/calls/` reads as a directory of named
+// nodes rather than 12 indistinguishable
+// `0017-spec_feature_elaborator.yaml` siblings. The agent_id stays as
+// the bare agent name; the tag is filename-only (it's already in the
+// call's messages content). Empty when not set.
+type callTagContextKey struct{}
+
+// WithCallTag returns a context that tags subsequent LLM calls with a
+// filename suffix the recorder appends to the per-call YAML name.
+// Production callers (the workflow fanout dispatcher) set it to the
+// per-item id (e.g. "feat-dashboard"); ad-hoc call sites leave it
+// unset.
+func WithCallTag(ctx context.Context, tag string) context.Context {
+	return context.WithValue(ctx, callTagContextKey{}, tag)
+}
+
+// CallTagFromContext returns the call tag set via WithCallTag, or ""
+// if none.
+func CallTagFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(callTagContextKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // acquiredCallbackKey carries a callback invoked when a throttled LLM
 // call leaves the per-model semaphore queue and actually begins. The
 // workflow executor uses it to flip a "queued" spinner to "running" in
@@ -281,10 +309,11 @@ func (r *SessionRecorder) ManifestPath() string {
 
 // Record stores one LLM call as a single completed entry. Equivalent
 // to Begin(...) immediately followed by Finish(...) and retained for
-// callers that don't need the live placeholder. Safe for concurrent
-// use.
-func (r *SessionRecorder) Record(role, agentID string, req GenerateRequest, resp *GenerateResponse, callErr error, started time.Time, duration time.Duration) {
-	h := r.Begin(role, agentID, req, started)
+// callers that don't need the live placeholder. callTag, when
+// non-empty, is appended to the per-call file name as a stable suffix
+// (see WithCallTag). Safe for concurrent use.
+func (r *SessionRecorder) Record(role, agentID, callTag string, req GenerateRequest, resp *GenerateResponse, callErr error, started time.Time, duration time.Duration) {
+	h := r.Begin(role, agentID, callTag, req, started)
 	completedAt := started.Add(duration)
 	h.finishAt(resp, callErr, completedAt, duration)
 }
@@ -304,11 +333,14 @@ type callHandle struct {
 
 // Begin assigns the next call index, writes the per-call file with
 // `status: in_progress` and the input messages, and returns a handle
-// for Finish. The file is on disk before Begin returns so a tail of
-// the session directory reveals what's currently in flight; a
-// SIGKILL between Begin and Finish preserves the input messages but
-// loses the output. Safe for concurrent use.
-func (r *SessionRecorder) Begin(role, agentID string, req GenerateRequest, started time.Time) *callHandle {
+// for Finish. callTag, when non-empty, is appended to the per-call
+// filename as a stable suffix (e.g. fanout calls pass the per-item id
+// like "feat-dashboard" so siblings are distinguishable from a
+// directory listing). The file is on disk before Begin returns so a
+// tail of the session directory reveals what's currently in flight;
+// a SIGKILL between Begin and Finish preserves the input messages
+// but loses the output. Safe for concurrent use.
+func (r *SessionRecorder) Begin(role, agentID, callTag string, req GenerateRequest, started time.Time) *callHandle {
 	r.mu.Lock()
 	r.nextIndex++
 	idx := r.nextIndex
@@ -330,7 +362,7 @@ func (r *SessionRecorder) Begin(role, agentID string, req GenerateRequest, start
 	h := &callHandle{
 		recorder: r,
 		index:    idx,
-		filePath: r.callFilePath(idx, agentID),
+		filePath: r.callFilePath(idx, agentID, callTag),
 		started:  started,
 		call:     call,
 	}
@@ -441,14 +473,25 @@ func (r *SessionRecorder) Close() error {
 }
 
 // callFilePath builds the per-call file path:
-//   <dir>/calls/<NNNN>-<agent>.yaml  when agent is set
-//   <dir>/calls/<NNNN>.yaml          when agent is empty
-// 4-digit zero-padded index sorts lexically out of the box; 9999 calls
-// per session is more headroom than any realistic workflow needs.
-func (r *SessionRecorder) callFilePath(idx int, agentID string) string {
+//
+//	<dir>/calls/<NNNN>-<agent>-<tag>.yaml  when agent and tag are set
+//	<dir>/calls/<NNNN>-<agent>.yaml        when only agent is set
+//	<dir>/calls/<NNNN>.yaml                when neither is set
+//
+// 4-digit zero-padded index sorts lexically out of the box; 9999
+// calls per session is more headroom than any realistic workflow
+// needs. The tag is the per-item identifier from the workflow's
+// fanout dispatcher (e.g. "feat-dashboard") so a directory listing
+// reads as named nodes rather than indistinguishable per-agent
+// siblings. Tags are slug-shaped already (they come from spec node
+// IDs); we don't sanitize further.
+func (r *SessionRecorder) callFilePath(idx int, agentID, callTag string) string {
 	name := fmt.Sprintf("%04d", idx)
 	if agentID != "" {
 		name = name + "-" + agentID
+	}
+	if callTag != "" {
+		name = name + "-" + callTag
 	}
 	return path.Join(r.dir, CallsDirName, name+".yaml")
 }
@@ -537,7 +580,8 @@ func (l *LoggingLLM) Generate(ctx context.Context, req GenerateRequest) (*Genera
 	started := time.Now()
 	role := RoleFromContext(ctx)
 	agentID := AgentIDFromContext(ctx)
-	handle := l.recorder.Begin(role, agentID, req, started)
+	callTag := CallTagFromContext(ctx)
+	handle := l.recorder.Begin(role, agentID, callTag, req, started)
 
 	var stop func()
 	if l.HeartbeatEnabled {

@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
@@ -136,6 +137,67 @@ func TestBuildGenerateRequest(t *testing.T) {
 	assert.Equal(t, "What features should we build?", req.Messages[1].Content)
 	assert.Equal(t, "user", req.Messages[2].Role)
 	assert.Equal(t, "Focus on the MVP scope.", req.Messages[2].Content)
+}
+
+func TestBuildGenerateRequestThreadsTimeout(t *testing.T) {
+	t.Run("valid duration string parses to time.Duration", func(t *testing.T) {
+		def := AgentDef{
+			ID:           "spec_feature_elaborator",
+			Timeout:      "5m",
+			SystemPrompt: "elaborator",
+		}
+		req := BuildGenerateRequest(def, []Message{{Role: "user", Content: "x"}})
+		assert.Equal(t, 5*time.Minute, req.Timeout,
+			"valid Go duration string in frontmatter must parse and surface on GenerateRequest")
+	})
+
+	t.Run("empty timeout falls through to global default", func(t *testing.T) {
+		def := AgentDef{ID: "no_timeout", SystemPrompt: "x"}
+		req := BuildGenerateRequest(def, []Message{{Role: "user", Content: "x"}})
+		assert.Zero(t, req.Timeout,
+			"unset Timeout must produce zero — Generate path then falls back to LOCUTUS_LLM_TIMEOUT default")
+	})
+
+	t.Run("malformed duration logs warning and returns zero", func(t *testing.T) {
+		// "5 minutes" isn't a valid Go duration string ("5m" is).
+		// We don't want a typo to refuse the call; the warning + zero
+		// fallback keeps the call running against the global default.
+		def := AgentDef{ID: "bad_timeout", Timeout: "5 minutes", SystemPrompt: "x"}
+		req := BuildGenerateRequest(def, []Message{{Role: "user", Content: "x"}})
+		assert.Zero(t, req.Timeout,
+			"malformed Timeout must NOT abort request build — fall back to default with a slog.Warn so the trace records the typo")
+	})
+}
+
+func TestLoadAgentDefsParsesTimeout(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, fsys.MkdirAll(".borg/agents", 0o755))
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec_feature_elaborator.md", []byte(`---
+id: spec_feature_elaborator
+role: planning
+timeout: 5m
+---
+You are the elaborator.
+`), 0o644))
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec_architect.md", []byte(`---
+id: spec_architect
+role: planning
+---
+You are the architect.
+`), 0o644))
+
+	defs, err := LoadAgentDefs(fsys, ".borg/agents")
+	require.NoError(t, err)
+	require.Len(t, defs, 2)
+
+	byID := make(map[string]AgentDef, len(defs))
+	for _, d := range defs {
+		byID[d.ID] = d
+	}
+	assert.Equal(t, "5m", byID["spec_feature_elaborator"].Timeout,
+		"frontmatter `timeout: 5m` round-trips as a string field; BuildGenerateRequest does the parse")
+	assert.Empty(t, byID["spec_architect"].Timeout,
+		"missing key defaults to empty; the global default applies")
 }
 
 func TestBuildGenerateRequestThreadsGrounding(t *testing.T) {
