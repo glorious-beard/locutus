@@ -377,38 +377,72 @@ func TestRenderedPromptHasNoContradictions(t *testing.T) {
 // class of bug as DJ-097's projection-vs-system-prompt drift, just
 // inside a single .md file.
 //
-// This test enumerates known-bad synonyms and fails when any of them
-// appears in a council agent's rendered prompt where the schema uses
-// a different name. New aliases get added here as they're discovered;
-// the test is a backstop, not a comprehensive solution.
+// Two failure shapes the test catches:
+//
+//  1. **`bannedSynonym`** — a synonym that must NEVER appear
+//     (e.g. "pick a winner"). Use this when the synonym is itself
+//     evocative of a wrong field name.
+//
+//  2. **`fuzzyPhrase` + `requireField`** — a fuzzy paraphrase that
+//     IS allowed to appear, but only if the canonical field name
+//     appears alongside it. Use this when the prose naturally needs
+//     to describe the action ("the reason it was rejected") and the
+//     fix is to name the field next to the description, not to drop
+//     the description.
+//
+// New aliases get added here as they're discovered; the test is a
+// backstop, not a comprehensive solution.
 func TestRenderedPromptSchemaTerminologyCoherence(t *testing.T) {
-	// (agent .md, prose synonym, schema field) — fail if synonym is
-	// present in the rendered prompt without the schema field also
-	// being present in the same context.
 	cases := []struct {
-		agentMD    string
-		stepID     string
-		snap       StateSnapshot
-		badSynonym string
-		schemaName string
-		bugRef     string
+		name          string
+		agentMD       string
+		stepID        string
+		snap          StateSnapshot
+		bannedSynonym string // if non-empty, must NOT appear at all
+		fuzzyPhrase   string // if non-empty, may appear, but requireField MUST also appear in the rendered prompt
+		requireField  string
+		bugRef        string
 	}{
 		{
-			agentMD:    "spec_reconciler.md",
-			stepID:     "reconcile",
-			snap:       StateSnapshot{Prompt: "Build it.", RawProposal: fixtureRawProposal(t)},
-			badSynonym: "pick a winner",
-			schemaName: "canonical",
-			bugRef:     "May-4 reconciler emitted `\"winner\": {...}` instead of `\"canonical\": {...}` because the prose said 'winner' while the schema example said 'canonical'. Genkit rejected the call.",
+			name:          "winner_is_banned_in_reconciler",
+			agentMD:       "spec_reconciler.md",
+			stepID:        "reconcile",
+			snap:          StateSnapshot{Prompt: "Build it.", RawProposal: fixtureRawProposal(t)},
+			bannedSynonym: "pick a winner",
+			bugRef:        "May-4: reconciler emitted `\"winner\": {...}` instead of `\"canonical\": {...}` because the prose said 'winner' while the schema field is `canonical`. Genkit rejected the call.",
+		},
+		{
+			name:         "rejected_because_named_when_described",
+			agentMD:      "spec_reconciler.md",
+			stepID:       "reconcile",
+			snap:         StateSnapshot{Prompt: "Build it.", RawProposal: fixtureRawProposal(t)},
+			fuzzyPhrase:  "the reason it was rejected",
+			requireField: "rejected_because",
+			bugRef:       "Sibling of winner/canonical: prose may describe the rationale, but the schema field name `rejected_because` MUST appear next to it so the model knows where to put the value.",
+		},
+		{
+			name:         "existing_id_named_when_described",
+			agentMD:      "spec_reconciler.md",
+			stepID:       "reconcile",
+			snap:         StateSnapshot{Prompt: "Build it.", RawProposal: fixtureRawProposal(t)},
+			fuzzyPhrase:  "existing decision's ID",
+			requireField: "existing_id",
+			bugRef:       "Sibling of winner/canonical: prose may describe the action, but the schema field name `existing_id` MUST appear next to it so the model knows where to put the value.",
 		},
 	}
 
 	for _, c := range cases {
-		def := loadAgentDefForSnapshot(t, c.agentMD)
-		got := renderPrompt(t, def, c.stepID, c.snap)
-		if strings.Contains(got, c.badSynonym) {
-			t.Errorf("%s: rendered prompt contains prose synonym %q for schema field %q. The model picks the prose word over the schema example. Prior bug: %s",
-				c.agentMD, c.badSynonym, c.schemaName, c.bugRef)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			def := loadAgentDefForSnapshot(t, c.agentMD)
+			got := renderPrompt(t, def, c.stepID, c.snap)
+			if c.bannedSynonym != "" && strings.Contains(got, c.bannedSynonym) {
+				t.Errorf("%s: rendered prompt contains banned synonym %q. The model picks the prose word over the schema example. Prior bug: %s",
+					c.agentMD, c.bannedSynonym, c.bugRef)
+			}
+			if c.fuzzyPhrase != "" && strings.Contains(got, c.fuzzyPhrase) && !strings.Contains(got, c.requireField) {
+				t.Errorf("%s: rendered prompt contains fuzzy phrase %q but never names the schema field %q. The model has nothing to anchor the value on. Prior bug: %s",
+					c.agentMD, c.fuzzyPhrase, c.requireField, c.bugRef)
+			}
+		})
 	}
 }

@@ -114,11 +114,12 @@ type ReconciliationVerdict struct {
 // Action kinds:
 //   - "dedupe":           identical decisions → one canonical.
 //   - "resolve_conflict": incompatible decisions on the same question →
-//                         winner survives; loser → winner.alternatives[];
-//                         caller fires cascade rewrite for affected nodes.
+//                         canonical survives; loser + rejected_because →
+//                         canonical.alternatives[]; caller fires cascade
+//                         rewrite for affected nodes.
 //   - "reuse_existing":   cluster maps to an existing-spec decision; reuse
-//                         that ID instead of minting a new one. Canonical
-//                         field is unused.
+//                         that ID via existing_id instead of minting a new
+//                         one. Canonical field is unused.
 //
 // keep_separate is implicit: any inline decision not referenced by an
 // action becomes its own canonical Decision with a slug-derived ID.

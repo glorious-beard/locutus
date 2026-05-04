@@ -114,10 +114,12 @@ func TestProjectReviseNodeRendersPriorContent(t *testing.T) {
 
 // TestProjectAdditionElaborateRendersConcernAndExistingNodes — the
 // per-finding addition projection (Phase 4) must include the verbatim
-// critic finding driving the addition AND the existing-nodes "do NOT
-// re-emit" list. Without the finding the elaborator has nothing to
-// author from; without the existing list it risks re-introducing
-// already-present nodes.
+// critic finding driving the addition AND the existing-nodes list.
+// Without the finding the elaborator has nothing to author from;
+// without the existing list it risks re-introducing already-present
+// nodes. The "do NOT re-emit" directive itself lives in the
+// elaborator's .md addition-mode addendum, not in this projection
+// (DJ-097).
 func TestProjectAdditionElaborateRendersConcernAndExistingNodes(t *testing.T) {
 	original := RawSpecProposal{
 		Features:   []RawFeatureProposal{{ID: "feat-dashboard", Title: "Dashboard"}},
@@ -137,7 +139,7 @@ func TestProjectAdditionElaborateRendersConcernAndExistingNodes(t *testing.T) {
 		require.Len(t, msgs, 1)
 		body := msgs[0].Content
 
-		assert.Contains(t, body, "do NOT re-emit", "explicit gate against duplicating existing nodes")
+		assert.Contains(t, body, "## Existing nodes", "existing-nodes section must be labeled so the system prompt's addition-mode addendum can refer to it")
 		assert.Contains(t, body, "feat-dashboard")
 		assert.Contains(t, body, "strat-frontend")
 		assert.Contains(t, body, "missing infrastructure-as-code strategy",

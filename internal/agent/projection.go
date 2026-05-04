@@ -275,7 +275,10 @@ func projectReviseNode(snap StateSnapshot, kind string) []Message {
 	}
 	fmt.Fprintf(&b, "- **Node ID:** `%s`\n\n", rev.NodeID)
 
-	b.WriteString("## Prior content (rejected — re-emit a corrected version)\n\n")
+	// Header is data-only ("here is the prior content"); the rule
+	// "treat it as rejected and re-emit a corrected version" lives in
+	// the elaborator's revise-mode addendum. See DJ-097.
+	b.WriteString("## Prior content\n\n")
 	switch kind {
 	case "feature":
 		if prior, ok := findRawFeature(snap.OriginalRawProposal, rev.NodeID); ok {
@@ -303,7 +306,10 @@ func projectReviseNode(snap StateSnapshot, kind string) []Message {
 
 	b.WriteString("\n## Concerns targeting this node\n\n")
 	if len(rev.Concerns) == 0 {
-		b.WriteString("(none — fanout was spawned without concerns; treat as a no-op re-emission of the prior content)\n")
+		// Data-only fallback. The "if empty, re-emit prior content
+		// unchanged" rule lives in the elaborator's .md revise-mode
+		// addendum. See DJ-097.
+		b.WriteString("(none)\n")
 	} else {
 		for _, c := range rev.Concerns {
 			fmt.Fprintf(&b, "- %s\n", c)
@@ -320,9 +326,10 @@ func projectReviseNode(snap StateSnapshot, kind string) []Message {
 // snap.FanoutItem to the JSON of one AddedNode; the elaborator
 // invents one new RawFeatureProposal or RawStrategyProposal
 // addressing the source_concern verbatim, picking its own id and
-// title from the concern's subject. Existing nodes are listed
-// explicitly as "do NOT re-emit" to prevent the elaborator from
-// re-introducing already-present features/strategies.
+// title from the concern's subject. Existing nodes are listed under
+// a "## Existing nodes" header so the elaborator's addition-mode
+// addendum (system prompt) can refer to the section by name when
+// telling the agent not to collide with already-present ids.
 //
 // Phase 4 promotes additions from a single architect call (DJ-092)
 // to per-finding fanout (DJ-095), eliminating the multi-node
@@ -344,7 +351,10 @@ func projectAdditionElaborate(snap StateSnapshot, kind string) []Message {
 	}
 
 	features, strategies := proposalNodeIDs(snap.OriginalRawProposal)
-	b.WriteString("\n\n## Existing nodes (do NOT re-emit)\n\n")
+	// Header is data-only ("here are the existing ids"); the rule
+	// "do not re-emit one of these ids" lives in the elaborator's
+	// addition-mode addendum. See DJ-097.
+	b.WriteString("\n\n## Existing nodes\n\n")
 	if len(features) == 0 && len(strategies) == 0 {
 		b.WriteString("(none)\n")
 	} else {
