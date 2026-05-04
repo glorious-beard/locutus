@@ -173,7 +173,7 @@ func formatOutlineForElaborator(raw string) string {
 // the list of node ids in the current proposal + the critic findings
 // (one per concern, grouped by kind for readability). The triager
 // emits a RevisionPlan routing each finding to a feature/strategy
-// revision, an addition, or discarded.
+// revision or an addition. There is no discard bucket — see DJ-095.
 //
 // The triager does NOT see the full proposal content — only the node
 // id list. Routing is a pure mapping from finding text → node id, not
@@ -183,7 +183,7 @@ func projectTriage(snap StateSnapshot) []Message {
 	b.WriteString("## Existing nodes in the proposal\n\n")
 	features, strategies := proposalNodeIDs(snap.RawProposal)
 	if len(features) == 0 && len(strategies) == 0 {
-		b.WriteString("(none — the proposal is empty; route every finding to additions[] or discarded[])\n")
+		b.WriteString("(none — the proposal is empty; route every finding to additions[])\n")
 	} else {
 		if len(features) > 0 {
 			b.WriteString("**Features:**\n")
@@ -228,7 +228,7 @@ func projectTriage(snap StateSnapshot) []Message {
 		}
 	}
 
-	b.WriteString("Emit a RevisionPlan routing each actionable finding above to feature_revisions, strategy_revisions, or additions. Findings you judge non-actionable (off-topic, already addressed, pure observations) are simply omitted. Use the verbatim finding text in the concerns/additions arrays — do not paraphrase.")
+	b.WriteString("Emit a RevisionPlan routing EVERY finding above to one of feature_revisions, strategy_revisions, or additions. The total entries across the three arrays MUST equal the total count of input findings. There is no discard bucket — the critic already judged actionability by emitting the finding. When uncertain whether a finding implies a missing feature or strategy, default to additions with kind=\"strategy\" — most missing-X findings are missing-strategy gaps. Use the verbatim finding text in concerns/source_concern fields; do not paraphrase. An array with no routable entries must be emitted as `[]` (an empty array) — do NOT emit `[{}]` or any placeholder shape; downstream code rejects empty objects as malformed.")
 	return []Message{{Role: "user", Content: b.String()}}
 }
 
