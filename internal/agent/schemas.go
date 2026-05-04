@@ -163,15 +163,25 @@ func init() {
 	// "non-actionable, omit" bucket; the triager's authority is
 	// routing only (DJ-095). Drives per-node revise fanouts (DJ-092)
 	// and per-finding addition fanouts (DJ-095) downstream.
+	// The schema example deliberately leaves StrategyRevisions empty
+	// to show the model that an empty array is valid output. When the
+	// example showed all three arrays populated (DJ-095 original
+	// shape), the model pattern-matched the example shape and emitted
+	// `strategy_revisions: [{}]` even when there were no strategy
+	// revisions to make — a degenerate shape that wasted one
+	// elaborator call per run. Showing an empty array here teaches
+	// the model that "no entries" is a valid emission, not a hole to
+	// be filled with a placeholder. See DJ-097 follow-up.
+	//
+	// FeatureRevisions and Additions stay populated so the model
+	// still sees the typical-case shapes for the buckets that
+	// usually carry entries.
 	RegisterSchema("RevisionPlan", RevisionPlan{
 		FeatureRevisions: []NodeRevision{{
 			NodeID:   "feat-example",
 			Concerns: []string{"verbatim text of the critic finding targeting this feature"},
 		}},
-		StrategyRevisions: []NodeRevision{{
-			NodeID:   "strat-example",
-			Concerns: []string{"verbatim text of the critic finding targeting this strategy"},
-		}},
+		StrategyRevisions: []NodeRevision{},
 		Additions: []AddedNode{{
 			Kind:          "strategy",
 			SourceConcern: "verbatim text of a critic finding proposing a missing feature or strategy; kind selects which elaborator agent the addition fanout dispatches to",

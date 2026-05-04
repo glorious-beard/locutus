@@ -61,14 +61,6 @@ Output valid JSON conforming to the RevisionPlan schema. No prose, no commentary
       ]
     }
   ],
-  "strategy_revisions": [
-    {
-      "node_id": "strat-example",
-      "concerns": [
-        "verbatim text of the critic finding targeting this strategy"
-      ]
-    }
-  ],
   "additions": [
     {
       "kind": "strategy",

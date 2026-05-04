@@ -382,15 +382,27 @@ func extractFanoutItems(state *PlanningState, path string) ([]string, error) {
 		if err := json.Unmarshal([]byte(state.RevisionPlan), &plan); err != nil {
 			return nil, fmt.Errorf("parse revision plan: %w", err)
 		}
-		var items []any
+		var src []NodeRevision
 		if path == "revision_plan.feature_revisions" {
-			for _, r := range plan.FeatureRevisions {
-				items = append(items, r)
-			}
+			src = plan.FeatureRevisions
 		} else {
-			for _, r := range plan.StrategyRevisions {
-				items = append(items, r)
+			src = plan.StrategyRevisions
+		}
+		// Defensive guard: drop NodeRevision entries with empty node_id
+		// AND empty concerns. A model emitting `[{}]` (the persistent
+		// regression where the model fills the schema example shape
+		// rather than emit an empty array) would otherwise dispatch an
+		// elaborator call against a meaningless input. The schema
+		// example was tightened to show empty arrays as valid output,
+		// but this guard covers the case where the model still
+		// emits placeholder shape despite the example.
+		var items []any
+		for _, r := range src {
+			if strings.TrimSpace(r.NodeID) == "" && len(r.Concerns) == 0 {
+				slog.Warn("fanout: dropping empty NodeRevision (likely `[{}]` placeholder)", "path", path)
+				continue
 			}
+			items = append(items, r)
 		}
 		return marshalFanoutItems(items)
 	case "revision_plan.additions.features", "revision_plan.additions.strategies":
@@ -407,6 +419,16 @@ func extractFanoutItems(state *PlanningState, path string) ([]string, error) {
 		}
 		var items []any
 		for _, a := range plan.Additions {
+			// Defensive guard: drop AddedNode entries with empty
+			// source_concern (no finding to address — same `[{}]`
+			// placeholder pattern the schema example was tightened
+			// against). An entry with non-empty source_concern but
+			// empty kind defaults to strategy per the AddedNode
+			// contract; that's recoverable, not malformed.
+			if strings.TrimSpace(a.SourceConcern) == "" {
+				slog.Warn("fanout: dropping empty AddedNode (no source_concern)", "path", path)
+				continue
+			}
 			kind := strings.TrimSpace(a.Kind)
 			if kind == "" {
 				kind = "strategy" // empty defaults to strategy per AddedNode contract

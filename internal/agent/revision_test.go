@@ -56,6 +56,68 @@ func TestExtractFanoutItemsRevisionPlan(t *testing.T) {
 	})
 }
 
+// TestExtractFanoutItemsDropsEmptyPlaceholders — defensive guard
+// against the `[{}]` placeholder regression. When the model emits
+// `strategy_revisions: [{}]` (a recurring degenerate output despite
+// schema examples and prompt rules forbidding it), the empty entry
+// must NOT be turned into a fanout item — that would dispatch an
+// elaborator call against a meaningless input and waste 30-90s of
+// LLM time per occurrence.
+func TestExtractFanoutItemsDropsEmptyPlaceholders(t *testing.T) {
+	t.Run("drops empty NodeRevision in feature_revisions", func(t *testing.T) {
+		// Triager emitted feature_revisions: [{}] — empty NodeRevision
+		// alongside one real entry.
+		raw, _ := json.Marshal(RevisionPlan{
+			FeatureRevisions: []NodeRevision{
+				{}, // placeholder — must be dropped
+				{NodeID: "feat-real", Concerns: []string{"address PII"}},
+			},
+		})
+		state := &PlanningState{RevisionPlan: string(raw)}
+		items, err := extractFanoutItems(state, "revision_plan.feature_revisions")
+		require.NoError(t, err)
+		require.Len(t, items, 1, "empty NodeRevision must be dropped before dispatch; only the real entry survives")
+		var first NodeRevision
+		require.NoError(t, json.Unmarshal([]byte(items[0]), &first))
+		assert.Equal(t, "feat-real", first.NodeID)
+	})
+
+	t.Run("drops empty NodeRevision in strategy_revisions", func(t *testing.T) {
+		// The May-4 winplan trace's exact failure shape:
+		// strategy_revisions: [{}] only — no real entries.
+		raw, _ := json.Marshal(RevisionPlan{
+			StrategyRevisions: []NodeRevision{{}},
+		})
+		state := &PlanningState{RevisionPlan: string(raw)}
+		items, err := extractFanoutItems(state, "revision_plan.strategy_revisions")
+		require.NoError(t, err)
+		assert.Empty(t, items, "all entries empty → no items dispatched (no wasted elaborator call)")
+	})
+
+	t.Run("drops empty AddedNode in additions paths", func(t *testing.T) {
+		raw, _ := json.Marshal(RevisionPlan{
+			Additions: []AddedNode{
+				{},                                                                // placeholder
+				{Kind: "strategy", SourceConcern: "missing observability"},        // real
+				{Kind: "feature", SourceConcern: "missing audit-log viewer"},      // real
+				{Kind: "strategy", SourceConcern: ""},                             // empty source — drop
+			},
+		})
+		state := &PlanningState{RevisionPlan: string(raw)}
+
+		stratItems, err := extractFanoutItems(state, "revision_plan.additions.strategies")
+		require.NoError(t, err)
+		require.Len(t, stratItems, 1, "only the real strategy addition survives; placeholder + empty-source dropped")
+		var s AddedNode
+		require.NoError(t, json.Unmarshal([]byte(stratItems[0]), &s))
+		assert.Equal(t, "missing observability", s.SourceConcern)
+
+		featItems, err := extractFanoutItems(state, "revision_plan.additions.features")
+		require.NoError(t, err)
+		require.Len(t, featItems, 1)
+	})
+}
+
 // TestExtractFanoutItemsAdditions — Phase 4 fanout for additions. The
 // AddedNode list filters by kind so each kind's fanout dispatches to
 // the matching elaborator agent. Empty kind defaults to strategy
