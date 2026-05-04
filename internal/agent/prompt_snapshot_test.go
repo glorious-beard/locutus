@@ -364,3 +364,51 @@ func TestRenderedPromptHasNoContradictions(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderedPromptSchemaTerminologyCoherence — when an agent's
+// prose refers to a structured-output field by name, the prose must
+// use the EXACT field name from the schema example, not a synonym.
+//
+// The May-4 reconciler failure: prompt prose said "pick a winner"
+// while the schema field is `canonical`. The model emitted
+// `"winner": {...}` for resolve_conflict actions; Genkit's schema
+// validator rejected the call ("Additional property winner is not
+// allowed") and the workflow died. Prose-vs-schema drift is the same
+// class of bug as DJ-097's projection-vs-system-prompt drift, just
+// inside a single .md file.
+//
+// This test enumerates known-bad synonyms and fails when any of them
+// appears in a council agent's rendered prompt where the schema uses
+// a different name. New aliases get added here as they're discovered;
+// the test is a backstop, not a comprehensive solution.
+func TestRenderedPromptSchemaTerminologyCoherence(t *testing.T) {
+	// (agent .md, prose synonym, schema field) — fail if synonym is
+	// present in the rendered prompt without the schema field also
+	// being present in the same context.
+	cases := []struct {
+		agentMD    string
+		stepID     string
+		snap       StateSnapshot
+		badSynonym string
+		schemaName string
+		bugRef     string
+	}{
+		{
+			agentMD:    "spec_reconciler.md",
+			stepID:     "reconcile",
+			snap:       StateSnapshot{Prompt: "Build it.", RawProposal: fixtureRawProposal(t)},
+			badSynonym: "pick a winner",
+			schemaName: "canonical",
+			bugRef:     "May-4 reconciler emitted `\"winner\": {...}` instead of `\"canonical\": {...}` because the prose said 'winner' while the schema example said 'canonical'. Genkit rejected the call.",
+		},
+	}
+
+	for _, c := range cases {
+		def := loadAgentDefForSnapshot(t, c.agentMD)
+		got := renderPrompt(t, def, c.stepID, c.snap)
+		if strings.Contains(got, c.badSynonym) {
+			t.Errorf("%s: rendered prompt contains prose synonym %q for schema field %q. The model picks the prose word over the schema example. Prior bug: %s",
+				c.agentMD, c.badSynonym, c.schemaName, c.bugRef)
+		}
+	}
+}

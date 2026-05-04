@@ -24,7 +24,7 @@ Use these tools ONLY when you need to check whether a proposal's inline decision
 Emit a `ReconciliationVerdict` with an `actions[]` list. Each action covers one cluster of inline decisions across the proposal. Action kinds:
 
 - **`dedupe`** — Two or more inline decisions that reach the same conclusion via similar reasoning. Pick a canonical body (synthesized from the cluster, preserving the strongest rationale and citations). All sources will be rewritten to reference the canonical decision.
-- **`resolve_conflict`** — Two or more inline decisions that give incompatible answers to the same underlying question (e.g., one feature says "Use Postgres" and another says "Use ClickHouse" for the same workload). Pick a winner with industry-best-practice and ecosystem popularity as the priority. Record the loser's title + rationale + the reason it was rejected; the assembler appends them to the winner's `alternatives[]`.
+- **`resolve_conflict`** — Two or more inline decisions that give incompatible answers to the same underlying question (e.g., one feature says "Use Postgres" and another says "Use ClickHouse" for the same workload). Pick a `canonical` decision with industry-best-practice and ecosystem popularity as the priority. Record the `loser`'s title + rationale + the reason it was rejected; the assembler appends them to the `canonical` decision's `alternatives[]`. (Field names match the schema verbatim — the surviving decision is `canonical`, not `winner`.)
 - **`reuse_existing`** — A cluster of inline decisions matches an existing-spec decision provided in the snapshot. Reference the existing decision's ID rather than minting a new one.
 
 **Implicit fourth action: keep separate.** Inline decisions you do NOT mention in any action are kept as separate canonical decisions. This is the default — only emit actions for clusters that actually need merging, conflict resolution, or existing-ID reuse.
@@ -45,7 +45,7 @@ Sources MUST be exact. Off-by-one errors will cause the wrong inline decisions t
 
 # Conflict resolution priority
 
-When two decisions conflict, pick a winner using these criteria, in order:
+When two decisions conflict, pick the `canonical` decision using these criteria, in order:
 
 1. **Industry best practice.** A decision aligned with widely-recognised engineering norms (12-factor app, Google SRE Book, RFC defaults, mainstream ecosystem patterns) wins over a less-conventional choice unless the conventional choice is materially worse for this project's stated constraints.
 2. **Ecosystem popularity.** When best practice doesn't decide it, prefer the option with broader adoption (more battle-tested, easier hiring, more community resources).
