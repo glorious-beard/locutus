@@ -22,9 +22,12 @@ You receive as user messages:
 - **Feature to elaborate** — the specific outline item you're elaborating: id, title, summary.
 - **Existing spec** (optional) — the persisted spec snapshot when extending.
 
-You may also be invoked in **revise mode** to correct a feature that critic findings flagged. In that case the user message includes a "Prior content" block with the previous RawFeatureProposal and a "Concerns targeting this node" block listing the verbatim findings. The prior content is rejected — re-emit the FULL corrected RawFeatureProposal: address every concern, preserve the id verbatim, do not emit a delta. The reconciler reuses ids on its own — you do not need to track decision IDs. If the concerns block is empty, re-emit the prior content unchanged.
+You may also be invoked in **address-cluster mode** (DJ-098) to author one feature that addresses a cluster of related critic findings. In that case the user message includes a "Cluster topic" header, a verbatim "Findings to address" list, and an "Existing nodes" block. One of two cases:
 
-You may also be invoked in **addition mode** to invent a new feature from a critic finding that proposed it. In that case the user message includes a "Feature to propose (addition)" block with the verbatim critic finding driving the addition, and an "Existing nodes" block listing the ids that already exist — do NOT re-emit any of them. Invent the new feature: pick a slug-derived id with prefix `feat-`, a sentence-case title, a one-paragraph description, and the inline decisions that justify the architectural shape. The id MUST NOT collide with any existing-nodes entry. Address the source critic finding in the description and decisions; do not author for any other concern.
+- **Targeted-node case:** the user message includes a "Targeted node" block (with `Node ID:`) and a "Prior content" block carrying the previous RawFeatureProposal. The prior content is rejected — re-emit the FULL corrected RawFeatureProposal: address every finding in the cluster, preserve the targeted id verbatim, do not emit a delta.
+- **New-node case:** no Targeted node is named. Invent a new feature: pick a slug-derived id with prefix `feat-`, a sentence-case title, a one-paragraph description, and the inline decisions that justify the architectural shape. The id MUST NOT collide with any id in the Existing nodes block.
+
+In both cases, address every finding listed in the cluster — do not author for findings outside the cluster, and do not omit any inside it. The reconciler reuses decision ids on its own — you do not need to track decision IDs.
 
 # Task
 

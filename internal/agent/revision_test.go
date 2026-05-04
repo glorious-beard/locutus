@@ -9,235 +9,187 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestExtractFanoutItemsRevisionPlan — feature/strategy revision arrays
-// resolve to one raw-JSON string per NodeRevision, parseable back to
-// the typed shape. Mirrors TestExtractFanoutItems for the outline path.
-func TestExtractFanoutItemsRevisionPlan(t *testing.T) {
-	plan := RevisionPlan{
-		FeatureRevisions: []NodeRevision{
-			{NodeID: "feat-a", Concerns: []string{"address PII encryption"}},
-			{NodeID: "feat-b", Concerns: []string{"clarify scale target"}},
-		},
-		StrategyRevisions: []NodeRevision{
-			{NodeID: "strat-x", Concerns: []string{"name the cloud vendor"}},
+// TestExtractFanoutItemsFindingClusters — DJ-098 unified revise. The
+// findings.clusters fanout returns one raw-JSON string per
+// FindingCluster, parseable back to the typed shape so the projection
+// can decide revise vs add per-item.
+func TestExtractFanoutItemsFindingClusters(t *testing.T) {
+	state := &PlanningState{
+		FindingClusters: []FindingCluster{
+			{Topic: "feat-a", NodeID: "feat-a", AgentID: "spec_feature_elaborator", Findings: []string{"address PII"}},
+			{Topic: "infrastructure-as-code", AgentID: "spec_strategy_elaborator", Findings: []string{"missing IaC", "no CI/CD"}},
 		},
 	}
-	raw, err := json.Marshal(plan)
+
+	items, err := extractFanoutItems(state, "findings.clusters")
 	require.NoError(t, err)
-	state := &PlanningState{RevisionPlan: string(raw)}
+	require.Len(t, items, 2)
 
-	t.Run("feature_revisions returns one item per entry", func(t *testing.T) {
-		items, err := extractFanoutItems(state, "revision_plan.feature_revisions")
-		require.NoError(t, err)
-		require.Len(t, items, 2)
+	var first FindingCluster
+	require.NoError(t, json.Unmarshal([]byte(items[0]), &first))
+	assert.Equal(t, "feat-a", first.NodeID)
+	assert.Equal(t, "spec_feature_elaborator", first.AgentID)
 
-		var first NodeRevision
-		require.NoError(t, json.Unmarshal([]byte(items[0]), &first))
-		assert.Equal(t, "feat-a", first.NodeID)
-		require.Len(t, first.Concerns, 1)
-		assert.Equal(t, "address PII encryption", first.Concerns[0])
-	})
-
-	t.Run("strategy_revisions returns one item per entry", func(t *testing.T) {
-		items, err := extractFanoutItems(state, "revision_plan.strategy_revisions")
-		require.NoError(t, err)
-		require.Len(t, items, 1)
-
-		var first NodeRevision
-		require.NoError(t, json.Unmarshal([]byte(items[0]), &first))
-		assert.Equal(t, "strat-x", first.NodeID)
-	})
-
-	t.Run("missing revision plan returns empty", func(t *testing.T) {
-		empty := &PlanningState{}
-		items, err := extractFanoutItems(empty, "revision_plan.feature_revisions")
-		require.NoError(t, err)
-		assert.Empty(t, items)
-	})
+	var second FindingCluster
+	require.NoError(t, json.Unmarshal([]byte(items[1]), &second))
+	assert.Empty(t, second.NodeID, "addition cluster has no NodeID")
+	assert.Equal(t, "spec_strategy_elaborator", second.AgentID)
+	assert.Len(t, second.Findings, 2)
 }
 
-// TestExtractFanoutItemsDropsEmptyPlaceholders — defensive guard
-// against the `[{}]` placeholder regression. When the model emits
-// `strategy_revisions: [{}]` (a recurring degenerate output despite
-// schema examples and prompt rules forbidding it), the empty entry
-// must NOT be turned into a fanout item — that would dispatch an
-// elaborator call against a meaningless input and waste 30-90s of
-// LLM time per occurrence.
-func TestExtractFanoutItemsDropsEmptyPlaceholders(t *testing.T) {
-	t.Run("drops empty NodeRevision in feature_revisions", func(t *testing.T) {
-		// Triager emitted feature_revisions: [{}] — empty NodeRevision
-		// alongside one real entry.
-		raw, _ := json.Marshal(RevisionPlan{
-			FeatureRevisions: []NodeRevision{
-				{}, // placeholder — must be dropped
-				{NodeID: "feat-real", Concerns: []string{"address PII"}},
-			},
-		})
-		state := &PlanningState{RevisionPlan: string(raw)}
-		items, err := extractFanoutItems(state, "revision_plan.feature_revisions")
-		require.NoError(t, err)
-		require.Len(t, items, 1, "empty NodeRevision must be dropped before dispatch; only the real entry survives")
-		var first NodeRevision
-		require.NoError(t, json.Unmarshal([]byte(items[0]), &first))
-		assert.Equal(t, "feat-real", first.NodeID)
-	})
-
-	t.Run("drops empty NodeRevision in strategy_revisions", func(t *testing.T) {
-		// The May-4 winplan trace's exact failure shape:
-		// strategy_revisions: [{}] only — no real entries.
-		raw, _ := json.Marshal(RevisionPlan{
-			StrategyRevisions: []NodeRevision{{}},
-		})
-		state := &PlanningState{RevisionPlan: string(raw)}
-		items, err := extractFanoutItems(state, "revision_plan.strategy_revisions")
-		require.NoError(t, err)
-		assert.Empty(t, items, "all entries empty → no items dispatched (no wasted elaborator call)")
-	})
-
-	t.Run("drops empty AddedNode in additions paths", func(t *testing.T) {
-		raw, _ := json.Marshal(RevisionPlan{
-			Additions: []AddedNode{
-				{},                                                                // placeholder
-				{Kind: "strategy", SourceConcern: "missing observability"},        // real
-				{Kind: "feature", SourceConcern: "missing audit-log viewer"},      // real
-				{Kind: "strategy", SourceConcern: ""},                             // empty source — drop
-			},
-		})
-		state := &PlanningState{RevisionPlan: string(raw)}
-
-		stratItems, err := extractFanoutItems(state, "revision_plan.additions.strategies")
-		require.NoError(t, err)
-		require.Len(t, stratItems, 1, "only the real strategy addition survives; placeholder + empty-source dropped")
-		var s AddedNode
-		require.NoError(t, json.Unmarshal([]byte(stratItems[0]), &s))
-		assert.Equal(t, "missing observability", s.SourceConcern)
-
-		featItems, err := extractFanoutItems(state, "revision_plan.additions.features")
-		require.NoError(t, err)
-		require.Len(t, featItems, 1)
-	})
-}
-
-// TestExtractFanoutItemsAdditions — Phase 4 fanout for additions. The
-// AddedNode list filters by kind so each kind's fanout dispatches to
-// the matching elaborator agent. Empty kind defaults to strategy
-// (recoverable failure mode per the AddedNode contract).
-func TestExtractFanoutItemsAdditions(t *testing.T) {
-	plan := RevisionPlan{
-		Additions: []AddedNode{
-			{Kind: "feature", SourceConcern: "missing data export feature"},
-			{Kind: "strategy", SourceConcern: "missing IaC strategy"},
-			{Kind: "strategy", SourceConcern: "missing observability tooling"},
-			{Kind: "", SourceConcern: "ambiguous gap defaults to strategy"},
+// TestExtractFanoutItemsFindingClustersDropsEmpty — defensive guard:
+// a FindingCluster with no findings is meaningless and would dispatch
+// an elaborator call against nothing. Drop them before fanout.
+func TestExtractFanoutItemsFindingClustersDropsEmpty(t *testing.T) {
+	state := &PlanningState{
+		FindingClusters: []FindingCluster{
+			{Topic: "real", AgentID: "spec_strategy_elaborator", Findings: []string{"x"}},
+			{Topic: "empty", AgentID: "spec_strategy_elaborator", Findings: nil},
 		},
 	}
-	raw, err := json.Marshal(plan)
+	items, err := extractFanoutItems(state, "findings.clusters")
 	require.NoError(t, err)
-	state := &PlanningState{RevisionPlan: string(raw)}
-
-	t.Run("feature additions filter by kind", func(t *testing.T) {
-		items, err := extractFanoutItems(state, "revision_plan.additions.features")
-		require.NoError(t, err)
-		require.Len(t, items, 1)
-		var first AddedNode
-		require.NoError(t, json.Unmarshal([]byte(items[0]), &first))
-		assert.Equal(t, "feature", first.Kind)
-		assert.Equal(t, "missing data export feature", first.SourceConcern)
-	})
-
-	t.Run("strategy additions filter by kind, including empty-kind default", func(t *testing.T) {
-		items, err := extractFanoutItems(state, "revision_plan.additions.strategies")
-		require.NoError(t, err)
-		require.Len(t, items, 3,
-			"explicit kind=strategy entries plus empty-kind default land in strategy fanout")
-		// The 3rd entry's kind is empty in source; default-to-strategy
-		// is the recoverable failure mode per the AddedNode contract.
-		var third AddedNode
-		require.NoError(t, json.Unmarshal([]byte(items[2]), &third))
-		assert.Equal(t, "ambiguous gap defaults to strategy", third.SourceConcern)
-	})
-
-	t.Run("missing revision plan returns empty for both additions paths", func(t *testing.T) {
-		empty := &PlanningState{}
-		items, err := extractFanoutItems(empty, "revision_plan.additions.features")
-		require.NoError(t, err)
-		assert.Empty(t, items)
-		items, err = extractFanoutItems(empty, "revision_plan.additions.strategies")
-		require.NoError(t, err)
-		assert.Empty(t, items)
-	})
+	require.Len(t, items, 1, "empty-findings cluster must be dropped before dispatch")
 }
 
-// TestMergeResultsAdditionProposalsAccumulates — each per-finding
-// addition fanout call appends one elaborator output; subsequent
-// merges accumulate without overwriting. Mirrors
-// TestMergeResultsRevisedFeaturesAccumulates for the additions path.
-func TestMergeResultsAdditionProposalsAccumulates(t *testing.T) {
-	state := &PlanningState{}
-	step := WorkflowStep{ID: "revise_strategy_additions", MergeAs: "addition_proposals"}
-	mergeResults(state, step, []RoundResult{
-		{StepID: "revise_strategy_additions", AgentID: "spec_strategy_elaborator", Output: `{"id":"strat-iac"}`},
-		{StepID: "revise_strategy_additions", AgentID: "spec_strategy_elaborator", Output: `{"id":"strat-observability"}`},
-	})
-	require.Len(t, state.AdditionProposals, 2)
-	assert.Contains(t, state.AdditionProposals[0], "strat-iac")
-	assert.Contains(t, state.AdditionProposals[1], "strat-observability")
+// TestMechanicalClusterPartitions — the Go pre-pass groups concerns
+// by id-mention against the existing-proposal id set. Findings that
+// name an existing feature/strategy form per-node clusters; everything
+// else lands in unmatched.
+func TestMechanicalClusterPartitions(t *testing.T) {
+	concerns := []Concern{
+		{Text: "Decision dec-foo referenced by feat-dashboard but missing"},
+		{Text: "feat-dashboard lacks PII encryption"},
+		{Text: "strat-frontend should name a build tool"},
+		{Text: "missing infrastructure-as-code strategy"},
+		{Text: "no cost ceiling defined"},
+		{Text: "feat-ghost-not-in-proposal lacks something"},
+	}
+	clusters, unmatched := MechanicalCluster(concerns,
+		[]string{"feat-dashboard"}, []string{"strat-frontend"})
+
+	require.Len(t, clusters, 2, "two existing-id clusters: feat-dashboard and strat-frontend")
+	// feat-dashboard cluster should have 2 findings (the two mentioning it).
+	var dashboard, frontend *FindingCluster
+	for i := range clusters {
+		switch clusters[i].NodeID {
+		case "feat-dashboard":
+			dashboard = &clusters[i]
+		case "strat-frontend":
+			frontend = &clusters[i]
+		}
+	}
+	require.NotNil(t, dashboard)
+	require.NotNil(t, frontend)
+	assert.Equal(t, "spec_feature_elaborator", dashboard.AgentID, "feat- prefix dispatches to feature elaborator")
+	assert.Equal(t, "spec_strategy_elaborator", frontend.AgentID, "strat- prefix dispatches to strategy elaborator")
+	assert.Len(t, dashboard.Findings, 2)
+	assert.Len(t, frontend.Findings, 1)
+
+	// unmatched: the IaC-missing finding, the cost-ceiling finding,
+	// AND the feat-ghost finding (id mentioned but not in existing set).
+	require.Len(t, unmatched, 3)
+	assert.Contains(t, unmatched, "missing infrastructure-as-code strategy")
+	assert.Contains(t, unmatched, "no cost ceiling defined")
+	assert.Contains(t, unmatched, "feat-ghost-not-in-proposal lacks something",
+		"id mentioned but not in existing set falls through to unmatched")
 }
 
-// TestFanoutItemIDFallsBackToNodeID — the per-item progress label
-// extractor reads `id` for outline items and `node_id` for revision
-// items. Without the fallback, revise-fanout entries would label as
-// the bare step ID and collapse into a single spinner.
-func TestFanoutItemIDFallsBackToNodeID(t *testing.T) {
+// TestMechanicalClusterDuplicatesAcrossNodes — a single finding that
+// names two existing-node ids is duplicated into both clusters. This
+// is the "one node per concern" rule from the triager era; preserved
+// because semantically the finding targets both.
+func TestMechanicalClusterDuplicatesAcrossNodes(t *testing.T) {
+	concerns := []Concern{
+		{Text: "feat-a and strat-x have a coupling problem"},
+	}
+	clusters, unmatched := MechanicalCluster(concerns,
+		[]string{"feat-a"}, []string{"strat-x"})
+	require.Len(t, clusters, 2)
+	assert.Empty(t, unmatched)
+	// The finding text appears in both clusters' findings list.
+	assert.Equal(t, clusters[0].Findings, clusters[1].Findings)
+}
+
+// TestPromoteLLMClustersDropsEmpty — a malformed/empty cluster is
+// dropped at promotion time. This is the DJ-098 equivalent of the
+// `[{}]`-placeholder defense the triager design needed.
+func TestPromoteLLMClustersDropsEmpty(t *testing.T) {
+	llm := LLMFindingClusters{
+		Clusters: []LLMFindingCluster{
+			{Topic: "real", Findings: []string{"x"}, Kind: "strategy"},
+			{Topic: "empty", Findings: nil, Kind: "strategy"}, // placeholder — drop
+		},
+	}
+	raw, _ := json.Marshal(llm)
+	out := PromoteLLMClusters(string(raw))
+	require.Len(t, out, 1, "empty-findings cluster must be dropped at promotion")
+	assert.Equal(t, "real", out[0].Topic)
+}
+
+// TestPromoteLLMClustersDefaultsKindToStrategy — when the model emits
+// a cluster with empty/unknown kind, default to strategy (recoverable
+// failure mode; most missing-X is missing-strategy).
+func TestPromoteLLMClustersDefaultsKindToStrategy(t *testing.T) {
+	llm := LLMFindingClusters{
+		Clusters: []LLMFindingCluster{
+			{Topic: "ambiguous", Findings: []string{"x"}, Kind: ""},
+		},
+	}
+	raw, _ := json.Marshal(llm)
+	out := PromoteLLMClusters(string(raw))
+	require.Len(t, out, 1)
+	assert.Equal(t, "spec_strategy_elaborator", out[0].AgentID)
+}
+
+// TestFanoutItemIDFallsBackToTopic — the per-item progress label
+// extractor reads `id` (outline items) → `node_id` (revise clusters
+// targeting an existing node) → `topic` (addition clusters). Without
+// the topic fallback, addition clusters would label as the bare step
+// ID and collapse into a single spinner.
+func TestFanoutItemIDFallsBackToTopic(t *testing.T) {
 	outlineItem := `{"id":"feat-x","title":"X"}`
-	revisionItem := `{"node_id":"feat-y","concerns":["fix it"]}`
+	revisedCluster := `{"node_id":"feat-y","topic":"feat-y","findings":["fix it"]}`
+	addCluster := `{"topic":"infrastructure-as-code","findings":["missing IaC"]}`
 	emptyItem := `{}`
 	malformed := `not json`
 
 	assert.Equal(t, "feat-x", fanoutItemID(outlineItem))
-	assert.Equal(t, "feat-y", fanoutItemID(revisionItem),
-		"revision items use node_id; fanoutItemID must fall back so the per-item event labels render")
+	assert.Equal(t, "feat-y", fanoutItemID(revisedCluster), "node_id wins over topic when both present")
+	assert.Equal(t, "infrastructure-as-code", fanoutItemID(addCluster), "topic is the addition fallback")
 	assert.Equal(t, "", fanoutItemID(emptyItem))
 	assert.Equal(t, "", fanoutItemID(malformed))
 }
 
-// TestShouldRunConditionalHasAdditions — the has_additions conditional
-// gates the revise_additions step. True only when the triager
-// produced a non-empty additions array.
-func TestShouldRunConditionalHasAdditions(t *testing.T) {
-	t.Run("no plan", func(t *testing.T) {
-		assert.False(t, shouldRunConditional("has_additions", &PlanningState{}))
+// TestShouldRunConditionalClusters — DJ-098 conditionals.
+//
+//   - has_unmatched_findings gates the LLM clusterer step.
+//   - has_finding_clusters gates the revise fanout and reconcile_revise.
+func TestShouldRunConditionalClusters(t *testing.T) {
+	t.Run("has_unmatched_findings: empty when nothing unmatched", func(t *testing.T) {
+		assert.False(t, shouldRunConditional("has_unmatched_findings", &PlanningState{}))
 	})
-	t.Run("plan with no additions", func(t *testing.T) {
-		raw, _ := json.Marshal(RevisionPlan{
-			FeatureRevisions: []NodeRevision{{NodeID: "feat-a", Concerns: []string{"x"}}},
-		})
-		state := &PlanningState{RevisionPlan: string(raw)}
-		assert.False(t, shouldRunConditional("has_additions", state))
+	t.Run("has_unmatched_findings: true with findings", func(t *testing.T) {
+		state := &PlanningState{UnmatchedFindings: []string{"x"}}
+		assert.True(t, shouldRunConditional("has_unmatched_findings", state))
 	})
-	t.Run("plan with additions", func(t *testing.T) {
-		raw, _ := json.Marshal(RevisionPlan{
-			Additions: []AddedNode{{Kind: "strategy", SourceConcern: "missing IaC strategy"}},
-		})
-		state := &PlanningState{RevisionPlan: string(raw)}
-		assert.True(t, shouldRunConditional("has_additions", state))
+	t.Run("has_finding_clusters: empty when nothing clustered", func(t *testing.T) {
+		assert.False(t, shouldRunConditional("has_finding_clusters", &PlanningState{}))
 	})
-	t.Run("malformed plan", func(t *testing.T) {
-		state := &PlanningState{RevisionPlan: "not json"}
-		assert.False(t, shouldRunConditional("has_additions", state),
-			"a malformed plan must not throw; surface as no-additions and let the trace show the malformed output")
+	t.Run("has_finding_clusters: true with clusters", func(t *testing.T) {
+		state := &PlanningState{
+			FindingClusters: []FindingCluster{{Topic: "x", AgentID: "spec_strategy_elaborator", Findings: []string{"y"}}},
+		}
+		assert.True(t, shouldRunConditional("has_finding_clusters", state))
 	})
 }
 
 // TestAssembleRevisedRawProposalReplacesByID — the revise-merge takes
-// the original assembled proposal, swaps revised features/strategies
-// in by ID, appends additions, and leaves untouched nodes verbatim.
+// the original assembled proposal, swaps in revised entries by id
+// match, appends additions, and leaves untouched nodes verbatim.
 //
-// This is the load-bearing assertion for Phase 1's bug fix: prior to
-// the revise fanout, the architect would emit empty placeholder
-// decisions for unrelated strategies during revise. With per-node
-// revision the unaffected nodes carry through with their original
-// decisions intact.
+// DJ-098 rewrites the source: each entry in state.RevisedNodes is
+// either a revision (id matches an original) or an addition (fresh id).
 func TestAssembleRevisedRawProposalReplacesByID(t *testing.T) {
 	original := RawSpecProposal{
 		Features: []RawFeatureProposal{
@@ -256,8 +208,7 @@ func TestAssembleRevisedRawProposalReplacesByID(t *testing.T) {
 
 	state := &PlanningState{
 		OriginalRawProposal: string(originalJSON),
-		RevisedFeatures:     []string{revisedFeatA},
-		RevisedStrategies:   []string{revisedStratX},
+		RevisedNodes:        []string{revisedFeatA, revisedStratX},
 	}
 	merged, ok := assembleRevisedRawProposal(state)
 	require.True(t, ok)
@@ -267,44 +218,36 @@ func TestAssembleRevisedRawProposalReplacesByID(t *testing.T) {
 	require.Len(t, out.Features, 2)
 	require.Len(t, out.Strategies, 2)
 
-	// feat-a was revised → swap in.
 	assert.Equal(t, "feat-a", out.Features[0].ID)
 	assert.Equal(t, "A revised", out.Features[0].Title)
 	require.Len(t, out.Features[0].Decisions, 1)
 	assert.Equal(t, "use foo+pii", out.Features[0].Decisions[0].Title)
 
-	// feat-b was untouched → carry through verbatim with its decision.
+	// feat-b untouched → carry through verbatim.
 	assert.Equal(t, "feat-b", out.Features[1].ID)
 	require.Len(t, out.Features[1].Decisions, 1)
 	assert.Equal(t, "use bar", out.Features[1].Decisions[0].Title,
-		"untouched feature must carry its original decisions through revise — the bug Phase 1 fixes is exactly when this fails")
+		"untouched feature must carry its original decisions through revise")
 
-	// strat-x was revised → swap in.
 	assert.Equal(t, "Next.js + Vercel + IaC", out.Strategies[0].Decisions[0].Title)
-	// strat-y was untouched → carry through.
 	assert.Equal(t, "Postgres", out.Strategies[1].Decisions[0].Title)
 }
 
-// TestAssembleRevisedRawProposalAppendsAdditions — additions are
-// appended after originals (and revisions). Collisions with existing
-// IDs are dropped (last-writer-wins on the original; addition is
-// ignored to avoid duplicate entries that would confuse the
-// reconciler).
+// TestAssembleRevisedRawProposalAppendsAdditions — additions (entries
+// in RevisedNodes whose id doesn't match any original) are appended
+// after originals.
 func TestAssembleRevisedRawProposalAppendsAdditions(t *testing.T) {
 	original := RawSpecProposal{
 		Features: []RawFeatureProposal{{ID: "feat-a", Title: "A"}},
 	}
 	originalJSON, _ := json.Marshal(original)
 
-	// Phase 4: AdditionProposals is now a slice of per-finding
-	// elaborator outputs. Each entry is one RawFeatureProposal or
-	// RawStrategyProposal; the merge sniffs id prefix to dispatch.
 	featAdd, _ := json.Marshal(RawFeatureProposal{ID: "feat-new", Title: "New feature"})
 	stratAdd, _ := json.Marshal(RawStrategyProposal{ID: "strat-iac", Title: "Terraform", Kind: "foundational"})
 
 	state := &PlanningState{
 		OriginalRawProposal: string(originalJSON),
-		AdditionProposals:   []string{string(featAdd), string(stratAdd)},
+		RevisedNodes:        []string{string(featAdd), string(stratAdd)},
 	}
 	merged, ok := assembleRevisedRawProposal(state)
 	require.True(t, ok)
@@ -312,40 +255,15 @@ func TestAssembleRevisedRawProposalAppendsAdditions(t *testing.T) {
 	var out RawSpecProposal
 	require.NoError(t, json.Unmarshal([]byte(merged), &out))
 	require.Len(t, out.Features, 2, "original + 1 feature addition")
-	require.Len(t, out.Strategies, 1, "1 strategy addition (no original strategies)")
+	require.Len(t, out.Strategies, 1, "1 strategy addition")
 	assert.Equal(t, "feat-new", out.Features[1].ID)
 	assert.Equal(t, "strat-iac", out.Strategies[0].ID)
 }
 
-// TestAssembleRevisedRawProposalAdditionsDedupOnExistingID — when an
-// addition's id collides with an existing-original id, drop it
-// (the reconciler downstream catches semantic conflicts; the merge
-// just prevents structural duplicates).
-func TestAssembleRevisedRawProposalAdditionsDedupOnExistingID(t *testing.T) {
-	original := RawSpecProposal{
-		Features: []RawFeatureProposal{{ID: "feat-a", Title: "A"}},
-	}
-	originalJSON, _ := json.Marshal(original)
-	collide, _ := json.Marshal(RawFeatureProposal{ID: "feat-a", Title: "Hallucinated dup"})
-
-	state := &PlanningState{
-		OriginalRawProposal: string(originalJSON),
-		AdditionProposals:   []string{string(collide)},
-	}
-	merged, ok := assembleRevisedRawProposal(state)
-	require.True(t, ok)
-	var out RawSpecProposal
-	require.NoError(t, json.Unmarshal([]byte(merged), &out))
-	require.Len(t, out.Features, 1,
-		"collision with existing-original id must be dropped, not duplicated")
-	assert.Equal(t, "A", out.Features[0].Title, "original wins on id collision")
-}
-
-// TestAssembleRevisedRawProposalAdditionsUnknownPrefixDropped — a
-// per-finding elaborator output with an id that doesn't start with
-// feat- or strat- is logged and skipped (best-effort, mirroring
-// the malformed-revision policy).
-func TestAssembleRevisedRawProposalAdditionsUnknownPrefixDropped(t *testing.T) {
+// TestAssembleRevisedRawProposalUnknownPrefixDropped — a per-cluster
+// elaborator output with an id that doesn't start with feat- or
+// strat- is logged and skipped (best-effort).
+func TestAssembleRevisedRawProposalUnknownPrefixDropped(t *testing.T) {
 	originalJSON, _ := json.Marshal(RawSpecProposal{
 		Features: []RawFeatureProposal{{ID: "feat-a", Title: "A"}},
 	})
@@ -353,74 +271,88 @@ func TestAssembleRevisedRawProposalAdditionsUnknownPrefixDropped(t *testing.T) {
 
 	state := &PlanningState{
 		OriginalRawProposal: string(originalJSON),
-		AdditionProposals:   []string{string(weird)},
+		RevisedNodes:        []string{string(weird)},
 	}
 	merged, ok := assembleRevisedRawProposal(state)
 	require.True(t, ok)
 	var out RawSpecProposal
 	require.NoError(t, json.Unmarshal([]byte(merged), &out))
-	assert.Len(t, out.Features, 1, "unknown-prefix addition must be skipped, not crash assembly")
+	assert.Len(t, out.Features, 1, "unknown-prefix entry must be skipped, not crash assembly")
 }
 
-// TestAssembleRevisedRawProposalEmptyOriginalReturnsNothing — the
-// merge requires an original; without one (e.g. before elaborate
-// completes), assembly is a no-op so the reconciler isn't fed garbage.
+// TestAssembleRevisedRawProposalEmptyOriginalReturnsNothing — assembly
+// is a no-op without an original (e.g. before elaborate completes).
 func TestAssembleRevisedRawProposalEmptyOriginalReturnsNothing(t *testing.T) {
 	state := &PlanningState{
-		RevisedFeatures: []string{`{"id":"feat-a"}`},
+		RevisedNodes: []string{`{"id":"feat-a"}`},
 	}
 	merged, ok := assembleRevisedRawProposal(state)
 	assert.False(t, ok)
 	assert.Empty(t, merged)
 }
 
-// TestExecuteRoundReviseFanoutSkipsWithoutPlan — the revise_features
-// fanout step is conditional has_concerns. When no concerns exist
-// it would skip; even if it doesn't, an empty RevisionPlan returns no
-// fanout items and the step is a no-op without firing any LLM calls.
-func TestExecuteRoundReviseFanoutSkipsWithoutPlan(t *testing.T) {
+// TestExecuteRoundReviseFanoutSkipsWithoutClusters — the revise step
+// is conditional has_finding_clusters. With no clusters it would skip;
+// even if it doesn't, an empty FindingClusters returns no fanout
+// items and the step is a no-op without firing any LLM calls.
+func TestExecuteRoundReviseFanoutSkipsWithoutClusters(t *testing.T) {
 	state := &PlanningState{}
 	mock := NewMockLLM()
 	ex := &WorkflowExecutor{
-		LLM:       mock,
-		AgentDefs: map[string]AgentDef{"spec_feature_elaborator": {ID: "spec_feature_elaborator"}},
+		LLM: mock,
+		AgentDefs: map[string]AgentDef{
+			"spec_feature_elaborator":  {ID: "spec_feature_elaborator"},
+			"spec_strategy_elaborator": {ID: "spec_strategy_elaborator"},
+		},
 	}
 	step := WorkflowStep{
-		ID:     "revise_features",
-		Agent:  "spec_feature_elaborator",
-		Fanout: "revision_plan.feature_revisions",
+		ID:     "revise",
+		Agent:  "spec_strategy_elaborator",
+		Fanout: "findings.clusters",
 	}
 	results, err := ex.ExecuteRound(context.Background(), step, state)
 	require.NoError(t, err)
 	assert.Empty(t, results)
 	assert.Equal(t, 0, mock.CallCount(),
-		"empty revision plan ⇒ zero fanout items ⇒ zero LLM calls")
+		"no clusters ⇒ zero fanout items ⇒ zero LLM calls")
 }
 
-// TestMergeResultsTriagerOutputPopulatesPlan — the revision_plan
-// merge handler stashes the triager output verbatim on
-// PlanningState.RevisionPlan so downstream fanouts can read it.
-func TestMergeResultsTriagerOutputPopulatesPlan(t *testing.T) {
+// TestMergeResultsRevisedNodesAccumulates — each per-cluster fanout
+// call appends one elaborator output to RevisedNodes; subsequent
+// merges accumulate without overwriting. Replaces the old per-feature/
+// per-strategy/per-addition slices with one unified slice.
+func TestMergeResultsRevisedNodesAccumulates(t *testing.T) {
 	state := &PlanningState{}
-	planJSON := `{"feature_revisions":[{"node_id":"feat-a","concerns":["x"]}]}`
-	step := WorkflowStep{ID: "triage", MergeAs: "revision_plan"}
+	step := WorkflowStep{ID: "revise", MergeAs: "revised_nodes"}
 	mergeResults(state, step, []RoundResult{
-		{StepID: "triage", AgentID: "spec_revision_triager", Output: planJSON},
+		{StepID: "revise (feat-a)", AgentID: "spec_feature_elaborator", Output: `{"id":"feat-a"}`},
+		{StepID: "revise (strat-iac)", AgentID: "spec_strategy_elaborator", Output: `{"id":"strat-iac"}`},
 	})
-	assert.Equal(t, planJSON, state.RevisionPlan)
+	require.Len(t, state.RevisedNodes, 2)
+	assert.Contains(t, state.RevisedNodes[0], "feat-a")
+	assert.Contains(t, state.RevisedNodes[1], "strat-iac")
 }
 
-// TestMergeResultsRevisedFeaturesAccumulates — each per-node revise
-// fanout call appends one revised RawFeatureProposal; subsequent
-// merges accumulate without overwriting prior entries.
-func TestMergeResultsRevisedFeaturesAccumulates(t *testing.T) {
-	state := &PlanningState{}
-	step := WorkflowStep{ID: "revise_features", MergeAs: "revised_features"}
+// TestMergeResultsFindingClustersPromotesLLMOutput — the
+// finding_clusters merge handler promotes the LLM clusterer's
+// LLMFindingClusters JSON into FindingCluster entries (with AgentID
+// set from kind), appended to whatever the mechanical pre-pass
+// already produced.
+func TestMergeResultsFindingClustersPromotesLLMOutput(t *testing.T) {
+	state := &PlanningState{
+		// Pre-existing mechanical cluster.
+		FindingClusters: []FindingCluster{
+			{Topic: "feat-a", NodeID: "feat-a", AgentID: "spec_feature_elaborator", Findings: []string{"x"}},
+		},
+	}
+	step := WorkflowStep{ID: "cluster_findings", MergeAs: "finding_clusters"}
+	llmOutput := `{"clusters":[{"topic":"infrastructure-as-code","findings":["missing IaC"],"kind":"strategy"}]}`
 	mergeResults(state, step, []RoundResult{
-		{StepID: "revise_features", AgentID: "spec_feature_elaborator", Output: `{"id":"feat-a"}`},
-		{StepID: "revise_features", AgentID: "spec_feature_elaborator", Output: `{"id":"feat-b"}`},
+		{StepID: "cluster_findings", AgentID: "spec_finding_clusterer", Output: llmOutput},
 	})
-	require.Len(t, state.RevisedFeatures, 2)
-	assert.Contains(t, state.RevisedFeatures[0], "feat-a")
-	assert.Contains(t, state.RevisedFeatures[1], "feat-b")
+	require.Len(t, state.FindingClusters, 2, "mechanical pre-existing + LLM-promoted cluster")
+	assert.Equal(t, "feat-a", state.FindingClusters[0].NodeID, "mechanical cluster preserved")
+	assert.Equal(t, "infrastructure-as-code", state.FindingClusters[1].Topic)
+	assert.Equal(t, "spec_strategy_elaborator", state.FindingClusters[1].AgentID,
+		"kind=strategy promotes to spec_strategy_elaborator")
 }

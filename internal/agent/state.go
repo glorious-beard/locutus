@@ -69,7 +69,7 @@ type PlanningState struct {
 	ElaboratedFeatures   []string `json:"elaborated_features,omitempty"`
 	ElaboratedStrategies []string `json:"elaborated_strategies,omitempty"`
 
-	// Revise-fanout state (Phase 1 of council-tools-and-revise-fanout).
+	// Revise-fanout state (DJ-098 unified per-cluster design).
 	//
 	// OriginalRawProposal is the post-elaborate, pre-revise assembly of
 	// the elaborate fanout outputs. Preserved separately from RawProposal
@@ -78,26 +78,29 @@ type PlanningState struct {
 	// merged version (original + revised + additions) before
 	// reconcile_revise consumes it.
 	//
-	// RevisionPlan is the spec_revision_triager agent's JSON output —
-	// drives the revise_features / revise_strategies fanouts.
+	// FindingClusters is the unified list of clusters consumed by the
+	// revise fanout. Populated in two passes: the mechanical pre-pass
+	// (id-mention matching, runs in mergeResults after critique) emits
+	// clusters for findings naming an existing node by id; the LLM
+	// clusterer step processes UnmatchedFindings and appends topic-
+	// grouped clusters for the rest. Each cluster carries the agent_id
+	// to dispatch (spec_feature_elaborator vs spec_strategy_elaborator)
+	// and an optional node_id (set when the cluster targets an existing
+	// node, empty when it proposes a new one).
 	//
-	// RevisedFeatures and RevisedStrategies accumulate per-node
-	// elaborator outputs from the revise fanouts (raw JSON of
-	// RawFeatureProposal / RawStrategyProposal).
+	// UnmatchedFindings is the verbatim list of critic findings the
+	// mechanical pre-pass couldn't id-match. Drives the LLM clusterer
+	// step's input via the cluster_findings projection.
 	//
-	// AdditionProposals accumulates per-finding elaborator outputs
-	// from the addition fanouts (Phase 4). Each entry is one
-	// RawFeatureProposal or RawStrategyProposal JSON; the
-	// assembleRevisedRawProposal merge sniffs the id prefix
-	// (feat- vs strat-) to dispatch each entry into the right
-	// merged slice. Pre-Phase-4 this was a single architect-call
-	// JSON blob; the slice supports the per-finding fanout pattern
-	// where multiple bounded elaborator calls each produce one node.
-	OriginalRawProposal string   `json:"original_raw_proposal,omitempty"`
-	RevisionPlan        string   `json:"revision_plan,omitempty"`
-	RevisedFeatures     []string `json:"revised_features,omitempty"`
-	RevisedStrategies   []string `json:"revised_strategies,omitempty"`
-	AdditionProposals   []string `json:"addition_proposals,omitempty"`
+	// RevisedNodes accumulates per-cluster elaborator outputs. Each
+	// entry is one RawFeatureProposal or RawStrategyProposal JSON; the
+	// assembleRevisedRawProposal merge sniffs the id prefix (feat- vs
+	// strat-) and decides revise (id matches existing) vs addition
+	// (fresh id) per entry.
+	OriginalRawProposal string           `json:"original_raw_proposal,omitempty"`
+	FindingClusters     []FindingCluster `json:"finding_clusters,omitempty"`
+	UnmatchedFindings   []string         `json:"unmatched_findings,omitempty"`
+	RevisedNodes        []string         `json:"revised_nodes,omitempty"`
 }
 
 // StateSnapshot is a read-only copy of PlanningState fields relevant to a
@@ -130,11 +133,10 @@ type StateSnapshot struct {
 	// RawStrategyProposal verbatim so the model has full context
 	// for the requested change.
 	OriginalRawProposal string
-	// RevisionPlan is the spec_revision_triager's JSON output, threaded
-	// to the revise_additions projection so the architect sees the
-	// addition concerns directly (the additions step is not a fanout
-	// and can't read them via FanoutItem).
-	RevisionPlan string
+	// UnmatchedFindings is the verbatim list of critic findings the
+	// mechanical pre-pass couldn't id-match. The cluster_findings
+	// step's projection renders this list as the LLM clusterer's input.
+	UnmatchedFindings []string
 }
 
 // Snapshot creates a read-only copy of the current state. Slice fields are
@@ -151,7 +153,10 @@ func (s *PlanningState) Snapshot() StateSnapshot {
 		Existing:            s.Existing,
 		Outline:             s.Outline,
 		OriginalRawProposal: s.OriginalRawProposal,
-		RevisionPlan:        s.RevisionPlan,
+	}
+	if len(s.UnmatchedFindings) > 0 {
+		snap.UnmatchedFindings = make([]string, len(s.UnmatchedFindings))
+		copy(snap.UnmatchedFindings, s.UnmatchedFindings)
 	}
 	if len(s.Concerns) > 0 {
 		snap.Concerns = make([]Concern, len(s.Concerns))

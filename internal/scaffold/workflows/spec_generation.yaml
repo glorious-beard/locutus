@@ -1,71 +1,34 @@
 # Spec-generation council workflow. Driven by `locutus refine goals`
 # and `locutus import <doc>` (post-admission planning pass).
 #
-# The flow (Phase 3 outline + elaborate fanout, Phase-1 council-tools
-# revise fanout):
-#   1. survey       — a senior-engineer scout brief: domain read, tech
-#                     options, the implicit assumptions GOALS.md leaves
-#                     out (scale, cost, ops model, deployment posture,
-#                     availability, compliance, multi-deliverable
-#                     coordination, etc.).
-#   2. outline      — the outliner emits an Outline: feature and
-#                     strategy titles + one-line summaries only. No
-#                     decisions, no detailed descriptions. The
-#                     outline IS the spec's structural skeleton; what
-#                     it lists gets elaborated, what it omits won't
-#                     exist in the spec.
-#   3. elaborate_features    — fanout: one per outlined feature, each
-#                              produces a full RawFeatureProposal with
-#                              inline decisions. Per-call output is
-#                              bounded by node complexity, not project
-#                              size — fixes the truncation failure mode
-#                              the single-architect-call had on big
-#                              specs.
-#   4. elaborate_strategies  — fanout: same shape, for strategies.
-#   5. reconcile    — clusters inline decisions across the assembled
-#                     proposal and emits a verdict (dedupe /
-#                     resolve_conflict / reuse_existing). Go surgery
-#                     (ApplyReconciliation) assigns canonical IDs and
-#                     produces the SpecProposal that downstream agents
-#                     consume.
-#   6. critique     — four specialist critics run in parallel against
-#                     the reconciled proposal: architecture, DevOps,
-#                     SRE, cost. Plus the in-workflow integrity critic
-#                     (mechanical Go check, no LLM call).
-#   7. triage       — fast-tier router that maps each critic finding
-#                     to a per-node revision, an addition, or
-#                     discarded. Bounded call (small input: concerns;
-#                     small output: routing plan). Conditional: only
-#                     fires when has_concerns.
-#   8. revise_features       — fanout: one elaborator call per affected
-#                              feature, scoped to its concerns. Reuses
-#                              spec_feature_elaborator with revise-mode
-#                              projection. Replaces the single architect
-#                              call that used to short-circuit to empty
-#                              `decisions: [{}]` placeholders under
-#                              critic-finding pressure.
-#   9. revise_strategies     — fanout: same shape, for strategies.
-#  10. revise_feature_additions   — fanout (Phase 4): one
-#                              spec_feature_elaborator call per
-#                              AddedNode with kind="feature". The
-#                              elaborator invents one new
-#                              RawFeatureProposal addressing the
-#                              source critic finding verbatim.
-#                              Conditional on has_additions; an empty
-#                              feature-additions slice is a no-op.
-#  11. revise_strategy_additions  — fanout (Phase 4): same shape with
-#                              spec_strategy_elaborator for kind="strategy"
-#                              entries.
-#  12. reconcile_revise      — same reconciler against the merged
-#                              raw proposal (original + revised + added).
-#                              Conditional on has_concerns. Cross-
-#                              cluster dedup of duplicate additions
-#                              (e.g. multiple critics flagging the same
-#                              missing strategy → 5 elaborator outputs
-#                              collapsed to 1 canonical) happens here.
+# DJ-098 unified per-cluster revise. Critic findings route through:
 #
-# max_rounds=1 because there is no convergence agent in this workflow —
-# the executor breaks after one full pass.
+#   1. survey      — senior-engineer scout brief.
+#   2. outline     — feature/strategy titles + summaries.
+#   3. elaborate_features  — fanout: one elaborator per outlined feature.
+#   4. elaborate_strategies — fanout: one elaborator per outlined strategy.
+#   5. reconcile   — clusters inline decisions across the assembled
+#                    proposal; emits canonical SpecProposal.
+#   6. critique    — four LLM critics + the in-workflow integrity
+#                    critic, parallel.
+#   7. cluster_findings — LLM clusterer groups any critic findings the
+#                    mechanical pre-pass couldn't id-match. Conditional
+#                    on has_unmatched_findings.
+#   8. revise      — fanout (one call per FindingCluster). Each cluster
+#                    carries its own agent_id (set by the mechanical
+#                    pre-pass from id prefix or by the LLM clusterer's
+#                    kind). Conditional on has_finding_clusters.
+#   9. reconcile_revise — same reconciler against the merged raw
+#                    proposal (original + revised + added). Conditional
+#                    on has_finding_clusters (skipped when nothing
+#                    needed revising).
+#
+# The mechanical pre-pass that populates state.FindingClusters from
+# state.Concerns runs in mergeResults after each critique merge — no
+# explicit step. It groups findings that name an existing node id;
+# the LLM clusterer step processes the rest.
+#
+# max_rounds=1 because there is no convergence agent in this workflow.
 #
 # Per-model concurrency caps live in models.yaml's `concurrent_requests`
 # field. Even with `parallel: true` on fanout steps, the actual
@@ -103,44 +66,27 @@ rounds:
     parallel: true
     depends_on: [reconcile]
     merge_as: critic_issues
-  - id: triage
-    agent: spec_revision_triager
+  - id: cluster_findings
+    agent: spec_finding_clusterer
     parallel: false
     depends_on: [critique]
-    conditional: has_concerns
-    merge_as: revision_plan
-  - id: revise_features
-    agent: spec_feature_elaborator
-    parallel: true
-    fanout: revision_plan.feature_revisions
-    depends_on: [triage]
-    conditional: has_concerns
-    merge_as: revised_features
-  - id: revise_strategies
+    conditional: has_unmatched_findings
+    merge_as: finding_clusters
+  - id: revise
+    # Step-level agent is the fallback when a cluster doesn't carry its
+    # own agent_id (shouldn't happen — both the mechanical pre-pass and
+    # the LLM-cluster promotion always set one — but keeping this as a
+    # safety net for robustness).
     agent: spec_strategy_elaborator
     parallel: true
-    fanout: revision_plan.strategy_revisions
-    depends_on: [triage]
-    conditional: has_concerns
-    merge_as: revised_strategies
-  - id: revise_feature_additions
-    agent: spec_feature_elaborator
-    parallel: true
-    fanout: revision_plan.additions.features
-    depends_on: [triage]
-    conditional: has_additions
-    merge_as: addition_proposals
-  - id: revise_strategy_additions
-    agent: spec_strategy_elaborator
-    parallel: true
-    fanout: revision_plan.additions.strategies
-    depends_on: [triage]
-    conditional: has_additions
-    merge_as: addition_proposals
+    fanout: findings.clusters
+    depends_on: [cluster_findings]
+    conditional: has_finding_clusters
+    merge_as: revised_nodes
   - id: reconcile_revise
     agent: spec_reconciler
     parallel: false
-    depends_on: [revise_features, revise_strategies, revise_feature_additions, revise_strategy_additions]
-    conditional: has_concerns
+    depends_on: [revise]
+    conditional: has_finding_clusters
     merge_as: reconciled_proposal
 max_rounds: 1

@@ -223,6 +223,21 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 			}
 			return step.ID + " (" + id + ")"
 		}
+		// DJ-098: per-item agent dispatch. When a fanout item carries
+		// its own `agent_id` field (FindingCluster does), it overrides
+		// the step's declared agent — different clusters in the same
+		// fanout step can dispatch to different elaborator agents.
+		// Items without an agent_id field fall back to the step's
+		// agent (preserves Phase 3 elaborate-fanout behavior).
+		itemAgent := func(raw string) string {
+			var v struct {
+				AgentID string `json:"agent_id"`
+			}
+			if err := json.Unmarshal([]byte(raw), &v); err == nil && strings.TrimSpace(v.AgentID) != "" {
+				return v.AgentID
+			}
+			return agents[0]
+		}
 		if step.Parallel {
 			var wg sync.WaitGroup
 			wg.Add(len(items))
@@ -231,7 +246,7 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 					defer wg.Done()
 					itemSnap := snap
 					itemSnap.FanoutItem = raw
-					results[idx] = e.executeAgent(ctx, fanoutStepID(raw), agents[0], itemSnap)
+					results[idx] = e.executeAgent(ctx, fanoutStepID(raw), itemAgent(raw), itemSnap)
 				}(i, item)
 			}
 			wg.Wait()
@@ -239,7 +254,7 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 			for i, item := range items {
 				itemSnap := snap
 				itemSnap.FanoutItem = item
-				results[i] = e.executeAgent(ctx, fanoutStepID(item), agents[0], itemSnap)
+				results[i] = e.executeAgent(ctx, fanoutStepID(item), itemAgent(item), itemSnap)
 			}
 		}
 		// Per-node failure isolation: a fanout step is the *only*
@@ -310,15 +325,16 @@ func stepIDFanoutTag(stepID string) string {
 
 // fanoutItemID extracts an identifier from a fanout item's raw JSON
 // for per-item event labeling. Tries `id` first (OutlineFeature /
-// OutlineStrategy shape) and falls back to `node_id` (NodeRevision
-// shape used by the revise fanouts). Returns empty when neither is
-// present; callers fall back to the bare step ID, which preserves
-// correctness — the dedup-key collision is a progress-rendering
-// issue, not a correctness one.
+// OutlineStrategy shape), then `node_id` (FindingCluster shape when
+// the cluster targets an existing node), then `topic` (FindingCluster
+// shape for new-node clusters). Returns empty when none are present;
+// callers fall back to the bare step ID. Dedup-key collisions are a
+// progress-rendering issue, not a correctness one.
 func fanoutItemID(rawJSON string) string {
 	var v struct {
 		ID     string `json:"id"`
 		NodeID string `json:"node_id"`
+		Topic  string `json:"topic"`
 	}
 	if err := json.Unmarshal([]byte(rawJSON), &v); err != nil {
 		return ""
@@ -326,7 +342,10 @@ func fanoutItemID(rawJSON string) string {
 	if v.ID != "" {
 		return v.ID
 	}
-	return v.NodeID
+	if v.NodeID != "" {
+		return v.NodeID
+	}
+	return v.Topic
 }
 
 // extractFanoutItems resolves a dotted state path (e.g. "outline.features")
@@ -336,16 +355,7 @@ func fanoutItemID(rawJSON string) string {
 //
 // Supported paths:
 //   - "outline.features", "outline.strategies"           — Phase 3 elaborate
-//   - "revision_plan.feature_revisions"                  — revise fanout (features)
-//   - "revision_plan.strategy_revisions"                 — revise fanout (strategies)
-//   - "revision_plan.additions.features"                 — addition fanout (features) — Phase 4
-//   - "revision_plan.additions.strategies"               — addition fanout (strategies) — Phase 4
-//
-// Addition paths filter the AddedNode list by `kind` so each kind's
-// fanout dispatches to the matching elaborator agent. An AddedNode
-// with empty kind defaults to "strategy" (most ambiguous "missing X"
-// findings are missing-strategy gaps; misclassification is recoverable
-// by the reconciler / next refine pass).
+//   - "findings.clusters"                                — DJ-098 unified revise
 //
 // Adding new fanout sources means parsing the corresponding state field
 // here — kept narrow to avoid hand-rolling a generic JSON-path resolver
@@ -374,69 +384,17 @@ func extractFanoutItems(state *PlanningState, path string) ([]string, error) {
 			}
 		}
 		return marshalFanoutItems(items)
-	case "revision_plan.feature_revisions", "revision_plan.strategy_revisions":
-		if strings.TrimSpace(state.RevisionPlan) == "" {
-			return nil, nil
-		}
-		var plan RevisionPlan
-		if err := json.Unmarshal([]byte(state.RevisionPlan), &plan); err != nil {
-			return nil, fmt.Errorf("parse revision plan: %w", err)
-		}
-		var src []NodeRevision
-		if path == "revision_plan.feature_revisions" {
-			src = plan.FeatureRevisions
-		} else {
-			src = plan.StrategyRevisions
-		}
-		// Defensive guard: drop NodeRevision entries with empty node_id
-		// AND empty concerns. A model emitting `[{}]` (the persistent
-		// regression where the model fills the schema example shape
-		// rather than emit an empty array) would otherwise dispatch an
-		// elaborator call against a meaningless input. The schema
-		// example was tightened to show empty arrays as valid output,
-		// but this guard covers the case where the model still
-		// emits placeholder shape despite the example.
+	case "findings.clusters":
+		// DJ-098 unified revise: one fanout item per FindingCluster.
+		// AgentID is sniffed off each item by ExecuteRound so the
+		// dispatcher routes to the right elaborator per cluster.
 		var items []any
-		for _, r := range src {
-			if strings.TrimSpace(r.NodeID) == "" && len(r.Concerns) == 0 {
-				slog.Warn("fanout: dropping empty NodeRevision (likely `[{}]` placeholder)", "path", path)
+		for _, c := range state.FindingClusters {
+			if len(c.Findings) == 0 {
+				slog.Warn("fanout: dropping FindingCluster with no findings", "topic", c.Topic)
 				continue
 			}
-			items = append(items, r)
-		}
-		return marshalFanoutItems(items)
-	case "revision_plan.additions.features", "revision_plan.additions.strategies":
-		if strings.TrimSpace(state.RevisionPlan) == "" {
-			return nil, nil
-		}
-		var plan RevisionPlan
-		if err := json.Unmarshal([]byte(state.RevisionPlan), &plan); err != nil {
-			return nil, fmt.Errorf("parse revision plan: %w", err)
-		}
-		wantKind := "feature"
-		if path == "revision_plan.additions.strategies" {
-			wantKind = "strategy"
-		}
-		var items []any
-		for _, a := range plan.Additions {
-			// Defensive guard: drop AddedNode entries with empty
-			// source_concern (no finding to address — same `[{}]`
-			// placeholder pattern the schema example was tightened
-			// against). An entry with non-empty source_concern but
-			// empty kind defaults to strategy per the AddedNode
-			// contract; that's recoverable, not malformed.
-			if strings.TrimSpace(a.SourceConcern) == "" {
-				slog.Warn("fanout: dropping empty AddedNode (no source_concern)", "path", path)
-				continue
-			}
-			kind := strings.TrimSpace(a.Kind)
-			if kind == "" {
-				kind = "strategy" // empty defaults to strategy per AddedNode contract
-			}
-			if kind != wantKind {
-				continue
-			}
-			items = append(items, a)
+			items = append(items, c)
 		}
 		return marshalFanoutItems(items)
 	default:
@@ -469,18 +427,18 @@ func shouldRunConditional(cond string, state *PlanningState) bool {
 		return state.ProposedSpec != ""
 	case "has_revisions":
 		return state.Revisions != ""
-	case "has_additions":
-		// True when the triager bucketed at least one finding as a
-		// proposed addition (a new feature/strategy missing from the
-		// proposal). Gates both addition fanouts (Phase 4).
-		if state.RevisionPlan == "" {
-			return false
-		}
-		var plan RevisionPlan
-		if err := json.Unmarshal([]byte(state.RevisionPlan), &plan); err != nil {
-			return false
-		}
-		return len(plan.Additions) > 0
+	case "has_unmatched_findings":
+		// DJ-098: gates the LLM clusterer step. True when the
+		// mechanical pre-pass (run in mergeResults after critique)
+		// left any findings unmatched to existing-node ids. When
+		// false, the LLM clusterer is skipped — every finding has
+		// already been routed to a per-node cluster.
+		return len(state.UnmatchedFindings) > 0
+	case "has_finding_clusters":
+		// DJ-098: gates the revise fanout. True when at least one
+		// FindingCluster (mechanical or LLM) is present. Skipped on
+		// runs where critics produced no findings.
+		return len(state.FindingClusters) > 0
 	}
 
 	// Fallback: keyword presence scan for custom/legacy conditionals.
@@ -593,27 +551,19 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 			})
 		case "revisions", "revise":
 			state.Revisions = r.Output
-		case "revision_plan":
-			// spec_revision_triager emits a RevisionPlan that buckets
-			// each critic finding into per-node revisions or proposed
-			// additions. Drives the revise fanouts and the additions
-			// step (gated by has_additions).
-			state.RevisionPlan = r.Output
-		case "revised_features":
-			// Per-node revise fanout: each call emits one revised
-			// RawFeatureProposal. Accumulated; merging into the final
-			// RawProposal happens via assembleRevisedRawProposal below
-			// once revise activity completes.
-			state.RevisedFeatures = append(state.RevisedFeatures, r.Output)
-		case "revised_strategies":
-			state.RevisedStrategies = append(state.RevisedStrategies, r.Output)
-		case "addition_proposals":
-			// Per-finding addition fanout (Phase 4): each call emits
-			// one RawFeatureProposal or RawStrategyProposal addressing
-			// one critic finding that proposes a missing node. Accumulate;
-			// assembleRevisedRawProposal sniffs id prefix per entry to
-			// route into the merged feature/strategy slices.
-			state.AdditionProposals = append(state.AdditionProposals, r.Output)
+		case "finding_clusters":
+			// DJ-098: spec_finding_clusterer emits LLMFindingClusters
+			// (topic + findings + kind per cluster). Promote into
+			// FindingCluster entries with AgentID set from kind, and
+			// append to whatever the mechanical pre-pass already
+			// produced.
+			state.FindingClusters = append(state.FindingClusters, PromoteLLMClusters(r.Output)...)
+		case "revised_nodes":
+			// DJ-098: per-cluster elaborator outputs accumulate into a
+			// single slice. Each entry is a RawFeatureProposal or
+			// RawStrategyProposal; the assembler sniffs id prefix and
+			// decides revise (id matches existing) vs add (fresh id).
+			state.RevisedNodes = append(state.RevisedNodes, r.Output)
 		case "record":
 			state.Record = r.Output
 		case "scout_brief", "survey":
@@ -631,6 +581,14 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 	// the post-workflow integrity loop.
 	if mergeKey == "critic_issues" || mergeKey == "critique" {
 		appendIntegrityFindings(state)
+		// DJ-098 mechanical clusterer: groups concerns by id-mention
+		// against the current proposal. Findings naming an existing
+		// node id form per-node clusters; the rest land in
+		// UnmatchedFindings for the LLM clusterer step. Runs after
+		// every critique merge so the cluster set reflects all
+		// critics' contributions and the integrity critic's
+		// dangling-ref findings.
+		runMechanicalCluster(state)
 	}
 
 	// Phase 3 assembly: when either fanout merge completes, attempt
@@ -652,16 +610,35 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 		}
 	}
 
-	// Revise assembly: when any revise-related merge completes,
-	// rebuild RawProposal from the original + the per-node revisions
-	// + the additions. Idempotent and order-independent — multiple
-	// revise merges converge on the same merged proposal as new data
-	// arrives. Reconcile_revise reads state.RawProposal unchanged.
-	if mergeKey == "revised_features" || mergeKey == "revised_strategies" || mergeKey == "addition_proposals" {
+	// Revise assembly: when revised_nodes accumulates, rebuild
+	// RawProposal from the original + the per-cluster outputs.
+	// Idempotent and order-independent — repeated calls converge on
+	// the same merged proposal as new entries arrive.
+	// Reconcile_revise reads state.RawProposal unchanged.
+	if mergeKey == "revised_nodes" {
 		if merged, ok := assembleRevisedRawProposal(state); ok {
 			state.RawProposal = merged
 		}
 	}
+}
+
+// runMechanicalCluster (DJ-098) partitions state.Concerns into
+// per-node FindingClusters (when a finding mentions an existing node
+// id) and UnmatchedFindings (everything else). Idempotent; runs after
+// every critique merge so late-arriving critic outputs and the
+// integrity critic's findings get clustered too.
+//
+// Replaces state.FindingClusters and state.UnmatchedFindings on each
+// invocation rather than appending; the LLM clusterer's output later
+// appends back in via the finding_clusters merge handler.
+func runMechanicalCluster(state *PlanningState) {
+	if state == nil {
+		return
+	}
+	featureIDs, strategyIDs := proposalIDLists(state.RawProposal)
+	clusters, unmatched := MechanicalCluster(state.Concerns, featureIDs, strategyIDs)
+	state.FindingClusters = clusters
+	state.UnmatchedFindings = unmatched
 }
 
 // assembleRawProposal stitches the per-element fanout outputs into a

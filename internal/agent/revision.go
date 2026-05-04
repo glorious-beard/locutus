@@ -1,20 +1,27 @@
-// Package agent — revise-step fanout (Phase 1 of council-tools-and-revise-fanout).
+// Package agent — revise-step assembly (DJ-098 unified per-cluster).
 //
-// The revise step used to be a single architect call producing the full
-// RawSpecProposal. On real runs (winplan 2026-05-02) the architect
-// short-circuited under critic-finding pressure and emitted empty
-// `decisions: [{}]` placeholders on every strategy. The reconciler
-// dropped the placeholders, leaving every persisted strategy with zero
-// decisions — exactly the failure Phase 3's elaborate fanout was
-// designed to prevent, just one round later.
+// History (kept for the next person who wonders why the design is shaped
+// this way):
 //
-// The new revise topology:
+//   - DJ-092 introduced per-node revise fanout (one elaborator call per
+//     affected feature/strategy) to fix the architect short-circuiting
+//     under multi-finding pressure with empty `decisions: [{}]`.
+//   - DJ-095 added a triager + RevisionPlan + per-finding addition
+//     fanout to handle "missing X" findings the original design dropped.
+//   - DJ-097 tightened the triager schema example to defeat `[{}]`
+//     placeholders — but the same model that emitted placeholders then
+//     dropped one of three array fields, losing 25 of 40 critic findings.
 //
-//   triage → routes critic concerns to per-node revisions or additions
-//          → revise_features (fanout, one elaborator call per affected feature)
-//          → revise_strategies (fanout, one elaborator call per affected strategy)
-//          → revise_additions (single architect call, only when there are additions)
-//          → reconcile_revise (consumes the merged RawSpecProposal)
+// DJ-098 collapsed the triager. Critic findings flow through:
+//
+//   - MechanicalCluster (Go, no LLM): groups findings by id-mention into
+//     per-node clusters. Findings without an id reference fall through.
+//   - spec_finding_clusterer (LLM, single job): groups the unmatched
+//     findings by topic. Schema is one array; one decision dimension.
+//   - revise (fanout: findings.clusters): per-cluster elaborator call.
+//     Each call emits one RawFeatureProposal or RawStrategyProposal
+//     addressing the cluster's findings. The output's id discriminates
+//     revise (matches existing) vs add (fresh id).
 //
 // The merged RawSpecProposal is the original (state.OriginalRawProposal)
 // with revised nodes swapped in by ID and additions appended. Untouched
@@ -29,78 +36,28 @@ import (
 	"strings"
 )
 
-// RevisionPlan is the spec_revision_triager agent's output. EVERY
-// critic finding routes to one of three buckets — there is no
-// fourth "non-actionable, omit" bucket. The triager's authority is
-// routing, not judging actionability; the critic already did the
-// judgment by emitting the finding (DJ-095).
-//
-//   - feature_revisions: concerns targeting an existing feature
-//   - strategy_revisions: concerns targeting an existing strategy
-//   - additions: concerns proposing a missing feature/strategy,
-//     each carrying a `kind` so the per-finding fanout dispatches
-//     to the right elaborator agent
-//
-// Splitting features and strategies into separate revision arrays
-// (rather than a single revisions[] with a kind field) lets the
-// workflow's two fanouts read each array directly via dotted state
-// path, the same way elaborate_features and elaborate_strategies
-// read outline.features and outline.strategies. Additions are a
-// single array because the kind tag is what the fanout filter
-// uses to dispatch the right elaborator agent.
-type RevisionPlan struct {
-	FeatureRevisions  []NodeRevision `json:"feature_revisions,omitempty"`
-	StrategyRevisions []NodeRevision `json:"strategy_revisions,omitempty"`
-	Additions         []AddedNode    `json:"additions,omitempty"`
-}
-
-// NodeRevision is one routed revision: a node id and the concerns
-// targeting it. The fanout dispatcher spawns one elaborator call per
-// NodeRevision; the elaborator's revise-mode projection assembles a
-// prompt with the prior node content + the targeted concerns.
-type NodeRevision struct {
-	NodeID   string   `json:"node_id"`
-	Concerns []string `json:"concerns"`
-}
-
-// AddedNode is one routed addition: a critic finding proposing a
-// missing feature or strategy. The kind decides which elaborator
-// agent the fanout dispatches to; the source_concern is the verbatim
-// finding text the elaborator addresses by inventing one node
-// (id, title, decisions) from scratch.
-//
-// Empty kind defaults to "strategy" downstream — most ambiguous
-// "missing X" findings turn out to be missing-strategy gaps, and a
-// strategy that should have been a feature is recoverable by the
-// reconciler / next refine pass; an addition silently skipped is not.
-type AddedNode struct {
-	Kind          string `json:"kind"`           // "feature" or "strategy"
-	SourceConcern string `json:"source_concern"` // verbatim critic finding text
-}
-
 // assembleRevisedRawProposal builds the merged RawSpecProposal that
 // reconcile_revise consumes. Reads:
 //
 //   - state.OriginalRawProposal — the assembled output of the elaborate
 //     fanouts (before any revise activity)
-//   - state.RevisedFeatures / state.RevisedStrategies — per-node revised
-//     RawFeatureProposal / RawStrategyProposal JSONs from the revise
-//     fanouts
-//   - state.AdditionProposals — partial RawSpecProposal from
-//     revise_additions (when present)
+//   - state.RevisedNodes — per-cluster elaborator outputs, each one a
+//     RawFeatureProposal or RawStrategyProposal JSON. The id prefix
+//     (feat- vs strat-) discriminates kind; whether the id matches an
+//     existing node discriminates revise (override) vs add (append).
 //
 // Revisions replace the original by ID match. Additions append. Order
 // of original entries is preserved so trace consumers see a stable
 // shape across runs.
 //
-// Returns (assembled, true) when at least one revision or addition is
-// present. Returns (original, true) unchanged when nothing has been
-// revised yet — safe to call after every revise-related merge.
+// Returns (assembled, true) when at least one revised node is present.
+// Returns (original, true) unchanged when nothing has been revised yet
+// — safe to call after every revise-related merge.
 //
-// Best-effort: malformed individual revision/addition entries are
-// dropped with a slog.Warn rather than failing the whole assembly.
-// One bad elaborator output shouldn't poison the rest, mirroring the
-// elaborate path's failure-isolation policy.
+// Best-effort: malformed individual entries are dropped with a slog.Warn
+// rather than failing the whole assembly. One bad elaborator output
+// shouldn't poison the rest, mirroring the elaborate path's failure-
+// isolation policy.
 func assembleRevisedRawProposal(state *PlanningState) (string, bool) {
 	if state == nil || state.OriginalRawProposal == "" {
 		return "", false
@@ -111,32 +68,50 @@ func assembleRevisedRawProposal(state *PlanningState) (string, bool) {
 		return "", false
 	}
 
-	// Index revised features/strategies by id for replacement lookup.
-	featureOverrides := make(map[string]RawFeatureProposal, len(state.RevisedFeatures))
-	for _, raw := range state.RevisedFeatures {
-		var f RawFeatureProposal
-		if err := json.Unmarshal([]byte(raw), &f); err != nil {
-			slog.Warn("assemble revised raw proposal: skipping malformed feature revision", "error", err)
-			continue
-		}
-		if f.ID == "" {
-			slog.Warn("assemble revised raw proposal: skipping feature revision with empty id")
-			continue
-		}
-		featureOverrides[f.ID] = f
+	// Index original ids so we can split each revised node into
+	// override (id matches) vs addition (fresh id).
+	originalFeatureIDs := make(map[string]struct{}, len(original.Features))
+	for _, f := range original.Features {
+		originalFeatureIDs[f.ID] = struct{}{}
 	}
-	strategyOverrides := make(map[string]RawStrategyProposal, len(state.RevisedStrategies))
-	for _, raw := range state.RevisedStrategies {
-		var s RawStrategyProposal
-		if err := json.Unmarshal([]byte(raw), &s); err != nil {
-			slog.Warn("assemble revised raw proposal: skipping malformed strategy revision", "error", err)
-			continue
+	originalStrategyIDs := make(map[string]struct{}, len(original.Strategies))
+	for _, s := range original.Strategies {
+		originalStrategyIDs[s.ID] = struct{}{}
+	}
+
+	featureOverrides := make(map[string]RawFeatureProposal, len(state.RevisedNodes))
+	strategyOverrides := make(map[string]RawStrategyProposal, len(state.RevisedNodes))
+	var featureAdditions []RawFeatureProposal
+	var strategyAdditions []RawStrategyProposal
+
+	for _, raw := range state.RevisedNodes {
+		id := strings.TrimSpace(extractRawID(raw))
+		switch {
+		case strings.HasPrefix(id, "feat-"):
+			var f RawFeatureProposal
+			if err := json.Unmarshal([]byte(raw), &f); err != nil {
+				slog.Warn("assemble revised raw proposal: skipping malformed feature node", "error", err)
+				continue
+			}
+			if _, isOverride := originalFeatureIDs[f.ID]; isOverride {
+				featureOverrides[f.ID] = f
+				continue
+			}
+			featureAdditions = append(featureAdditions, f)
+		case strings.HasPrefix(id, "strat-"):
+			var s RawStrategyProposal
+			if err := json.Unmarshal([]byte(raw), &s); err != nil {
+				slog.Warn("assemble revised raw proposal: skipping malformed strategy node", "error", err)
+				continue
+			}
+			if _, isOverride := originalStrategyIDs[s.ID]; isOverride {
+				strategyOverrides[s.ID] = s
+				continue
+			}
+			strategyAdditions = append(strategyAdditions, s)
+		default:
+			slog.Warn("assemble revised raw proposal: revised node has unrecognized id prefix; expected feat- or strat-", "raw", truncateForLog(raw))
 		}
-		if s.ID == "" {
-			slog.Warn("assemble revised raw proposal: skipping strategy revision with empty id")
-			continue
-		}
-		strategyOverrides[s.ID] = s
 	}
 
 	merged := RawSpecProposal{}
@@ -155,51 +130,36 @@ func assembleRevisedRawProposal(state *PlanningState) (string, bool) {
 		merged.Strategies = append(merged.Strategies, s)
 	}
 
-	// Additions are per-finding elaborator outputs (Phase 4 fanout).
-	// Each entry in state.AdditionProposals is one RawFeatureProposal
-	// or RawStrategyProposal JSON; the kind is inferred from the id
-	// prefix (`feat-` / `strat-`). De-dup by id against what's already
-	// in merged so a hallucinated addition that collides with an
-	// existing id doesn't double-up; the reconciler downstream catches
-	// semantic conflicts (5 critics' "missing observability" → 5
-	// elaborator outputs collapsed to 1 canonical strategy).
-	existingFeatureIDs := make(map[string]struct{}, len(merged.Features))
+	// Additions: dedupe by id against what's already in merged so a
+	// hallucinated id collision doesn't double-up. Semantic dedup
+	// (5 elaborators independently inventing strat-observability,
+	// strat-monitoring, strat-otel) is OUT OF SCOPE here — the
+	// clustering step upstream is meant to collapse those 5 critic
+	// findings into 1 cluster, so this code rarely sees the case.
+	// If it does, the next refine pass cleans up.
+	mergedFeatureIDs := make(map[string]struct{}, len(merged.Features))
 	for _, f := range merged.Features {
-		existingFeatureIDs[f.ID] = struct{}{}
+		mergedFeatureIDs[f.ID] = struct{}{}
 	}
-	existingStrategyIDs := make(map[string]struct{}, len(merged.Strategies))
+	mergedStrategyIDs := make(map[string]struct{}, len(merged.Strategies))
 	for _, s := range merged.Strategies {
-		existingStrategyIDs[s.ID] = struct{}{}
+		mergedStrategyIDs[s.ID] = struct{}{}
 	}
-	for _, raw := range state.AdditionProposals {
-		switch {
-		case strings.HasPrefix(strings.TrimSpace(extractRawID(raw)), "feat-"):
-			var f RawFeatureProposal
-			if err := json.Unmarshal([]byte(raw), &f); err != nil {
-				slog.Warn("assemble revised raw proposal: skipping malformed feature addition", "error", err)
-				continue
-			}
-			if _, dup := existingFeatureIDs[f.ID]; dup {
-				slog.Warn("assemble revised raw proposal: addition collides with existing feature id", "id", f.ID)
-				continue
-			}
-			merged.Features = append(merged.Features, f)
-			existingFeatureIDs[f.ID] = struct{}{}
-		case strings.HasPrefix(strings.TrimSpace(extractRawID(raw)), "strat-"):
-			var s RawStrategyProposal
-			if err := json.Unmarshal([]byte(raw), &s); err != nil {
-				slog.Warn("assemble revised raw proposal: skipping malformed strategy addition", "error", err)
-				continue
-			}
-			if _, dup := existingStrategyIDs[s.ID]; dup {
-				slog.Warn("assemble revised raw proposal: addition collides with existing strategy id", "id", s.ID)
-				continue
-			}
-			merged.Strategies = append(merged.Strategies, s)
-			existingStrategyIDs[s.ID] = struct{}{}
-		default:
-			slog.Warn("assemble revised raw proposal: addition has unrecognized id prefix; expected feat- or strat-", "raw", truncateForLog(raw))
+	for _, f := range featureAdditions {
+		if _, dup := mergedFeatureIDs[f.ID]; dup {
+			slog.Warn("assemble revised raw proposal: feature addition collides with existing id", "id", f.ID)
+			continue
 		}
+		merged.Features = append(merged.Features, f)
+		mergedFeatureIDs[f.ID] = struct{}{}
+	}
+	for _, s := range strategyAdditions {
+		if _, dup := mergedStrategyIDs[s.ID]; dup {
+			slog.Warn("assemble revised raw proposal: strategy addition collides with existing id", "id", s.ID)
+			continue
+		}
+		merged.Strategies = append(merged.Strategies, s)
+		mergedStrategyIDs[s.ID] = struct{}{}
 	}
 
 	out, err := json.Marshal(&merged)
@@ -211,8 +171,8 @@ func assembleRevisedRawProposal(state *PlanningState) (string, bool) {
 
 // findRawFeature returns the prior RawFeatureProposal for the given id,
 // or false when not present in the original raw proposal. Used by the
-// revise-feature projection to render the prior node content into the
-// elaborator's prompt.
+// per-cluster projection to render prior node content when the cluster
+// targets an existing feature (revise mode).
 func findRawFeature(originalRaw, id string) (RawFeatureProposal, bool) {
 	if originalRaw == "" || id == "" {
 		return RawFeatureProposal{}, false
@@ -247,8 +207,9 @@ func findRawStrategy(originalRaw, id string) (RawStrategyProposal, bool) {
 }
 
 // proposalNodeIDs returns the feature and strategy ids present in the
-// raw proposal, used by the triage projection to give the triager a
-// concrete list of routable node ids.
+// raw proposal, used by the per-cluster projection to give the
+// elaborator a list of existing ids it must not collide with when
+// inventing a new node.
 func proposalNodeIDs(rawProposal string) (features []string, strategies []string) {
 	if rawProposal == "" {
 		return nil, nil
@@ -266,11 +227,31 @@ func proposalNodeIDs(rawProposal string) (features []string, strategies []string
 	return features, strategies
 }
 
+// proposalIDLists returns the bare feature and strategy ids in the raw
+// proposal, used by MechanicalCluster to filter id references against
+// the actually-present-in-proposal set.
+func proposalIDLists(rawProposal string) (features []string, strategies []string) {
+	if rawProposal == "" {
+		return nil, nil
+	}
+	var p RawSpecProposal
+	if err := json.Unmarshal([]byte(rawProposal), &p); err != nil {
+		return nil, nil
+	}
+	for _, f := range p.Features {
+		features = append(features, f.ID)
+	}
+	for _, s := range p.Strategies {
+		strategies = append(strategies, s.ID)
+	}
+	return features, strategies
+}
+
 // extractRawID parses raw JSON for an `id` field and returns it.
-// Used by the additions-merge path to sniff whether a per-finding
-// elaborator output is a feature or a strategy without committing
-// to either schema up front. Returns empty when the raw JSON is
-// malformed or has no id; the caller logs and skips.
+// Used to sniff whether a per-cluster elaborator output is a feature
+// or a strategy without committing to either schema up front. Returns
+// empty when the raw JSON is malformed or has no id; the caller logs
+// and skips.
 func extractRawID(raw string) string {
 	var v struct {
 		ID string `json:"id"`
@@ -282,10 +263,8 @@ func extractRawID(raw string) string {
 }
 
 // truncateForLog clips a long string to a fixed prefix for slog
-// output — used by the additions-merge path so a malformed addition
-// doesn't dump kilobytes of YAML into stderr. Operator can find the
-// full payload in the per-call trace; the warning just signals which
-// addition got skipped.
+// output so a malformed entry doesn't dump kilobytes of YAML into
+// stderr. Operator can find the full payload in the per-call trace.
 func truncateForLog(s string) string {
 	const max = 120
 	if len(s) <= max {

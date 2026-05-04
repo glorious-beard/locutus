@@ -158,33 +158,19 @@ func init() {
 		Issues: []string{"feature feat-x references dec-y but dec-y is not generated"},
 	})
 
-	// RevisionPlan is the spec_revision_triager agent's output. EVERY
-	// critic finding routes to one of three buckets — there is no
-	// "non-actionable, omit" bucket; the triager's authority is
-	// routing only (DJ-095). Drives per-node revise fanouts (DJ-092)
-	// and per-finding addition fanouts (DJ-095) downstream.
-	// The schema example deliberately leaves StrategyRevisions empty
-	// to show the model that an empty array is valid output. When the
-	// example showed all three arrays populated (DJ-095 original
-	// shape), the model pattern-matched the example shape and emitted
-	// `strategy_revisions: [{}]` even when there were no strategy
-	// revisions to make — a degenerate shape that wasted one
-	// elaborator call per run. Showing an empty array here teaches
-	// the model that "no entries" is a valid emission, not a hole to
-	// be filled with a placeholder. See DJ-097 follow-up.
-	//
-	// FeatureRevisions and Additions stay populated so the model
-	// still sees the typical-case shapes for the buckets that
-	// usually carry entries.
-	RegisterSchema("RevisionPlan", RevisionPlan{
-		FeatureRevisions: []NodeRevision{{
-			NodeID:   "feat-example",
-			Concerns: []string{"verbatim text of the critic finding targeting this feature"},
-		}},
-		StrategyRevisions: []NodeRevision{},
-		Additions: []AddedNode{{
-			Kind:          "strategy",
-			SourceConcern: "verbatim text of a critic finding proposing a missing feature or strategy; kind selects which elaborator agent the addition fanout dispatches to",
+	// LLMFindingClusters is the spec_finding_clusterer agent's output
+	// (DJ-098). The clusterer's only job is to group unmatched critic
+	// findings by topic and assign each cluster a kind (feature or
+	// strategy) so the workflow knows which elaborator to dispatch.
+	// This replaces the three-bucket RevisionPlan: one schema, one
+	// array, one decision dimension per cluster — eliminates the
+	// schema-pattern-matching pathology that broke the triager three
+	// times in a row.
+	RegisterSchema("LLMFindingClusters", LLMFindingClusters{
+		Clusters: []LLMFindingCluster{{
+			Topic:    "infrastructure-as-code and CI/CD",
+			Findings: []string{"verbatim text of a critic finding belonging to this cluster"},
+			Kind:     "strategy",
 		}},
 	})
 

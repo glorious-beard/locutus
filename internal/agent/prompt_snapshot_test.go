@@ -220,66 +220,84 @@ func TestRenderedPromptSnapshots(t *testing.T) {
 	scoutBriefJSON := `{"domain_read":"campaign tech","technology_options":["framework: A vs B"],"implicit_assumptions":["scale: 100k"],"watch_outs":["seasonality"]}`
 	rawProposal := fixtureRawProposal(t)
 	outline := fixtureOutline(t)
-	concerns := []Concern{
-		{AgentID: "devops_critic", Severity: "medium", Kind: "devops", Text: "CI/CD missing."},
-		{AgentID: "sre_critic", Severity: "medium", Kind: "sre", Text: "observability tooling not named."},
-	}
 
 	cases := []renderedPromptCase{
 		{
-			name:    "triage",
-			stepID:  "triage",
-			agentMD: "spec_revision_triager.md",
+			name:    "cluster_findings",
+			stepID:  "cluster_findings",
+			agentMD: "spec_finding_clusterer.md",
 			snap: StateSnapshot{
 				Prompt:      "Build it.",
 				RawProposal: rawProposal,
-				Concerns:    concerns,
+				UnmatchedFindings: []string{
+					"CI/CD missing.",
+					"observability tooling not named.",
+					"no cost ceiling defined",
+				},
 			},
-			goldenAs: "triage.txt",
+			goldenAs: "cluster_findings.txt",
 		},
 		{
-			name:    "revise_features",
-			stepID:  "revise_features (feat-dashboard)",
+			name:    "revise_feature_revise",
+			stepID:  "revise (feat-dashboard)",
 			agentMD: "spec_feature_elaborator.md",
 			snap: StateSnapshot{
 				Prompt:              "Build it.",
 				OriginalRawProposal: rawProposal,
-				FanoutItem:          mustMarshal(t, NodeRevision{NodeID: "feat-dashboard", Concerns: []string{"add PII encryption"}}),
+				FanoutItem: mustMarshal(t, FindingCluster{
+					Topic:    "feat-dashboard",
+					NodeID:   "feat-dashboard",
+					AgentID:  "spec_feature_elaborator",
+					Findings: []string{"add PII encryption"},
+				}),
 			},
-			goldenAs: "revise_features.txt",
+			goldenAs: "revise_feature_revise.txt",
 		},
 		{
-			name:    "revise_strategies",
-			stepID:  "revise_strategies (strat-frontend)",
+			name:    "revise_strategy_revise",
+			stepID:  "revise (strat-frontend)",
 			agentMD: "spec_strategy_elaborator.md",
 			snap: StateSnapshot{
 				Prompt:              "Build it.",
 				OriginalRawProposal: rawProposal,
-				FanoutItem:          mustMarshal(t, NodeRevision{NodeID: "strat-frontend", Concerns: []string{"name the IaC tool"}}),
+				FanoutItem: mustMarshal(t, FindingCluster{
+					Topic:    "strat-frontend",
+					NodeID:   "strat-frontend",
+					AgentID:  "spec_strategy_elaborator",
+					Findings: []string{"name the IaC tool"},
+				}),
 			},
-			goldenAs: "revise_strategies.txt",
+			goldenAs: "revise_strategy_revise.txt",
 		},
 		{
-			name:    "revise_feature_additions",
-			stepID:  "revise_feature_additions (feat-export)",
+			name:    "revise_feature_add",
+			stepID:  "revise (data export)",
 			agentMD: "spec_feature_elaborator.md",
 			snap: StateSnapshot{
 				Prompt:              "Build it.",
 				OriginalRawProposal: rawProposal,
-				FanoutItem:          mustMarshal(t, AddedNode{Kind: "feature", SourceConcern: "missing data export feature"}),
+				FanoutItem: mustMarshal(t, FindingCluster{
+					Topic:    "data export",
+					AgentID:  "spec_feature_elaborator",
+					Findings: []string{"missing data export feature"},
+				}),
 			},
-			goldenAs: "revise_feature_additions.txt",
+			goldenAs: "revise_feature_add.txt",
 		},
 		{
-			name:    "revise_strategy_additions",
-			stepID:  "revise_strategy_additions (strat-iac)",
+			name:    "revise_strategy_add",
+			stepID:  "revise (infrastructure-as-code)",
 			agentMD: "spec_strategy_elaborator.md",
 			snap: StateSnapshot{
 				Prompt:              "Build it.",
 				OriginalRawProposal: rawProposal,
-				FanoutItem:          mustMarshal(t, AddedNode{Kind: "strategy", SourceConcern: "missing infrastructure-as-code strategy"}),
+				FanoutItem: mustMarshal(t, FindingCluster{
+					Topic:    "infrastructure-as-code and CI/CD",
+					AgentID:  "spec_strategy_elaborator",
+					Findings: []string{"missing infrastructure-as-code strategy", "no CI/CD pipeline defined"},
+				}),
 			},
-			goldenAs: "revise_strategy_additions.txt",
+			goldenAs: "revise_strategy_add.txt",
 		},
 		{
 			name:    "elaborate_features",
@@ -336,31 +354,29 @@ func mustMarshal(t *testing.T, v any) string {
 }
 
 // TestRenderedPromptHasNoContradictions — a coarse-grained smoke check
-// that the rendered prompt for each council step doesn't carry the
-// specific contradiction patterns that broke DJ-095. Snapshot diffs
+// that the clusterer's rendered prompt doesn't carry contradiction
+// patterns analogous to the triager-era DJ-095 failure. Snapshot diffs
 // catch this for any specific case; this test catches it as a
 // permanent invariant so a future "let's add a soft hint to the
 // projection" PR fails loudly.
 func TestRenderedPromptHasNoContradictions(t *testing.T) {
-	// Triager rendered prompt must not say findings can be omitted
-	// when the system prompt mandates routing-completeness.
-	def := loadAgentDefForSnapshot(t, "spec_revision_triager.md")
+	// Clusterer rendered prompt must not say findings can be omitted
+	// when the system prompt mandates lossless grouping.
+	def := loadAgentDefForSnapshot(t, "spec_finding_clusterer.md")
 	snap := StateSnapshot{
-		Prompt:      "Build it.",
-		RawProposal: fixtureRawProposal(t),
-		Concerns:    []Concern{{AgentID: "devops_critic", Kind: "devops", Text: "x"}},
+		Prompt:            "Build it.",
+		RawProposal:       fixtureRawProposal(t),
+		UnmatchedFindings: []string{"x"},
 	}
-	got := renderPrompt(t, def, "triage", snap)
+	got := renderPrompt(t, def, "cluster_findings", snap)
 
-	// The rendered prompt must NOT carry both "every finding" /
-	// "must equal" language AND "simply omitted" language. The
-	// projection-side directive was the bug; if a future edit
-	// reintroduces it, this assertion fires.
-	if strings.Contains(got, "simply omitted") || strings.Contains(got, "non-actionable") {
-		// Only a problem if the routing-completeness mandate is also
-		// present, which it must be (system prompt).
-		if strings.Contains(got, "every finding") || strings.Contains(got, "Total entries") {
-			t.Errorf("triager rendered prompt contradicts itself: contains BOTH routing-completeness mandate AND 'simply omitted' language. The projection must not carry the omit instruction; rules belong in the agent .md only. See DJ-097.")
+	// The rendered prompt must NOT carry both lossless-grouping
+	// language AND drop/omit language. The projection-side directive
+	// was the bug pattern that broke the triager three times; if a
+	// future edit reintroduces it on the clusterer, this fires.
+	if strings.Contains(got, "simply omitted") || strings.Contains(got, "non-actionable") || strings.Contains(got, "may be dropped") {
+		if strings.Contains(got, "exactly one cluster") || strings.Contains(got, "Lossless") {
+			t.Errorf("clusterer rendered prompt contradicts itself: contains BOTH lossless-grouping mandate AND drop/omit language. The projection must not carry the omit instruction; rules belong in the agent .md only. See DJ-097/DJ-098.")
 		}
 	}
 }

@@ -8,45 +8,44 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestProjectTriageIncludesNodeIDsAndConcerns — the triager's prompt
-// must list the proposal's existing node ids (so the agent has a
-// concrete routing target) and the verbatim critic findings (so it
-// doesn't paraphrase).
-func TestProjectTriageIncludesNodeIDsAndConcerns(t *testing.T) {
+// TestProjectClusterFindingsIncludesUnmatchedAndExisting — the
+// clusterer's prompt must list the proposal's existing nodes (kind-
+// classification context) and the verbatim unmatched findings (the
+// input the clusterer must group losslessly).
+func TestProjectClusterFindingsIncludesUnmatchedAndExisting(t *testing.T) {
 	proposal := RawSpecProposal{
-		Features: []RawFeatureProposal{
-			{ID: "feat-dashboard", Title: "Dashboard"},
-		},
-		Strategies: []RawStrategyProposal{
-			{ID: "strat-frontend", Title: "Stack", Kind: "foundational"},
-		},
+		Features:   []RawFeatureProposal{{ID: "feat-dashboard", Title: "Dashboard"}},
+		Strategies: []RawStrategyProposal{{ID: "strat-frontend", Title: "Stack", Kind: "foundational"}},
 	}
 	raw, _ := json.Marshal(proposal)
 	snap := StateSnapshot{
 		Prompt:      "Build it.",
 		RawProposal: string(raw),
-		Concerns: []Concern{
-			{AgentID: "architect_critic", Kind: "architecture", Text: "feat-dashboard lacks PII encryption"},
-			{AgentID: "cost_critic", Kind: "cost", Text: "missing IaC strategy"},
+		UnmatchedFindings: []string{
+			"missing IaC strategy",
+			"no cost ceiling defined",
+			"observability tooling not specified",
 		},
 	}
-	msgs := projectTriage(snap)
+	msgs := projectClusterFindings(snap)
 	require.Len(t, msgs, 1)
 	body := msgs[0].Content
 
-	assert.Contains(t, body, "feat-dashboard", "feature id must appear so triager can route to it")
-	assert.Contains(t, body, "strat-frontend", "strategy id must appear")
-	assert.Contains(t, body, "feat-dashboard lacks PII encryption", "verbatim concern text required")
-	assert.Contains(t, body, "missing IaC strategy")
-	assert.Contains(t, body, "### architecture", "concerns grouped by kind so the routing intent is visible")
-	assert.Contains(t, body, "### cost")
+	assert.Contains(t, body, "feat-dashboard", "existing feature ids supply kind-classification context")
+	assert.Contains(t, body, "strat-frontend")
+	assert.Contains(t, body, "missing IaC strategy", "verbatim unmatched-finding text required")
+	assert.Contains(t, body, "no cost ceiling defined")
+	assert.Contains(t, body, "observability tooling not specified")
+	// Lossless-grouping mandate, kind-defaulting rule live in the
+	// agent .md, not the projection (DJ-097).
+	assert.NotContains(t, body, "Total entries", "directives must not leak into the projection (DJ-097)")
 }
 
-// TestProjectReviseNodeRendersPriorContent — the per-node revise
-// elaborator's prompt must include the prior RawFeatureProposal /
-// RawStrategyProposal verbatim plus the targeted concerns so the
-// elaborator can re-emit a corrected version with full context.
-func TestProjectReviseNodeRendersPriorContent(t *testing.T) {
+// TestProjectFindingClusterRendersTargetedNode — when a cluster
+// targets an existing node, the elaborator's prompt must include the
+// prior content (so it can re-emit a corrected version) and the
+// targeted findings (verbatim).
+func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 	original := RawSpecProposal{
 		Features: []RawFeatureProposal{
 			{ID: "feat-a", Title: "A", Description: "first", Decisions: []InlineDecisionProposal{{Title: "use foo"}}},
@@ -57,190 +56,139 @@ func TestProjectReviseNodeRendersPriorContent(t *testing.T) {
 	}
 	raw, _ := json.Marshal(original)
 
-	t.Run("feature revise mode", func(t *testing.T) {
-		rev := NodeRevision{NodeID: "feat-a", Concerns: []string{"add PII encryption", "clarify scale"}}
-		revRaw, _ := json.Marshal(rev)
+	t.Run("feature revise (NodeID set, feat- prefix)", func(t *testing.T) {
+		cluster := FindingCluster{
+			Topic:    "feat-a",
+			NodeID:   "feat-a",
+			AgentID:  "spec_feature_elaborator",
+			Findings: []string{"add PII encryption", "clarify scale"},
+		}
+		clusterRaw, _ := json.Marshal(cluster)
 		snap := StateSnapshot{
 			Prompt:              "Build it.",
 			OriginalRawProposal: string(raw),
-			FanoutItem:          string(revRaw),
+			FanoutItem:          string(clusterRaw),
 		}
-		msgs := projectReviseNode(snap, "feature")
+		msgs := projectFindingCluster(snap)
 		require.Len(t, msgs, 1)
 		body := msgs[0].Content
 
 		assert.Contains(t, body, "feat-a")
-		assert.Contains(t, body, "use foo", "prior decision title must appear so elaborator sees what it's revising")
-		assert.Contains(t, body, "add PII encryption", "verbatim concern text")
+		assert.Contains(t, body, "## Prior content", "header signals revise mode")
+		assert.Contains(t, body, "use foo", "prior decision title surfaced")
+		assert.Contains(t, body, "add PII encryption", "verbatim cluster finding")
 		assert.Contains(t, body, "clarify scale")
-		// Directive text ("Produce the corrected RawFeatureProposal...")
-		// lives in the elaborator's .md system prompt; no longer asserted
-		// in the projection output. See DJ-097.
-		assert.NotContains(t, body, "Produce the corrected",
-			"projections are data-only; directives must not leak into the user message (DJ-097)")
+		// Revise/add discrimination directive lives in the elaborator
+		// .md system prompt, not in the projection (DJ-097).
+		assert.NotContains(t, body, "Produce the corrected", "directives must not leak into projection")
 	})
 
-	t.Run("strategy revise mode", func(t *testing.T) {
-		rev := NodeRevision{NodeID: "strat-x", Concerns: []string{"name the IaC tool"}}
-		revRaw, _ := json.Marshal(rev)
+	t.Run("strategy revise (NodeID set, strat- prefix)", func(t *testing.T) {
+		cluster := FindingCluster{
+			Topic:    "strat-x",
+			NodeID:   "strat-x",
+			AgentID:  "spec_strategy_elaborator",
+			Findings: []string{"name the IaC tool"},
+		}
+		clusterRaw, _ := json.Marshal(cluster)
 		snap := StateSnapshot{
 			Prompt:              "Build it.",
 			OriginalRawProposal: string(raw),
-			FanoutItem:          string(revRaw),
+			FanoutItem:          string(clusterRaw),
 		}
-		msgs := projectReviseNode(snap, "strategy")
+		msgs := projectFindingCluster(snap)
 		body := msgs[0].Content
 
 		assert.Contains(t, body, "strat-x")
-		assert.Contains(t, body, "Next.js")
+		assert.Contains(t, body, "Next.js", "prior strategy decision title surfaced")
 		assert.Contains(t, body, "name the IaC tool")
-		assert.NotContains(t, body, "Produce the corrected",
-			"data-only; directive lives in the elaborator's .md")
 	})
 
 	t.Run("missing prior content surfaces the gap", func(t *testing.T) {
-		rev := NodeRevision{NodeID: "feat-ghost", Concerns: []string{"x"}}
-		revRaw, _ := json.Marshal(rev)
+		cluster := FindingCluster{
+			Topic:    "feat-ghost",
+			NodeID:   "feat-ghost",
+			AgentID:  "spec_feature_elaborator",
+			Findings: []string{"x"},
+		}
+		clusterRaw, _ := json.Marshal(cluster)
 		snap := StateSnapshot{
 			Prompt:              "Build it.",
 			OriginalRawProposal: string(raw),
-			FanoutItem:          string(revRaw),
+			FanoutItem:          string(clusterRaw),
 		}
-		msgs := projectReviseNode(snap, "feature")
+		msgs := projectFindingCluster(snap)
 		body := msgs[0].Content
 		assert.Contains(t, body, "not found", "missing prior content explicit to the model")
 	})
 }
 
-// TestProjectAdditionElaborateRendersConcernAndExistingNodes — the
-// per-finding addition projection (Phase 4) must include the verbatim
-// critic finding driving the addition AND the existing-nodes list.
-// Without the finding the elaborator has nothing to author from;
-// without the existing list it risks re-introducing already-present
-// nodes. The "do NOT re-emit" directive itself lives in the
-// elaborator's .md addition-mode addendum, not in this projection
-// (DJ-097).
-func TestProjectAdditionElaborateRendersConcernAndExistingNodes(t *testing.T) {
+// TestProjectFindingClusterRendersAddMode — when a cluster has no
+// NodeID (new-node case), the projection must show the existing-nodes
+// list (id-collision avoidance) and the cluster's findings, but NOT a
+// "Prior content" block.
+func TestProjectFindingClusterRendersAddMode(t *testing.T) {
 	original := RawSpecProposal{
 		Features:   []RawFeatureProposal{{ID: "feat-dashboard", Title: "Dashboard"}},
 		Strategies: []RawStrategyProposal{{ID: "strat-frontend", Title: "Stack", Kind: "foundational"}},
 	}
 	raw, _ := json.Marshal(original)
 
-	t.Run("strategy addition mode", func(t *testing.T) {
-		added := AddedNode{Kind: "strategy", SourceConcern: "missing infrastructure-as-code strategy"}
-		addedRaw, _ := json.Marshal(added)
+	t.Run("strategy add (no NodeID, kind=strategy)", func(t *testing.T) {
+		cluster := FindingCluster{
+			Topic:    "infrastructure-as-code and CI/CD",
+			AgentID:  "spec_strategy_elaborator",
+			Findings: []string{"missing IaC strategy", "no CI/CD pipeline defined"},
+		}
+		clusterRaw, _ := json.Marshal(cluster)
 		snap := StateSnapshot{
 			Prompt:              "Build it.",
 			OriginalRawProposal: string(raw),
-			FanoutItem:          string(addedRaw),
+			FanoutItem:          string(clusterRaw),
 		}
-		msgs := projectAdditionElaborate(snap, "strategy")
+		msgs := projectFindingCluster(snap)
 		require.Len(t, msgs, 1)
 		body := msgs[0].Content
 
-		assert.Contains(t, body, "## Existing nodes", "existing-nodes section must be labeled so the system prompt's addition-mode addendum can refer to it")
+		assert.Contains(t, body, "## Existing nodes", "existing-nodes section labeled")
 		assert.Contains(t, body, "feat-dashboard")
 		assert.Contains(t, body, "strat-frontend")
-		assert.Contains(t, body, "missing infrastructure-as-code strategy",
-			"verbatim critic finding text drives the addition")
-		// Directive ("Produce one RawStrategyProposal... invent the id...")
-		// lives in the elaborator's .md "addition mode" addendum.
-		// Projection is data-only — see DJ-097.
-		assert.NotContains(t, body, "Produce one Raw",
-			"projections must not carry directives; the elaborator's .md owns them")
-	})
-
-	t.Run("feature addition mode", func(t *testing.T) {
-		added := AddedNode{Kind: "feature", SourceConcern: "the plan lacks a feature for data export"}
-		addedRaw, _ := json.Marshal(added)
-		snap := StateSnapshot{
-			Prompt:              "Build it.",
-			OriginalRawProposal: string(raw),
-			FanoutItem:          string(addedRaw),
-		}
-		msgs := projectAdditionElaborate(snap, "feature")
-		body := msgs[0].Content
-
-		assert.Contains(t, body, "the plan lacks a feature for data export")
-		assert.NotContains(t, body, "Produce one Raw",
-			"data-only; directive in .md")
-	})
-
-	t.Run("missing source_concern surfaces the gap", func(t *testing.T) {
-		added := AddedNode{Kind: "strategy"} // no source_concern
-		addedRaw, _ := json.Marshal(added)
-		snap := StateSnapshot{
-			Prompt:              "Build it.",
-			OriginalRawProposal: string(raw),
-			FanoutItem:          string(addedRaw),
-		}
-		msgs := projectAdditionElaborate(snap, "strategy")
-		body := msgs[0].Content
-		assert.Contains(t, body, "(missing", "missing source_concern explicit to the model")
+		assert.Contains(t, body, "infrastructure-as-code and CI/CD", "topic verbatim")
+		assert.Contains(t, body, "missing IaC strategy", "verbatim cluster finding")
+		assert.Contains(t, body, "no CI/CD pipeline defined")
+		assert.NotContains(t, body, "## Prior content", "no prior content in add mode")
+		assert.NotContains(t, body, "Targeted node", "no targeted-node section in add mode")
 	})
 }
 
-// TestProjectStateRoutesReviseStepsCorrectly — the projection
-// dispatcher must route revise_features / revise_strategies /
-// revise_feature_additions / revise_strategy_additions / triage to
-// the right projection, including when fanout suffixes are present
-// on the step ID.
-func TestProjectStateRoutesReviseStepsCorrectly(t *testing.T) {
-	plan := RevisionPlan{Additions: []AddedNode{{Kind: "strategy", SourceConcern: "x"}}}
-	planRaw, _ := json.Marshal(plan)
-	snap := StateSnapshot{
-		Prompt:       "Build it.",
-		RevisionPlan: string(planRaw),
-		Concerns:     []Concern{{AgentID: "architect_critic", Kind: "architecture", Text: "concern text"}},
-	}
-
-	t.Run("triage routes to projectTriage", func(t *testing.T) {
-		msgs := ProjectState("triage", snap)
+// TestProjectStateRoutesClusterStepsCorrectly — the projection
+// dispatcher must route cluster_findings and revise (with fanout
+// suffix carrying a FindingCluster) to the right projections.
+func TestProjectStateRoutesClusterStepsCorrectly(t *testing.T) {
+	t.Run("cluster_findings routes to projectClusterFindings", func(t *testing.T) {
+		snap := StateSnapshot{
+			Prompt:            "Build it.",
+			UnmatchedFindings: []string{"some finding"},
+		}
+		msgs := ProjectState("cluster_findings", snap)
 		require.Len(t, msgs, 1)
-		assert.Contains(t, msgs[0].Content, "Critic findings to route")
+		assert.Contains(t, msgs[0].Content, "Findings to cluster")
 	})
 
-	t.Run("revise_features with fanout suffix routes to revise-feature projection", func(t *testing.T) {
-		rev := NodeRevision{NodeID: "feat-a", Concerns: []string{"x"}}
-		revRaw, _ := json.Marshal(rev)
-		snap := snap
-		snap.FanoutItem = string(revRaw)
-		msgs := ProjectState("revise_features (feat-a)", snap)
-		// Routing is verified via the data-shaped header that's
-		// distinct per projection — "feature to revise" vs
-		// "strategy to revise" vs "Feature to propose (addition)".
+	t.Run("revise with fanout item routes to projectFindingCluster", func(t *testing.T) {
+		cluster := FindingCluster{
+			Topic:    "feat-a",
+			NodeID:   "feat-a",
+			AgentID:  "spec_feature_elaborator",
+			Findings: []string{"x"},
+		}
+		clusterRaw, _ := json.Marshal(cluster)
+		snap := StateSnapshot{
+			Prompt:     "Build it.",
+			FanoutItem: string(clusterRaw),
+		}
+		msgs := ProjectState("revise (feat-a)", snap)
 		assert.Contains(t, msgs[0].Content, "feat-a")
-		assert.Contains(t, msgs[0].Content, "feature to revise")
-	})
-
-	t.Run("revise_strategies routes to revise-strategy projection", func(t *testing.T) {
-		rev := NodeRevision{NodeID: "strat-x", Concerns: []string{"x"}}
-		revRaw, _ := json.Marshal(rev)
-		snap := snap
-		snap.FanoutItem = string(revRaw)
-		msgs := ProjectState("revise_strategies (strat-x)", snap)
-		assert.Contains(t, msgs[0].Content, "strat-x")
-		assert.Contains(t, msgs[0].Content, "strategy to revise")
-	})
-
-	t.Run("revise_feature_additions routes to addition-feature projection", func(t *testing.T) {
-		added := AddedNode{Kind: "feature", SourceConcern: "missing data-export feature"}
-		addedRaw, _ := json.Marshal(added)
-		snap := snap
-		snap.FanoutItem = string(addedRaw)
-		msgs := ProjectState("revise_feature_additions (feat-data-export)", snap)
-		assert.Contains(t, msgs[0].Content, "missing data-export feature")
-		assert.Contains(t, msgs[0].Content, "Feature to propose (addition)")
-	})
-
-	t.Run("revise_strategy_additions routes to addition-strategy projection", func(t *testing.T) {
-		added := AddedNode{Kind: "strategy", SourceConcern: "missing IaC strategy"}
-		addedRaw, _ := json.Marshal(added)
-		snap := snap
-		snap.FanoutItem = string(addedRaw)
-		msgs := ProjectState("revise_strategy_additions (strat-iac)", snap)
-		assert.Contains(t, msgs[0].Content, "missing IaC strategy")
-		assert.Contains(t, msgs[0].Content, "Strategy to propose (addition)")
+		assert.Contains(t, msgs[0].Content, "Findings to address")
 	})
 }

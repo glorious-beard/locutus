@@ -49,17 +49,18 @@ func ProjectState(stepID string, snap StateSnapshot) []Message {
 	case "research":
 		return projectResearch(snap)
 	case "revise":
+		// DJ-098: unified per-cluster fanout. Each fanout call hits
+		// this branch (with a base step ID of "revise" after the
+		// per-item suffix is stripped). The cluster-aware projection
+		// dispatches off snap.FanoutItem (a FindingCluster JSON).
+		// Legacy non-fanout "revise" calls (older workflows) fall
+		// through to projectRevise via the empty-FanoutItem branch.
+		if snap.FanoutItem != "" {
+			return projectFindingCluster(snap)
+		}
 		return projectRevise(snap)
-	case "triage":
-		return projectTriage(snap)
-	case "revise_features":
-		return projectReviseNode(snap, "feature")
-	case "revise_strategies":
-		return projectReviseNode(snap, "strategy")
-	case "revise_feature_additions":
-		return projectAdditionElaborate(snap, "feature")
-	case "revise_strategy_additions":
-		return projectAdditionElaborate(snap, "strategy")
+	case "cluster_findings":
+		return projectClusterFindings(snap)
 	case "record":
 		return projectRecord(snap)
 	default:
@@ -177,21 +178,19 @@ func formatOutlineForElaborator(raw string) string {
 	return strings.TrimSpace(b.String())
 }
 
-// projectTriage builds the spec_revision_triager's user message:
-// the list of node ids in the current proposal + the critic findings
-// (one per concern, grouped by kind for readability). The triager
-// emits a RevisionPlan routing each finding to a feature/strategy
-// revision or an addition. There is no discard bucket — see DJ-095.
-//
-// The triager does NOT see the full proposal content — only the node
-// id list. Routing is a pure mapping from finding text → node id, not
-// an authoring task.
-func projectTriage(snap StateSnapshot) []Message {
+// projectClusterFindings builds the spec_finding_clusterer's user
+// message (DJ-098). The clusterer receives the unmatched-findings
+// list (findings that didn't name an existing node id) and groups
+// them by topic. Decision dimensions are minimal: which cluster a
+// finding belongs to, and what kind (feature/strategy) the cluster
+// is. No node-id matching, no revise-vs-add intent — the elaborator
+// downstream decides those locally per cluster.
+func projectClusterFindings(snap StateSnapshot) []Message {
 	var b strings.Builder
-	b.WriteString("## Existing nodes in the proposal\n\n")
+	b.WriteString("## Existing nodes in the proposal (for kind-classification context)\n\n")
 	features, strategies := proposalNodeIDs(snap.RawProposal)
 	if len(features) == 0 && len(strategies) == 0 {
-		b.WriteString("(none — the proposal is empty; route every finding to additions[])\n")
+		b.WriteString("(none — the proposal is empty)\n\n")
 	} else {
 		if len(features) > 0 {
 			b.WriteString("**Features:**\n")
@@ -209,133 +208,34 @@ func projectTriage(snap StateSnapshot) []Message {
 		}
 	}
 
-	if len(snap.Concerns) > 0 {
-		b.WriteString("## Critic findings to route\n\n")
-		// Group by kind so the triager sees lens labels next to each
-		// finding — useful when judging whether a finding is a node
-		// targeting one or a proposed addition.
-		byKind := make(map[string][]Concern)
-		for _, c := range snap.Concerns {
-			k := c.Kind
-			if k == "" {
-				k = "review"
-			}
-			byKind[k] = append(byKind[k], c)
-		}
-		kinds := make([]string, 0, len(byKind))
-		for k := range byKind {
-			kinds = append(kinds, k)
-		}
-		sort.Strings(kinds)
-		for _, k := range kinds {
-			fmt.Fprintf(&b, "### %s (%d)\n", k, len(byKind[k]))
-			for _, c := range byKind[k] {
-				fmt.Fprintf(&b, "- %s\n", c.Text)
-			}
-			b.WriteString("\n")
-		}
-	}
-
-	// Routing-completeness mandate, empty-array handling, and the
-	// default-to-additions-with-kind=strategy rule live in
-	// spec_revision_triager.md (Task + Mandates sections). Do not
-	// re-state them here — see DJ-097.
-	return []Message{{Role: "user", Content: b.String()}}
-}
-
-// projectReviseNode builds the per-node revise elaborator's user
-// message. The fanout dispatcher set snap.FanoutItem to the JSON of
-// one NodeRevision; we look up the prior RawFeatureProposal /
-// RawStrategyProposal from snap.OriginalRawProposal and present both
-// the prior content and the targeted concerns to the elaborator.
-//
-// This routes through the same elaborator agent (spec_feature_elaborator
-// / spec_strategy_elaborator) that handled the initial elaborate
-// fanout — the agent's job is identical (produce a Raw*Proposal for
-// one node) and the projection just supplies different context.
-func projectReviseNode(snap StateSnapshot, kind string) []Message {
-	var b strings.Builder
-	b.WriteString(snap.Prompt)
-	if snap.ScoutBrief != "" {
-		if formatted := formatScoutBrief(snap.ScoutBrief); formatted != "" {
-			b.WriteString("\n\n## Scout brief\n\n")
-			b.WriteString(formatted)
-		}
-	}
-
-	var rev NodeRevision
-	if snap.FanoutItem != "" {
-		_ = json.Unmarshal([]byte(snap.FanoutItem), &rev)
-	}
-
-	fmt.Fprintf(&b, "\n\n## %s to revise\n\n", kind)
-	if rev.NodeID == "" {
-		b.WriteString("(missing — fanout did not populate a NodeRevision)\n")
-		return []Message{{Role: "user", Content: b.String()}}
-	}
-	fmt.Fprintf(&b, "- **Node ID:** `%s`\n\n", rev.NodeID)
-
-	// Header is data-only ("here is the prior content"); the rule
-	// "treat it as rejected and re-emit a corrected version" lives in
-	// the elaborator's revise-mode addendum. See DJ-097.
-	b.WriteString("## Prior content\n\n")
-	switch kind {
-	case "feature":
-		if prior, ok := findRawFeature(snap.OriginalRawProposal, rev.NodeID); ok {
-			data, err := json.MarshalIndent(prior, "", "  ")
-			if err == nil {
-				b.WriteString("```json\n")
-				b.Write(data)
-				b.WriteString("\n```\n")
-			}
-		} else {
-			fmt.Fprintf(&b, "(prior feature %q not found in the original proposal)\n", rev.NodeID)
-		}
-	case "strategy":
-		if prior, ok := findRawStrategy(snap.OriginalRawProposal, rev.NodeID); ok {
-			data, err := json.MarshalIndent(prior, "", "  ")
-			if err == nil {
-				b.WriteString("```json\n")
-				b.Write(data)
-				b.WriteString("\n```\n")
-			}
-		} else {
-			fmt.Fprintf(&b, "(prior strategy %q not found in the original proposal)\n", rev.NodeID)
-		}
-	}
-
-	b.WriteString("\n## Concerns targeting this node\n\n")
-	if len(rev.Concerns) == 0 {
-		// Data-only fallback. The "if empty, re-emit prior content
-		// unchanged" rule lives in the elaborator's .md revise-mode
-		// addendum. See DJ-097.
+	b.WriteString("## Findings to cluster (verbatim — every entry must end up in exactly one cluster)\n\n")
+	if len(snap.UnmatchedFindings) == 0 {
 		b.WriteString("(none)\n")
 	} else {
-		for _, c := range rev.Concerns {
-			fmt.Fprintf(&b, "- %s\n", c)
+		for _, f := range snap.UnmatchedFindings {
+			fmt.Fprintf(&b, "- %s\n", f)
 		}
 	}
-	// Directive ("Produce the corrected Raw*Proposal... preserve id...
-	// re-emit the FULL node") lives in the elaborator's .md "revise
-	// mode" addendum. Do not re-state here — see DJ-097.
+
+	// Lossless-grouping mandate, kind-defaulting rule, and example
+	// shape live in spec_finding_clusterer.md. Projection is data-only
+	// per DJ-097.
 	return []Message{{Role: "user", Content: b.String()}}
 }
 
-// projectAdditionElaborate builds the per-finding addition
-// elaborator's user message. The fanout dispatcher set
-// snap.FanoutItem to the JSON of one AddedNode; the elaborator
-// invents one new RawFeatureProposal or RawStrategyProposal
-// addressing the source_concern verbatim, picking its own id and
-// title from the concern's subject. Existing nodes are listed under
-// a "## Existing nodes" header so the elaborator's addition-mode
-// addendum (system prompt) can refer to the section by name when
-// telling the agent not to collide with already-present ids.
+// projectFindingCluster builds the per-cluster elaborator's user
+// message (DJ-098). The fanout dispatcher set snap.FanoutItem to the
+// JSON of one FindingCluster; the elaborator emits one
+// RawFeatureProposal or RawStrategyProposal that addresses every
+// finding in the cluster.
 //
-// Phase 4 promotes additions from a single architect call (DJ-092)
-// to per-finding fanout (DJ-095), eliminating the multi-node
-// authoring pressure that was the same anti-pattern Phase 1 fixed
-// for the main revise step.
-func projectAdditionElaborate(snap StateSnapshot, kind string) []Message {
+// This unifies what used to be projectReviseNode + projectAdditionElaborate.
+// Discrimination between revise and add is implicit in cluster.NodeID:
+// when set, the elaborator preserves that id and the projection
+// includes the prior node content; when empty, the elaborator picks
+// a fresh id and the projection includes the existing-nodes list as
+// an id-collision-avoidance reference.
+func projectFindingCluster(snap StateSnapshot) []Message {
 	var b strings.Builder
 	b.WriteString(snap.Prompt)
 	if snap.ScoutBrief != "" {
@@ -345,15 +245,15 @@ func projectAdditionElaborate(snap StateSnapshot, kind string) []Message {
 		}
 	}
 
-	var added AddedNode
+	var cluster FindingCluster
 	if snap.FanoutItem != "" {
-		_ = json.Unmarshal([]byte(snap.FanoutItem), &added)
+		_ = json.Unmarshal([]byte(snap.FanoutItem), &cluster)
 	}
 
+	// Always show the existing-nodes list. For revise mode this is
+	// situational awareness; for add mode it's the id-collision-
+	// avoidance reference.
 	features, strategies := proposalNodeIDs(snap.OriginalRawProposal)
-	// Header is data-only ("here are the existing ids"); the rule
-	// "do not re-emit one of these ids" lives in the elaborator's
-	// addition-mode addendum. See DJ-097.
 	b.WriteString("\n\n## Existing nodes\n\n")
 	if len(features) == 0 && len(strategies) == 0 {
 		b.WriteString("(none)\n")
@@ -374,25 +274,53 @@ func projectAdditionElaborate(snap StateSnapshot, kind string) []Message {
 		}
 	}
 
-	fmt.Fprintf(&b, "## %s to propose (addition)\n\n", titleize(kind))
-	if added.SourceConcern == "" {
-		b.WriteString("(missing — fanout did not populate an AddedNode source_concern)\n")
-		return []Message{{Role: "user", Content: b.String()}}
-	}
-	b.WriteString("**Critic finding driving this addition (verbatim):**\n\n")
-	fmt.Fprintf(&b, "> %s\n", added.SourceConcern)
-	// Directive ("Produce one Raw*Proposal... invent the id with
-	// prefix... do NOT collide with existing nodes") lives in the
-	// elaborator's .md "addition mode" addendum. Do not re-state
-	// here — see DJ-097.
-	return []Message{{Role: "user", Content: b.String()}}
-}
+	fmt.Fprintf(&b, "## Cluster topic\n\n%s\n\n", strings.TrimSpace(cluster.Topic))
 
-func titleize(s string) string {
-	if s == "" {
-		return s
+	if cluster.NodeID != "" {
+		fmt.Fprintf(&b, "## Targeted node\n\n- **Node ID:** `%s`\n\n", cluster.NodeID)
+		b.WriteString("## Prior content\n\n")
+		// Sniff prefix to decide which Raw*Proposal type to look up.
+		switch {
+		case strings.HasPrefix(cluster.NodeID, "feat-"):
+			if prior, ok := findRawFeature(snap.OriginalRawProposal, cluster.NodeID); ok {
+				data, err := json.MarshalIndent(prior, "", "  ")
+				if err == nil {
+					b.WriteString("```json\n")
+					b.Write(data)
+					b.WriteString("\n```\n\n")
+				}
+			} else {
+				fmt.Fprintf(&b, "(prior feature %q not found in the original proposal)\n\n", cluster.NodeID)
+			}
+		case strings.HasPrefix(cluster.NodeID, "strat-"):
+			if prior, ok := findRawStrategy(snap.OriginalRawProposal, cluster.NodeID); ok {
+				data, err := json.MarshalIndent(prior, "", "  ")
+				if err == nil {
+					b.WriteString("```json\n")
+					b.Write(data)
+					b.WriteString("\n```\n\n")
+				}
+			} else {
+				fmt.Fprintf(&b, "(prior strategy %q not found in the original proposal)\n\n", cluster.NodeID)
+			}
+		}
 	}
-	return strings.ToUpper(s[:1]) + s[1:]
+
+	b.WriteString("## Findings to address (verbatim)\n\n")
+	if len(cluster.Findings) == 0 {
+		b.WriteString("(none)\n")
+	} else {
+		for _, f := range cluster.Findings {
+			fmt.Fprintf(&b, "- %s\n", f)
+		}
+	}
+
+	// Directive ("If a Targeted node is named, preserve its id and
+	// re-emit a corrected version. Otherwise pick a fresh id and
+	// invent a new node addressing the findings.") lives in the
+	// elaborator's .md system prompt. Projection is data-only per
+	// DJ-097.
+	return []Message{{Role: "user", Content: b.String()}}
 }
 
 // projectReconcile builds the reconciler's user message: the raw
