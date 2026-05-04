@@ -73,7 +73,11 @@ func TestProjectReviseNodeRendersPriorContent(t *testing.T) {
 		assert.Contains(t, body, "use foo", "prior decision title must appear so elaborator sees what it's revising")
 		assert.Contains(t, body, "add PII encryption", "verbatim concern text")
 		assert.Contains(t, body, "clarify scale")
-		assert.Contains(t, body, "RawFeatureProposal", "directive names the output schema")
+		// Directive text ("Produce the corrected RawFeatureProposal...")
+		// lives in the elaborator's .md system prompt; no longer asserted
+		// in the projection output. See DJ-097.
+		assert.NotContains(t, body, "Produce the corrected",
+			"projections are data-only; directives must not leak into the user message (DJ-097)")
 	})
 
 	t.Run("strategy revise mode", func(t *testing.T) {
@@ -90,7 +94,8 @@ func TestProjectReviseNodeRendersPriorContent(t *testing.T) {
 		assert.Contains(t, body, "strat-x")
 		assert.Contains(t, body, "Next.js")
 		assert.Contains(t, body, "name the IaC tool")
-		assert.Contains(t, body, "RawStrategyProposal")
+		assert.NotContains(t, body, "Produce the corrected",
+			"data-only; directive lives in the elaborator's .md")
 	})
 
 	t.Run("missing prior content surfaces the gap", func(t *testing.T) {
@@ -137,8 +142,11 @@ func TestProjectAdditionElaborateRendersConcernAndExistingNodes(t *testing.T) {
 		assert.Contains(t, body, "strat-frontend")
 		assert.Contains(t, body, "missing infrastructure-as-code strategy",
 			"verbatim critic finding text drives the addition")
-		assert.Contains(t, body, "RawStrategyProposal", "directive names the output schema")
-		assert.Contains(t, body, "strat-", "elaborator must mint an id with the strategy prefix")
+		// Directive ("Produce one RawStrategyProposal... invent the id...")
+		// lives in the elaborator's .md "addition mode" addendum.
+		// Projection is data-only — see DJ-097.
+		assert.NotContains(t, body, "Produce one Raw",
+			"projections must not carry directives; the elaborator's .md owns them")
 	})
 
 	t.Run("feature addition mode", func(t *testing.T) {
@@ -153,8 +161,8 @@ func TestProjectAdditionElaborateRendersConcernAndExistingNodes(t *testing.T) {
 		body := msgs[0].Content
 
 		assert.Contains(t, body, "the plan lacks a feature for data export")
-		assert.Contains(t, body, "RawFeatureProposal")
-		assert.Contains(t, body, "feat-", "elaborator must mint an id with the feature prefix")
+		assert.NotContains(t, body, "Produce one Raw",
+			"data-only; directive in .md")
 	})
 
 	t.Run("missing source_concern surfaces the gap", func(t *testing.T) {
@@ -197,8 +205,11 @@ func TestProjectStateRoutesReviseStepsCorrectly(t *testing.T) {
 		snap := snap
 		snap.FanoutItem = string(revRaw)
 		msgs := ProjectState("revise_features (feat-a)", snap)
+		// Routing is verified via the data-shaped header that's
+		// distinct per projection — "feature to revise" vs
+		// "strategy to revise" vs "Feature to propose (addition)".
 		assert.Contains(t, msgs[0].Content, "feat-a")
-		assert.Contains(t, msgs[0].Content, "RawFeatureProposal")
+		assert.Contains(t, msgs[0].Content, "feature to revise")
 	})
 
 	t.Run("revise_strategies routes to revise-strategy projection", func(t *testing.T) {
@@ -208,7 +219,7 @@ func TestProjectStateRoutesReviseStepsCorrectly(t *testing.T) {
 		snap.FanoutItem = string(revRaw)
 		msgs := ProjectState("revise_strategies (strat-x)", snap)
 		assert.Contains(t, msgs[0].Content, "strat-x")
-		assert.Contains(t, msgs[0].Content, "RawStrategyProposal")
+		assert.Contains(t, msgs[0].Content, "strategy to revise")
 	})
 
 	t.Run("revise_feature_additions routes to addition-feature projection", func(t *testing.T) {
@@ -218,7 +229,7 @@ func TestProjectStateRoutesReviseStepsCorrectly(t *testing.T) {
 		snap.FanoutItem = string(addedRaw)
 		msgs := ProjectState("revise_feature_additions (feat-data-export)", snap)
 		assert.Contains(t, msgs[0].Content, "missing data-export feature")
-		assert.Contains(t, msgs[0].Content, "RawFeatureProposal")
+		assert.Contains(t, msgs[0].Content, "Feature to propose (addition)")
 	})
 
 	t.Run("revise_strategy_additions routes to addition-strategy projection", func(t *testing.T) {
@@ -228,6 +239,6 @@ func TestProjectStateRoutesReviseStepsCorrectly(t *testing.T) {
 		snap.FanoutItem = string(addedRaw)
 		msgs := ProjectState("revise_strategy_additions (strat-iac)", snap)
 		assert.Contains(t, msgs[0].Content, "missing IaC strategy")
-		assert.Contains(t, msgs[0].Content, "RawStrategyProposal")
+		assert.Contains(t, msgs[0].Content, "Strategy to propose (addition)")
 	})
 }

@@ -11,6 +11,18 @@ import (
 // the fields from the snapshot that are relevant to that agent's job. This keeps
 // each agent's context window focused and avoids leaking irrelevant information.
 //
+// Projections are data-only. Rules of behavior — what schema to emit,
+// how to handle empty buckets, what counts as actionable — live in the
+// agent's .md system prompt, NOT in the user message generated here.
+// This separation is structural: when system-prompt rules and
+// user-message directives drift, the user message wins at inference
+// time and silently overrides the system prompt. DJ-095's lossless
+// triage broke for one run because the projection still carried a
+// "non-actionable findings are simply omitted" tail after the system
+// prompt was rewritten to mandate routing-completeness; the projection
+// won and 22 of 32 findings got dropped. The fix is to never let
+// projections carry directives — see DJ-097.
+//
 // Fanout steps (Phase 3) tag each call with a per-item suffix in the
 // stepID — e.g. "elaborate_features (feat-dashboard)" — so progress
 // sinks render one entry per item. We strip the suffix before routing
@@ -113,13 +125,9 @@ func projectElaborateOne(snap StateSnapshot, kind string) []Message {
 	} else {
 		b.WriteString("(missing — fanout did not populate FanoutItem)")
 	}
-	b.WriteString("\n\nProduce the full Raw")
-	if kind == "feature" {
-		b.WriteString("FeatureProposal")
-	} else {
-		b.WriteString("StrategyProposal")
-	}
-	b.WriteString(" for the item above. Preserve its id and title verbatim. Decisions are inline; the reconciler downstream dedupes across siblings.")
+	// Directive ("Produce the full Raw...Proposal") lives in the
+	// elaborator's .md system prompt (Task section). Adding it here
+	// would create the same drift surface that broke DJ-095's triage.
 	return []Message{{Role: "user", Content: b.String()}}
 }
 
@@ -228,7 +236,10 @@ func projectTriage(snap StateSnapshot) []Message {
 		}
 	}
 
-	b.WriteString("Emit a RevisionPlan routing EVERY finding above to one of feature_revisions, strategy_revisions, or additions. The total entries across the three arrays MUST equal the total count of input findings. There is no discard bucket — the critic already judged actionability by emitting the finding. When uncertain whether a finding implies a missing feature or strategy, default to additions with kind=\"strategy\" — most missing-X findings are missing-strategy gaps. Use the verbatim finding text in concerns/source_concern fields; do not paraphrase. An array with no routable entries must be emitted as `[]` (an empty array) — do NOT emit `[{}]` or any placeholder shape; downstream code rejects empty objects as malformed.")
+	// Routing-completeness mandate, empty-array handling, and the
+	// default-to-additions-with-kind=strategy rule live in
+	// spec_revision_triager.md (Task + Mandates sections). Do not
+	// re-state them here — see DJ-097.
 	return []Message{{Role: "user", Content: b.String()}}
 }
 
@@ -298,9 +309,9 @@ func projectReviseNode(snap StateSnapshot, kind string) []Message {
 			fmt.Fprintf(&b, "- %s\n", c)
 		}
 	}
-
-	fmt.Fprintf(&b, "\nProduce the corrected Raw%sProposal for the node above. Address every concern. Preserve the id verbatim. Decisions are inline; the reconciler downstream dedupes across siblings. Re-emit the FULL node — do not emit a delta.\n", titleize(kind))
-
+	// Directive ("Produce the corrected Raw*Proposal... preserve id...
+	// re-emit the FULL node") lives in the elaborator's .md "revise
+	// mode" addendum. Do not re-state here — see DJ-097.
 	return []Message{{Role: "user", Content: b.String()}}
 }
 
@@ -359,22 +370,12 @@ func projectAdditionElaborate(snap StateSnapshot, kind string) []Message {
 		return []Message{{Role: "user", Content: b.String()}}
 	}
 	b.WriteString("**Critic finding driving this addition (verbatim):**\n\n")
-	fmt.Fprintf(&b, "> %s\n\n", added.SourceConcern)
-
-	fmt.Fprintf(&b, "Produce one Raw%sProposal that addresses the finding above. Invent the id (slug-derived from the subject of the finding, prefix `%s-`), the title, the body/description, and the inline decisions that justify the architectural shape. Do NOT re-emit any node from the existing-nodes list — pick a fresh id that doesn't collide.\n",
-		titleize(kind), kindIDPrefix(kind))
-
+	fmt.Fprintf(&b, "> %s\n", added.SourceConcern)
+	// Directive ("Produce one Raw*Proposal... invent the id with
+	// prefix... do NOT collide with existing nodes") lives in the
+	// elaborator's .md "addition mode" addendum. Do not re-state
+	// here — see DJ-097.
 	return []Message{{Role: "user", Content: b.String()}}
-}
-
-// kindIDPrefix returns the id prefix the addition elaborator should
-// use when minting a new node id. Defensive default: empty kind →
-// strategy prefix, matching the AddedNode contract.
-func kindIDPrefix(kind string) string {
-	if kind == "feature" {
-		return "feat"
-	}
-	return "strat"
 }
 
 func titleize(s string) string {
@@ -402,10 +403,17 @@ func projectReconcile(snap StateSnapshot) []Message {
 		// production wiring; kept as a soft fallback for tests.
 		b.WriteString(snap.ProposedSpec)
 	}
-	b.WriteString("\n\nEmit a ReconciliationVerdict naming the clusters that need dedupe / resolve_conflict / reuse_existing. Inline decisions you do not mention are kept as separate canonical decisions.")
+	// Data-conditional flag (NOT a directive) — the reconciler's .md
+	// system prompt covers tool usage in general; this tells the
+	// agent the data state of *this* call ("an existing spec is
+	// present"). Greenfield runs omit the flag entirely so the agent
+	// doesn't burn turns on tool calls that would return empty.
 	if snap.Existing != nil && !snap.Existing.IsEmpty() {
-		b.WriteString("\n\nThe project has an existing persisted spec. Use the `spec_list_manifest` tool to see what's already there, then `spec_get(id)` to fetch a specific node when you suspect an inline decision matches one already on disk (and should be a `reuse_existing` action). Do not call the tools for greenfield runs — they will return empty.")
+		b.WriteString("\n\n## Existing spec is present\n\nA persisted spec snapshot exists at `.borg/spec/`; the spec_list_manifest and spec_get tools will return non-empty results. (On greenfield runs this section is omitted.)")
 	}
+	// Directive ("Emit a ReconciliationVerdict... inline decisions
+	// you do not mention are kept as separate canonical decisions")
+	// lives in spec_reconciler.md. Do not re-state here — see DJ-097.
 	return []Message{{Role: "user", Content: b.String()}}
 }
 
