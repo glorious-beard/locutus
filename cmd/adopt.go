@@ -230,7 +230,7 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 	if err != nil {
 		return report, err
 	}
-	store := state.NewFileStateStore(cfg.FS, ".locutus/state")
+	store := state.NewFileStateStore(cfg.FS, state.DefaultStateDir)
 
 	// --- Phase 0: Synthesize approaches for parents that arrived
 	// without any. Approaches are an adopt-time concern (real code

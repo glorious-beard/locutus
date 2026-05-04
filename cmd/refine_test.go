@@ -71,7 +71,7 @@ func setupRefineFS(t *testing.T) specio.FS {
 
 	// Seed a state entry for app-auth so `StatusDrifted` can be asserted
 	// after refine cascades child Approaches.
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	require.NoError(t, store.Save(state.ReconciliationState{
 		ApproachID:     "app-auth",
 		Status:         state.StatusLive,
@@ -113,7 +113,7 @@ func TestRefineFeatureRegeneratesDescription(t *testing.T) {
 	assert.Contains(t, f.Description, "OAuth2")
 	assert.Contains(t, body, "OAuth2")
 
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	entry, err := store.Load("app-auth")
 	require.NoError(t, err)
 	assert.Equal(t, state.StatusDrifted, entry.Status)
@@ -131,7 +131,7 @@ func TestRefineFeatureNoOpWhenRewriterReportsUnchanged(t *testing.T) {
 	assert.False(t, result.Rewrite.Updated)
 	assert.Empty(t, result.Rewrite.DriftedApproaches)
 
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	entry, err := store.Load("app-auth")
 	require.NoError(t, err)
 	assert.Equal(t, state.StatusLive, entry.Status, "no-op must not touch downstream state")
@@ -182,7 +182,7 @@ func TestRefineApproachResynthesizesBody(t *testing.T) {
 	assert.Contains(t, body, "OAuth2")
 	assert.Contains(t, a.Body, "OAuth2")
 
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	entry, err := store.Load("app-auth")
 	require.NoError(t, err)
 	assert.Equal(t, state.StatusDrifted, entry.Status, "refined Approach must be drifted for replan")

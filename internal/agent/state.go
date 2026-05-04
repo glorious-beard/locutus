@@ -85,14 +85,19 @@ type PlanningState struct {
 	// elaborator outputs from the revise fanouts (raw JSON of
 	// RawFeatureProposal / RawStrategyProposal).
 	//
-	// AdditionProposals is the architect's revise_additions output —
-	// a partial RawSpecProposal containing only the new features /
-	// strategies that address triage-bucketed addition concerns.
+	// AdditionProposals accumulates per-finding elaborator outputs
+	// from the addition fanouts (Phase 4). Each entry is one
+	// RawFeatureProposal or RawStrategyProposal JSON; the
+	// assembleRevisedRawProposal merge sniffs the id prefix
+	// (feat- vs strat-) to dispatch each entry into the right
+	// merged slice. Pre-Phase-4 this was a single architect-call
+	// JSON blob; the slice supports the per-finding fanout pattern
+	// where multiple bounded elaborator calls each produce one node.
 	OriginalRawProposal string   `json:"original_raw_proposal,omitempty"`
 	RevisionPlan        string   `json:"revision_plan,omitempty"`
 	RevisedFeatures     []string `json:"revised_features,omitempty"`
 	RevisedStrategies   []string `json:"revised_strategies,omitempty"`
-	AdditionProposals   string   `json:"addition_proposals,omitempty"`
+	AdditionProposals   []string `json:"addition_proposals,omitempty"`
 }
 
 // StateSnapshot is a read-only copy of PlanningState fields relevant to a

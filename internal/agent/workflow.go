@@ -338,6 +338,14 @@ func fanoutItemID(rawJSON string) string {
 //   - "outline.features", "outline.strategies"           — Phase 3 elaborate
 //   - "revision_plan.feature_revisions"                  — revise fanout (features)
 //   - "revision_plan.strategy_revisions"                 — revise fanout (strategies)
+//   - "revision_plan.additions.features"                 — addition fanout (features) — Phase 4
+//   - "revision_plan.additions.strategies"               — addition fanout (strategies) — Phase 4
+//
+// Addition paths filter the AddedNode list by `kind` so each kind's
+// fanout dispatches to the matching elaborator agent. An AddedNode
+// with empty kind defaults to "strategy" (most ambiguous "missing X"
+// findings are missing-strategy gaps; misclassification is recoverable
+// by the reconciler / next refine pass).
 //
 // Adding new fanout sources means parsing the corresponding state field
 // here — kept narrow to avoid hand-rolling a generic JSON-path resolver
@@ -385,6 +393,30 @@ func extractFanoutItems(state *PlanningState, path string) ([]string, error) {
 			}
 		}
 		return marshalFanoutItems(items)
+	case "revision_plan.additions.features", "revision_plan.additions.strategies":
+		if strings.TrimSpace(state.RevisionPlan) == "" {
+			return nil, nil
+		}
+		var plan RevisionPlan
+		if err := json.Unmarshal([]byte(state.RevisionPlan), &plan); err != nil {
+			return nil, fmt.Errorf("parse revision plan: %w", err)
+		}
+		wantKind := "feature"
+		if path == "revision_plan.additions.strategies" {
+			wantKind = "strategy"
+		}
+		var items []any
+		for _, a := range plan.Additions {
+			kind := strings.TrimSpace(a.Kind)
+			if kind == "" {
+				kind = "strategy" // empty defaults to strategy per AddedNode contract
+			}
+			if kind != wantKind {
+				continue
+			}
+			items = append(items, a)
+		}
+		return marshalFanoutItems(items)
 	default:
 		return nil, fmt.Errorf("unsupported fanout path %q", path)
 	}
@@ -418,8 +450,7 @@ func shouldRunConditional(cond string, state *PlanningState) bool {
 	case "has_additions":
 		// True when the triager bucketed at least one finding as a
 		// proposed addition (a new feature/strategy missing from the
-		// proposal). Gates the revise_additions step so we don't ask
-		// the architect to invent additions when none are needed.
+		// proposal). Gates both addition fanouts (Phase 4).
 		if state.RevisionPlan == "" {
 			return false
 		}
@@ -555,10 +586,12 @@ func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult
 		case "revised_strategies":
 			state.RevisedStrategies = append(state.RevisedStrategies, r.Output)
 		case "addition_proposals":
-			// Architect's revise_additions output: a partial
-			// RawSpecProposal containing only new features/strategies
-			// addressing addition concerns.
-			state.AdditionProposals = r.Output
+			// Per-finding addition fanout (Phase 4): each call emits
+			// one RawFeatureProposal or RawStrategyProposal addressing
+			// one critic finding that proposes a missing node. Accumulate;
+			// assembleRevisedRawProposal sniffs id prefix per entry to
+			// route into the merged feature/strategy slices.
+			state.AdditionProposals = append(state.AdditionProposals, r.Output)
 		case "record":
 			state.Record = r.Output
 		case "scout_brief", "survey":

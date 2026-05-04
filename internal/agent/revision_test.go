@@ -56,6 +56,72 @@ func TestExtractFanoutItemsRevisionPlan(t *testing.T) {
 	})
 }
 
+// TestExtractFanoutItemsAdditions — Phase 4 fanout for additions. The
+// AddedNode list filters by kind so each kind's fanout dispatches to
+// the matching elaborator agent. Empty kind defaults to strategy
+// (recoverable failure mode per the AddedNode contract).
+func TestExtractFanoutItemsAdditions(t *testing.T) {
+	plan := RevisionPlan{
+		Additions: []AddedNode{
+			{Kind: "feature", SourceConcern: "missing data export feature"},
+			{Kind: "strategy", SourceConcern: "missing IaC strategy"},
+			{Kind: "strategy", SourceConcern: "missing observability tooling"},
+			{Kind: "", SourceConcern: "ambiguous gap defaults to strategy"},
+		},
+	}
+	raw, err := json.Marshal(plan)
+	require.NoError(t, err)
+	state := &PlanningState{RevisionPlan: string(raw)}
+
+	t.Run("feature additions filter by kind", func(t *testing.T) {
+		items, err := extractFanoutItems(state, "revision_plan.additions.features")
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		var first AddedNode
+		require.NoError(t, json.Unmarshal([]byte(items[0]), &first))
+		assert.Equal(t, "feature", first.Kind)
+		assert.Equal(t, "missing data export feature", first.SourceConcern)
+	})
+
+	t.Run("strategy additions filter by kind, including empty-kind default", func(t *testing.T) {
+		items, err := extractFanoutItems(state, "revision_plan.additions.strategies")
+		require.NoError(t, err)
+		require.Len(t, items, 3,
+			"explicit kind=strategy entries plus empty-kind default land in strategy fanout")
+		// The 3rd entry's kind is empty in source; default-to-strategy
+		// is the recoverable failure mode per the AddedNode contract.
+		var third AddedNode
+		require.NoError(t, json.Unmarshal([]byte(items[2]), &third))
+		assert.Equal(t, "ambiguous gap defaults to strategy", third.SourceConcern)
+	})
+
+	t.Run("missing revision plan returns empty for both additions paths", func(t *testing.T) {
+		empty := &PlanningState{}
+		items, err := extractFanoutItems(empty, "revision_plan.additions.features")
+		require.NoError(t, err)
+		assert.Empty(t, items)
+		items, err = extractFanoutItems(empty, "revision_plan.additions.strategies")
+		require.NoError(t, err)
+		assert.Empty(t, items)
+	})
+}
+
+// TestMergeResultsAdditionProposalsAccumulates — each per-finding
+// addition fanout call appends one elaborator output; subsequent
+// merges accumulate without overwriting. Mirrors
+// TestMergeResultsRevisedFeaturesAccumulates for the additions path.
+func TestMergeResultsAdditionProposalsAccumulates(t *testing.T) {
+	state := &PlanningState{}
+	step := WorkflowStep{ID: "revise_strategy_additions", MergeAs: "addition_proposals"}
+	mergeResults(state, step, []RoundResult{
+		{StepID: "revise_strategy_additions", AgentID: "spec_strategy_elaborator", Output: `{"id":"strat-iac"}`},
+		{StepID: "revise_strategy_additions", AgentID: "spec_strategy_elaborator", Output: `{"id":"strat-observability"}`},
+	})
+	require.Len(t, state.AdditionProposals, 2)
+	assert.Contains(t, state.AdditionProposals[0], "strat-iac")
+	assert.Contains(t, state.AdditionProposals[1], "strat-observability")
+}
+
 // TestFanoutItemIDFallsBackToNodeID — the per-item progress label
 // extractor reads `id` for outline items and `node_id` for revision
 // items. Without the fallback, revise-fanout entries would label as
@@ -89,7 +155,7 @@ func TestShouldRunConditionalHasAdditions(t *testing.T) {
 	})
 	t.Run("plan with additions", func(t *testing.T) {
 		raw, _ := json.Marshal(RevisionPlan{
-			Additions: []string{"missing IaC strategy"},
+			Additions: []AddedNode{{Kind: "strategy", SourceConcern: "missing IaC strategy"}},
 		})
 		state := &PlanningState{RevisionPlan: string(raw)}
 		assert.True(t, shouldRunConditional("has_additions", state))
@@ -168,25 +234,70 @@ func TestAssembleRevisedRawProposalAppendsAdditions(t *testing.T) {
 	}
 	originalJSON, _ := json.Marshal(original)
 
-	additions := RawSpecProposal{
-		Features:   []RawFeatureProposal{{ID: "feat-new", Title: "New feature"}},
-		Strategies: []RawStrategyProposal{{ID: "strat-iac", Title: "Terraform", Kind: "foundational"}},
-	}
-	additionsJSON, _ := json.Marshal(additions)
+	// Phase 4: AdditionProposals is now a slice of per-finding
+	// elaborator outputs. Each entry is one RawFeatureProposal or
+	// RawStrategyProposal; the merge sniffs id prefix to dispatch.
+	featAdd, _ := json.Marshal(RawFeatureProposal{ID: "feat-new", Title: "New feature"})
+	stratAdd, _ := json.Marshal(RawStrategyProposal{ID: "strat-iac", Title: "Terraform", Kind: "foundational"})
 
 	state := &PlanningState{
 		OriginalRawProposal: string(originalJSON),
-		AdditionProposals:   string(additionsJSON),
+		AdditionProposals:   []string{string(featAdd), string(stratAdd)},
 	}
 	merged, ok := assembleRevisedRawProposal(state)
 	require.True(t, ok)
 
 	var out RawSpecProposal
 	require.NoError(t, json.Unmarshal([]byte(merged), &out))
-	require.Len(t, out.Features, 2, "original + 1 addition")
-	require.Len(t, out.Strategies, 1, "addition only (no original strategies)")
+	require.Len(t, out.Features, 2, "original + 1 feature addition")
+	require.Len(t, out.Strategies, 1, "1 strategy addition (no original strategies)")
 	assert.Equal(t, "feat-new", out.Features[1].ID)
 	assert.Equal(t, "strat-iac", out.Strategies[0].ID)
+}
+
+// TestAssembleRevisedRawProposalAdditionsDedupOnExistingID — when an
+// addition's id collides with an existing-original id, drop it
+// (the reconciler downstream catches semantic conflicts; the merge
+// just prevents structural duplicates).
+func TestAssembleRevisedRawProposalAdditionsDedupOnExistingID(t *testing.T) {
+	original := RawSpecProposal{
+		Features: []RawFeatureProposal{{ID: "feat-a", Title: "A"}},
+	}
+	originalJSON, _ := json.Marshal(original)
+	collide, _ := json.Marshal(RawFeatureProposal{ID: "feat-a", Title: "Hallucinated dup"})
+
+	state := &PlanningState{
+		OriginalRawProposal: string(originalJSON),
+		AdditionProposals:   []string{string(collide)},
+	}
+	merged, ok := assembleRevisedRawProposal(state)
+	require.True(t, ok)
+	var out RawSpecProposal
+	require.NoError(t, json.Unmarshal([]byte(merged), &out))
+	require.Len(t, out.Features, 1,
+		"collision with existing-original id must be dropped, not duplicated")
+	assert.Equal(t, "A", out.Features[0].Title, "original wins on id collision")
+}
+
+// TestAssembleRevisedRawProposalAdditionsUnknownPrefixDropped — a
+// per-finding elaborator output with an id that doesn't start with
+// feat- or strat- is logged and skipped (best-effort, mirroring
+// the malformed-revision policy).
+func TestAssembleRevisedRawProposalAdditionsUnknownPrefixDropped(t *testing.T) {
+	originalJSON, _ := json.Marshal(RawSpecProposal{
+		Features: []RawFeatureProposal{{ID: "feat-a", Title: "A"}},
+	})
+	weird, _ := json.Marshal(map[string]any{"id": "xyz-bogus", "title": "Unknown"})
+
+	state := &PlanningState{
+		OriginalRawProposal: string(originalJSON),
+		AdditionProposals:   []string{string(weird)},
+	}
+	merged, ok := assembleRevisedRawProposal(state)
+	require.True(t, ok)
+	var out RawSpecProposal
+	require.NoError(t, json.Unmarshal([]byte(merged), &out))
+	assert.Len(t, out.Features, 1, "unknown-prefix addition must be skipped, not crash assembly")
 }
 
 // TestAssembleRevisedRawProposalEmptyOriginalReturnsNothing — the

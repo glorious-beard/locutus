@@ -24,7 +24,7 @@ func setupIntegrationFixture(t *testing.T, assertions []spec.Assertion) (string,
 	repoDir := t.TempDir()
 	fs := specio.NewOSFS(repoDir)
 
-	for _, d := range []string{".borg/spec/features", ".borg/spec/decisions", ".borg/spec/approaches", ".borg/history", ".locutus/state"} {
+	for _, d := range []string{".borg/spec/features", ".borg/spec/decisions", ".borg/spec/approaches", ".borg/history", ".borg/state"} {
 		require.NoError(t, fs.MkdirAll(d, 0o755))
 	}
 
@@ -152,7 +152,7 @@ func TestRunAdoptFullDispatchHappyPath(t *testing.T) {
 	assert.Contains(t, report.Archived, "plan-auth-v1")
 
 	// State store should say live.
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	entry, err := store.Load("app-oauth")
 	require.NoError(t, err)
 	assert.Equal(t, state.StatusLive, entry.Status)
@@ -188,7 +188,7 @@ func TestRunAdoptAssertionFailurePreservesPlanAndFlipsFailed(t *testing.T) {
 	assert.NoError(t, err, "incomplete plan should remain on disk for the next adopt invocation")
 	assert.Empty(t, report.Archived)
 
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	entry, err := store.Load("app-oauth")
 	require.NoError(t, err)
 	assert.Equal(t, state.StatusFailed, entry.Status)
@@ -213,7 +213,7 @@ func TestRunAdoptDispatchFailureMarksAllCoveredFailed(t *testing.T) {
 	assert.Contains(t, outcome.Error, "agent errored")
 	assert.Equal(t, []string{"app-oauth"}, outcome.FailedApproaches)
 
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	entry, err := store.Load("app-oauth")
 	require.NoError(t, err)
 	assert.Equal(t, state.StatusFailed, entry.Status)
@@ -266,7 +266,7 @@ func TestRunAdoptArchivesAlreadyLivePlan(t *testing.T) {
 	require.NotNil(t, approach)
 	specHash := spec.ComputeSpecHash(*approach)
 
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	require.NoError(t, store.Save(state.ReconciliationState{
 		ApproachID:     "app-oauth",
 		Status:         state.StatusLive,
@@ -302,7 +302,7 @@ func TestRunAdoptInvalidatesDriftedPlan(t *testing.T) {
 	// (drift) should be invalidated, not resumed.
 	repoDir, fs, _ := setupIntegrationFixture(t, nil)
 
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	require.NoError(t, store.Save(state.ReconciliationState{
 		ApproachID:     "app-oauth",
 		Status:         state.StatusInProgress,
@@ -347,7 +347,7 @@ func TestRunAdoptResumesNonDriftedPlan(t *testing.T) {
 	require.NotNil(t, approach)
 	specHash := spec.ComputeSpecHash(*approach)
 
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	require.NoError(t, store.Save(state.ReconciliationState{
 		ApproachID:     "app-oauth",
 		Status:         state.StatusInProgress,

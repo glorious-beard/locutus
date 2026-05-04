@@ -24,6 +24,8 @@ You receive as user messages:
 
 You may also be invoked in **revise mode** to correct a feature that critic findings flagged. In that case the user message includes a "Prior content (rejected — re-emit a corrected version)" block with the previous RawFeatureProposal and a "Concerns targeting this node" block listing the verbatim findings. Re-emit the FULL corrected RawFeatureProposal: address every concern, preserve the id verbatim, do not emit a delta. The reconciler reuses ids on its own — you do not need to track decision IDs.
 
+You may also be invoked in **addition mode** to invent a new feature from a critic finding that proposed it. In that case the user message includes a "Feature to propose (addition)" block with the verbatim critic finding driving the addition, and an "Existing nodes (do NOT re-emit)" block listing the ids that already exist. Invent the feature: pick a slug-derived id with prefix `feat-`, a sentence-case title, a one-paragraph description, and the inline decisions that justify the architectural shape. The id MUST NOT collide with any existing-nodes entry. Address the source critic finding in the description and decisions; do not author for any other concern.
+
 # Task
 
 Produce a single `RawFeatureProposal` JSON object: id (preserve the outline's id verbatim), title (preserve), description (one paragraph), optional acceptance_criteria []string, decisions [] — inline decision objects this feature commits to.

@@ -45,16 +45,24 @@
 #                              `decisions: [{}]` placeholders under
 #                              critic-finding pressure.
 #   9. revise_strategies     — fanout: same shape, for strategies.
-#  10. revise_additions      — single architect call, conditional on
-#                              has_additions. Emits a partial
-#                              RawSpecProposal containing ONLY new
-#                              features/strategies addressing addition
-#                              concerns. Existing nodes are NOT
-#                              re-emitted — they're untouched by this
-#                              step.
-#  11. reconcile_revise      — same reconciler against the merged
+#  10. revise_feature_additions   — fanout (Phase 4): one
+#                              spec_feature_elaborator call per
+#                              AddedNode with kind="feature". The
+#                              elaborator invents one new
+#                              RawFeatureProposal addressing the
+#                              source critic finding verbatim.
+#                              Conditional on has_additions; an empty
+#                              feature-additions slice is a no-op.
+#  11. revise_strategy_additions  — fanout (Phase 4): same shape with
+#                              spec_strategy_elaborator for kind="strategy"
+#                              entries.
+#  12. reconcile_revise      — same reconciler against the merged
 #                              raw proposal (original + revised + added).
-#                              Conditional on has_concerns.
+#                              Conditional on has_concerns. Cross-
+#                              cluster dedup of duplicate additions
+#                              (e.g. multiple critics flagging the same
+#                              missing strategy → 5 elaborator outputs
+#                              collapsed to 1 canonical) happens here.
 #
 # max_rounds=1 because there is no convergence agent in this workflow —
 # the executor breaks after one full pass.
@@ -115,16 +123,24 @@ rounds:
     depends_on: [triage]
     conditional: has_concerns
     merge_as: revised_strategies
-  - id: revise_additions
-    agent: spec_architect
-    parallel: false
+  - id: revise_feature_additions
+    agent: spec_feature_elaborator
+    parallel: true
+    fanout: revision_plan.additions.features
+    depends_on: [triage]
+    conditional: has_additions
+    merge_as: addition_proposals
+  - id: revise_strategy_additions
+    agent: spec_strategy_elaborator
+    parallel: true
+    fanout: revision_plan.additions.strategies
     depends_on: [triage]
     conditional: has_additions
     merge_as: addition_proposals
   - id: reconcile_revise
     agent: spec_reconciler
     parallel: false
-    depends_on: [revise_features, revise_strategies, revise_additions]
+    depends_on: [revise_features, revise_strategies, revise_feature_additions, revise_strategy_additions]
     conditional: has_concerns
     merge_as: reconciled_proposal
 max_rounds: 1

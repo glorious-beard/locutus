@@ -31,7 +31,7 @@ func setupCascadeFixture(t *testing.T) (specio.FS, *spec.SpecGraph, *state.FileS
 	require.NoError(t, fs.MkdirAll(".borg/spec/strategies", 0o755))
 	require.NoError(t, fs.MkdirAll(".borg/spec/approaches", 0o755))
 	require.NoError(t, fs.MkdirAll(".borg/history", 0o755))
-	require.NoError(t, fs.MkdirAll(".locutus/state", 0o755))
+	require.NoError(t, fs.MkdirAll(".borg/state", 0o755))
 
 	feat := spec.Feature{
 		ID:          "feat-auth",
@@ -67,7 +67,7 @@ func setupCascadeFixture(t *testing.T) (specio.FS, *spec.SpecGraph, *state.FileS
 		spec.TraceabilityIndex{},
 	)
 
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	// Preseed both Approaches as live so we can verify they transition to
 	// drifted with WorkstreamID + AssertionResults cleared.
 	for _, id := range []string{"app-oauth", "app-go"} {
@@ -204,8 +204,8 @@ func TestCascadeRecordsHistoryEvents(t *testing.T) {
 func TestCascadeMarksDriftEvenWithoutPriorState(t *testing.T) {
 	fs, g, _ := setupCascadeFixture(t)
 	// Fresh store with no pre-seeded entries.
-	emptyStore := state.NewFileStateStore(fs, ".locutus/state-fresh")
-	require.NoError(t, fs.MkdirAll(".locutus/state-fresh", 0o755))
+	emptyStore := state.NewFileStateStore(fs, ".borg/state-fresh")
+	require.NoError(t, fs.MkdirAll(".borg/state-fresh", 0o755))
 
 	llm := agent.NewMockLLM(
 		scriptedRewrite("revised feat", true, "note the Go decision"),

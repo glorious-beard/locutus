@@ -40,7 +40,7 @@ var directories = []string{
 	".borg/agents",
 	".borg/workflows",
 	".agents/skills",
-	".locutus/state",
+	".borg/state",
 }
 
 // Scaffold creates the full project scaffold on the given FS. It is idempotent:

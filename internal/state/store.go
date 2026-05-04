@@ -12,6 +12,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// DefaultStateDir is the canonical location for the reconciliation
+// state store. Sibling of `.borg/spec/` (desired state) — observed
+// state lives alongside, both under `.borg/` per the "everything
+// committed lives under .borg/, everything ephemeral lives under
+// .locutus/" line.
+const DefaultStateDir = ".borg/state"
+
 // ErrNotFound is returned when a state entry does not exist.
 var ErrNotFound = errors.New("state: not found")
 
@@ -24,6 +31,8 @@ type FileStateStore struct {
 }
 
 // NewFileStateStore creates a store rooted at baseDir within fsys.
+// Production callers pass state.DefaultStateDir; tests pass an
+// explicit path when they want isolated fixtures.
 func NewFileStateStore(fsys specio.FS, baseDir string) *FileStateStore {
 	return &FileStateStore{fsys: fsys, baseDir: baseDir}
 }

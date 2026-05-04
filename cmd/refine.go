@@ -172,7 +172,7 @@ func RunRefine(ctx context.Context, llm agent.LLM, fsys specio.FS, decisionID st
 		return nil, fmt.Errorf("refine: decision %q not found", decisionID)
 	}
 
-	store := state.NewFileStateStore(fsys, ".locutus/state")
+	store := state.NewFileStateStore(fsys, state.DefaultStateDir)
 	cascadeResult, err := cascade.Cascade(ctx, llm, fsys, g, store, decisionID)
 	if err != nil {
 		return &RefineResult{NodeID: decisionID, NodeKind: spec.KindDecision, Cascade: cascadeResult}, err
@@ -210,7 +210,7 @@ func RunRefineFeature(ctx context.Context, llm agent.LLM, fsys specio.FS, featur
 		return result, nil
 	}
 
-	store := state.NewFileStateStore(fsys, ".locutus/state")
+	store := state.NewFileStateStore(fsys, state.DefaultStateDir)
 	if err := cascade.MarkApproachesDrifted(store, f.Approaches, &result.Rewrite.DriftedApproaches); err != nil {
 		return result, fmt.Errorf("refine feature drift: %w", err)
 	}
@@ -247,7 +247,7 @@ func RunRefineStrategy(ctx context.Context, llm agent.LLM, fsys specio.FS, strat
 		return result, nil
 	}
 
-	store := state.NewFileStateStore(fsys, ".locutus/state")
+	store := state.NewFileStateStore(fsys, state.DefaultStateDir)
 	if err := cascade.MarkApproachesDrifted(store, s.Approaches, &result.Rewrite.DriftedApproaches); err != nil {
 		return result, fmt.Errorf("refine strategy drift: %w", err)
 	}
@@ -289,7 +289,7 @@ func RunRefineBug(ctx context.Context, llm agent.LLM, fsys specio.FS, bugID stri
 
 	childIDs := childApproachesOf(g, bugID)
 	if len(childIDs) > 0 {
-		store := state.NewFileStateStore(fsys, ".locutus/state")
+		store := state.NewFileStateStore(fsys, state.DefaultStateDir)
 		if err := cascade.MarkApproachesDrifted(store, childIDs, &result.Rewrite.DriftedApproaches); err != nil {
 			return result, fmt.Errorf("refine bug drift: %w", err)
 		}
@@ -339,7 +339,7 @@ func RunRefineApproach(ctx context.Context, llm agent.LLM, fsys specio.FS, appro
 		return result, fmt.Errorf("save approach: %w", err)
 	}
 
-	store := state.NewFileStateStore(fsys, ".locutus/state")
+	store := state.NewFileStateStore(fsys, state.DefaultStateDir)
 	if err := cascade.MarkApproachesDrifted(store, []string{approachID}, &result.Rewrite.DriftedApproaches); err != nil {
 		return result, fmt.Errorf("refine approach drift: %w", err)
 	}

@@ -19,7 +19,7 @@ func setupAdoptFixture(t *testing.T) specio.FS {
 	require.NoError(t, fs.MkdirAll(".borg/spec/decisions", 0o755))
 	require.NoError(t, fs.MkdirAll(".borg/spec/strategies", 0o755))
 	require.NoError(t, fs.MkdirAll(".borg/spec/approaches", 0o755))
-	require.NoError(t, fs.MkdirAll(".locutus/state", 0o755))
+	require.NoError(t, fs.MkdirAll(".borg/state", 0o755))
 
 	feat := spec.Feature{
 		ID: "feat-auth", Title: "Auth", Status: spec.FeatureStatusActive,
@@ -48,7 +48,7 @@ func TestRunAdoptDryRunProducesPlan(t *testing.T) {
 	assert.Equal(t, 1, report.Summary.Candidates)
 
 	// Dry-run must NOT write any state entries.
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	entries, err := store.Walk()
 	require.NoError(t, err)
 	assert.Empty(t, entries, "dry-run must not persist state")
@@ -61,7 +61,7 @@ func TestRunAdoptPersistsPlannedStatus(t *testing.T) {
 	require.NotNil(t, report)
 	assert.False(t, report.DryRun)
 
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	entries, err := store.Walk()
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
@@ -92,7 +92,7 @@ func TestRunAdoptSkipsLiveOnWrite(t *testing.T) {
 	// stale WorkstreamID + AssertionResults — per DJ-069 these refer to a
 	// plan built against a different Approach body, so they must be cleared
 	// when the Approach is re-queued as `planned` after drift detection.
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	liveHash := "sha256:preseed" // deliberately wrong so re-classification would mark it drifted
 	require.NoError(t, store.Save(state.ReconciliationState{
 		ApproachID:   "app-oauth",

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -108,60 +107,77 @@ func TestProjectReviseNodeRendersPriorContent(t *testing.T) {
 	})
 }
 
-// TestProjectReviseAdditionsListsExistingAndAdditions — the additions
-// projection tells the architect what nodes exist (do NOT re-emit) and
-// what addition concerns to address. Both pieces are required: without
-// the existing list the architect re-introduces nodes; without the
-// additions list it has nothing to author.
-func TestProjectReviseAdditionsListsExistingAndAdditions(t *testing.T) {
+// TestProjectAdditionElaborateRendersConcernAndExistingNodes — the
+// per-finding addition projection (Phase 4) must include the verbatim
+// critic finding driving the addition AND the existing-nodes "do NOT
+// re-emit" list. Without the finding the elaborator has nothing to
+// author from; without the existing list it risks re-introducing
+// already-present nodes.
+func TestProjectAdditionElaborateRendersConcernAndExistingNodes(t *testing.T) {
 	original := RawSpecProposal{
-		Features:   []RawFeatureProposal{{ID: "feat-a", Title: "A"}},
-		Strategies: []RawStrategyProposal{{ID: "strat-x", Title: "Stack", Kind: "foundational"}},
+		Features:   []RawFeatureProposal{{ID: "feat-dashboard", Title: "Dashboard"}},
+		Strategies: []RawStrategyProposal{{ID: "strat-frontend", Title: "Stack", Kind: "foundational"}},
 	}
 	raw, _ := json.Marshal(original)
-	plan := RevisionPlan{
-		Additions: []string{"missing IaC strategy", "missing audit-log feature"},
-	}
-	planRaw, _ := json.Marshal(plan)
 
-	snap := StateSnapshot{
-		Prompt:              "Build it.",
-		OriginalRawProposal: string(raw),
-		RevisionPlan:        string(planRaw),
-	}
-	msgs := projectReviseAdditions(snap)
-	require.Len(t, msgs, 1)
-	body := msgs[0].Content
+	t.Run("strategy addition mode", func(t *testing.T) {
+		added := AddedNode{Kind: "strategy", SourceConcern: "missing infrastructure-as-code strategy"}
+		addedRaw, _ := json.Marshal(added)
+		snap := StateSnapshot{
+			Prompt:              "Build it.",
+			OriginalRawProposal: string(raw),
+			FanoutItem:          string(addedRaw),
+		}
+		msgs := projectAdditionElaborate(snap, "strategy")
+		require.Len(t, msgs, 1)
+		body := msgs[0].Content
 
-	assert.Contains(t, body, "do NOT re-emit", "explicit gate against re-emitting existing nodes")
-	assert.Contains(t, body, "feat-a")
-	assert.Contains(t, body, "strat-x")
-	assert.Contains(t, body, "missing IaC strategy", "verbatim addition text")
-	assert.Contains(t, body, "missing audit-log feature")
-	assert.True(t, strings.Contains(body, "RawSpecProposal"),
-		"directive references the output schema")
-}
+		assert.Contains(t, body, "do NOT re-emit", "explicit gate against duplicating existing nodes")
+		assert.Contains(t, body, "feat-dashboard")
+		assert.Contains(t, body, "strat-frontend")
+		assert.Contains(t, body, "missing infrastructure-as-code strategy",
+			"verbatim critic finding text drives the addition")
+		assert.Contains(t, body, "RawStrategyProposal", "directive names the output schema")
+		assert.Contains(t, body, "strat-", "elaborator must mint an id with the strategy prefix")
+	})
 
-// TestProjectReviseAdditionsEmptyPlan — when the triager produced no
-// additions, the architect prompt should make that explicit so the
-// architect emits an empty proposal instead of inventing additions.
-func TestProjectReviseAdditionsEmptyPlan(t *testing.T) {
-	snap := StateSnapshot{
-		Prompt:       "Build it.",
-		RevisionPlan: `{}`,
-	}
-	msgs := projectReviseAdditions(snap)
-	body := msgs[0].Content
-	assert.Contains(t, body, "(none in the revision plan",
-		"empty additions must be surfaced so the architect doesn't hallucinate")
+	t.Run("feature addition mode", func(t *testing.T) {
+		added := AddedNode{Kind: "feature", SourceConcern: "the plan lacks a feature for data export"}
+		addedRaw, _ := json.Marshal(added)
+		snap := StateSnapshot{
+			Prompt:              "Build it.",
+			OriginalRawProposal: string(raw),
+			FanoutItem:          string(addedRaw),
+		}
+		msgs := projectAdditionElaborate(snap, "feature")
+		body := msgs[0].Content
+
+		assert.Contains(t, body, "the plan lacks a feature for data export")
+		assert.Contains(t, body, "RawFeatureProposal")
+		assert.Contains(t, body, "feat-", "elaborator must mint an id with the feature prefix")
+	})
+
+	t.Run("missing source_concern surfaces the gap", func(t *testing.T) {
+		added := AddedNode{Kind: "strategy"} // no source_concern
+		addedRaw, _ := json.Marshal(added)
+		snap := StateSnapshot{
+			Prompt:              "Build it.",
+			OriginalRawProposal: string(raw),
+			FanoutItem:          string(addedRaw),
+		}
+		msgs := projectAdditionElaborate(snap, "strategy")
+		body := msgs[0].Content
+		assert.Contains(t, body, "(missing", "missing source_concern explicit to the model")
+	})
 }
 
 // TestProjectStateRoutesReviseStepsCorrectly — the projection
 // dispatcher must route revise_features / revise_strategies /
-// revise_additions / triage to the right projection, including when
-// fanout suffixes are present on the step ID.
+// revise_feature_additions / revise_strategy_additions / triage to
+// the right projection, including when fanout suffixes are present
+// on the step ID.
 func TestProjectStateRoutesReviseStepsCorrectly(t *testing.T) {
-	plan := RevisionPlan{Additions: []string{"x"}}
+	plan := RevisionPlan{Additions: []AddedNode{{Kind: "strategy", SourceConcern: "x"}}}
 	planRaw, _ := json.Marshal(plan)
 	snap := StateSnapshot{
 		Prompt:       "Build it.",
@@ -195,8 +211,23 @@ func TestProjectStateRoutesReviseStepsCorrectly(t *testing.T) {
 		assert.Contains(t, msgs[0].Content, "RawStrategyProposal")
 	})
 
-	t.Run("revise_additions routes to additions projection", func(t *testing.T) {
-		msgs := ProjectState("revise_additions", snap)
-		assert.Contains(t, msgs[0].Content, "Additions to propose")
+	t.Run("revise_feature_additions routes to addition-feature projection", func(t *testing.T) {
+		added := AddedNode{Kind: "feature", SourceConcern: "missing data-export feature"}
+		addedRaw, _ := json.Marshal(added)
+		snap := snap
+		snap.FanoutItem = string(addedRaw)
+		msgs := ProjectState("revise_feature_additions (feat-data-export)", snap)
+		assert.Contains(t, msgs[0].Content, "missing data-export feature")
+		assert.Contains(t, msgs[0].Content, "RawFeatureProposal")
+	})
+
+	t.Run("revise_strategy_additions routes to addition-strategy projection", func(t *testing.T) {
+		added := AddedNode{Kind: "strategy", SourceConcern: "missing IaC strategy"}
+		addedRaw, _ := json.Marshal(added)
+		snap := snap
+		snap.FanoutItem = string(addedRaw)
+		msgs := ProjectState("revise_strategy_additions (strat-iac)", snap)
+		assert.Contains(t, msgs[0].Content, "missing IaC strategy")
+		assert.Contains(t, msgs[0].Content, "RawStrategyProposal")
 	})
 }

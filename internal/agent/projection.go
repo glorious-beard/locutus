@@ -44,8 +44,10 @@ func ProjectState(stepID string, snap StateSnapshot) []Message {
 		return projectReviseNode(snap, "feature")
 	case "revise_strategies":
 		return projectReviseNode(snap, "strategy")
-	case "revise_additions":
-		return projectReviseAdditions(snap)
+	case "revise_feature_additions":
+		return projectAdditionElaborate(snap, "feature")
+	case "revise_strategy_additions":
+		return projectAdditionElaborate(snap, "strategy")
 	case "record":
 		return projectRecord(snap)
 	default:
@@ -302,11 +304,20 @@ func projectReviseNode(snap StateSnapshot, kind string) []Message {
 	return []Message{{Role: "user", Content: b.String()}}
 }
 
-// projectReviseAdditions builds the architect's revise_additions
-// user message. The architect emits a partial RawSpecProposal
-// containing ONLY the new features/strategies that address each
-// addition concern from the RevisionPlan.
-func projectReviseAdditions(snap StateSnapshot) []Message {
+// projectAdditionElaborate builds the per-finding addition
+// elaborator's user message. The fanout dispatcher set
+// snap.FanoutItem to the JSON of one AddedNode; the elaborator
+// invents one new RawFeatureProposal or RawStrategyProposal
+// addressing the source_concern verbatim, picking its own id and
+// title from the concern's subject. Existing nodes are listed
+// explicitly as "do NOT re-emit" to prevent the elaborator from
+// re-introducing already-present features/strategies.
+//
+// Phase 4 promotes additions from a single architect call (DJ-092)
+// to per-finding fanout (DJ-095), eliminating the multi-node
+// authoring pressure that was the same anti-pattern Phase 1 fixed
+// for the main revise step.
+func projectAdditionElaborate(snap StateSnapshot, kind string) []Message {
 	var b strings.Builder
 	b.WriteString(snap.Prompt)
 	if snap.ScoutBrief != "" {
@@ -316,13 +327,12 @@ func projectReviseAdditions(snap StateSnapshot) []Message {
 		}
 	}
 
-	var plan RevisionPlan
-	if snap.RevisionPlan != "" {
-		_ = json.Unmarshal([]byte(snap.RevisionPlan), &plan)
+	var added AddedNode
+	if snap.FanoutItem != "" {
+		_ = json.Unmarshal([]byte(snap.FanoutItem), &added)
 	}
 
 	features, strategies := proposalNodeIDs(snap.OriginalRawProposal)
-
 	b.WriteString("\n\n## Existing nodes (do NOT re-emit)\n\n")
 	if len(features) == 0 && len(strategies) == 0 {
 		b.WriteString("(none)\n")
@@ -343,18 +353,28 @@ func projectReviseAdditions(snap StateSnapshot) []Message {
 		}
 	}
 
-	b.WriteString("## Additions to propose\n\n")
-	if len(plan.Additions) == 0 {
-		b.WriteString("(none in the revision plan — emit `{\"features\": [], \"strategies\": []}`)\n")
-	} else {
-		for _, c := range plan.Additions {
-			fmt.Fprintf(&b, "- %s\n", c)
-		}
+	fmt.Fprintf(&b, "## %s to propose (addition)\n\n", titleize(kind))
+	if added.SourceConcern == "" {
+		b.WriteString("(missing — fanout did not populate an AddedNode source_concern)\n")
+		return []Message{{Role: "user", Content: b.String()}}
 	}
+	b.WriteString("**Critic finding driving this addition (verbatim):**\n\n")
+	fmt.Fprintf(&b, "> %s\n\n", added.SourceConcern)
 
-	b.WriteString("\nEmit a RawSpecProposal containing ONLY new features and strategies that address each addition concern above. Do NOT re-emit any existing node listed above. Each new feature/strategy must carry the same inline-decision structure (real titles, rationales, alternatives, citations) as the architect's full RawSpecProposal — the reconciler downstream will assign canonical decision IDs.\n")
+	fmt.Fprintf(&b, "Produce one Raw%sProposal that addresses the finding above. Invent the id (slug-derived from the subject of the finding, prefix `%s-`), the title, the body/description, and the inline decisions that justify the architectural shape. Do NOT re-emit any node from the existing-nodes list — pick a fresh id that doesn't collide.\n",
+		titleize(kind), kindIDPrefix(kind))
 
 	return []Message{{Role: "user", Content: b.String()}}
+}
+
+// kindIDPrefix returns the id prefix the addition elaborator should
+// use when minting a new node id. Defensive default: empty kind →
+// strategy prefix, matching the AddedNode contract.
+func kindIDPrefix(kind string) string {
+	if kind == "feature" {
+		return "feat"
+	}
+	return "strat"
 }
 
 func titleize(s string) string {

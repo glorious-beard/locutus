@@ -13,7 +13,7 @@ import (
 )
 
 func newStore() *state.FileStateStore {
-	return state.NewFileStateStore(specio.NewMemFS(), ".locutus/state")
+	return state.NewFileStateStore(specio.NewMemFS(), ".borg/state")
 }
 
 func sampleState(approachID string) state.ReconciliationState {
@@ -85,7 +85,7 @@ func TestLoadDoesNotMaskIOErrorAsNotFound(t *testing.T) {
 		FS:  specio.NewMemFS(),
 		err: errors.New("permission denied"),
 	}
-	store := state.NewFileStateStore(fsys, ".locutus/state")
+	store := state.NewFileStateStore(fsys, ".borg/state")
 
 	_, err := store.Load("oauth-login")
 	require.Error(t, err)
@@ -96,10 +96,10 @@ func TestLoadDoesNotMaskIOErrorAsNotFound(t *testing.T) {
 
 func TestWalkSurfacesIOErrors(t *testing.T) {
 	mem := specio.NewMemFS()
-	require.NoError(t, mem.MkdirAll(".locutus/state", 0o755))
-	require.NoError(t, mem.WriteFile(".locutus/state/oauth-login.yaml", []byte("approach_id: oauth-login\n"), 0o644))
+	require.NoError(t, mem.MkdirAll(".borg/state", 0o755))
+	require.NoError(t, mem.WriteFile(".borg/state/oauth-login.yaml", []byte("approach_id: oauth-login\n"), 0o644))
 	fsys := &failingReadFS{FS: mem, err: errors.New("disk read failure")}
-	store := state.NewFileStateStore(fsys, ".locutus/state")
+	store := state.NewFileStateStore(fsys, ".borg/state")
 
 	_, err := store.Walk()
 	require.Error(t, err)

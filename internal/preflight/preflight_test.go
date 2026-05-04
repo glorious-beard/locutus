@@ -24,7 +24,7 @@ func setupPreflightFixture(t *testing.T) (
 ) {
 	t.Helper()
 	fs := specio.NewMemFS()
-	for _, d := range []string{".borg/spec/features", ".borg/spec/decisions", ".borg/spec/strategies", ".borg/spec/approaches", ".borg/history", ".locutus/state"} {
+	for _, d := range []string{".borg/spec/features", ".borg/spec/decisions", ".borg/spec/strategies", ".borg/spec/approaches", ".borg/history", ".borg/state"} {
 		require.NoError(t, fs.MkdirAll(d, 0o755))
 	}
 
@@ -56,7 +56,7 @@ func setupPreflightFixture(t *testing.T) (
 		[]spec.Approach{app},
 		spec.TraceabilityIndex{},
 	)
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 
 	ws := spec.Workstream{
 		ID: "ws-auth",

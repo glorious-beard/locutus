@@ -18,7 +18,7 @@ func setupReconcileFixture(t *testing.T) (specio.FS, *spec.SpecGraph, *state.Fil
 	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
 	require.NoError(t, fs.MkdirAll(".borg/spec/decisions", 0o755))
 	require.NoError(t, fs.MkdirAll(".borg/spec/approaches", 0o755))
-	require.NoError(t, fs.MkdirAll(".locutus/state", 0o755))
+	require.NoError(t, fs.MkdirAll(".borg/state", 0o755))
 
 	feat := spec.Feature{ID: "feat-auth", Title: "Auth", Status: spec.FeatureStatusActive, Approaches: []string{"app-oauth"}}
 	dec := spec.Decision{ID: "dec-lang", Title: "Go", Status: spec.DecisionStatusActive}
@@ -42,7 +42,7 @@ func setupReconcileFixture(t *testing.T) (specio.FS, *spec.SpecGraph, *state.Fil
 		traces,
 	)
 
-	store := state.NewFileStateStore(fs, ".locutus/state")
+	store := state.NewFileStateStore(fs, ".borg/state")
 	return fs, g, store
 }
 

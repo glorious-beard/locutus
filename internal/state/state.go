@@ -21,7 +21,7 @@ const (
 )
 
 // ReconciliationState is the observed state for a single Approach node.
-// Stored at .locutus/state/<approach-id>.yaml — written by the reconciler, never by the planner.
+// Stored at .borg/state/<approach-id>.yaml — written by the reconciler, never by the planner.
 type ReconciliationState struct {
 	ApproachID       string            `yaml:"approach_id"`                     // always an Approach node ID
 	SpecHash         string            `yaml:"spec_hash"`                       // hash of the Approach spec node

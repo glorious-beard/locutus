@@ -22,7 +22,7 @@ func setupAdoptSynthFixture(t *testing.T) specio.FS {
 	require.NoError(t, fs.MkdirAll(".borg/spec/decisions", 0o755))
 	require.NoError(t, fs.MkdirAll(".borg/spec/strategies", 0o755))
 	require.NoError(t, fs.MkdirAll(".borg/spec/approaches", 0o755))
-	require.NoError(t, fs.MkdirAll(".locutus/state", 0o755))
+	require.NoError(t, fs.MkdirAll(".borg/state", 0o755))
 
 	feat := spec.Feature{
 		ID: "feat-bare", Title: "Bare feature",

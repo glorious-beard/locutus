@@ -26,31 +26,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
-// RevisionPlan is the spec_revision_triager agent's output. Each
-// actionable critic finding is routed to one of three buckets:
+// RevisionPlan is the spec_revision_triager agent's output. EVERY
+// critic finding routes to one of three buckets — there is no
+// fourth "non-actionable, omit" bucket. The triager's authority is
+// routing, not judging actionability; the critic already did the
+// judgment by emitting the finding (DJ-095).
 //
 //   - feature_revisions: concerns targeting an existing feature
 //   - strategy_revisions: concerns targeting an existing strategy
-//   - additions: concerns proposing a missing feature/strategy
+//   - additions: concerns proposing a missing feature/strategy,
+//     each carrying a `kind` so the per-finding fanout dispatches
+//     to the right elaborator agent
 //
-// Findings the triager judges non-actionable are simply omitted —
-// the trace captures both the input concerns and the output buckets,
-// so an operator can compute "what got dropped" by diffing without
-// needing a separate `discarded[]` field. Dead output surface is
-// degenerate-loop bait on weaker models, so we keep RevisionPlan
-// to exactly the fields downstream code consumes.
-//
-// Splitting features and strategies into separate arrays (rather than
-// a single revisions[] with a kind field) lets the workflow's two
-// fanouts read each array directly via dotted state path, the same
-// way elaborate_features and elaborate_strategies read outline.features
-// and outline.strategies.
+// Splitting features and strategies into separate revision arrays
+// (rather than a single revisions[] with a kind field) lets the
+// workflow's two fanouts read each array directly via dotted state
+// path, the same way elaborate_features and elaborate_strategies
+// read outline.features and outline.strategies. Additions are a
+// single array because the kind tag is what the fanout filter
+// uses to dispatch the right elaborator agent.
 type RevisionPlan struct {
 	FeatureRevisions  []NodeRevision `json:"feature_revisions,omitempty"`
 	StrategyRevisions []NodeRevision `json:"strategy_revisions,omitempty"`
-	Additions         []string       `json:"additions,omitempty"`
+	Additions         []AddedNode    `json:"additions,omitempty"`
 }
 
 // NodeRevision is one routed revision: a node id and the concerns
@@ -60,6 +61,21 @@ type RevisionPlan struct {
 type NodeRevision struct {
 	NodeID   string   `json:"node_id"`
 	Concerns []string `json:"concerns"`
+}
+
+// AddedNode is one routed addition: a critic finding proposing a
+// missing feature or strategy. The kind decides which elaborator
+// agent the fanout dispatches to; the source_concern is the verbatim
+// finding text the elaborator addresses by inventing one node
+// (id, title, decisions) from scratch.
+//
+// Empty kind defaults to "strategy" downstream — most ambiguous
+// "missing X" findings turn out to be missing-strategy gaps, and a
+// strategy that should have been a feature is recoverable by the
+// reconciler / next refine pass; an addition silently skipped is not.
+type AddedNode struct {
+	Kind          string `json:"kind"`           // "feature" or "strategy"
+	SourceConcern string `json:"source_concern"` // verbatim critic finding text
 }
 
 // assembleRevisedRawProposal builds the merged RawSpecProposal that
@@ -139,42 +155,50 @@ func assembleRevisedRawProposal(state *PlanningState) (string, bool) {
 		merged.Strategies = append(merged.Strategies, s)
 	}
 
-	// Additions are partial RawSpecProposals appended after the
-	// original (and revised) entries. Multiple addition merges (e.g. if
-	// the workflow ever runs multiple revise rounds) accumulate.
-	if state.AdditionProposals != "" {
-		var additions RawSpecProposal
-		if err := json.Unmarshal([]byte(state.AdditionProposals), &additions); err != nil {
-			slog.Warn("assemble revised raw proposal: skipping malformed additions", "error", err)
-		} else {
-			// De-dup by id against what's already in merged so a
-			// hallucinated addition that collides with an existing id
-			// doesn't double-up. Last-writer-wins on collision; the
-			// reconciler downstream catches semantic conflicts.
-			existingFeatureIDs := make(map[string]struct{}, len(merged.Features))
-			for _, f := range merged.Features {
-				existingFeatureIDs[f.ID] = struct{}{}
+	// Additions are per-finding elaborator outputs (Phase 4 fanout).
+	// Each entry in state.AdditionProposals is one RawFeatureProposal
+	// or RawStrategyProposal JSON; the kind is inferred from the id
+	// prefix (`feat-` / `strat-`). De-dup by id against what's already
+	// in merged so a hallucinated addition that collides with an
+	// existing id doesn't double-up; the reconciler downstream catches
+	// semantic conflicts (5 critics' "missing observability" → 5
+	// elaborator outputs collapsed to 1 canonical strategy).
+	existingFeatureIDs := make(map[string]struct{}, len(merged.Features))
+	for _, f := range merged.Features {
+		existingFeatureIDs[f.ID] = struct{}{}
+	}
+	existingStrategyIDs := make(map[string]struct{}, len(merged.Strategies))
+	for _, s := range merged.Strategies {
+		existingStrategyIDs[s.ID] = struct{}{}
+	}
+	for _, raw := range state.AdditionProposals {
+		switch {
+		case strings.HasPrefix(strings.TrimSpace(extractRawID(raw)), "feat-"):
+			var f RawFeatureProposal
+			if err := json.Unmarshal([]byte(raw), &f); err != nil {
+				slog.Warn("assemble revised raw proposal: skipping malformed feature addition", "error", err)
+				continue
 			}
-			for _, f := range additions.Features {
-				if _, dup := existingFeatureIDs[f.ID]; dup {
-					slog.Warn("assemble revised raw proposal: addition collides with existing feature id", "id", f.ID)
-					continue
-				}
-				merged.Features = append(merged.Features, f)
-				existingFeatureIDs[f.ID] = struct{}{}
+			if _, dup := existingFeatureIDs[f.ID]; dup {
+				slog.Warn("assemble revised raw proposal: addition collides with existing feature id", "id", f.ID)
+				continue
 			}
-			existingStrategyIDs := make(map[string]struct{}, len(merged.Strategies))
-			for _, s := range merged.Strategies {
-				existingStrategyIDs[s.ID] = struct{}{}
+			merged.Features = append(merged.Features, f)
+			existingFeatureIDs[f.ID] = struct{}{}
+		case strings.HasPrefix(strings.TrimSpace(extractRawID(raw)), "strat-"):
+			var s RawStrategyProposal
+			if err := json.Unmarshal([]byte(raw), &s); err != nil {
+				slog.Warn("assemble revised raw proposal: skipping malformed strategy addition", "error", err)
+				continue
 			}
-			for _, s := range additions.Strategies {
-				if _, dup := existingStrategyIDs[s.ID]; dup {
-					slog.Warn("assemble revised raw proposal: addition collides with existing strategy id", "id", s.ID)
-					continue
-				}
-				merged.Strategies = append(merged.Strategies, s)
-				existingStrategyIDs[s.ID] = struct{}{}
+			if _, dup := existingStrategyIDs[s.ID]; dup {
+				slog.Warn("assemble revised raw proposal: addition collides with existing strategy id", "id", s.ID)
+				continue
 			}
+			merged.Strategies = append(merged.Strategies, s)
+			existingStrategyIDs[s.ID] = struct{}{}
+		default:
+			slog.Warn("assemble revised raw proposal: addition has unrecognized id prefix; expected feat- or strat-", "raw", truncateForLog(raw))
 		}
 	}
 
@@ -240,4 +264,32 @@ func proposalNodeIDs(rawProposal string) (features []string, strategies []string
 		strategies = append(strategies, fmt.Sprintf("%s (%s) — %s", s.ID, s.Kind, s.Title))
 	}
 	return features, strategies
+}
+
+// extractRawID parses raw JSON for an `id` field and returns it.
+// Used by the additions-merge path to sniff whether a per-finding
+// elaborator output is a feature or a strategy without committing
+// to either schema up front. Returns empty when the raw JSON is
+// malformed or has no id; the caller logs and skips.
+func extractRawID(raw string) string {
+	var v struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return ""
+	}
+	return v.ID
+}
+
+// truncateForLog clips a long string to a fixed prefix for slog
+// output — used by the additions-merge path so a malformed addition
+// doesn't dump kilobytes of YAML into stderr. Operator can find the
+// full payload in the per-call trace; the warning just signals which
+// addition got skipped.
+func truncateForLog(s string) string {
+	const max = 120
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }

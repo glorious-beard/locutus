@@ -80,10 +80,6 @@ Approaches (implementation sketches per feature/strategy) are NOT part of your o
 - **Cover the breadth of the domain.** Propose enough features that a v1 launch is recognizable as the product GOALS.md describes — typically 5–10 features for a non-trivial domain. Don't stop at three when the domain has clear additional capabilities.
 - **When extending an existing spec,** prefer matching feature/strategy IDs over creating duplicates. The reconciler matches inline decisions against existing decisions for ID reuse on its own — you don't need to track existing decision IDs.
 
-## On revise_additions calls
-
-When the user message lists "Additions to propose", emit a RawSpecProposal containing ONLY the new features/strategies that address each addition concern. Do NOT re-emit existing nodes (they are listed in the message marked "do NOT re-emit"). Each new feature/strategy still carries the full inline-decision structure (real titles, rationales, alternatives, citations) — the reconciler downstream assigns canonical IDs.
-
-Per-node revisions (existing features/strategies that need updates) are handled by the elaborator agents in a separate fanout — you are not asked to rewrite the whole graph.
+Revise rounds (per-node corrections AND per-finding additions) are handled by the elaborator agents in fanouts — you are not asked to rewrite the whole graph or invent additions in bulk.
 
 Output valid JSON conforming to the RawSpecProposal schema. No prose, no commentary, no code fences.

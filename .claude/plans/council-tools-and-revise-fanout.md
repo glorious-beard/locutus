@@ -1,4 +1,4 @@
-# Plan: Revise Fanout, Scout Grounding, Spec-Lookup Tool
+# Plan: Revise Fanout, Scout Grounding, Spec-Lookup Tool, Lossless Triage
 
 ## Context
 
@@ -10,15 +10,22 @@ A real `locutus refine goals` run on winplan (2026-05-02, trace `.locutus/sessio
 
 3. **The reconciler inlines the entire spec into its prompt.** The `RawSpecProposal` plus full `ExistingSpec` snapshot land in the user message verbatim. At small spec sizes this is fine; at 100+ nodes it pressures context and makes every reconcile call expensive even when only a few nodes need attention. DJ-068 already establishes that `.borg/spec/` IS the manifest — but no tool exists for an agent to query it lazily. `.borg/manifest.json` is empty (just project metadata per DJ-081) and cannot be the spec index.
 
+A follow-up run on winplan (2026-05-03, trace `.locutus/sessions/20260503/0034/35-d9cdc4/`) — with Phases 1-3 shipped — surfaced a fourth distinct problem:
+
+4. **Critics flag many real gaps; the triager drops most of them.** The four critics (architect, devops, sre, cost) emitted ~32 findings across the proposal. The devops critic flagged missing CI/CD, environments, rollback, secrets, deps, build reproducibility (6). The SRE critic flagged missing observability tooling, SLO targets, on-call, capacity, circuit breakers, runbooks, error budget (7). The architect critic flagged missing Multi-deliverable coordination, Documentation, Build Tooling, Distribution Channel, Backend connectivity protocol, AWS-vs-Vercel coherence, plus several decision-language violations (14). The cost critic flagged missing cost ceiling, no caps/alarms, no cheap alternatives (5). Of those ~32 findings, the triager (call 0024) routed exactly **3** — two cost/capacity concerns onto `feat-voter-file-management` and one SLO concern onto `feat-field-canvassing-interface`. Every other finding fell into the "non-actionable, omit" bucket the triager prompt defines as rule 5. The result on disk: a spec missing IaC, CI/CD, secrets, observability, auth, build tooling — exactly the gaps the critics had identified. The triager is detecting them and discarding them in the same call.
+
+   Even if triage routed correctly, the additions path remains a single architect call (DJ-092 `revise_additions`) — structurally identical to the pre-Phase-1 revise step that failed by emitting placeholder decisions under multi-node authoring pressure. With 29+ additions, that call is the same anti-pattern, just one round later.
+
 ## Goal
 
-Fix the immediate user-visible bug (#1), then add the two structural capabilities the council is missing (#2, #3): grounding for the scout, lazy spec navigation for the reconciler.
+Fix the immediate user-visible bug (#1), then add the structural capabilities the council is missing: grounding for the scout (#2), lazy spec navigation for the reconciler (#3), and lossless triage + per-finding additions fanout so critics' work isn't silently discarded (#4).
 
 Success looks like:
 
 - A real refine run on winplan produces strategies with the same decision richness on disk as the elaborate fanout originally emitted. The empty-placeholder failure mode is structurally impossible.
 - The scout's brief cites recent material (post-training-cutoff) when it commits on a foundational axis. Cloud-platform-commitment and IaC-tool gaps surface when GOALS.md leaves them implicit.
 - The reconciler operates against a manifest + lookup tool instead of an inlined dump. Per-call context size is bounded by the reconciler's own working set, not by total spec size.
+- Every actionable critic finding produces an elaborator call. The triager routes — it does not judge actionability. Additions are produced via fanout (one elaborator call per missing-node concern), not a single architect call inventing N nodes from a list.
 
 ## Scope
 
@@ -27,6 +34,7 @@ In scope:
 - Restructure the revise step as a fanout-per-affected-node, mirroring the Phase-3 elaborate pattern.
 - Add a `grounding` field to agent frontmatter; wire it to the Gemini provider's `GoogleSearch` tool. Enable on the scout.
 - Add a Genkit tool surface (`spec_list_manifest`, `spec_get`) backed by `specio.SpecStore`. Wire to the reconciler agent. Update the reconciler prompt to navigate-then-fetch instead of receive-everything-inline.
+- Sharpen the triager: drop its "non-actionable → omit" bucket. Every critic finding routes to one of three buckets. Promote `additions` from a `[]string` consumed by a single architect call to a per-finding fanout shape consumed by per-call elaborator invocations.
 
 Out of scope:
 
@@ -34,6 +42,7 @@ Out of scope:
 - A separate `.borg/spec/manifest.json` file. The spec directory IS the manifest per DJ-068; the tool reads it dynamically. (Open question — see Open Questions; if a persisted file is preferred, it slots in as Phase 3.5.)
 - A persisted research cache for the scout. Search results land in the trace via the call payload; that's the audit surface.
 - Other agents getting tools. Elaborators stay with their current per-node prompts. Critics stay free-form. Only the reconciler is rewritten in Phase 3.
+- A multi-round convergence loop (`max_rounds > 1` so critics re-run on the augmented spec, triage re-fires, etc.). Larger structural change. If Phase 4's lossless triage + additions fanout produces a single-pass spec that's still meaningfully gapped after one round, convergence becomes the natural Phase 5; defer until measured.
 
 ## Architectural shifts
 
@@ -61,6 +70,17 @@ Phase 3:
   reconciler (with spec_list_manifest + spec_get tools)
     ├─ no full-spec inlining in the prompt
     └─ navigate the manifest, fetch only what it needs
+
+Phase 4:
+  critique → triage (routes EVERYTHING — no discard bucket)
+           → revise_features (fanout) → reconcile_revise
+           → revise_strategies (fanout) →
+           → revise_additions (FANOUT — one elaborator call per finding)
+                                                     ↑
+                                  the additions step is no longer a single
+                                  architect call; one missing-node finding
+                                  becomes one bounded elaborator invocation.
+                                  reconciler dedupes cross-cluster as today.
 ```
 
 ---
@@ -299,11 +319,72 @@ The reconciler emits a structured `ReconciliationVerdict` (responseSchema). Both
 
 ---
 
+## Phase 4: Lossless Triage + Per-Finding Additions Fanout
+
+### Problem
+
+Two structural issues compound on each other:
+
+- **Triage discards.** The `spec_revision_triager` prompt (DJ-092) defines four buckets: `feature_revisions`, `strategy_revisions`, `additions`, and an implicit "non-actionable → omit" routing. On the May-3 winplan run the implicit bucket consumed 29 of 32 critic findings. The omit instruction was added so the triager could drop pure observations and already-addressed findings, but in practice it's the triager's escape hatch when a finding doesn't obviously fit one of the three actionable buckets — and "missing CI/CD" / "missing observability tool" / "missing Distribution Channel" all read as observations to a fast-tier model that hasn't been told routing is mandatory.
+- **Additions is a single-call architect step.** Even when the triager DOES route to `additions`, the downstream `revise_additions` step is one architect call asked to invent N new features/strategies from a string list. With 5–30 additions that's the same multi-node-authoring pressure that broke the original revise step (DJ-092). Phase 1 fixed it for revise; the additions side was left as a single call because the original plan didn't anticipate that triage would route this many additions, this regularly.
+
+### 4.1 Triage routes everything
+
+Reframe the triager's job: **routing, not actionability judgment**. Every critic finding lands in exactly one of:
+
+- `feature_revisions[NodeRevision]` — concern targets an existing feature
+- `strategy_revisions[NodeRevision]` — concern targets an existing strategy
+- `additions[AddedNode]` — concern proposes a missing feature or strategy
+
+There is no fourth bucket. Critic findings ARE the council's actionable signal; the triager's only authority is to assign them to the right place. The agent's prompt drops rule 5 ("findings... that don't propose a change: omit") and replaces it with a routing-completeness mandate ("every finding from the input must end up in one of the three arrays; if you cannot route it confidently, default to `additions` with `kind: "strategy"` since most ambiguous findings turn out to be missing-strategy gaps in practice").
+
+**Triager capability tier moves from `fast` to `balanced`.** Routing 32 findings across the bucket boundary is closer to a judgment call than the simple keyword-mapping the fast tier handles well; under-tiering is a contributing factor to today's silent-discard behavior.
+
+### 4.2 Additions fanout
+
+Promote the additions path to a per-finding fanout, mirroring `revise_features` / `revise_strategies`:
+
+- `RevisionPlan.Additions` changes from `[]string` to `[]AddedNode`. Each `AddedNode` carries:
+  - `kind: "feature" | "strategy"` — the triager's routing call (rule of thumb: if the finding describes a product capability, feature; if it describes a cross-cutting choice or quality, strategy).
+  - `source_concern: string` — the verbatim critic finding text.
+- New workflow step `revise_additions_fanout`: `spec_feature_elaborator` or `spec_strategy_elaborator` is invoked once per `AddedNode` (kind selects the agent), in addition mode.
+- The elaborator's addition-mode projection sees: GOALS, scout brief, the existing-node list (do NOT re-emit), and the one source_concern this call is responsible for. Output is one `RawFeatureProposal` or `RawStrategyProposal` with the elaborator-invented id/title/kind/decisions.
+- The merge handler appends each elaborator output to `state.AdditionProposals` (a slice now, not a single JSON blob). `assembleRevisedRawProposal` accumulates additions the same way it accumulates revised nodes.
+- The single-call `revise_additions` step (and its conditional `has_additions`) is removed. The fanout step inherits `has_additions` semantics — empty fanout = skipped.
+
+The reconciler is unchanged; cross-cluster dedup (5 critics flagging the same missing strategy → 5 elaborator outputs collapsed to 1 canonical) is exactly what `ApplyReconciliation` was designed to do.
+
+### What changes in code
+
+- `RevisionPlan.Additions` type changes from `[]string` to `[]AddedNode`. Schema example updated; downstream consumers (`projectReviseAdditions` is removed; `extractFanoutItems` gains a `revision_plan.additions` path; `shouldRunConditional("has_additions")` checks `len(plan.Additions)`) updated accordingly.
+- New `AddedNode` struct in `revision.go` with `kind` and `source_concern` fields.
+- New projection `projectAdditionElaborate` (parameterized for feature/strategy) — same shape as `projectReviseNode` but with addition-mode framing (no prior content to revise; elaborator invents the node from one concern).
+- The elaborator agent prompts gain an "If invoked in addition mode" addendum: the user message includes a "Concern proposing this missing node" block and a "Existing nodes (do NOT re-emit)" block. Output is one full `RawFeatureProposal` / `RawStrategyProposal` with the elaborator's invented id (slug-derived from the concern's subject).
+- Workflow YAML: replace the single `revise_additions` step with two fanout steps `revise_feature_additions` / `revise_strategy_additions`, both `parallel: true`, both `fanout: revision_plan.additions` filtered by kind. Or: a single `revise_additions` step with kind-aware dispatch in `executeAgent`. (Implementation detail; the simpler shape is two separate fanout steps gated on a kind-check helper.)
+- `spec_revision_triager.md` prompt rewrite: drop the discard rule, add the routing-completeness mandate, change the additions example to the new `AddedNode` shape. Frontmatter `capability` flips from `fast` to `balanced`.
+- New tests:
+  - Triager schema test confirming the new `AddedNode` shape round-trips.
+  - `extractFanoutItems` test for `revision_plan.additions` (similar to the existing feature_revisions test).
+  - Projection test for `projectAdditionElaborate` rendering the existing-node list + the source concern.
+  - Merge test for `assembleRevisedRawProposal` accumulating multiple additions.
+- DJ entry capturing the design + the May-3 trace evidence.
+
+### Phase 4 ship criteria
+
+- A real refine run on winplan with the same critic findings: the triager routes all ~32 to the three buckets (zero silently discarded). The additions fanout fires N elaborator calls, one per missing-node concern. The persisted spec carries strategies for IaC, CI/CD, secrets, observability, etc. — the gaps the critics had identified.
+- The reconciler's cross-cluster dedup correctly collapses redundant additions (e.g., devops-critic's "missing CI/CD" + architect-critic's "missing Build Tooling" land as one CI/CD strategy, not two).
+- A trace inspection shows zero "non-actionable → omit" entries on the triager output (the bucket is structurally absent).
+- `go test ./...` and `go vet ./...` pass.
+- DJ entry.
+
+---
+
 ## Sequencing recommendation
 
-1. **Phase 1 first** — smallest, fixes the immediate user-visible failure (strategies losing decisions). Triage agent + revise fanout + workflow update. One PR-sized commit.
-2. **Phase 2 next** — small, validates a research feature on one agent. Grounding wiring + scout frontmatter. One commit.
-3. **Phase 3 last** — biggest, touches reconciler + adds new tool surface. One commit.
+1. **Phase 1 first** — smallest, fixes the immediate user-visible failure (strategies losing decisions). Triage agent + revise fanout + workflow update. One PR-sized commit. *Shipped (DJ-092).*
+2. **Phase 2 next** — small, validates a research feature on one agent. Grounding wiring + scout frontmatter. One commit. *Shipped (DJ-093).*
+3. **Phase 3 last** — biggest, touches reconciler + adds new tool surface. One commit. *Shipped (DJ-094).*
+4. **Phase 4** — restores the council's signal pathway. Triager prompt rewrite + capability tier flip + additions schema change + new fanout step + elaborator addition-mode projection + reconciler dedup leans on as today. One commit.
 
 Each phase is independently shippable and reverts cleanly if something breaks.
 
@@ -314,15 +395,23 @@ Each phase is independently shippable and reverts cleanly if something breaks.
 - **Phase 2 — Anthropic users get an ungrounded scout.** They see a warning but the workflow doesn't fail. Equivalent to today's behavior; no regression. When the Genkit Go anthropic plugin gains web_search support, we wire it through the same `Grounding` flag.
 - **Phase 3 — reconciler tool-call dispatch loop.** The Genkit tool-use loop runs the model in a multi-turn loop until it stops calling tools. Misbehaving prompt could induce a degenerate tool-call loop. Mitigation: cap tool-call rounds in the GenerateRequest (Genkit supports this) and surface tool-call counts in the trace.
 - **Phase 3 — manifest staleness.** Since the manifest is computed on-demand from disk listings, stale data isn't a risk. If we move to Phase 3.5 (persisted manifest), drift becomes a real concern and we'd add a regen-on-write step.
+- **Phase 4 — cost.** N additions × one strong-tier elaborator call each is meaningful spend. The May-3 trace would have produced ~29 additions calls + 3 revisions; at 30-90s per call and bounded by per-model concurrency cap (~4 concurrent), wall-clock is on the order of 5-10 minutes added. Per-call 5m timeout (already shipped) bounds runaway. If the cost-per-refine becomes uncomfortable, options include: (a) capping additions per critic (e.g., top-3 per critic); (b) moving the addition elaborator to `balanced` tier; (c) consolidating findings inside the triager via a bounded LLM-side dedup pass before fanout.
+- **Phase 4 — addition kind misclassification.** Triager's `kind: "feature"|"strategy"` call routes to the wrong elaborator agent. Mitigation: the strategy elaborator can produce a feature-shaped output and vice versa under the right system prompt; a misroute costs accuracy, not correctness. Reversible per-run.
+- **Phase 4 — duplicate additions.** Multiple critics flagging the same gap → multiple elaborator calls → multiple near-identical strategies. Reconciler dedup is the mitigation and is exactly its job; risk is bounded to "reconciler must actually catch the dup" — if it doesn't, the spec ships with two copies and the user notices on first run.
+- **Phase 4 — triager goes the other way.** Stripping the discard bucket might cause the triager to over-route (e.g., routing a finding that's genuinely already addressed, producing a redundant elaborator call). Cost: one wasted call. Worth flagging if it becomes a recurring spend issue; the discard bucket can be reintroduced behind a stricter rule than today's broad "non-actionable."
 
 ## Open questions
 
-- **Phase 1 — additions handling.** Today's plan has `revise_additions` as a single architect call that emits new features/strategies. An alternative is to drop additions in Phase 1 (additions become a separate `import` flow) and only handle node-targeted revisions. The cleaner shape depends on how often critics propose missing features in practice. Recommendation: ship Phase 1 with `revise_additions` to preserve current capability; revisit if the additions path is rarely exercised.
+- **Phase 1 — additions handling.** Today's plan has `revise_additions` as a single architect call that emits new features/strategies. An alternative is to drop additions in Phase 1 (additions become a separate `import` flow) and only handle node-targeted revisions. The cleaner shape depends on how often critics propose missing features in practice. Recommendation: ship Phase 1 with `revise_additions` to preserve current capability; revisit if the additions path is rarely exercised. *Resolved post-shipment: the May-3 trace showed the additions path IS heavily exercised — 29+ findings would route there if the triager wasn't discarding them. Phase 4 promotes the path to a fanout for exactly this reason.*
 - **Phase 2 — `output_schema` + `GoogleSearch` coexistence on Gemini.** The plan assumes both can be set. Verify during implementation; if they conflict, the scout's `output_schema: ScoutBrief` may need to drop to free-form parse-on-receive.
 - **Phase 3 — manifest summary length.** How long is "one-line summary" in the manifest? 200 chars feels right for features/strategies; decisions might need more (the rationale's first sentence). Tunable per-kind.
 - **Phase 3 — should the elaborators get `spec_get` too?** They might benefit from looking up a sibling decision while elaborating a feature. Out of scope for this plan; revisit if elaborator quality shows the same context-pressure pattern.
+- **Phase 4 — kind disambiguation in the triager.** Some critic findings genuinely span feature/strategy boundaries (e.g., "missing audit-log viewer" reads as a feature, but also implies a quality strategy on retention). The plan assumes the triager picks one; the reconciler can split if the elaborator's output reveals the bigger scope. Worth measuring whether this is a real source of mis-shape after a run or two.
+- **Phase 4 — should the triager pre-cluster duplicate findings?** Today the dedup happens at the reconciler stage, after the elaborator has already done the work. A bounded LLM-side dedup inside the triager (group findings by topic, route one elaborator per cluster) would save calls, but adds complexity to the triager that today's "route, don't judge" reframing was specifically designed to avoid. Defer until measured.
+- **Phase 4 vs. Phase 5 (convergence loop).** A multi-round convergence loop (`max_rounds: 3` so critics re-run on the augmented spec) would catch additions-of-additions — gaps the round-1 additions themselves expose. Whether this matters is a measurement question: if Phase 4's single-pass output is already comprehensive enough to plan against, convergence is over-engineering. If it isn't, Phase 5 is the structural follow-up.
 
 ## What this doesn't fix
 
 - The architect's **outliner** still picks the foundational strategy set with no research. Phase 2 grounds the *scout*; the outliner consumes the scout's brief but doesn't search itself. If the scout-with-grounding doesn't surface foundational gaps the outliner misses, we'd extend grounding to the outliner — same wiring.
 - Cost ceilings, caching, and rate-limit handling for grounded calls are not in scope. Phase 2 is the simplest "wire it on, see what happens" move.
+- **Multi-round convergence (would-be Phase 5).** Even with Phase 4 in place, the workflow runs a single pass: critique → triage → revise/additions → reconcile_revise. New nodes added in this pass aren't themselves criticised. If a Phase-4 run produces specs that still have meaningful gaps the same critics would have flagged on a second pass, we'd bump `max_rounds` to 2-3 and re-run critique against the post-revise spec. Out of scope for Phase 4 because the structural change (additions-as-fanout) is the larger-leverage move; convergence is the natural follow-up if measured failure says single-pass isn't enough.
