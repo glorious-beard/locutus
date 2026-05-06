@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -91,13 +92,27 @@ func (g *GeminiAdapter) Run(ctx context.Context, req Request) (*Response, error)
 	wantSchema := req.OutputSchema != nil
 	wantGrounding := req.Grounding
 
-	// Gemini's API rejects responseSchema together with function
-	// declarations, and rejects GoogleSearch together with function
-	// declarations. Both collisions are deployment-routing errors:
-	// the agent shouldn't have routed here in the first place.
-	// Surface ErrIncompatible so the executor advances to the next
-	// preference in def.Models rather than producing structurally
-	// wrong output the downstream parser can't handle.
+	// Gemini's API rejects ANY tool (custom function declarations
+	// OR GoogleSearch) when responseMimeType is application/json
+	// with responseSchema set. The error is "Tool use with a
+	// response mime type: 'application/json' is unsupported".
+	//
+	// Schema + custom tools: hard fail. The agent that asked for
+	// both (e.g. a future reconciler-style design) needs both to
+	// function — neither can be silently dropped. ErrIncompatible
+	// lets the executor advance to the next preference; today
+	// spec_reconciler routes anthropic/strong → openai/strong, not
+	// googleai, so this only fires on a misrouted deployment.
+	//
+	// Schema + GoogleSearch grounding: drop grounding, keep
+	// schema. The schema is the response contract that downstream
+	// parsers depend on; grounding is a "verify against the live
+	// web" enhancement the model can function without. Warn so
+	// the operator knows the scout brief was produced ungrounded
+	// on this provider.
+	//
+	// Grounding + custom tools (no schema): hard fail. The agent
+	// asked for both; no clear demotion target.
 	if wantSchema && hasCustomTools {
 		return nil, fmt.Errorf("%w: gemini cannot combine responseSchema with custom tools (model=%s)",
 			ErrIncompatible, req.Model)
@@ -105,6 +120,11 @@ func (g *GeminiAdapter) Run(ctx context.Context, req Request) (*Response, error)
 	if wantGrounding && hasCustomTools {
 		return nil, fmt.Errorf("%w: gemini cannot combine GoogleSearch grounding with custom tools (model=%s)",
 			ErrIncompatible, req.Model)
+	}
+	if wantSchema && wantGrounding {
+		slog.Warn("gemini: responseSchema + GoogleSearch incompatible; dropping grounding (schema preserved)",
+			"model", req.Model)
+		wantGrounding = false
 	}
 
 	if wantSchema {
