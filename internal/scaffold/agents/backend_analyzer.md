@@ -1,8 +1,9 @@
 ---
 id: backend_analyzer
 role: backend-analysis
-capability: balanced
-temperature: 0.3
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 output_schema: BackendAnalysis
 ---
 # Identity

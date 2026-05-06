@@ -1,9 +1,9 @@
 ---
 id: spec_reconciler
 role: reconcile
-capability: balanced
-temperature: 0.2
-thinking_budget: 4096
+models:
+  - {provider: anthropic, tier: strong}
+  - {provider: openai, tier: strong}
 output_schema: ReconciliationVerdict
 tools:
   - spec_list_manifest

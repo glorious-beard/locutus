@@ -48,7 +48,7 @@ func newTestAgentDefs() map[string]AgentDef {
 }
 
 func mockResp(content string) MockResponse {
-	return MockResponse{Response: &GenerateResponse{Content: content}}
+	return MockResponse{Response: &AgentOutput{Content: content}}
 }
 
 func TestLoadWorkflow(t *testing.T) {
@@ -89,10 +89,10 @@ func TestLoadWorkflowMissing(t *testing.T) {
 }
 
 func TestExecuteRoundSequential(t *testing.T) {
-	mock := NewMockLLM(mockResp("planner proposal"))
+	mock := NewMockExecutor(mockResp("planner proposal"))
 
 	exec := &WorkflowExecutor{
-		LLM:       mock,
+		Executor: mock,
 		AgentDefs: map[string]AgentDef{"planner": {ID: "planner", SystemPrompt: "You are the planner."}},
 		Workflow:  &Workflow{MaxRounds: 5},
 	}
@@ -110,13 +110,13 @@ func TestExecuteRoundSequential(t *testing.T) {
 }
 
 func TestExecuteRoundParallel(t *testing.T) {
-	mock := NewMockLLM(
+	mock := NewMockExecutor(
 		mockResp("critic concerns"),
 		mockResp("stakeholder feedback"),
 	)
 
 	exec := &WorkflowExecutor{
-		LLM: mock,
+		Executor: mock,
 		AgentDefs: map[string]AgentDef{
 			"critic":      {ID: "critic", SystemPrompt: "You are the critic."},
 			"stakeholder": {ID: "stakeholder", SystemPrompt: "You are a stakeholder."},
@@ -150,10 +150,10 @@ func TestExecuteRoundParallel(t *testing.T) {
 }
 
 func TestExecuteRoundConditionalSkipped(t *testing.T) {
-	mock := NewMockLLM(mockResp("should not be called"))
+	mock := NewMockExecutor(mockResp("should not be called"))
 
 	exec := &WorkflowExecutor{
-		LLM:       mock,
+		Executor: mock,
 		AgentDefs: map[string]AgentDef{"researcher": {ID: "researcher", SystemPrompt: "You are the researcher."}},
 		Workflow:  &Workflow{MaxRounds: 5},
 	}
@@ -176,10 +176,10 @@ func TestExecuteRoundConditionalSkipped(t *testing.T) {
 }
 
 func TestExecuteRoundConditionalFires(t *testing.T) {
-	mock := NewMockLLM(mockResp("research findings"))
+	mock := NewMockExecutor(mockResp("research findings"))
 
 	exec := &WorkflowExecutor{
-		LLM:       mock,
+		Executor: mock,
 		AgentDefs: map[string]AgentDef{"researcher": {ID: "researcher", SystemPrompt: "You are the researcher."}},
 		Workflow:  &Workflow{MaxRounds: 5},
 	}
@@ -251,7 +251,7 @@ func TestMergeResults(t *testing.T) {
 func TestWorkflowRunFullSequence(t *testing.T) {
 	// 6 calls: propose(1) + challenge(2) + research(1) + revise(1) + record(1)
 	// The critic response includes "open_questions" so research fires.
-	mock := NewMockLLM(
+	mock := NewMockExecutor(
 		mockResp("planner proposal"),
 		mockResp("critic: there are open_questions here"),
 		mockResp("stakeholder: looks reasonable"),
@@ -266,7 +266,7 @@ func TestWorkflowRunFullSequence(t *testing.T) {
 	assert.NoError(t, err)
 
 	exec := &WorkflowExecutor{
-		LLM:       mock,
+		Executor: mock,
 		AgentDefs: newTestAgentDefs(),
 		Workflow:  wf,
 	}
@@ -289,7 +289,7 @@ func TestWorkflowRunFullSequence(t *testing.T) {
 }
 
 func TestWorkflowRunWithRetryableError(t *testing.T) {
-	mock := NewMockLLM(
+	mock := NewMockExecutor(
 		MockResponse{Err: ErrRateLimit},
 		mockResp("planner response after retry"),
 	)
@@ -300,7 +300,7 @@ func TestWorkflowRunWithRetryableError(t *testing.T) {
 	}
 
 	exec := &WorkflowExecutor{
-		LLM:       mock,
+		Executor: mock,
 		AgentDefs: map[string]AgentDef{"planner": {ID: "planner", SystemPrompt: "You are the planner."}},
 		Workflow:  wf,
 	}
@@ -324,14 +324,14 @@ func TestWorkflowCleansUpBridgeOnConvergenceError(t *testing.T) {
 	// First call: planner step succeeds. Second call: convergence check fails
 	// with a non-retryable error so GenerateWithRetry returns immediately and
 	// Run early-returns at the convergence-error branch.
-	mock := NewMockLLM(
+	mock := NewMockExecutor(
 		mockResp("planner output"),
 		MockResponse{Err: errors.New("convergence model unavailable")},
 	)
 
 	events := make(chan WorkflowEvent, 100)
 	exec := &WorkflowExecutor{
-		LLM: mock,
+		Executor: mock,
 		AgentDefs: map[string]AgentDef{
 			"planner":     {ID: "planner", SystemPrompt: "plan."},
 			"convergence": {ID: "convergence", SystemPrompt: "judge."},
@@ -356,11 +356,11 @@ func TestWorkflowCleansUpBridgeOnConvergenceError(t *testing.T) {
 }
 
 func TestWorkflowEvents(t *testing.T) {
-	mock := NewMockLLM(mockResp("planner output"))
+	mock := NewMockExecutor(mockResp("planner output"))
 
 	events := make(chan WorkflowEvent, 10)
 	exec := &WorkflowExecutor{
-		LLM:       mock,
+		Executor: mock,
 		AgentDefs: map[string]AgentDef{"planner": {ID: "planner", SystemPrompt: "You are the planner."}},
 		Workflow:  &Workflow{Rounds: []WorkflowStep{{ID: "propose", Agent: "planner"}}, MaxRounds: 5},
 		Events:    events,
@@ -412,7 +412,7 @@ func TestSnapshotIsolation(t *testing.T) {
 func TestConvergenceLoopConvergesFirstRound(t *testing.T) {
 	// Single-step workflow + convergence monitor + readiness gate.
 	// Iteration 1: propose → convergence says CONVERGED → critic APPROVED → stakeholder APPROVED → done.
-	mock := NewMockLLM(
+	mock := NewMockExecutor(
 		mockResp("planner proposal"),           // propose
 		mockResp("CONVERGED: all looks good"),  // convergence check
 		mockResp("APPROVED"),                   // critic readiness
@@ -431,7 +431,7 @@ func TestConvergenceLoopConvergesFirstRound(t *testing.T) {
 		"stakeholder": {ID: "stakeholder", SystemPrompt: "You are a stakeholder."},
 	}
 
-	exec := &WorkflowExecutor{LLM: mock, AgentDefs: defs, Workflow: wf}
+	exec := &WorkflowExecutor{Executor: mock, AgentDefs: defs, Workflow: wf}
 	results, err := exec.Run(context.Background(), "Design X.")
 	assert.NoError(t, err)
 	assert.Len(t, results, 1) // only the propose result
@@ -441,7 +441,7 @@ func TestConvergenceLoopConvergesFirstRound(t *testing.T) {
 func TestConvergenceLoopRequiresMultipleIterations(t *testing.T) {
 	// Iteration 1: propose → NOT_CONVERGED
 	// Iteration 2: propose (again) → CONVERGED → APPROVED × 2
-	mock := NewMockLLM(
+	mock := NewMockExecutor(
 		// Iteration 1
 		mockResp("initial proposal"),
 		mockResp("NOT_CONVERGED\n- need more detail on auth"),
@@ -464,7 +464,7 @@ func TestConvergenceLoopRequiresMultipleIterations(t *testing.T) {
 		"stakeholder": {ID: "stakeholder", SystemPrompt: "You are a stakeholder."},
 	}
 
-	exec := &WorkflowExecutor{LLM: mock, AgentDefs: defs, Workflow: wf}
+	exec := &WorkflowExecutor{Executor: mock, AgentDefs: defs, Workflow: wf}
 	results, err := exec.Run(context.Background(), "Design X.")
 	assert.NoError(t, err)
 	assert.Len(t, results, 2) // propose from each iteration
@@ -474,7 +474,7 @@ func TestConvergenceLoopRequiresMultipleIterations(t *testing.T) {
 func TestConvergenceLoopReadinessBlocked(t *testing.T) {
 	// Iteration 1: propose → CONVERGED → critic BLOCKED → loop
 	// Iteration 2: propose → CONVERGED → critic APPROVED → stakeholder APPROVED
-	mock := NewMockLLM(
+	mock := NewMockExecutor(
 		// Iteration 1
 		mockResp("proposal v1"),
 		mockResp("CONVERGED"),
@@ -498,7 +498,7 @@ func TestConvergenceLoopReadinessBlocked(t *testing.T) {
 		"stakeholder": {ID: "stakeholder", SystemPrompt: "You are a stakeholder."},
 	}
 
-	exec := &WorkflowExecutor{LLM: mock, AgentDefs: defs, Workflow: wf}
+	exec := &WorkflowExecutor{Executor: mock, AgentDefs: defs, Workflow: wf}
 	results, err := exec.Run(context.Background(), "Design X.")
 	assert.NoError(t, err)
 	assert.Len(t, results, 2) // one propose per iteration
@@ -514,7 +514,7 @@ func TestConvergenceLoopForcedAfterMaxRounds(t *testing.T) {
 			mockResp("NOT_CONVERGED\n- still issues"),
 		)
 	}
-	mock := NewMockLLM(responses...)
+	mock := NewMockExecutor(responses...)
 
 	wf := &Workflow{
 		Rounds:    []WorkflowStep{{ID: "propose", Agent: "planner"}},
@@ -526,7 +526,7 @@ func TestConvergenceLoopForcedAfterMaxRounds(t *testing.T) {
 		"convergence": {ID: "convergence", SystemPrompt: "Assess convergence."},
 	}
 
-	exec := &WorkflowExecutor{LLM: mock, AgentDefs: defs, Workflow: wf}
+	exec := &WorkflowExecutor{Executor: mock, AgentDefs: defs, Workflow: wf}
 	results, err := exec.Run(context.Background(), "Design X.")
 	assert.NoError(t, err)
 	// Should have forced exit, not run all 5 full iterations.

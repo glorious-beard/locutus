@@ -77,7 +77,7 @@ func (c *AssimilateCmd) Run(ctx context.Context, cli *CLI) error {
 //
 // remediate=true runs the gap-filling pass; remediate=false leaves
 // inference output untouched and reports gaps without acting on them.
-func RunAssimilate(ctx context.Context, llm agent.LLM, fsys specio.FS, runRemediate bool, sink agent.EventSink) (*agent.AssimilationResult, error) {
+func RunAssimilate(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, runRemediate bool, sink agent.EventSink) (*agent.AssimilationResult, error) {
 	inventory, err := agent.WalkInventory(fsys)
 	if err != nil {
 		return nil, fmt.Errorf("walking inventory: %w", err)

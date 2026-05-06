@@ -101,7 +101,7 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 // fixture graph. The sink argument is only consumed by the council-driven
 // branches (currently Goals); single-call paths ignore it because they
 // don't run a workflow.
-func dispatchRefine(ctx context.Context, llm agent.LLM, fsys specio.FS, id string, kind spec.NodeKind, sink agent.EventSink) (*RefineResult, error) {
+func dispatchRefine(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, id string, kind spec.NodeKind, sink agent.EventSink) (*RefineResult, error) {
 	switch kind {
 	case spec.KindDecision:
 		return RunRefine(ctx, llm, fsys, id)
@@ -129,7 +129,7 @@ func dispatchRefine(ctx context.Context, llm agent.LLM, fsys specio.FS, id strin
 // updated in place, new IDs land as new files. Quality strategies
 // (testing, observability, deployment) are mandatory in the LLM prompt
 // so engineering best practices show up by construction.
-func RunRefineGoals(ctx context.Context, llm agent.LLM, fsys specio.FS, sink agent.EventSink) (*RefineResult, error) {
+func RunRefineGoals(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, sink agent.EventSink) (*RefineResult, error) {
 	goalsBody, found := readGoals(fsys)
 	if !found || strings.TrimSpace(goalsBody) == "" {
 		return nil, fmt.Errorf("refine goals: GOALS.md is empty or missing — populate it before running")
@@ -165,7 +165,7 @@ func RunRefineGoals(ctx context.Context, llm agent.LLM, fsys specio.FS, sink age
 // the graph to find parent Features/Strategies that reference the
 // Decision, rewrites their present-tense prose, marks child Approaches
 // drifted, and records history events.
-func RunRefine(ctx context.Context, llm agent.LLM, fsys specio.FS, decisionID string) (*RefineResult, error) {
+func RunRefine(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, decisionID string) (*RefineResult, error) {
 	g := buildGraphForRefine(fsys)
 
 	if g.Decision(decisionID) == nil {
@@ -188,7 +188,7 @@ func RunRefine(ctx context.Context, llm agent.LLM, fsys specio.FS, decisionID st
 // RunRefineFeature rewrites Feature.Description to reflect its currently
 // applicable Decisions, marks child Approaches drifted, and records a
 // history event.
-func RunRefineFeature(ctx context.Context, llm agent.LLM, fsys specio.FS, featureID string) (*RefineResult, error) {
+func RunRefineFeature(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, featureID string) (*RefineResult, error) {
 	g := buildGraphForRefine(fsys)
 	f := g.Feature(featureID)
 	if f == nil {
@@ -225,7 +225,7 @@ func RunRefineFeature(ctx context.Context, llm agent.LLM, fsys specio.FS, featur
 // RunRefineStrategy does the same for a Strategy. The prose lives in the
 // .md body rather than a struct field; cascade.RewriteStrategy handles
 // the round-trip.
-func RunRefineStrategy(ctx context.Context, llm agent.LLM, fsys specio.FS, strategyID string) (*RefineResult, error) {
+func RunRefineStrategy(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, strategyID string) (*RefineResult, error) {
 	g := buildGraphForRefine(fsys)
 	s := g.Strategy(strategyID)
 	if s == nil {
@@ -262,7 +262,7 @@ func RunRefineStrategy(ctx context.Context, llm agent.LLM, fsys specio.FS, strat
 // applicable Decisions. Bugs have no Decisions slice of their own — they
 // inherit the Feature's context. RootCause and FixPlan are
 // incident-diagnosis fields and are not touched by refine.
-func RunRefineBug(ctx context.Context, llm agent.LLM, fsys specio.FS, bugID string) (*RefineResult, error) {
+func RunRefineBug(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, bugID string) (*RefineResult, error) {
 	g := buildGraphForRefine(fsys)
 	b := g.Bug(bugID)
 	if b == nil {
@@ -304,7 +304,7 @@ func RunRefineBug(ctx context.Context, llm agent.LLM, fsys specio.FS, bugID stri
 // RunRefineApproach re-synthesizes Approach.Body from parent prose and
 // applicable Decisions via the synthesizer agent. The refined Approach
 // is itself marked drifted so the next `adopt` classifies it and replans.
-func RunRefineApproach(ctx context.Context, llm agent.LLM, fsys specio.FS, approachID string) (*RefineResult, error) {
+func RunRefineApproach(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, approachID string) (*RefineResult, error) {
 	g := buildGraphForRefine(fsys)
 	a := g.Approach(approachID)
 	if a == nil {
@@ -387,7 +387,7 @@ func resolveParentContext(fsys specio.FS, g *spec.SpecGraph, parentID string) (p
 // invokeSynthesizer assembles the synthesizer prompt and parses the JSON
 // reply. Shares the RewriteResult output schema with the rewriter so
 // callers can reuse cascade.RewriteResult for parsing.
-func invokeSynthesizer(ctx context.Context, llm agent.LLM, a spec.Approach, parent parentContext, applicable []spec.Decision) (*cascade.RewriteResult, error) {
+func invokeSynthesizer(ctx context.Context, llm agent.AgentExecutor, a spec.Approach, parent parentContext, applicable []spec.Decision) (*cascade.RewriteResult, error) {
 	var prompt strings.Builder
 	fmt.Fprintf(&prompt, "## Approach\n%s — %s\n\n", a.ID, a.Title)
 	fmt.Fprintf(&prompt, "## Parent kind\n%s\n\n", parent.Kind)
@@ -403,14 +403,13 @@ func invokeSynthesizer(ctx context.Context, llm agent.LLM, a spec.Approach, pare
 	prompt.WriteString("\n## Current Approach body\n")
 	prompt.WriteString(a.Body)
 
-	req := agent.GenerateRequest{
-		Messages: []agent.Message{
-			{Role: "system", Content: "You are the approach synthesizer. Respond with valid JSON matching the RewriteResult schema."},
-			{Role: "user", Content: prompt.String()},
-		},
+	def := agent.AgentDef{
+		ID:           "synthesizer",
+		SystemPrompt: "You are the approach synthesizer. Respond with valid JSON matching the RewriteResult schema.",
 	}
+	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt.String()}}}
 	var out cascade.RewriteResult
-	if err := agent.GenerateInto(agent.WithRole(ctx, "synthesizer"), llm, req, &out); err != nil {
+	if err := agent.RunInto(agent.WithRole(ctx, "synthesizer"), llm, def, input, &out); err != nil {
 		return nil, fmt.Errorf("synthesizer: %w", err)
 	}
 	return &out, nil

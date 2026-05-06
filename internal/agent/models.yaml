@@ -1,87 +1,80 @@
-# Model tier configuration: maps a CapabilityTier to an ordered list of
-# candidate models, plus per-model knobs (max_output_tokens, etc.).
-# At Generate time, the resolver walks the list for the requested tier
-# and returns the first entry whose provider prefix is enabled in the
-# environment (ANTHROPIC_API_KEY / GEMINI_API_KEY / GOOGLE_API_KEY).
-# List position reflects preference when multiple providers are configured.
+# Per-provider tier table. Each tier (fast / balanced / strong) baked
+# into a deployment-tunable model + operational knobs. Agents declare
+# routing intent via per-agent frontmatter `models:` priority lists
+# (e.g. `[{provider: anthropic, tier: balanced}, {provider: googleai,
+# tier: strong}]`); the executor walks the list at dispatch time and
+# resolves the first preference whose provider is configured against
+# this table.
 #
-# This file is embedded in the locutus binary; locutus update refreshes
-# it when the SDK pulls in new model names. Users who want to override
-# per-project can set LOCUTUS_MODELS_CONFIG to a YAML file with the
-# same shape, or edit .borg/models.yaml.
+# This file is embedded in the locutus binary; `locutus update`
+# refreshes it when SDKs pull in new model names. Override per-project
+# by editing `.borg/models.yaml`, or globally via
+# `LOCUTUS_MODELS_CONFIG=/path/to/file.yaml`.
 #
-# Provider prefixes required: "anthropic/" or "googleai/". Strings
-# without a prefix are ignored — Genkit needs the prefix to route.
+# Knobs:
+#   model                — concrete provider-side model string the
+#                          adapter passes to its SDK as-is.
+#   max_output_tokens    — caps the model's response length. Adapters
+#                          substitute a safe minimum when the API
+#                          rejects 0 (Anthropic).
+#   thinking             — coarse extended-thinking level.
+#                          off  = no thinking budget.
+#                          on   = ~4k thinking tokens (provider-mapped).
+#                          high = ~8k thinking tokens.
+#   concurrent_requests  — per-(provider, model) semaphore cap. Bound
+#                          fanout-shaped workloads (one elaborator
+#                          per outline node) below provider RPM
+#                          ceilings without coordination across the
+#                          workflow. Zero = unbounded.
 
-tiers:
-  # Fast tier: cheap, low-latency. Used for the monitor (cycle
-  # detection) and similar high-frequency judgment calls. Google's
-  # flash-lite is first because Gemini free-tier covers light usage
-  # where Anthropic would burn API tokens.
-  fast:
-    - googleai/gemini-2.5-flash-lite
-    - anthropic/claude-haiku-4-5-20251001
+providers:
+  anthropic:
+    fast:
+      model: claude-haiku-4-5-20251001
+      max_output_tokens: 8192
+      thinking: off
+      concurrent_requests: 5
+    balanced:
+      model: claude-sonnet-4-6
+      max_output_tokens: 16384
+      thinking: on
+      concurrent_requests: 4
+    strong:
+      model: claude-opus-4-7
+      max_output_tokens: 32768
+      thinking: high
+      concurrent_requests: 3
 
-  # Balanced tier: default for planner, critic, convergence, and most
-  # council agents. Mid-latency, mid-cost.
-  balanced:
-    - googleai/gemini-2.5-flash
-    - anthropic/claude-sonnet-4-6
+  googleai:
+    fast:
+      model: gemini-2.5-flash-lite
+      max_output_tokens: 16384
+      thinking: off
+      concurrent_requests: 4
+    balanced:
+      model: gemini-2.5-flash
+      max_output_tokens: 32768
+      thinking: on
+      concurrent_requests: 4
+    strong:
+      model: gemini-2.5-pro
+      max_output_tokens: 65536
+      thinking: high
+      concurrent_requests: 2
 
-  # Strong tier: expensive, highest-quality judgment. Used for the
-  # validator / guardian (acceptance checks, permission rulings) and
-  # gap analysis. Anthropic is listed first here because Claude tends
-  # to produce more calibrated code-judgment verdicts; flip the order
-  # via LOCUTUS_MODELS_CONFIG if you prefer Gemini Pro.
-  strong:
-    - anthropic/claude-opus-4-7
-    - googleai/gemini-2.5-pro
-
-# Per-model knobs. Applied when a GenerateRequest doesn't override the
-# field. Add entries here for any model whose provider-default behavior
-# is wrong for spec-generation workloads — most importantly, Gemini's
-# ~8k API-default MaxOutputTokens, which truncates the architect's
-# structured output once the proposal carries inline decisions for
-# several deliverables.
-#
-# max_output_tokens precedence: req.MaxTokens > this knob > provider
-# default. Anthropic plugins reject MaxTokens == 0 — the runtime falls
-# back to a small built-in only when neither request nor knob applies.
-models:
-  # Gemini caps. The 32k/65k figures are well below the model's actual
-  # context-output ceiling but high enough for the architect's spec
-  # output without bloating prompts that don't need the headroom.
-  #
-  # concurrent_requests caps in-flight calls to that model. Tuned to
-  # avoid Gemini's per-minute RPM ceilings on free / preview tiers
-  # under fanout-shaped workloads (Phase 3 elaborate steps fire one
-  # call per outlined node). Bump higher on paid tiers with generous
-  # quotas; lower if you hit 429s.
-  googleai/gemini-2.5-flash-lite:
-    max_output_tokens: 16384
-    concurrent_requests: 4
-  googleai/gemini-2.5-flash:
-    max_output_tokens: 32768
-    concurrent_requests: 4
-  googleai/gemini-2.5-pro:
-    max_output_tokens: 65536
-    concurrent_requests: 2
-  googleai/gemini-3-flash-preview:
-    max_output_tokens: 32768
-    concurrent_requests: 2
-  googleai/gemini-3.1-pro-preview:
-    max_output_tokens: 65536
-    concurrent_requests: 2
-
-  # Anthropic caps. Smaller defaults than Gemini because Claude models
-  # tend to be more efficient with output tokens; bump per-project if
-  # your spec is unusually large.
-  anthropic/claude-haiku-4-5-20251001:
-    max_output_tokens: 8192
-    concurrent_requests: 5
-  anthropic/claude-sonnet-4-6:
-    max_output_tokens: 16384
-    concurrent_requests: 4
-  anthropic/claude-opus-4-7:
-    max_output_tokens: 16384
-    concurrent_requests: 3
+  openai:
+    fast:
+      model: gpt-5-mini
+      max_output_tokens: 8192
+      thinking: off
+      concurrent_requests: 5
+    balanced:
+      model: gpt-5
+      max_output_tokens: 16384
+      thinking: on
+      concurrent_requests: 4
+    strong:
+      model: o3-pro
+      max_output_tokens: 32768
+      thinking: high
+      concurrent_requests: 3

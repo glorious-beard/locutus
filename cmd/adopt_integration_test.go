@@ -113,12 +113,12 @@ func assertError(msg string) error {
 
 // emptyPreflightLLM returns a MockLLM scripted to respond with empty
 // resolutions for every pre-flight call (no ambiguities found).
-func emptyPreflightLLM(n int) *agent.MockLLM {
+func emptyPreflightLLM(n int) *agent.MockExecutor {
 	resps := make([]agent.MockResponse, n)
 	for i := range resps {
-		resps[i] = agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"resolutions": []}`}}
+		resps[i] = agent.MockResponse{Response: &agent.AgentOutput{Content: `{"resolutions": []}`}}
 	}
-	return agent.NewMockLLM(resps...)
+	return agent.NewMockExecutor(resps...)
 }
 
 func TestRunAdoptFullDispatchHappyPath(t *testing.T) {

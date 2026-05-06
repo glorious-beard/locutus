@@ -68,7 +68,7 @@ type RoundResult struct {
 // WorkflowExecutor runs the council workflow using the generic DAG executor
 // with a typed PlanningState blackboard.
 type WorkflowExecutor struct {
-	LLM       LLM
+	Executor  AgentExecutor
 	AgentDefs map[string]AgentDef
 	Workflow  *Workflow
 	Events    chan WorkflowEvent // optional; nil disables progress reporting
@@ -158,9 +158,9 @@ func (e *WorkflowExecutor) executeAgent(ctx context.Context, stepID, agentID str
 	})
 
 	messages := ProjectState(stepID, snap)
-	req := BuildGenerateRequest(def, messages)
+	input := AgentInput{Messages: messages}
 
-	resp, err := GenerateWithRetry(ctx, e.LLM, req, executionRetryConfig())
+	resp, err := RunWithRetry(ctx, e.Executor, def, input, executionRetryConfig())
 	if err != nil {
 		e.emitEvent(stepID, agentID, "error", err.Error())
 		return RoundResult{StepID: stepID, AgentID: agentID, Err: err}
@@ -836,7 +836,7 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 			break
 		}
 
-		verdict, err := CheckConvergence(ctx, e.LLM, monitorDef, state)
+		verdict, err := CheckConvergence(ctx, e.Executor, monitorDef, state)
 		if err != nil {
 			return allResults, fmt.Errorf("convergence check: %w", err)
 		}
@@ -852,7 +852,7 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 		}
 
 		if verdict.Converged {
-			ready, err := CheckReadiness(ctx, e.LLM, e.AgentDefs, state)
+			ready, err := CheckReadiness(ctx, e.Executor, e.AgentDefs, state)
 			if err != nil {
 				return allResults, fmt.Errorf("readiness gate: %w", err)
 			}

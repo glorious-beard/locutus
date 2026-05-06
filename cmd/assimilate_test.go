@@ -59,14 +59,14 @@ max_rounds: 1
 	return fs
 }
 
-func mockAssimilationLLM() *agent.MockLLM {
-	return agent.NewMockLLM(
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"languages":["go"],"frameworks":[],"structure":"single-binary"}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[{"id":"d-go","title":"Go backend","status":"inferred","confidence":0.95}],"entities":[]}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[],"strategies":[]}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[]}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"gaps":[]}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[{"id":"d-testing","title":"Add tests","status":"assumed"}],"features":[]}`}},
+func mockAssimilationLLM() *agent.MockExecutor {
+	return agent.NewMockExecutor(
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"languages":["go"],"frameworks":[],"structure":"single-binary"}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"decisions":[{"id":"d-go","title":"Go backend","status":"inferred","confidence":0.95}],"entities":[]}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"decisions":[],"strategies":[]}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"decisions":[]}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"gaps":[]}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"decisions":[{"id":"d-testing","title":"Add tests","status":"assumed"}],"features":[]}`}},
 	)
 }
 
@@ -122,7 +122,7 @@ func TestRunAssimilateBridgesEventsToSink(t *testing.T) {
 
 func TestRunAssimilateMissingConfig(t *testing.T) {
 	fs := specio.NewMemFS()
-	llm := agent.NewMockLLM()
+	llm := agent.NewMockExecutor()
 
 	result, err := RunAssimilate(context.Background(), llm, fs, false, nil)
 	assert.Error(t, err)
@@ -135,21 +135,21 @@ func TestRunAssimilateMissingConfig(t *testing.T) {
 // scout → analyze → gap → remediate flow with persistable content (one
 // feature + one decision). Used by the persistence tests below; kept
 // separate from mockAssimilationLLM so the assertions are explicit.
-func mockPersistenceLLM() *agent.MockLLM {
-	return agent.NewMockLLM(
+func mockPersistenceLLM() *agent.MockExecutor {
+	return agent.NewMockExecutor(
 		// scout
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"languages":["go"]}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"languages":["go"]}`}},
 		// analyze × 3 (backend, frontend, infra) — put the payload in the first one.
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{
   "features":[{"id":"feat-admin","title":"Admin console","status":"inferred","description":"Observed admin routes in handlers."}],
   "decisions":[{"id":"dec-go","title":"Go backend","status":"inferred","confidence":0.95,"rationale":"go.mod present"}]
 }`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{}`}},
 		// gap
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"gaps":[]}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"gaps":[]}`}},
 		// remediate
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{}`}},
 	)
 }
 
@@ -216,7 +216,7 @@ func TestRunAssimilateRespectsExistingSpec(t *testing.T) {
 	// the existing feature so the scout knows what's already in scope.
 	calls := llm.Calls()
 	require.NotEmpty(t, calls, "LLM must have been invoked")
-	firstPrompt := callToPromptString(calls[0].Request)
+	firstPrompt := callToPromptString(calls[0].Input)
 	assert.Contains(t, firstPrompt, "feat-auth",
 		"scout agent prompt must include existing spec context (feat-auth)")
 }
@@ -270,13 +270,13 @@ func TestRunAssimilateInferredStatusDefault(t *testing.T) {
 	fs := setupAssimilateFS(t)
 
 	// LLM returns a Feature without a status field.
-	llm := agent.NewMockLLM(
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"features":[{"id":"feat-nostatus","title":"Mystery"}]}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"gaps":[]}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{}`}},
+	llm := agent.NewMockExecutor(
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"features":[{"id":"feat-nostatus","title":"Mystery"}]}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"gaps":[]}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{}`}},
 	)
 
 	_, err := RunAssimilate(context.Background(), llm, fs, false, nil)
@@ -293,7 +293,7 @@ func TestRunAssimilateInferredStatusDefault(t *testing.T) {
 // callToPromptString flattens a GenerateRequest into a single string so
 // tests can assert on prompt contents regardless of how the orchestrator
 // split the content across messages.
-func callToPromptString(req agent.GenerateRequest) string {
+func callToPromptString(req agent.AgentInput) string {
 	var b strings.Builder
 	for _, m := range req.Messages {
 		b.WriteString(m.Content)
@@ -308,14 +308,14 @@ func callToPromptString(req agent.GenerateRequest) string {
 // integration: with runRemediate=true, the assumed Decision lands in
 // the AssimilationResult and on disk; with runRemediate=false, only
 // the inferred-spec output lands.
-func mockAssimilationLLMWithGaps() *agent.MockLLM {
-	return agent.NewMockLLM(
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"languages":["go"],"frameworks":[],"structure":"single-binary"}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[{"id":"d-go","title":"Go backend","status":"inferred","confidence":0.95}],"entities":[]}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[],"strategies":[]}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[]}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"gaps":[{"category":"missing_test_framework","severity":"high","description":"no tests configured"}]}`}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"decisions":[{"id":"d-testing","title":"Use go test","status":"assumed","rationale":"fills missing_test_framework gap"}]}`}},
+func mockAssimilationLLMWithGaps() *agent.MockExecutor {
+	return agent.NewMockExecutor(
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"languages":["go"],"frameworks":[],"structure":"single-binary"}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"decisions":[{"id":"d-go","title":"Go backend","status":"inferred","confidence":0.95}],"entities":[]}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"decisions":[],"strategies":[]}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"decisions":[]}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"gaps":[{"category":"missing_test_framework","severity":"high","description":"no tests configured"}]}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"decisions":[{"id":"d-testing","title":"Use go test","status":"assumed","rationale":"fills missing_test_framework gap"}]}`}},
 	)
 }
 

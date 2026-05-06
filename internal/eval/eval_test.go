@@ -14,7 +14,7 @@ import (
 )
 
 // scriptJudge returns a MockLLM that emits one LLM-judge JSON response.
-func scriptJudge(t *testing.T, passed bool, reasoning string, confidence float64) *agent.MockLLM {
+func scriptJudge(t *testing.T, passed bool, reasoning string, confidence float64) *agent.MockExecutor {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{
 		"passed":     passed,
@@ -22,8 +22,8 @@ func scriptJudge(t *testing.T, passed bool, reasoning string, confidence float64
 		"confidence": confidence,
 	})
 	require.NoError(t, err)
-	return agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: string(payload)},
+	return agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: string(payload)},
 	})
 }
 
@@ -100,7 +100,7 @@ func TestLLMJudgePromptContainsTriad(t *testing.T) {
 	calls := llm.Calls()
 	require.Len(t, calls, 1)
 	var prompt strings.Builder
-	for _, m := range calls[0].Request.Messages {
+	for _, m := range calls[0].Input.Messages {
 		prompt.WriteString(m.Content)
 		prompt.WriteString("\n")
 	}
@@ -131,7 +131,7 @@ func TestLLMJudgeArtifactTruncation(t *testing.T) {
 	calls := llm.Calls()
 	require.Len(t, calls, 1)
 	var prompt strings.Builder
-	for _, m := range calls[0].Request.Messages {
+	for _, m := range calls[0].Input.Messages {
 		prompt.WriteString(m.Content)
 	}
 	p := prompt.String()

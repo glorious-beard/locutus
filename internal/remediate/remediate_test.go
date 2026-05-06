@@ -14,17 +14,17 @@ import (
 )
 
 // scriptPlan returns a MockLLM that emits a single Plan JSON response.
-func scriptPlan(t *testing.T, plan remediate.Plan) *agent.MockLLM {
+func scriptPlan(t *testing.T, plan remediate.Plan) *agent.MockExecutor {
 	t.Helper()
 	payload, err := json.Marshal(plan)
 	require.NoError(t, err)
-	return agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: string(payload)},
+	return agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: string(payload)},
 	})
 }
 
 func TestRemediateNoGapsIsNoOp(t *testing.T) {
-	llm := agent.NewMockLLM() // no scripted responses; should never be called
+	llm := agent.NewMockExecutor() // no scripted responses; should never be called
 	result, err := remediate.Remediate(context.Background(), llm, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -136,7 +136,7 @@ func TestRemediatePromptContainsGapsAndExistingSpec(t *testing.T) {
 	calls := llm.Calls()
 	require.Len(t, calls, 1)
 	var prompt strings.Builder
-	for _, m := range calls[0].Request.Messages {
+	for _, m := range calls[0].Input.Messages {
 		prompt.WriteString(m.Content)
 		prompt.WriteString("\n")
 	}

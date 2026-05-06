@@ -200,7 +200,7 @@ func isIgnored(filePath string, patterns []gitignorePattern) bool {
 }
 
 // Analyze runs the full assimilation pipeline using the assimilation council workflow.
-func Analyze(ctx context.Context, llm LLM, fsys specio.FS, req AssimilationRequest) (*AssimilationResult, error) {
+func Analyze(ctx context.Context, exec AgentExecutor, fsys specio.FS, req AssimilationRequest) (*AssimilationResult, error) {
 	const agentsDir = ".borg/agents"
 	const workflowPath = ".borg/workflows/assimilation.yaml"
 
@@ -256,8 +256,8 @@ func Analyze(ctx context.Context, llm LLM, fsys specio.FS, req AssimilationReque
 	prompt := promptBuilder.String()
 
 	// Execute the workflow.
-	exec := &WorkflowExecutor{
-		LLM:       llm,
+	wfExec := &WorkflowExecutor{
+		Executor:  exec,
 		AgentDefs: agentDefs,
 		Workflow:  wf,
 	}
@@ -270,7 +270,7 @@ func Analyze(ctx context.Context, llm LLM, fsys specio.FS, req AssimilationReque
 		sink = SilentSink{}
 	}
 	events := make(chan WorkflowEvent, 64)
-	exec.Events = events
+	wfExec.Events = events
 	bridgeDone := make(chan struct{})
 	go func() {
 		defer close(bridgeDone)
@@ -284,7 +284,7 @@ func Analyze(ctx context.Context, llm LLM, fsys specio.FS, req AssimilationReque
 		sink.Close()
 	}()
 
-	results, err := exec.Run(ctx, prompt)
+	results, err := wfExec.Run(ctx, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("assimilation workflow execution: %w", err)
 	}

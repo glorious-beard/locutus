@@ -99,7 +99,7 @@ type agentReport struct {
 // classification — pre-flight reads from and writes to both.
 func Preflight(
 	ctx context.Context,
-	llm agent.LLM,
+	llm agent.AgentExecutor,
 	fsys specio.FS,
 	graph *spec.SpecGraph,
 	store *state.FileStateStore,
@@ -215,7 +215,7 @@ func approachIDsFromWorkstream(ws spec.Workstream) []string {
 // invokePreflight builds the prompt, calls the LLM, and parses the JSON.
 func invokePreflight(
 	ctx context.Context,
-	llm agent.LLM,
+	llm agent.AgentExecutor,
 	g *spec.SpecGraph,
 	approach spec.Approach,
 	ws spec.Workstream,
@@ -253,14 +253,13 @@ func invokePreflight(
 
 	fmt.Fprintf(&prompt, "\n## Rounds remaining after this one\n%d\n", roundsRemaining)
 
-	req := agent.GenerateRequest{
-		Messages: []agent.Message{
-			{Role: "system", Content: "You are the pre-flight clarifier. Respond with valid JSON matching the PreflightReport schema."},
-			{Role: "user", Content: prompt.String()},
-		},
+	def := agent.AgentDef{
+		ID:           "preflight",
+		SystemPrompt: "You are the pre-flight clarifier. Respond with valid JSON matching the PreflightReport schema.",
 	}
+	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt.String()}}}
 	var out agentReport
-	if err := agent.GenerateInto(ctx, llm, req, &out); err != nil {
+	if err := agent.RunInto(ctx, llm, def, input, &out); err != nil {
 		return nil, fmt.Errorf("preflight: %w", err)
 	}
 	return &out, nil

@@ -19,7 +19,7 @@ import (
 // conversion — the underlying signature is the same.
 //
 // Returns an error if the agent def cannot be loaded or is not found.
-func NamedAgentFn(fsys specio.FS, llm LLM, agentID string) (func(ctx context.Context, userPrompt string) (string, error), error) {
+func NamedAgentFn(fsys specio.FS, exec AgentExecutor, agentID string) (func(ctx context.Context, userPrompt string) (string, error), error) {
 	defs, err := LoadAgentDefs(fsys, ".borg/agents")
 	if err != nil {
 		return nil, fmt.Errorf("load agent defs: %w", err)
@@ -34,14 +34,10 @@ func NamedAgentFn(fsys specio.FS, llm LLM, agentID string) (func(ctx context.Con
 	if def == nil {
 		return nil, fmt.Errorf("agent %q not found under .borg/agents", agentID)
 	}
-	system := def.SystemPrompt
+	bound := *def
 	return func(ctx context.Context, user string) (string, error) {
-		resp, err := llm.Generate(ctx, GenerateRequest{
-			Messages: []Message{
-				{Role: "system", Content: system},
-				{Role: "user", Content: user},
-			},
-		})
+		input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
+		resp, err := exec.Run(ctx, bound, input)
 		if err != nil {
 			return "", err
 		}

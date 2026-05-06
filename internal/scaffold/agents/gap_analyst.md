@@ -1,8 +1,9 @@
 ---
 id: gap_analyst
 role: gap-analysis
-capability: balanced
-temperature: 0.2
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 output_schema: GapAnalysis
 ---
 # Identity

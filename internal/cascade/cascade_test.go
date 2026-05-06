@@ -89,7 +89,7 @@ func setupCascadeFixture(t *testing.T) (specio.FS, *spec.SpecGraph, *state.FileS
 // The JSON body matches the RewriteResult schema.
 func scriptedRewrite(body string, changed bool, rationale string) agent.MockResponse {
 	payload := `{"revised_body":` + quote(body) + `,"changed":` + boolJSON(changed) + `,"rationale":` + quote(rationale) + `}`
-	return agent.MockResponse{Response: &agent.GenerateResponse{Content: payload}}
+	return agent.MockResponse{Response: &agent.AgentOutput{Content: payload}}
 }
 
 func quote(s string) string { return `"` + s + `"` }
@@ -103,7 +103,7 @@ func boolJSON(b bool) string {
 func TestCascadeRewritesBothParentsAndDriftsApproaches(t *testing.T) {
 	fs, g, store := setupCascadeFixture(t)
 
-	llm := agent.NewMockLLM(
+	llm := agent.NewMockExecutor(
 		scriptedRewrite("We are building authentication using Go as the backend language.", true, "Surface the Go decision"),
 		scriptedRewrite("We run the backend in Go with the language decision refreshed.", true, "Clarify that Go is still the chosen language"),
 	)
@@ -139,7 +139,7 @@ func TestCascadeSkipsWhenRewriterReportsNoChange(t *testing.T) {
 	fs, g, store := setupCascadeFixture(t)
 
 	// Both rewrites report no change needed.
-	llm := agent.NewMockLLM(
+	llm := agent.NewMockExecutor(
 		scriptedRewrite("We are building authentication using the previously-chosen language.", false, "Already accurate"),
 		scriptedRewrite("We run the backend in Go.", false, "Already accurate"),
 	)
@@ -162,7 +162,7 @@ func TestCascadeSkipsWhenRewriterReportsNoChange(t *testing.T) {
 
 func TestCascadeUnknownDecisionErrors(t *testing.T) {
 	fs, g, store := setupCascadeFixture(t)
-	llm := agent.NewMockLLM()
+	llm := agent.NewMockExecutor()
 
 	_, err := cascade.Cascade(context.Background(), llm, fs, g, store, "nope")
 	assert.Error(t, err)
@@ -174,7 +174,7 @@ func TestCascadeUnknownDecisionErrors(t *testing.T) {
 func TestCascadeRecordsHistoryEvents(t *testing.T) {
 	fs, g, store := setupCascadeFixture(t)
 
-	llm := agent.NewMockLLM(
+	llm := agent.NewMockExecutor(
 		scriptedRewrite("revised feat", true, "updated to reflect Go"),
 		scriptedRewrite("revised strat", true, "clarified Go choice"),
 	)
@@ -207,7 +207,7 @@ func TestCascadeMarksDriftEvenWithoutPriorState(t *testing.T) {
 	emptyStore := state.NewFileStateStore(fs, ".borg/state-fresh")
 	require.NoError(t, fs.MkdirAll(".borg/state-fresh", 0o755))
 
-	llm := agent.NewMockLLM(
+	llm := agent.NewMockExecutor(
 		scriptedRewrite("revised feat", true, "note the Go decision"),
 		scriptedRewrite("revised strat", true, "confirm Go"),
 	)

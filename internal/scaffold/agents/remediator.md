@@ -1,8 +1,9 @@
 ---
 id: remediator
 role: remediation
-capability: balanced
-temperature: 0.3
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 output_schema: RemediationPlan
 ---
 # Identity

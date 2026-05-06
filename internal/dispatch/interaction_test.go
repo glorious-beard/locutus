@@ -62,8 +62,8 @@ func sendPermRequest(t *testing.T, socketPath string, req PermRequest) net.Conn 
 // --- handleInteraction tests --------------------------------------------
 
 func TestHandleInteraction_PermissionAllow(t *testing.T) {
-	validator := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: "ALLOW"},
+	validator := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: "ALLOW"},
 	})
 	bridge, err := NewPermBridge()
 	require.NoError(t, err)
@@ -97,8 +97,8 @@ func TestHandleInteraction_PermissionAllow(t *testing.T) {
 }
 
 func TestHandleInteraction_PermissionDeny(t *testing.T) {
-	validator := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: "DENY: network egress not permitted for this step"},
+	validator := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: "DENY: network egress not permitted for this step"},
 	})
 	bridge, err := NewPermBridge()
 	require.NoError(t, err)
@@ -162,7 +162,7 @@ func TestHandleInteraction_MissingValidator_DeniesDefensively(t *testing.T) {
 // channel the test can push parser events into.
 func newBridgedTestSupervisor(
 	t *testing.T,
-	validator agent.LLM,
+	validator agent.AgentExecutor,
 ) (*Supervisor, *fakeStreamingDriver, *PermBridge, chan streamResult) {
 	t.Helper()
 	bridge, err := NewPermBridge()
@@ -186,8 +186,8 @@ func newBridgedTestSupervisor(
 }
 
 func TestRunAttempt_PermissionEventMergedMidStream(t *testing.T) {
-	validator := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: "ALLOW"},
+	validator := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: "ALLOW"},
 	})
 	sup, driver, bridge, parserCh := newBridgedTestSupervisor(t, validator)
 

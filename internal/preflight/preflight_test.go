@@ -73,7 +73,7 @@ func setupPreflightFixture(t *testing.T) (
 // specResolutionJSON returns an agent response that resolves all questions
 // from the spec graph (no assumptions).
 func specResolutionJSON(q, answer, specNode string) agent.MockResponse {
-	return agent.MockResponse{Response: &agent.GenerateResponse{Content: `{
+	return agent.MockResponse{Response: &agent.AgentOutput{Content: `{
   "resolutions": [
     {"question": "` + q + `", "source": "spec", "spec_node_id": "` + specNode + `", "answer": "` + answer + `"}
   ]
@@ -88,7 +88,7 @@ func assumedResolutionJSON(q, answer, title, rationale string, confidence float6
     {"question": "` + q + `", "source": "assumed", "answer": "` + answer + `", "assumed_decision": {"title": "` + title + `", "rationale": "` + rationale + `", "confidence": ` + floatJSON(confidence) + `}}
   ]
 }`
-	return agent.MockResponse{Response: &agent.GenerateResponse{Content: payload}}
+	return agent.MockResponse{Response: &agent.AgentOutput{Content: payload}}
 }
 
 func floatJSON(f float64) string {
@@ -99,7 +99,7 @@ func formatFloat(f float64) string { return fmt.Sprintf("%.2f", f) }
 // emptyResolutionsJSON — the happy path exit: agent finds nothing to
 // clarify.
 func emptyResolutionsJSON() agent.MockResponse {
-	return agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"resolutions": []}`}}
+	return agent.MockResponse{Response: &agent.AgentOutput{Content: `{"resolutions": []}`}}
 }
 
 // "fmt" import only needed for test formatting helpers above.
@@ -107,7 +107,7 @@ func emptyResolutionsJSON() agent.MockResponse {
 
 func TestPreflightNoAmbiguitiesExitsEarly(t *testing.T) {
 	fs, g, store, ws, approaches := setupPreflightFixture(t)
-	llm := agent.NewMockLLM(emptyResolutionsJSON())
+	llm := agent.NewMockExecutor(emptyResolutionsJSON())
 
 	report, err := preflight.Preflight(context.Background(), llm, fs, g, store, ws, approaches, 3)
 	require.NoError(t, err)
@@ -122,7 +122,7 @@ func TestPreflightNoAmbiguitiesExitsEarly(t *testing.T) {
 
 func TestPreflightSpecResolutionSkipsDecisionCreation(t *testing.T) {
 	fs, g, store, ws, approaches := setupPreflightFixture(t)
-	llm := agent.NewMockLLM(
+	llm := agent.NewMockExecutor(
 		specResolutionJSON(
 			"What hashing algorithm should the password flow use?",
 			"bcrypt with cost factor 12",
@@ -156,7 +156,7 @@ func TestPreflightAssumedResolutionCreatesDecisionAndCascades(t *testing.T) {
 		ApproachID: "app-oauth", SpecHash: "sha256:prior", Status: state.StatusLive,
 	}))
 
-	llm := agent.NewMockLLM(
+	llm := agent.NewMockExecutor(
 		// Round 1: one assumed resolution.
 		assumedResolutionJSON(
 			"What session TTL should we use when the user ticks 'remember me'?",
@@ -166,7 +166,7 @@ func TestPreflightAssumedResolutionCreatesDecisionAndCascades(t *testing.T) {
 			0.6,
 		),
 		// Cascade invocation for the new Decision — rewriter returns no change.
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"revised_body": "We hash passwords with bcrypt.", "changed": false, "rationale": "New decision does not affect parent prose"}`}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"revised_body": "We hash passwords with bcrypt.", "changed": false, "rationale": "New decision does not affect parent prose"}`}},
 		// Round 2: agent finds nothing new → early exit.
 		emptyResolutionsJSON(),
 	)
@@ -194,7 +194,7 @@ func TestPreflightRejectsInvalidConfidence(t *testing.T) {
 	fs, g, store, ws, approaches := setupPreflightFixture(t)
 
 	// Confidence >= 1.0 must be rejected — DJ-071 requires the range (0,1).
-	llm := agent.NewMockLLM(
+	llm := agent.NewMockExecutor(
 		assumedResolutionJSON("Q?", "A.", "Some title", "Some rationale", 1.0),
 	)
 
@@ -205,12 +205,12 @@ func TestPreflightRejectsInvalidConfidence(t *testing.T) {
 func TestPreflightRejectsSpecResolutionWithoutSpecNode(t *testing.T) {
 	fs, g, store, ws, approaches := setupPreflightFixture(t)
 
-	malformed := agent.MockResponse{Response: &agent.GenerateResponse{Content: `{
+	malformed := agent.MockResponse{Response: &agent.AgentOutput{Content: `{
   "resolutions": [
     {"question": "Q?", "source": "spec", "answer": "A."}
   ]
 }`}}
-	llm := agent.NewMockLLM(malformed)
+	llm := agent.NewMockExecutor(malformed)
 
 	_, err := preflight.Preflight(context.Background(), llm, fs, g, store, ws, approaches, 3)
 	assert.Error(t, err)
@@ -221,7 +221,7 @@ func TestPreflightExitsWhenAgentStabilises(t *testing.T) {
 
 	// Two rounds of questions then one empty round. Preflight should stop
 	// at the empty round, not burn the full maxRounds budget.
-	llm := agent.NewMockLLM(
+	llm := agent.NewMockExecutor(
 		specResolutionJSON("first?", "answer one", "dec-bcrypt"),
 		specResolutionJSON("second?", "answer two", "dec-bcrypt"),
 		emptyResolutionsJSON(),

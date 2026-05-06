@@ -65,7 +65,7 @@ max_rounds: 1
 // minAgentMD builds a minimal agent .md file that LoadAgentDefs can
 // parse. We don't care about the prose body in tests — the mock LLM is
 // what produces output; the agent def just needs to declare model tier
-// + output schema so BuildGenerateRequest wires the request correctly.
+// + output schema so BuildAgentInput wires the request correctly.
 func minAgentMD(id, role, capability, schema string) string {
 	return fmt.Sprintf(`---
 id: %s
@@ -124,14 +124,14 @@ const (
 )
 
 func TestGenerateSpecRequiresGoals(t *testing.T) {
-	mock := NewMockLLM()
+	mock := NewMockExecutor()
 	_, err := GenerateSpec(context.Background(), mock, nil, SpecGenRequest{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "GoalsBody is required")
 }
 
 func TestGenerateSpecRequiresFSys(t *testing.T) {
-	mock := NewMockLLM()
+	mock := NewMockExecutor()
 	_, err := GenerateSpec(context.Background(), mock, nil, SpecGenRequest{GoalsBody: "build it"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fsys is required")
@@ -140,14 +140,14 @@ func TestGenerateSpecRequiresFSys(t *testing.T) {
 func TestGenerateSpecCleanProposalSkipsRevise(t *testing.T) {
 	// Phase 2 flow: scout → propose → reconcile → 4 critics (all empty)
 	// → no revise → no reconcile_revise = 7 calls.
-	mock := NewMockLLM(
-		MockResponse{Response: &GenerateResponse{Content: scoutResp, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: rawProposalCanonical, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+	mock := NewMockExecutor(
+		MockResponse{Response: &AgentOutput{Content: scoutResp, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: rawProposalCanonical, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
 	)
 	fs := setupSpecGenFixture(t)
 
@@ -172,14 +172,14 @@ func TestGenerateSpecBridgesEventsToSink(t *testing.T) {
 	// workflow's events make it through to the supplied EventSink. This
 	// validates the bridging goroutine in GenerateSpec (channel → sink)
 	// and confirms Close() fires after the run.
-	mock := NewMockLLM(
-		MockResponse{Response: &GenerateResponse{Content: scoutResp, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: rawProposalCanonical, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+	mock := NewMockExecutor(
+		MockResponse{Response: &AgentOutput{Content: scoutResp, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: rawProposalCanonical, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
 	)
 	fs := setupSpecGenFixture(t)
 
@@ -267,20 +267,20 @@ func TestGenerateSpecCritiqueRevisesProposal(t *testing.T) {
 		"features": [{"id":"feat-x","title":"X","description":"a feature","decisions":[{"title":"Use D","rationale":"r","confidence":0.8,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]},{"title":"Cache reads","rationale":"r","confidence":0.7,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]}]}],
 		"strategies": [{"id":"strat-x","title":"S","kind":"foundational","body":"prose"}]
 	}`
-	mock := NewMockLLM(
-		MockResponse{Response: &GenerateResponse{Content: scoutResp, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: rawProposalCanonical, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
+	mock := NewMockExecutor(
+		MockResponse{Response: &AgentOutput{Content: scoutResp, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: rawProposalCanonical, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
 		// Four critic responses: one flags, three are empty. Order is
 		// non-deterministic across goroutines, but the count is fixed.
-		MockResponse{Response: &GenerateResponse{Content: criticDangler, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticDangler, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
 		// revise emits a new RawSpecProposal.
-		MockResponse{Response: &GenerateResponse{Content: rawRevised, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: rawRevised, Model: "m"}},
 		// reconcile_revise emits an empty verdict (no clusters need merging).
-		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
 	)
 	fs := setupSpecGenFixture(t)
 
@@ -304,14 +304,14 @@ func TestGenerateSpecScoutBriefReachesProposer(t *testing.T) {
 		"implicit_assumptions":["scale: 100k registered, 1k concurrent. Default: small team"],
 		"watch_outs":["BigQuery costs at scale"]
 	}`
-	mock := NewMockLLM(
-		MockResponse{Response: &GenerateResponse{Content: scout, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: rawProposalCanonical, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: criticEmpty, Model: "m"}},
+	mock := NewMockExecutor(
+		MockResponse{Response: &AgentOutput{Content: scout, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: rawProposalCanonical, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
 	)
 	fs := setupSpecGenFixture(t)
 
@@ -323,7 +323,7 @@ func TestGenerateSpecScoutBriefReachesProposer(t *testing.T) {
 	// Find the proposer call. Order: 0=scout, 1=propose, 2=reconcile, 3-6=critics.
 	calls := mock.Calls()
 	require.GreaterOrEqual(t, len(calls), 2)
-	proposerUser := calls[1].Request.Messages[len(calls[1].Request.Messages)-1].Content
+	proposerUser := calls[1].Input.Messages[len(calls[1].Input.Messages)-1].Content
 	assert.Contains(t, proposerUser, "electoral campaign tooling",
 		"proposer should see the scout's domain_read")
 	assert.Contains(t, proposerUser, "scale: 100k registered, 1k concurrent",
@@ -337,16 +337,16 @@ func TestGenerateSpecCriticIssuesReachReviser(t *testing.T) {
 	// each issue into a Concern entry. The revise call (architect round
 	// 2) should then see the concerns formatted in its user message.
 	scout := `{"domain_read":"x"}`
-	mock := NewMockLLM(
-		MockResponse{Response: &GenerateResponse{Content: scout, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: rawProposalCanonical, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: `{"issues":["arch issue"]}`, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: `{"issues":["devops issue"]}`, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: `{"issues":["sre issue"]}`, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: `{"issues":["cost issue"]}`, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: rawProposalCanonical, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: reconcileEmpty, Model: "m"}},
+	mock := NewMockExecutor(
+		MockResponse{Response: &AgentOutput{Content: scout, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: rawProposalCanonical, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: `{"issues":["arch issue"]}`, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: `{"issues":["devops issue"]}`, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: `{"issues":["sre issue"]}`, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: `{"issues":["cost issue"]}`, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: rawProposalCanonical, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
 	)
 	fs := setupSpecGenFixture(t)
 
@@ -361,7 +361,7 @@ func TestGenerateSpecCriticIssuesReachReviser(t *testing.T) {
 	// The revise call is at index 7 (after the 4 critics). Its user
 	// content should mention every critic's issue, with role-based
 	// attribution from projectRevise.
-	revise := calls[7].Request.Messages
+	revise := calls[7].Input.Messages
 	revisePrompt := strings.Join(messageContents(revise), "\n")
 	assert.Contains(t, revisePrompt, "arch issue")
 	assert.Contains(t, revisePrompt, "devops issue")

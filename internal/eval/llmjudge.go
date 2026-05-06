@@ -27,7 +27,7 @@ const defaultArtifactCapBytes = 64 * 1024
 // evaluation framework; the JSON-output schema (passed / reasoning /
 // confidence) is Locutus-native.
 type LLMJudge struct {
-	LLM              agent.LLM
+	LLM              agent.AgentExecutor
 	ArtifactCapBytes int // 0 uses defaultArtifactCapBytes
 }
 
@@ -55,13 +55,12 @@ func (j *LLMJudge) Evaluate(ctx context.Context, c EvalCase) (*EvalMetric, error
 
 	prompt := j.buildPrompt(c)
 
-	req := agent.GenerateRequest{
-		Messages: []agent.Message{
-			{Role: "system", Content: "You are the llm_judge evaluator. Respond with valid JSON matching the schema {passed: bool, reasoning: string, confidence: number}."},
-			{Role: "user", Content: prompt},
-		},
+	def := agent.AgentDef{
+		ID:           "llm_judge",
+		SystemPrompt: "You are the llm_judge evaluator. Respond with valid JSON matching the schema {passed: bool, reasoning: string, confidence: number}.",
 	}
-	resp, err := j.LLM.Generate(ctx, req)
+	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt}}}
+	resp, err := j.LLM.Run(ctx, def, input)
 	if err != nil {
 		return nil, fmt.Errorf("llm_judge generate: %w", err)
 	}

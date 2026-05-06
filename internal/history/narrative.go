@@ -38,7 +38,7 @@ type GenerateFn func(ctx context.Context, userPrompt string) (string, error)
 // NarrativeConfig bundles the options `GenerateNarrative` accepts. LLM
 // access is expressed as `GenerateFn` callbacks so the history package
 // stays free of a direct agent-package dependency (agent already imports
-// history). The cmd/history path wraps an `agent.LLM` into both fns.
+// history). The cmd/history path wraps an `agent.AgentExecutor` into both fns.
 type NarrativeConfig struct {
 	// Generate is the default LLM callback if ArchivistFn / AnalystFn
 	// aren't set. Tests can pass a single MockLLM-backed adapter through

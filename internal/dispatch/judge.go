@@ -61,9 +61,9 @@ func (s *Supervisor) monitorCycle(ctx context.Context, step spec.PlanStep, event
 	summary := SummarizeEvents(events)
 	prompt := fmt.Sprintf("Step goal: %s\n\nRecent agent activity:\n%s", step.Description, summary)
 
-	req := agent.BuildGenerateRequest(def, []agent.Message{{Role: "user", Content: prompt}})
+	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt}}}
 	var verdict CycleVerdict
-	if err := agent.GenerateIntoWithRetry(ctx, s.cfg.FastLLM, req, fastMonitorRetry, &verdict); err != nil {
+	if err := agent.RunIntoWithRetry(ctx, s.cfg.FastLLM, def, input, fastMonitorRetry, &verdict); err != nil {
 		return nil, fmt.Errorf("monitor verdict: %w", err)
 	}
 	return &verdict, nil

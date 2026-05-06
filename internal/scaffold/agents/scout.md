@@ -1,8 +1,9 @@
 ---
 id: scout
 role: codebase-discovery
-capability: balanced
-temperature: 0.2
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 output_schema: ScoutSummary
 ---
 # Identity

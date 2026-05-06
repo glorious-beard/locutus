@@ -33,7 +33,7 @@ type GenerationSummary struct {
 // Strategy bodies are captured separately because spec.Strategy has no
 // body field; they are written into the .md sidecar via SavePair after
 // the JSON has been normalised.
-func runSpecGeneration(ctx context.Context, llm agent.LLM, fsys specio.FS, req agent.SpecGenRequest) (*GenerationSummary, error) {
+func runSpecGeneration(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, req agent.SpecGenRequest) (*GenerationSummary, error) {
 	// Default the critic to one round when the caller hasn't been
 	// explicit. The propose→critique→revise cycle catches the dangling
 	// references and missing-alternative violations that the proposer
@@ -84,7 +84,7 @@ func runSpecGeneration(ctx context.Context, llm agent.LLM, fsys specio.FS, req a
 // the prose under the canonical decisions, saves back. Aggregates errors
 // rather than aborting: a single bad rewrite shouldn't roll back the
 // entire spec generation.
-func cascadeAfterReconcile(ctx context.Context, llm agent.LLM, fsys specio.FS, proposal *agent.SpecProposal) error {
+func cascadeAfterReconcile(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, proposal *agent.SpecProposal) error {
 	if len(proposal.ConflictActions) == 0 {
 		return nil
 	}
@@ -165,7 +165,7 @@ func decisionsByIDs(lookup map[string]spec.Decision, ids []string) []spec.Decisi
 // rewriteFeatureOnDisk reloads the just-persisted feature, runs the
 // in-memory rewriter, and saves the new body back. Returns nil when the
 // rewriter judges the prose already accurate.
-func rewriteFeatureOnDisk(ctx context.Context, llm agent.LLM, fsys specio.FS, f agent.FeatureProposal, applicable []spec.Decision) error {
+func rewriteFeatureOnDisk(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, f agent.FeatureProposal, applicable []spec.Decision) error {
 	persisted, _, err := specio.LoadPair[spec.Feature](fsys, ".borg/spec/features/"+f.ID)
 	if err != nil {
 		return fmt.Errorf("load: %w", err)
@@ -187,7 +187,7 @@ func rewriteFeatureOnDisk(ctx context.Context, llm agent.LLM, fsys specio.FS, f 
 // rewriteStrategyOnDisk does the same for strategies. Strategy prose
 // lives in the .md sidecar, not the typed struct, so the rewriter sees
 // and replaces the .md body.
-func rewriteStrategyOnDisk(ctx context.Context, llm agent.LLM, fsys specio.FS, s agent.StrategyProposal, applicable []spec.Decision) error {
+func rewriteStrategyOnDisk(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, s agent.StrategyProposal, applicable []spec.Decision) error {
 	persisted, body, err := specio.LoadPair[spec.Strategy](fsys, ".borg/spec/strategies/"+s.ID)
 	if err != nil {
 		return fmt.Errorf("load: %w", err)

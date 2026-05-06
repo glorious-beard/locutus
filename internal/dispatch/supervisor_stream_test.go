@@ -234,7 +234,7 @@ func manyToolCalls(n int) []AgentEvent {
 // newTestSupervisorWithMonitor wires a streaming supervisor with a scripted
 // FastLLM (for monitorCycle) and a monitor agent def so ShouldCheck+judge
 // actually exercise the integrated path.
-func newTestSupervisorWithMonitor(t *testing.T, parser StreamParser, fastLLM agent.LLM, logger *slog.Logger) (*Supervisor, *fakeStreamingDriver) {
+func newTestSupervisorWithMonitor(t *testing.T, parser StreamParser, fastLLM agent.AgentExecutor, logger *slog.Logger) (*Supervisor, *fakeStreamingDriver) {
 	t.Helper()
 	rc := &trackingReadCloser{}
 	runner := func(cmd *exec.Cmd) (io.ReadCloser, error) { return rc, nil }
@@ -250,8 +250,8 @@ func newTestSupervisorWithMonitor(t *testing.T, parser StreamParser, fastLLM age
 }
 
 func TestRunAttempt_MonitorAbortsOnChurn(t *testing.T) {
-	fast := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{
+	fast := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{
 			Content: `{"is_cycle":true,"confidence":0.9,"pattern":"file_thrashing","reasoning":"same file edited twice"}`,
 		},
 	})
@@ -276,8 +276,8 @@ func TestRunAttempt_MonitorAbortsOnChurn(t *testing.T) {
 }
 
 func TestRunAttempt_MonitorContinuesOnHealthy(t *testing.T) {
-	fast := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{
+	fast := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{
 			Content: `{"is_cycle":false,"confidence":0.1,"reasoning":"healthy iteration"}`,
 		},
 	})
@@ -293,8 +293,8 @@ func TestRunAttempt_MonitorContinuesOnHealthy(t *testing.T) {
 
 func TestRunAttempt_MonitorLowConfidenceDoesNotAbort(t *testing.T) {
 	// IsCycle=true with confidence below the 0.7 threshold must NOT abort.
-	fast := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{
+	fast := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{
 			Content: `{"is_cycle":true,"confidence":0.5,"pattern":"file_thrashing","reasoning":"maybe cycling but unclear"}`,
 		},
 	})

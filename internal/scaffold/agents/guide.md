@@ -1,8 +1,9 @@
 ---
 id: guide
 role: guidance
-capability: strong
-temperature: 0.3
+models:
+  - {provider: anthropic, tier: strong}
+  - {provider: googleai, tier: strong}
 ---
 # Identity
 

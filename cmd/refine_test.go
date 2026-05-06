@@ -84,7 +84,7 @@ func setupRefineFS(t *testing.T) specio.FS {
 
 // scriptRewriter returns a MockLLM that emits a single RewriteResult JSON
 // response matching the rewriter/synthesizer output schema.
-func scriptRewriter(t *testing.T, changed bool, body, rationale string) *agent.MockLLM {
+func scriptRewriter(t *testing.T, changed bool, body, rationale string) *agent.MockExecutor {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{
 		"revised_body": body,
@@ -92,8 +92,8 @@ func scriptRewriter(t *testing.T, changed bool, body, rationale string) *agent.M
 		"rationale":    rationale,
 	})
 	require.NoError(t, err)
-	return agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: string(payload)},
+	return agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: string(payload)},
 	})
 }
 
@@ -235,16 +235,16 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 	// (workflow YAML has parallel: true); the mock would race on
 	// positional consumption otherwise. Agent-tagged responses match
 	// the source agent regardless of arrival order at the mock.
-	mock := agent.NewMockLLM(
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: scoutResp, Model: "m"}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: outlineResp, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_feature_elaborator", Response: &agent.GenerateResponse{Content: featureElaborateResp, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_strategy_elaborator", Response: &agent.GenerateResponse{Content: strategyElaborateResp, Model: "m"}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: reconcileEmpty, Model: "m"}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: `{"issues":[]}`, Model: "m"}},
+	mock := agent.NewMockExecutor(
+		agent.MockResponse{Response: &agent.AgentOutput{Content: scoutResp, Model: "m"}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: outlineResp, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_feature_elaborator", Response: &agent.AgentOutput{Content: featureElaborateResp, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_strategy_elaborator", Response: &agent.AgentOutput{Content: strategyElaborateResp, Model: "m"}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: reconcileEmpty, Model: "m"}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 	)
 
 	result, err := RunRefineGoals(context.Background(), mock, fs, nil)

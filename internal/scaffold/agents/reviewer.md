@@ -1,8 +1,9 @@
 ---
 id: reviewer
 role: review
-capability: balanced
-temperature: 0.2
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 ---
 # Identity
 

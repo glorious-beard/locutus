@@ -1,8 +1,9 @@
 ---
 id: planner
 role: planning
-capability: balanced
-temperature: 0.7
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 output_schema: MasterPlan
 ---
 # Identity

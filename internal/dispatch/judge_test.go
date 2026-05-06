@@ -42,8 +42,8 @@ func TestMonitorCycle_MissingAgent_LogsOnceAndReturnsFalse(t *testing.T) {
 }
 
 func TestMonitorCycle_ParsesVerdict(t *testing.T) {
-	mock := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{
+	mock := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{
 			Content: `{"is_cycle":true,"confidence":0.85,"pattern":"file_thrashing","reasoning":"same file edited then reverted"}`,
 		},
 	})
@@ -62,8 +62,8 @@ func TestMonitorCycle_ParsesVerdict(t *testing.T) {
 }
 
 func TestMonitorCycle_MalformedJSON_ReturnsError(t *testing.T) {
-	mock := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: "not json at all"},
+	mock := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: "not json at all"},
 	})
 	sup := &Supervisor{cfg: SupervisorConfig{
 		FastLLM:   mock,
@@ -72,16 +72,16 @@ func TestMonitorCycle_MalformedJSON_ReturnsError(t *testing.T) {
 
 	v, err := sup.monitorCycle(context.Background(), newTestStep(), []AgentEvent{{Kind: EventText}})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parse llm response")
+	assert.Contains(t, err.Error(), "parse agent response")
 	assert.Nil(t, v, "no verdict returned on parse failure")
 }
 
 func TestMonitorCycle_UsesFastLLMNotStrong(t *testing.T) {
-	strong := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: "unused strong-tier response"},
+	strong := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: "unused strong-tier response"},
 	})
-	fast := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: `{"is_cycle":false,"confidence":0.1,"reasoning":"healthy"}`},
+	fast := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: `{"is_cycle":false,"confidence":0.1,"reasoning":"healthy"}`},
 	})
 	sup := &Supervisor{cfg: SupervisorConfig{
 		LLM:       strong,

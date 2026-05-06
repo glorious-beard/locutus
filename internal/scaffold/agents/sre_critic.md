@@ -1,9 +1,9 @@
 ---
 id: sre_critic
 role: review
-capability: balanced
-temperature: 0.2
-thinking_budget: 2048
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 output_schema: CriticIssues
 ---
 # Identity

@@ -1,0 +1,191 @@
+// Package adapters defines the per-provider boundary the Locutus
+// AgentExecutor dispatches through. Each Adapter translates a
+// provider-neutral Request into one or more native SDK calls (driving
+// the provider's own tool-use loop where applicable) and returns a
+// provider-neutral Response the executor surfaces to its caller.
+//
+// Adapters do not depend on internal/agent — the types here are
+// self-contained so the agent package can import adapters without a
+// cycle. The cost is light translation in the executor when threading
+// requests in / responses out.
+package adapters
+
+import (
+	"context"
+	"encoding/json"
+)
+
+// Adapter is implemented by each provider-specific adapter
+// (Anthropic, Gemini, OpenAI Responses). Run executes one logical
+// agent call, including any internal tool-use loop the model drives.
+type Adapter interface {
+	// Provider returns the canonical provider name this adapter
+	// serves (e.g. "anthropic", "googleai", "openai"). Used for
+	// log lines and the Pick.Provider match in the executor's
+	// adapter table.
+	Provider() string
+
+	// Run dispatches the request to the provider and returns a
+	// neutral Response. Multi-round tool-use is the adapter's
+	// responsibility: the executor hands over the full ToolDef
+	// list, the adapter loops as the model emits tool calls,
+	// dispatches Handler, feeds results back into the next turn,
+	// and aggregates per-round telemetry into Response.Rounds.
+	Run(ctx context.Context, req Request) (*Response, error)
+}
+
+// Role is the message role on a chat turn.
+type Role string
+
+const (
+	RoleSystem    Role = "system"
+	RoleUser      Role = "user"
+	RoleAssistant Role = "assistant"
+)
+
+// Message is one turn in the conversation handed to the adapter.
+// System prompts are passed as the first message with RoleSystem;
+// adapters split them out into provider-native system fields where
+// the API expects that shape (Anthropic, Gemini system_instruction).
+type Message struct {
+	Role    Role
+	Content string
+}
+
+// ThinkingLevel is a coarse thinking-budget enum the executor
+// resolves from per-tier config in models.yaml. Adapters translate
+// to provider-specific values:
+//
+//   - Anthropic: ThinkingOff disables; ThinkingOn → 4096 budget;
+//     ThinkingHigh → 8192 budget.
+//   - Gemini: ThinkingOn → IncludeThoughts true + 4096 budget;
+//     ThinkingHigh → 8192 budget.
+//   - OpenAI o-series: ThinkingOn → reasoning_effort medium;
+//     ThinkingHigh → reasoning_effort high.
+type ThinkingLevel string
+
+const (
+	ThinkingOff  ThinkingLevel = "off"
+	ThinkingOn   ThinkingLevel = "on"
+	ThinkingHigh ThinkingLevel = "high"
+)
+
+// Request is the provider-neutral input the executor builds for a
+// single agent call. Fields stay flat / value-typed so adapters can
+// inspect them without callbacks back into the agent package.
+type Request struct {
+	// Model is the concrete provider-side model string the policy
+	// resolved (e.g. "claude-sonnet-4-6", "gemini-2.5-flash"). The
+	// adapter passes this to its SDK as-is — no further resolution
+	// or fallback inside the adapter.
+	Model string
+
+	// SystemPrompt is the agent's system-prompt body. Adapters
+	// place this in the provider-native system slot rather than as
+	// a chat turn so prompt-cache prefixes stay aligned with
+	// provider expectations.
+	SystemPrompt string
+
+	// Messages are the user-side turns (already projected from
+	// PlanningState). Adapters DO NOT see RoleSystem entries here;
+	// the system prompt arrives via SystemPrompt.
+	Messages []Message
+
+	// MaxOutputTokens caps the model's response length. Zero means
+	// "use the provider default" — Anthropic adapters substitute a
+	// safe minimum since the SDK rejects MaxTokens=0.
+	MaxOutputTokens int
+
+	// Thinking is the resolved thinking-level. Adapters set
+	// provider-specific budget knobs from this enum.
+	Thinking ThinkingLevel
+
+	// OutputSchema is the JSON Schema (as a generic map) the model's
+	// response must conform to. Each adapter projects this into the
+	// provider-native strict-mode shape: Anthropic forced tool-use,
+	// Gemini responseSchema, OpenAI Responses json_schema strict.
+	// Nil means free-form output. Mutually exclusive with Tools on
+	// Gemini (the adapter falls back to prompt-only schema doc with
+	// a Warn when both are set).
+	OutputSchema map[string]any
+
+	// Grounding requests provider-native search grounding. Anthropic
+	// has no native grounding through the SDK today; the adapter
+	// logs a Warn and proceeds ungrounded. Gemini attaches the
+	// GoogleSearch tool. OpenAI Responses attaches web_search_preview.
+	Grounding bool
+
+	// Tools is the set of locutus-owned tools the model may dispatch.
+	// Each carries its name, description, JSON-Schema input shape,
+	// and a handler the adapter invokes when the model emits a tool
+	// request. The adapter drives the loop until the model emits a
+	// final response without further tool requests.
+	Tools []ToolDef
+}
+
+// ToolDef is one entry in Request.Tools. The adapter advertises the
+// (Name, Description, InputSchema) tuple to the model in the
+// provider's tool-spec format and invokes Handler when the model
+// dispatches a call. Handler input is the model-emitted JSON
+// arguments verbatim; output is the JSON the adapter feeds back as
+// the tool result on the next turn.
+type ToolDef struct {
+	Name        string
+	Description string
+	InputSchema map[string]any
+	Handler     func(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
+}
+
+// Response is the provider-neutral result of one agent call. Token
+// counts are reported separately rather than as one TokensUsed total
+// so session traces can show the input/output/thoughts split — useful
+// for spotting prompts that have grown unexpectedly large or thinking
+// spends that overshot the agent's intent.
+type Response struct {
+	// Content is the model's final text response. For schema-
+	// constrained calls this is the strict-mode JSON output.
+	Content string
+
+	// Reasoning is the concatenated extended-thinking text when the
+	// call ran with a non-zero thinking budget. Empty when thinking
+	// was off or the provider redacted thoughts.
+	Reasoning string
+
+	// RawMessage is a JSON dump of the underlying provider's final
+	// message payload. Surfaced for diagnostic-only paths where
+	// Content alone doesn't carry enough information (truncated
+	// structured outputs, non-text parts in tool-use loops).
+	RawMessage string
+
+	// Model echoes the model the adapter actually called. Useful
+	// when the executor falls back across the agent's models[]
+	// preference list and the trace needs to record which fallback
+	// fired.
+	Model string
+
+	InputTokens    int
+	OutputTokens   int
+	ThoughtsTokens int
+	TotalTokens    int
+
+	// Rounds carries per-round captures across a multi-round tool-
+	// use loop. Single-round calls leave it nil and rely on the
+	// top-level Reasoning / Content / RawMessage fields. The
+	// executor surfaces this through to the session trace so an
+	// operator can see what the model asked tools to do, not just
+	// the final response after the loop completed.
+	Rounds []Round
+}
+
+// Round is one model invocation inside a multi-round tool-use loop.
+// Mirrors the per-round shape session traces already record so the
+// adapter doesn't need a translation layer in the executor.
+type Round struct {
+	Index          int
+	Reasoning      string
+	Text           string
+	Message        string
+	InputTokens    int
+	OutputTokens   int
+	ThoughtsTokens int
+}

@@ -86,9 +86,7 @@ type SpecGenRequest struct {
 	DocumentID   string
 	Existing     *ExistingSpec
 
-	// Capability, Model, CritiqueRounds — advisory; see type comment.
-	Capability     CapabilityTier
-	Model          string
+	// CritiqueRounds — advisory; see type comment.
 	CritiqueRounds int
 
 	// Sink, when non-nil, receives a WorkflowEvent for every agent
@@ -142,7 +140,7 @@ type CriticIssues struct {
 // MaxIntegrityRetries failed attempts, GenerateSpec returns an
 // IntegrityViolationError instead of producing a degraded proposal —
 // silent stripping would mask a council failure the user cares about.
-func GenerateSpec(ctx context.Context, llm LLM, fsys specio.FS, req SpecGenRequest) (*SpecProposal, error) {
+func GenerateSpec(ctx context.Context, exec AgentExecutor, fsys specio.FS, req SpecGenRequest) (*SpecProposal, error) {
 	if strings.TrimSpace(req.GoalsBody) == "" {
 		return nil, fmt.Errorf("GenerateSpec: GoalsBody is required")
 	}
@@ -165,7 +163,7 @@ func GenerateSpec(ctx context.Context, llm LLM, fsys specio.FS, req SpecGenReque
 	}
 
 	executor := &WorkflowExecutor{
-		LLM:       llm,
+		Executor:  exec,
 		AgentDefs: agentDefs,
 		Workflow:  wf,
 		Existing:  req.Existing,
@@ -254,7 +252,7 @@ func GenerateSpec(ctx context.Context, llm LLM, fsys specio.FS, req SpecGenReque
 			Message:   fmt.Sprintf("repairing %d dangling reference(s)", len(warnings)),
 			Timestamp: time.Now(),
 		}
-		repaired, err := reviseForIntegrity(ctx, llm, archDef, prompt, &proposal, warnings)
+		repaired, err := reviseForIntegrity(ctx, exec, archDef, prompt, &proposal, warnings)
 		if err != nil {
 			events <- WorkflowEvent{
 				StepID:    stepID,
@@ -317,7 +315,7 @@ func (e *IntegrityViolationError) Error() string {
 // SpecProposal given a list of integrity violations. Single LLM call
 // — the violations are mechanical so we don't need critics to
 // re-discover them, just the architect to fix them.
-func reviseForIntegrity(ctx context.Context, llm LLM, archDef AgentDef, originalPrompt string, prev *SpecProposal, warnings []IntegrityWarning) (*SpecProposal, error) {
+func reviseForIntegrity(ctx context.Context, exec AgentExecutor, archDef AgentDef, originalPrompt string, prev *SpecProposal, warnings []IntegrityWarning) (*SpecProposal, error) {
 	prevJSON, err := json.MarshalIndent(prev, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal previous proposal: %w", err)
@@ -344,8 +342,8 @@ func reviseForIntegrity(ctx context.Context, llm LLM, archDef AgentDef, original
 	b.Write(prevJSON)
 	b.WriteString("\n```\n\nRe-emit the COMPLETE corrected SpecProposal as a single JSON object. No diff. No partial object. No prose.")
 
-	req := BuildGenerateRequest(archDef, []Message{{Role: "user", Content: b.String()}})
-	resp, err := llm.Generate(WithRole(ctx, "integrity_revise"), req)
+	input := AgentInput{Messages: []Message{{Role: "user", Content: b.String()}}}
+	resp, err := exec.Run(WithRole(ctx, "integrity_revise"), archDef, input)
 	if err != nil {
 		return nil, err
 	}

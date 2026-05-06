@@ -1,8 +1,9 @@
 ---
 id: monitor
 role: supervision
-capability: fast
-temperature: 0.0
+models:
+  - {provider: anthropic, tier: fast}
+  - {provider: googleai, tier: fast}
 ---
 # Identity
 

@@ -1,9 +1,9 @@
 ---
 id: spec_finding_clusterer
 role: planning
-capability: balanced
-temperature: 0.2
-thinking_budget: 2048
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 output_schema: LLMFindingClusters
 ---
 # Identity

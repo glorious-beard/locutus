@@ -64,7 +64,7 @@ type Result struct {
 // call). A nil llm with non-empty gaps is an error — silently skipping
 // remediation when an LLM provider is unconfigured would produce a
 // false-clean result for autonomous brownfield runs.
-func Remediate(ctx context.Context, llm agent.LLM, gaps []agent.Gap, existing *agent.ExistingSpec) (*Result, error) {
+func Remediate(ctx context.Context, llm agent.AgentExecutor, gaps []agent.Gap, existing *agent.ExistingSpec) (*Result, error) {
 	if len(gaps) == 0 {
 		return &Result{Plan: &Plan{}}, nil
 	}
@@ -172,15 +172,14 @@ func mergeUnique(existing, added []string) []string {
 
 // invokeRemediator assembles the remediator prompt from gaps + existing
 // spec context and parses the structured Plan response.
-func invokeRemediator(ctx context.Context, llm agent.LLM, gaps []agent.Gap, existing *agent.ExistingSpec) (*Plan, error) {
-	req := agent.GenerateRequest{
-		Messages: []agent.Message{
-			{Role: "system", Content: "You are the gap remediator. Respond with valid JSON matching the Plan schema {decisions, strategies, features, feature_updates}."},
-			{Role: "user", Content: buildPrompt(gaps, existing)},
-		},
+func invokeRemediator(ctx context.Context, llm agent.AgentExecutor, gaps []agent.Gap, existing *agent.ExistingSpec) (*Plan, error) {
+	def := agent.AgentDef{
+		ID:           "remediator",
+		SystemPrompt: "You are the gap remediator. Respond with valid JSON matching the Plan schema {decisions, strategies, features, feature_updates}.",
 	}
+	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: buildPrompt(gaps, existing)}}}
 	var plan Plan
-	if err := agent.GenerateInto(ctx, llm, req, &plan); err != nil {
+	if err := agent.RunInto(ctx, llm, def, input, &plan); err != nil {
 		return nil, fmt.Errorf("remediator: %w", err)
 	}
 	return &plan, nil

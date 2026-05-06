@@ -1,8 +1,9 @@
 ---
 id: llm_judge
 role: evaluation
-capability: fast
-temperature: 0.1
+models:
+  - {provider: anthropic, tier: fast}
+  - {provider: googleai, tier: fast}
 output_schema: LLMJudgeResult
 ---
 

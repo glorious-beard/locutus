@@ -1,8 +1,9 @@
 ---
 id: infra_analyzer
 role: infrastructure-analysis
-capability: balanced
-temperature: 0.3
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 output_schema: InfraAnalysis
 ---
 # Identity

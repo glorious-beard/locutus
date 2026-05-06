@@ -86,20 +86,19 @@ func TestExecuteRoundFanoutSpawnsOnePerItem(t *testing.T) {
 		"spec_feature_elaborator": {
 			ID:           "spec_feature_elaborator",
 			Role:         "planning",
-			Capability:   CapabilityStrong,
 			OutputSchema: "RawFeatureProposal",
 			SystemPrompt: "You are an elaborator.",
 		},
 	}
 
-	mock := NewMockLLM(
-		MockResponse{Response: &GenerateResponse{Content: `{"id":"feat-a","title":"A","decisions":[]}`, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: `{"id":"feat-b","title":"B","decisions":[]}`, Model: "m"}},
-		MockResponse{Response: &GenerateResponse{Content: `{"id":"feat-c","title":"C","decisions":[]}`, Model: "m"}},
+	mock := NewMockExecutor(
+		MockResponse{Response: &AgentOutput{Content: `{"id":"feat-a","title":"A","decisions":[]}`, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: `{"id":"feat-b","title":"B","decisions":[]}`, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: `{"id":"feat-c","title":"C","decisions":[]}`, Model: "m"}},
 	)
 
 	ex := &WorkflowExecutor{
-		LLM:       mock,
+		Executor: mock,
 		AgentDefs: defs,
 		Workflow:  &Workflow{},
 	}
@@ -123,7 +122,7 @@ func TestExecuteRoundFanoutSpawnsOnePerItem(t *testing.T) {
 	allPrompts := make([]string, 0, 3)
 	for _, c := range calls {
 		// Last message is the user message.
-		msgs := c.Request.Messages
+		msgs := c.Input.Messages
 		require.NotEmpty(t, msgs)
 		allPrompts = append(allPrompts, msgs[len(msgs)-1].Content)
 	}
@@ -148,9 +147,9 @@ func TestExecuteRoundFanoutSpawnsOnePerItem(t *testing.T) {
 // nothing to iterate returns cleanly without firing any agent calls.
 func TestExecuteRoundFanoutEmptyOutlineNoOps(t *testing.T) {
 	state := &PlanningState{Outline: `{"features":[],"strategies":[]}`}
-	mock := NewMockLLM()
+	mock := NewMockExecutor()
 	ex := &WorkflowExecutor{
-		LLM:       mock,
+		Executor: mock,
 		AgentDefs: map[string]AgentDef{"spec_feature_elaborator": {ID: "spec_feature_elaborator"}},
 	}
 	step := WorkflowStep{

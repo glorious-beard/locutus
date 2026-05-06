@@ -5,77 +5,70 @@ import (
 	"sync"
 )
 
-// MockCall records a single call made to the mock LLM.
+// MockCall records one dispatch made through MockExecutor for test
+// assertions. Captures the AgentDef and AgentInput exactly as the
+// caller submitted them.
 type MockCall struct {
-	Request GenerateRequest
+	Def   AgentDef
+	Input AgentInput
 }
 
-// MockResponse is a scripted response for the mock LLM. If Err is non-nil,
-// Generate returns that error instead of the response.
+// MockResponse is a scripted output for MockExecutor. If Err is
+// non-nil, Run returns the error instead of the output.
 //
-// AgentID, when set, scopes the response to a specific source agent —
-// the mock matches against AgentIDFromContext at call time and only
-// serves agent-tagged responses to matching callers. This keeps tests
-// deterministic when steps run in parallel (Phase 3 fanout fires
-// concurrent goroutines whose mutex-acquisition order is non-
-// deterministic; positional ordering would race). Mixing tagged and
-// untagged responses works: tagged responses match only their agent;
-// untagged responses fall back to positional consumption for callers
-// with no agent id, or no matching tagged response.
+// AgentID, when set, scopes the response to a specific source
+// agent: the mock matches against AgentDef.ID at call time and only
+// serves agent-tagged responses to matching callers. Tagged and
+// untagged responses can mix — tagged responses match only their
+// agent; untagged responses fall back to positional consumption.
 type MockResponse struct {
 	AgentID  string
-	Response *GenerateResponse
+	Response *AgentOutput
 	Err      error
 	consumed bool
 }
 
-// MockLLM implements LLM with scripted responses for testing. Responses are
-// consumed in order; if exhausted, Generate returns an error. All calls are
-// recorded for assertion.
-type MockLLM struct {
+// MockExecutor implements AgentExecutor with scripted responses for
+// testing. Responses are consumed in order; if exhausted, Run
+// returns an error. All calls are recorded for assertion.
+type MockExecutor struct {
 	mu        sync.Mutex
 	responses []MockResponse
 	calls     []MockCall
 	pos       int
 }
 
-// NewMockLLM creates a MockLLM with the given scripted responses.
-func NewMockLLM(responses ...MockResponse) *MockLLM {
-	return &MockLLM{responses: responses}
+// NewMockExecutor creates a MockExecutor with the given scripted
+// responses.
+func NewMockExecutor(responses ...MockResponse) *MockExecutor {
+	return &MockExecutor{responses: responses}
 }
 
-// Generate returns the next scripted response, or an error if exhausted.
-// It respects context cancellation/deadline.
-func (m *MockLLM) Generate(ctx context.Context, req GenerateRequest) (*GenerateResponse, error) {
-	// Check context first — simulates timeout behavior.
+// Run returns the next scripted response, or an error if exhausted.
+// Honors context cancellation by surfacing ErrTimeout — simulates
+// the per-call deadline behavior production adapters implement.
+func (m *MockExecutor) Run(ctx context.Context, def AgentDef, input AgentInput) (*AgentOutput, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ErrTimeout
 	}
 
-	// Honor the acquired-callback contract real LLMs implement (see
-	// GenKitLLM.Generate after acquireConcurrency). Workflow tests
-	// exercising the queued → started transition need the mock to
-	// invoke the callback at the moment the call "leaves the queue."
-	// Mock has no semaphore, so we fire it immediately.
 	if cb := AcquiredCallbackFromContext(ctx); cb != nil {
 		cb()
 	}
 
-	agentID := AgentIDFromContext(ctx)
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.calls = append(m.calls, MockCall{Request: req})
+	m.calls = append(m.calls, MockCall{Def: def, Input: input})
 
-	// Agent-id-scoped match takes precedence: a response tagged with
-	// AgentID is served only to that agent. Lets parallel tests script
-	// a deterministic per-agent response without depending on the
-	// goroutine arrival order at the mutex.
-	if agentID != "" {
+	// Tagged-response match takes precedence: a response with
+	// AgentID set is served only to that agent. Lets parallel
+	// tests script per-agent responses without depending on
+	// goroutine arrival order.
+	if def.ID != "" {
 		for i := range m.responses {
 			r := &m.responses[i]
-			if r.consumed || r.AgentID == "" || r.AgentID != agentID {
+			if r.consumed || r.AgentID == "" || r.AgentID != def.ID {
 				continue
 			}
 			r.consumed = true
@@ -86,17 +79,13 @@ func (m *MockLLM) Generate(ctx context.Context, req GenerateRequest) (*GenerateR
 		}
 	}
 
-	// Untagged responses fall back to positional consumption,
-	// preserving existing test fixtures that don't care about
-	// agent routing.
 	for m.pos < len(m.responses) {
 		r := &m.responses[m.pos]
 		m.pos++
 		if r.consumed {
 			continue
 		}
-		if r.AgentID != "" && r.AgentID != agentID {
-			// A different agent's tagged response — skip past it.
+		if r.AgentID != "" && r.AgentID != def.ID {
 			continue
 		}
 		r.consumed = true
@@ -109,7 +98,7 @@ func (m *MockLLM) Generate(ctx context.Context, req GenerateRequest) (*GenerateR
 }
 
 // Calls returns all recorded calls.
-func (m *MockLLM) Calls() []MockCall {
+func (m *MockExecutor) Calls() []MockCall {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := make([]MockCall, len(m.calls))
@@ -118,14 +107,14 @@ func (m *MockLLM) Calls() []MockCall {
 }
 
 // CallCount returns the number of calls made.
-func (m *MockLLM) CallCount() int {
+func (m *MockExecutor) CallCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.calls)
 }
 
 // Reset clears all calls and resets the response position.
-func (m *MockLLM) Reset(responses ...MockResponse) {
+func (m *MockExecutor) Reset(responses ...MockResponse) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.responses = responses

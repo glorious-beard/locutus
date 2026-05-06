@@ -297,9 +297,9 @@ func TestAssembleRevisedRawProposalEmptyOriginalReturnsNothing(t *testing.T) {
 // items and the step is a no-op without firing any LLM calls.
 func TestExecuteRoundReviseFanoutSkipsWithoutClusters(t *testing.T) {
 	state := &PlanningState{}
-	mock := NewMockLLM()
+	mock := NewMockExecutor()
 	ex := &WorkflowExecutor{
-		LLM: mock,
+		Executor: mock,
 		AgentDefs: map[string]AgentDef{
 			"spec_feature_elaborator":  {ID: "spec_feature_elaborator"},
 			"spec_strategy_elaborator": {ID: "spec_strategy_elaborator"},

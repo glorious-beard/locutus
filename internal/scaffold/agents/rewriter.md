@@ -1,8 +1,9 @@
 ---
 id: rewriter
 role: synthesis
-capability: fast
-temperature: 0.2
+models:
+  - {provider: anthropic, tier: fast}
+  - {provider: googleai, tier: fast}
 output_schema: RewriteResult
 ---
 # Identity

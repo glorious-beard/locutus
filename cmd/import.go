@@ -61,7 +61,7 @@ func (c *ImportCmd) Run(ctx context.Context, cli *CLI) error {
 	// Construct the LLM up front when we know we'll need it (intake
 	// runs unless --skip-triage). Wrapping in a SessionRecorder means
 	// every council call lands under .locutus/sessions/.
-	var llm agent.LLM
+	var llm agent.AgentExecutor
 	var rec *agent.SessionRecorder
 	if !c.SkipTriage {
 		llm, rec, err = recordingLLM(fsys, root, "import "+c.Path)
@@ -102,7 +102,7 @@ func (c *ImportCmd) Run(ctx context.Context, cli *CLI) error {
 // sourcePath is optional: when present, it's used as a deterministic
 // fallback for id/title when --skip-triage is set or the LLM is
 // unavailable. noPlan suppresses the post-admission planning pass.
-func RunImport(ctx context.Context, llm agent.LLM, fsys specio.FS, data []byte, sourcePath, kind string, skipTriage, noPlan, dryRun bool, sink agent.EventSink) (*ImportResult, error) {
+func RunImport(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, data []byte, sourcePath, kind string, skipTriage, noPlan, dryRun bool, sink agent.EventSink) (*ImportResult, error) {
 	result := &ImportResult{DryRun: dryRun, SkippedTriage: skipTriage, SkippedPlan: noPlan}
 
 	// 1. Resolve metadata: frontmatter > LLM intake > filename fallback.
@@ -181,7 +181,7 @@ func RunImport(ctx context.Context, llm agent.LLM, fsys specio.FS, data []byte, 
 // runFeatureGeneration runs the spec-generation LLM call against the
 // admitted feature, treating the feature body as the document and
 // extending the existing spec graph with the LLM's output.
-func runFeatureGeneration(ctx context.Context, llm agent.LLM, fsys specio.FS, meta *importMetadata, sink agent.EventSink) (*GenerationSummary, error) {
+func runFeatureGeneration(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, meta *importMetadata, sink agent.EventSink) (*GenerationSummary, error) {
 	if llm == nil {
 		return nil, fmt.Errorf("planning pass: no LLM provided")
 	}
@@ -340,7 +340,7 @@ type importFrontmatter struct {
 // llm is required when skipTriage=false; the caller is expected to pass
 // the recording-wrapped LLM constructed at the top of the subcommand.
 // Pass nil when skipTriage=true.
-func resolveImportMetadata(ctx context.Context, llm agent.LLM, fsys specio.FS, data []byte, sourcePath, kind string, skipTriage bool) (*importMetadata, *agent.IntakeResult, error) {
+func resolveImportMetadata(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, data []byte, sourcePath, kind string, skipTriage bool) (*importMetadata, *agent.IntakeResult, error) {
 	var fm importFrontmatter
 	body, err := frontmatter.Parse(data, &fm)
 	if err != nil {

@@ -44,8 +44,8 @@ func TestAdoptSynthesizesMissingApproachOnDryRun(t *testing.T) {
 		"changed":      true,
 		"rationale":    "synthesized from feature prose",
 	})
-	llm := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: string(synthBody)},
+	llm := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: string(synthBody)},
 	})
 
 	report, err := RunAdoptWithConfig(context.Background(), AdoptConfig{
@@ -74,8 +74,8 @@ func TestAdoptSynthesizesMissingApproachAndPersists(t *testing.T) {
 		"changed":      true,
 		"rationale":    "synthesized",
 	})
-	llm := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: string(synthBody)},
+	llm := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: string(synthBody)},
 	})
 
 	report, err := RunAdoptWithConfig(context.Background(), AdoptConfig{
@@ -108,7 +108,7 @@ func TestAdoptSkipsSynthesisWhenParentAlreadyHasApproach(t *testing.T) {
 	// Pre-existing approach: synthesis should NOT fire.
 	fs := setupAdoptFixture(t)
 
-	llm := agent.NewMockLLM() // no responses scripted; any call would fail
+	llm := agent.NewMockExecutor() // no responses scripted; any call would fail
 
 	report, err := RunAdoptWithConfig(context.Background(), AdoptConfig{
 		FS:     fs,
@@ -137,8 +137,8 @@ func TestAdoptSynthesizeRespectsScope(t *testing.T) {
 		"changed":      true,
 		"rationale":    "x",
 	})
-	llm := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: string(synthBody)},
+	llm := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: string(synthBody)},
 	})
 
 	report, err := RunAdoptWithConfig(context.Background(), AdoptConfig{

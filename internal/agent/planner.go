@@ -22,7 +22,7 @@ type PlanRequest struct {
 }
 
 // Plan runs the full greenfield planning pipeline.
-func Plan(ctx context.Context, llm LLM, fsys specio.FS, req PlanRequest) (*spec.MasterPlan, error) {
+func Plan(ctx context.Context, exec AgentExecutor, fsys specio.FS, req PlanRequest) (*spec.MasterPlan, error) {
 	// 1. Load agent definitions.
 	defs, err := LoadAgentDefs(fsys, ".borg/agents")
 	if err != nil {
@@ -43,7 +43,7 @@ func Plan(ctx context.Context, llm LLM, fsys specio.FS, req PlanRequest) (*spec.
 
 	// 4. Create workflow executor.
 	executor := &WorkflowExecutor{
-		LLM:       llm,
+		Executor:  exec,
 		AgentDefs: agentDefs,
 		Workflow:  wf,
 	}

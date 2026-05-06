@@ -62,7 +62,7 @@ type RewriteResult struct {
 // Partial progress is preserved in `Result` even when the error is non-nil.
 func Cascade(
 	ctx context.Context,
-	llm agent.LLM,
+	llm agent.AgentExecutor,
 	fsys specio.FS,
 	graph *spec.SpecGraph,
 	store *state.FileStateStore,
@@ -172,7 +172,7 @@ func applicableDecisions(g *spec.SpecGraph, ids []string) []spec.Decision {
 // `refine` can reuse the same mechanism for non-Decision-driven rewrites.
 func RewriteFeature(
 	ctx context.Context,
-	llm agent.LLM,
+	llm agent.AgentExecutor,
 	fsys specio.FS,
 	f spec.Feature,
 	applicable, changed []spec.Decision,
@@ -198,7 +198,7 @@ func RewriteFeature(
 // and the body.
 func RewriteStrategy(
 	ctx context.Context,
-	llm agent.LLM,
+	llm agent.AgentExecutor,
 	fsys specio.FS,
 	s spec.Strategy,
 	applicable, changed []spec.Decision,
@@ -223,7 +223,7 @@ func RewriteStrategy(
 // FixPlan are incident-diagnosis fields and are left untouched.
 func RewriteBug(
 	ctx context.Context,
-	llm agent.LLM,
+	llm agent.AgentExecutor,
 	fsys specio.FS,
 	b spec.Bug,
 	applicable, changed []spec.Decision,
@@ -249,7 +249,7 @@ func RewriteBug(
 // reconcile cascade pass before persistence) call this directly.
 func InvokeRewriter(
 	ctx context.Context,
-	llm agent.LLM,
+	llm agent.AgentExecutor,
 	parentKind, parentID, parentTitle, currentBody string,
 	applicable, changed []spec.Decision,
 ) (*RewriteResult, error) {
@@ -263,7 +263,7 @@ func InvokeRewriter(
 // constrain the response at the API layer rather than after the fact.
 func invokeRewriter(
 	ctx context.Context,
-	llm agent.LLM,
+	llm agent.AgentExecutor,
 	parentKind, parentID, parentTitle, currentBody string,
 	applicable, changed []spec.Decision,
 ) (*RewriteResult, error) {
@@ -282,14 +282,13 @@ func invokeRewriter(
 		fmt.Fprintf(&prompt, "- %s — %s\n", d.ID, d.Title)
 	}
 
-	req := agent.GenerateRequest{
-		Messages: []agent.Message{
-			{Role: "system", Content: "You are the cascade rewriter. Respond with valid JSON matching the RewriteResult schema."},
-			{Role: "user", Content: prompt.String()},
-		},
+	def := agent.AgentDef{
+		ID:           "rewriter",
+		SystemPrompt: "You are the cascade rewriter. Respond with valid JSON matching the RewriteResult schema.",
 	}
+	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt.String()}}}
 	var out RewriteResult
-	if err := agent.GenerateInto(agent.WithRole(ctx, "rewriter"), llm, req, &out); err != nil {
+	if err := agent.RunInto(agent.WithRole(ctx, "rewriter"), llm, def, input, &out); err != nil {
 		return nil, fmt.Errorf("rewriter: %w", err)
 	}
 	return &out, nil

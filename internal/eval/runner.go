@@ -23,7 +23,7 @@ type Runner struct {
 // Runner still works, but AssertionKindLLMReview evaluations fail fast
 // with a clear "llm provider required" error. Callers without an LLM
 // should either not register LLMJudge or accept that error.
-func NewRunner(llm agent.LLM) *Runner {
+func NewRunner(llm agent.AgentExecutor) *Runner {
 	r := &Runner{evaluators: make(map[spec.AssertionKind]Evaluator)}
 	r.Register(spec.AssertionKindLLMReview, &LLMJudge{LLM: llm})
 	return r

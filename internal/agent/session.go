@@ -307,15 +307,15 @@ func (r *SessionRecorder) ManifestPath() string {
 	return path.Join(r.dir, SessionManifestFile)
 }
 
-// Record stores one LLM call as a single completed entry. Equivalent
-// to Begin(...) immediately followed by Finish(...) and retained for
-// callers that don't need the live placeholder. callTag, when
-// non-empty, is appended to the per-call file name as a stable suffix
-// (see WithCallTag). Safe for concurrent use.
-func (r *SessionRecorder) Record(role, agentID, callTag string, req GenerateRequest, resp *GenerateResponse, callErr error, started time.Time, duration time.Duration) {
-	h := r.Begin(role, agentID, callTag, req, started)
+// Record stores one agent call as a single completed entry.
+// Equivalent to Begin(...) immediately followed by Finish(...) and
+// retained for callers that don't need the live placeholder.
+// callTag, when non-empty, is appended to the per-call file name
+// as a stable suffix (see WithCallTag). Safe for concurrent use.
+func (r *SessionRecorder) Record(role, agentID, callTag string, def AgentDef, input AgentInput, out *AgentOutput, callErr error, started time.Time, duration time.Duration) {
+	h := r.Begin(role, agentID, callTag, def, input, started)
 	completedAt := started.Add(duration)
-	h.finishAt(resp, callErr, completedAt, duration)
+	h.finishAt(out, callErr, completedAt, duration)
 }
 
 // callHandle is returned from Begin and threaded into Finish so the
@@ -340,7 +340,7 @@ type callHandle struct {
 // tail of the session directory reveals what's currently in flight;
 // a SIGKILL between Begin and Finish preserves the input messages
 // but loses the output. Safe for concurrent use.
-func (r *SessionRecorder) Begin(role, agentID, callTag string, req GenerateRequest, started time.Time) *callHandle {
+func (r *SessionRecorder) Begin(role, agentID, callTag string, def AgentDef, input AgentInput, started time.Time) *callHandle {
 	r.mu.Lock()
 	r.nextIndex++
 	idx := r.nextIndex
@@ -352,10 +352,13 @@ func (r *SessionRecorder) Begin(role, agentID, callTag string, req GenerateReque
 		Role:         role,
 		Status:       CallStatusInProgress,
 		StartedAt:    started.Format(time.RFC3339),
-		Model:        req.Model,
-		OutputSchema: req.OutputSchema != nil,
+		OutputSchema: def.OutputSchema != "",
 	}
-	for _, m := range req.Messages {
+	systemPrompt := BuildSystemPrompt(def)
+	if systemPrompt != "" {
+		call.Messages = append(call.Messages, recordedMessage{Role: "system", Content: systemPrompt})
+	}
+	for _, m := range input.Messages {
 		call.Messages = append(call.Messages, recordedMessage{Role: m.Role, Content: m.Content})
 	}
 
@@ -384,19 +387,19 @@ func (r *SessionRecorder) Begin(role, agentID, callTag string, req GenerateReque
 // Finish completes the call this handle was issued for. Idempotent
 // on a nil handle so callers can defer h.Finish(...) without nil
 // checks even when Begin was never called.
-func (h *callHandle) Finish(resp *GenerateResponse, callErr error) {
+func (h *callHandle) Finish(out *AgentOutput, callErr error) {
 	if h == nil || h.recorder == nil {
 		return
 	}
 	completedAt := time.Now()
-	h.finishAt(resp, callErr, completedAt, completedAt.Sub(h.started))
+	h.finishAt(out, callErr, completedAt, completedAt.Sub(h.started))
 }
 
 // finishAt is the shared backend for Finish (real-time) and Record
 // (synthetic time). Mutates the handle's recordedCall, flushes the
 // per-call file, then drops the handle from the recorder's in-flight
 // set so the call's payload becomes GC-eligible.
-func (h *callHandle) finishAt(resp *GenerateResponse, callErr error, completedAt time.Time, duration time.Duration) {
+func (h *callHandle) finishAt(out *AgentOutput, callErr error, completedAt time.Time, duration time.Duration) {
 	h.call.CompletedAt = completedAt.Format(time.RFC3339)
 	h.call.DurationMS = duration.Milliseconds()
 	if callErr != nil {
@@ -405,16 +408,16 @@ func (h *callHandle) finishAt(resp *GenerateResponse, callErr error, completedAt
 	} else {
 		h.call.Status = CallStatusCompleted
 	}
-	if resp != nil {
-		h.call.Response = resp.Content
-		h.call.Reasoning = resp.Reasoning
-		h.call.RawMessage = resp.RawMessage
-		h.call.InputTokens = resp.InputTokens
-		h.call.OutputTokens = resp.OutputTokens
-		h.call.ThoughtsTokens = resp.ThoughtsTokens
-		h.call.TotalTokens = resp.TotalTokens
+	if out != nil {
+		h.call.Response = out.Content
+		h.call.Reasoning = out.Reasoning
+		h.call.RawMessage = out.RawMessage
+		h.call.InputTokens = out.InputTokens
+		h.call.OutputTokens = out.OutputTokens
+		h.call.ThoughtsTokens = out.ThoughtsTokens
+		h.call.TotalTokens = out.TotalTokens
 		if h.call.Model == "" {
-			h.call.Model = resp.Model
+			h.call.Model = out.Model
 		}
 		// Multi-round tool-use captures: copy each round's snapshot
 		// into the per-call file so the trace shows what the model
@@ -422,9 +425,9 @@ func (h *callHandle) finishAt(resp *GenerateResponse, callErr error, completedAt
 		// just the final response. Single-round calls leave Rounds
 		// nil — the top-level Reasoning/Response/RawMessage already
 		// carry that round's data.
-		if len(resp.Rounds) > 0 {
-			h.call.Rounds = make([]recordedRound, len(resp.Rounds))
-			for i, r := range resp.Rounds {
+		if len(out.Rounds) > 0 {
+			h.call.Rounds = make([]recordedRound, len(out.Rounds))
+			for i, r := range out.Rounds {
 				h.call.Rounds[i] = recordedRound{
 					Index:          r.Index,
 					Reasoning:      r.Reasoning,
@@ -539,61 +542,63 @@ func newShortSessionID() string {
 	return hex.EncodeToString(rnd[:])
 }
 
-// LoggingLLM wraps any LLM and routes every Generate call through a
-// SessionRecorder before delegating. The role tag for each call is read
-// from ctx via RoleFromContext (set by callers via WithRole).
+// LoggingExecutor wraps any AgentExecutor and routes every Run call
+// through a SessionRecorder before delegating. The role tag for each
+// call is read from ctx via RoleFromContext (set by callers via
+// WithRole).
 //
-// Heartbeat: when HeartbeatEnabled is true, an in-flight call emits a
-// periodic "still running" log line so an operator watching stderr
+// Heartbeat: when HeartbeatEnabled is true, an in-flight call emits
+// a periodic "still running" log line so an operator watching stderr
 // sees the call hasn't deadlocked. Callers that already render
 // per-call progress through another channel (CLI spinners, MCP
 // progress notifications) should pass false to keep stderr quiet.
-type LoggingLLM struct {
-	inner            LLM
+type LoggingExecutor struct {
+	inner            AgentExecutor
 	recorder         *SessionRecorder
 	HeartbeatEnabled bool
 }
 
-// NewLoggingLLM wraps inner with recording. Heartbeat defaults to off
-// — callers turn it on with NewLoggingLLMWithHeartbeat when they
-// don't have a per-call UI of their own. Existing callers that don't
-// pass a heartbeat preference get silent behavior, matching the CLI
-// rich path where the spinner is the visibility surface.
-func NewLoggingLLM(inner LLM, recorder *SessionRecorder) *LoggingLLM {
-	return &LoggingLLM{inner: inner, recorder: recorder}
+// NewLoggingExecutor wraps inner with recording. Heartbeat defaults
+// to off — callers turn it on with NewLoggingExecutorWithHeartbeat
+// when they don't have a per-call UI of their own. Existing callers
+// that don't pass a heartbeat preference get silent behavior,
+// matching the CLI rich path where the spinner is the visibility
+// surface.
+func NewLoggingExecutor(inner AgentExecutor, recorder *SessionRecorder) *LoggingExecutor {
+	return &LoggingExecutor{inner: inner, recorder: recorder}
 }
 
-// NewLoggingLLMWithHeartbeat is the same as NewLoggingLLM but
-// configures the heartbeat. Used by --plain CLI mode and the MCP
-// server, which do not own per-call UI.
-func NewLoggingLLMWithHeartbeat(inner LLM, recorder *SessionRecorder, heartbeat bool) *LoggingLLM {
-	return &LoggingLLM{inner: inner, recorder: recorder, HeartbeatEnabled: heartbeat}
+// NewLoggingExecutorWithHeartbeat is the same as NewLoggingExecutor
+// but configures the heartbeat. Used by --plain CLI mode and the
+// MCP server, which do not own per-call UI.
+func NewLoggingExecutorWithHeartbeat(inner AgentExecutor, recorder *SessionRecorder, heartbeat bool) *LoggingExecutor {
+	return &LoggingExecutor{inner: inner, recorder: recorder, HeartbeatEnabled: heartbeat}
 }
 
-// Generate delegates to the inner LLM and records the call. The
-// recorder gets an in-progress entry at start so a tail of the per-call
-// file reveals what's currently in flight. A heartbeat goroutine logs
-// "still running" every heartbeatInterval so an operator watching
-// stderr knows the call hasn't deadlocked even when the underlying
-// non-streaming Generate produces no output of its own.
-func (l *LoggingLLM) Generate(ctx context.Context, req GenerateRequest) (*GenerateResponse, error) {
+// Run delegates to the inner AgentExecutor and records the call. The
+// recorder gets an in-progress entry at start so a tail of the per-
+// call file reveals what's currently in flight. A heartbeat goroutine
+// logs "still running" every heartbeatInterval so an operator
+// watching stderr knows the call hasn't deadlocked even when the
+// underlying non-streaming Run produces no output of its own.
+func (l *LoggingExecutor) Run(ctx context.Context, def AgentDef, input AgentInput) (*AgentOutput, error) {
 	started := time.Now()
 	role := RoleFromContext(ctx)
 	agentID := AgentIDFromContext(ctx)
 	callTag := CallTagFromContext(ctx)
-	handle := l.recorder.Begin(role, agentID, callTag, req, started)
+	handle := l.recorder.Begin(role, agentID, callTag, def, input, started)
 
 	var stop func()
 	if l.HeartbeatEnabled {
-		stop = startHeartbeat(role, req.Model, started)
+		stop = startHeartbeat(role, def.ID, started)
 	} else {
 		stop = func() {}
 	}
 	defer stop()
 
-	resp, err := l.inner.Generate(ctx, req)
-	handle.Finish(resp, err)
-	return resp, err
+	out, err := l.inner.Run(ctx, def, input)
+	handle.Finish(out, err)
+	return out, err
 }
 
 // EnvKeyLLMHeartbeat overrides the heartbeat interval. Accepts any
@@ -645,4 +650,4 @@ func startHeartbeat(role, model string, started time.Time) (stop func()) {
 
 // Recorder exposes the underlying recorder so callers can read the
 // session id / path for log messages.
-func (l *LoggingLLM) Recorder() *SessionRecorder { return l.recorder }
+func (l *LoggingExecutor) Recorder() *SessionRecorder { return l.recorder }

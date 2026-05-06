@@ -1,9 +1,9 @@
 ---
 id: spec_outliner
 role: planning
-capability: balanced
-temperature: 0.4
-thinking_budget: 4096
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 output_schema: Outline
 ---
 # Identity

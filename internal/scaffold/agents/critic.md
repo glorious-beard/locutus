@@ -1,8 +1,9 @@
 ---
 id: critic
 role: review
-capability: balanced
-temperature: 0.3
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 output_schema: Concern
 ---
 # Identity

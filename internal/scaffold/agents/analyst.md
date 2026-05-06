@@ -1,8 +1,9 @@
 ---
 id: analyst
 role: history
-capability: balanced
-temperature: 0.5
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 ---
 # Identity
 

@@ -7,14 +7,15 @@ import (
 	"time"
 )
 
-// RetryConfig controls retry behavior for LLM calls.
+// RetryConfig controls retry behavior for agent calls.
 type RetryConfig struct {
 	MaxAttempts int           // total attempts (1 = no retry)
 	BaseDelay   time.Duration // initial backoff delay
 	MaxDelay    time.Duration // cap on backoff delay
 }
 
-// DefaultRetryConfig returns sensible defaults: 3 attempts, 1s base, 10s max.
+// DefaultRetryConfig returns sensible defaults: 3 attempts, 1s
+// base, 10s max.
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
 		MaxAttempts: 3,
@@ -23,37 +24,38 @@ func DefaultRetryConfig() RetryConfig {
 	}
 }
 
-// GenerateWithRetry wraps an LLM.Generate call with exponential backoff retry
-// on rate limit (429) and timeout errors.
+// RunWithRetry wraps an AgentExecutor.Run call with exponential
+// backoff retry on rate-limit (ErrRateLimit) and timeout
+// (ErrTimeout) errors.
 //
 // When ctx carries a retry callback (via WithRetryCallback), the
 // callback fires on every retry-eligible failure right before the
-// backoff sleep. Workflow executors use this to surface a "retrying"
-// spinner state — silent retries used to leave the operator staring
-// at a RUNNING spinner that was actually burning attempts on rate-
-// limit backoff.
-func GenerateWithRetry(ctx context.Context, llm LLM, req GenerateRequest, cfg RetryConfig) (*GenerateResponse, error) {
+// backoff sleep. Workflow executors use this to surface a
+// "retrying" spinner state — silent retries used to leave the
+// operator staring at a RUNNING spinner that was actually burning
+// attempts on rate-limit backoff.
+func RunWithRetry(ctx context.Context, exec AgentExecutor, def AgentDef, input AgentInput, cfg RetryConfig) (*AgentOutput, error) {
 	var lastErr error
 	delay := cfg.BaseDelay
 	notify := RetryCallbackFromContext(ctx)
 
 	for attempt := 1; attempt <= cfg.MaxAttempts; attempt++ {
-		resp, err := llm.Generate(ctx, req)
+		out, err := exec.Run(ctx, def, input)
 		if err == nil {
-			return resp, nil
+			return out, nil
 		}
 		lastErr = err
 
-		// Only retry on rate limit or timeout.
 		if !errors.Is(err, ErrRateLimit) && !errors.Is(err, ErrTimeout) {
-			return nil, err
+			return out, err
 		}
 
 		if attempt < cfg.MaxAttempts {
 			if notify != nil {
 				notify(attempt, err)
 			}
-			slog.Debug("retrying LLM call",
+			slog.Debug("retrying agent call",
+				"agent", def.ID,
 				"attempt", attempt,
 				"max", cfg.MaxAttempts,
 				"error", err,

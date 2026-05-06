@@ -64,12 +64,12 @@ func (m *alwaysPassDriver) RespondToAgent(ctx context.Context, sessionID, respon
 }
 
 // mockLLMAllPass returns a MockLLM that validates every call as PASS.
-func mockLLMAllPass(count int) *agent.MockLLM {
+func mockLLMAllPass(count int) *agent.MockExecutor {
 	responses := make([]agent.MockResponse, count)
 	for i := range responses {
-		responses[i] = agent.MockResponse{Response: &agent.GenerateResponse{Content: "PASS"}}
+		responses[i] = agent.MockResponse{Response: &agent.AgentOutput{Content: "PASS"}}
 	}
-	return agent.NewMockLLM(responses...)
+	return agent.NewMockExecutor(responses...)
 }
 
 // makeWorkstream creates a workstream with N trivial steps.

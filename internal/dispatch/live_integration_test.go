@@ -57,8 +57,8 @@ func TestClaudeCodeLive(t *testing.T) {
 	// Validator always passes — the goal of this test is pipeline plumbing,
 	// not validation correctness. The file-presence assertion below is the
 	// real acceptance gate.
-	validator := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: "PASS"},
+	validator := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: "PASS"},
 	})
 
 	d := &dispatch.Dispatcher{

@@ -1,8 +1,9 @@
 ---
 id: validator
 role: validation
-capability: balanced
-temperature: 0.1
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 ---
 # Identity
 

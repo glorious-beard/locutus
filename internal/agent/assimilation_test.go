@@ -244,7 +244,7 @@ func TestAnalyzeProducesSpec(t *testing.T) {
 		},
 	})
 
-	mock := NewMockLLM(
+	mock := NewMockExecutor(
 		mockResp(scoutResp),
 		mockResp(backendResp),
 		mockResp(frontendResp),
@@ -278,7 +278,7 @@ func TestAnalyzeMissingAssimilationConfig(t *testing.T) {
 
 	inventory := []FileEntry{{Path: "go.mod", Size: 22}}
 
-	mock := NewMockLLM() // no responses needed — should fail before LLM call
+	mock := NewMockExecutor() // no responses needed — should fail before LLM call
 
 	ctx := context.Background()
 	result, err := Analyze(ctx, mock, fs, AssimilationRequest{Inventory: inventory})
@@ -320,7 +320,7 @@ func TestAnalyzeEmptyCodebase(t *testing.T) {
 		"features":  []map[string]any{},
 	})
 
-	mock := NewMockLLM(
+	mock := NewMockExecutor(
 		mockResp(scoutResp),     // scout
 		mockResp(emptyAnalysis), // backend_analyzer
 		mockResp(emptyAnalysis), // frontend_analyzer

@@ -16,7 +16,7 @@ const historyDir = ".borg/history"
 
 // recordingFn is a GenerateFn implementation that serves scripted
 // responses from a queue and captures every (system, user) prompt pair.
-// Plays the same role agent.MockLLM plays elsewhere, but decoupled from
+// Plays the same role agent.MockExecutor plays elsewhere, but decoupled from
 // the agent package so history tests don't re-introduce the import
 // cycle the narrative generator was built to avoid.
 type recordingFn struct {

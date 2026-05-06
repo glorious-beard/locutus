@@ -3,7 +3,6 @@ package agent
 import (
 	"os"
 	"testing"
-	"time"
 
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
@@ -15,37 +14,36 @@ const agentDir = ".borg/agents"
 func setupAgentFS(t *testing.T) *specio.MemFS {
 	t.Helper()
 	fsys := specio.NewMemFS()
-	err := fsys.MkdirAll(agentDir, 0o755)
-	assert.NoError(t, err)
+	require.NoError(t, fsys.MkdirAll(agentDir, 0o755))
 
 	planner := `---
 id: planner
 role: Planner
-model: anthropic/claude-sonnet-4-20250514
-temperature: 0.7
+models:
+  - {provider: anthropic, tier: balanced}
 ---
 You are the planner agent. Propose features, decisions, and strategies.
 `
 	critic := `---
 id: critic
 role: Critic
-model: anthropic/claude-sonnet-4-20250514
-temperature: 0.3
+models:
+  - {provider: anthropic, tier: balanced}
 ---
 You are the critic agent. Challenge assumptions and find flaws in proposals.
 `
 	historian := `---
 id: historian
 role: Historian
-model: anthropic/claude-haiku-4-20250514
-temperature: 0.2
+models:
+  - {provider: anthropic, tier: fast}
 ---
 You are the historian agent. Recall past decisions and their outcomes.
 `
 
-	assert.NoError(t, fsys.WriteFile(agentDir+"/planner.md", []byte(planner), 0o644))
-	assert.NoError(t, fsys.WriteFile(agentDir+"/critic.md", []byte(critic), 0o644))
-	assert.NoError(t, fsys.WriteFile(agentDir+"/historian.md", []byte(historian), 0o644))
+	require.NoError(t, fsys.WriteFile(agentDir+"/planner.md", []byte(planner), 0o644))
+	require.NoError(t, fsys.WriteFile(agentDir+"/critic.md", []byte(critic), 0o644))
+	require.NoError(t, fsys.WriteFile(agentDir+"/historian.md", []byte(historian), 0o644))
 
 	return fsys
 }
@@ -55,48 +53,33 @@ func TestLoadAgentDefs(t *testing.T) {
 
 	defs, err := LoadAgentDefs(fsys, agentDir)
 
-	assert.NoError(t, err)
-	assert.Len(t, defs, 3)
+	require.NoError(t, err)
+	require.Len(t, defs, 3)
 
-	// ListDir returns sorted paths, so order is: critic, historian, planner.
 	byID := make(map[string]AgentDef, len(defs))
 	for _, d := range defs {
 		byID[d.ID] = d
 	}
 
-	// Planner
 	p := byID["planner"]
 	assert.Equal(t, "planner", p.ID)
 	assert.Equal(t, "Planner", p.Role)
-	assert.Equal(t, "anthropic/claude-sonnet-4-20250514", p.Model)
-	assert.InDelta(t, 0.7, p.Temperature, 0.001)
+	require.Len(t, p.Models, 1)
+	assert.Equal(t, "anthropic", p.Models[0].Provider)
+	assert.Equal(t, "balanced", p.Models[0].Tier)
 	assert.Equal(t, "You are the planner agent. Propose features, decisions, and strategies.\n", p.SystemPrompt)
 
-	// Critic
-	c := byID["critic"]
-	assert.Equal(t, "critic", c.ID)
-	assert.Equal(t, "Critic", c.Role)
-	assert.Equal(t, "anthropic/claude-sonnet-4-20250514", c.Model)
-	assert.InDelta(t, 0.3, c.Temperature, 0.001)
-	assert.Equal(t, "You are the critic agent. Challenge assumptions and find flaws in proposals.\n", c.SystemPrompt)
-
-	// Historian
 	h := byID["historian"]
-	assert.Equal(t, "historian", h.ID)
-	assert.Equal(t, "Historian", h.Role)
-	assert.Equal(t, "anthropic/claude-haiku-4-20250514", h.Model)
-	assert.InDelta(t, 0.2, h.Temperature, 0.001)
-	assert.Equal(t, "You are the historian agent. Recall past decisions and their outcomes.\n", h.SystemPrompt)
+	assert.Equal(t, "fast", h.Models[0].Tier)
 }
 
 func TestLoadAgentDefsEmpty(t *testing.T) {
 	fsys := specio.NewMemFS()
-	err := fsys.MkdirAll(agentDir, 0o755)
-	assert.NoError(t, err)
+	require.NoError(t, fsys.MkdirAll(agentDir, 0o755))
 
 	defs, err := LoadAgentDefs(fsys, agentDir)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Empty(t, defs)
 }
 
@@ -108,67 +91,6 @@ func TestLoadAgentDefsMissingDir(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestBuildGenerateRequest(t *testing.T) {
-	def := AgentDef{
-		ID:           "planner",
-		Role:         "Planner",
-		Model:        "anthropic/claude-sonnet-4-20250514",
-		Temperature:  0.7,
-		SystemPrompt: "You are the planner agent.",
-	}
-
-	messages := []Message{
-		{Role: "user", Content: "What features should we build?"},
-		{Role: "user", Content: "Focus on the MVP scope."},
-	}
-
-	req := BuildGenerateRequest(def, messages)
-
-	assert.Equal(t, "anthropic/claude-sonnet-4-20250514", req.Model)
-	assert.InDelta(t, 0.7, req.Temperature, 0.001)
-
-	// First message must be the system prompt.
-	assert.Len(t, req.Messages, 3)
-	assert.Equal(t, "system", req.Messages[0].Role)
-	assert.Equal(t, "You are the planner agent.", req.Messages[0].Content)
-
-	// Remaining messages follow in order.
-	assert.Equal(t, "user", req.Messages[1].Role)
-	assert.Equal(t, "What features should we build?", req.Messages[1].Content)
-	assert.Equal(t, "user", req.Messages[2].Role)
-	assert.Equal(t, "Focus on the MVP scope.", req.Messages[2].Content)
-}
-
-func TestBuildGenerateRequestThreadsTimeout(t *testing.T) {
-	t.Run("valid duration string parses to time.Duration", func(t *testing.T) {
-		def := AgentDef{
-			ID:           "spec_feature_elaborator",
-			Timeout:      "5m",
-			SystemPrompt: "elaborator",
-		}
-		req := BuildGenerateRequest(def, []Message{{Role: "user", Content: "x"}})
-		assert.Equal(t, 5*time.Minute, req.Timeout,
-			"valid Go duration string in frontmatter must parse and surface on GenerateRequest")
-	})
-
-	t.Run("empty timeout falls through to global default", func(t *testing.T) {
-		def := AgentDef{ID: "no_timeout", SystemPrompt: "x"}
-		req := BuildGenerateRequest(def, []Message{{Role: "user", Content: "x"}})
-		assert.Zero(t, req.Timeout,
-			"unset Timeout must produce zero — Generate path then falls back to LOCUTUS_LLM_TIMEOUT default")
-	})
-
-	t.Run("malformed duration logs warning and returns zero", func(t *testing.T) {
-		// "5 minutes" isn't a valid Go duration string ("5m" is).
-		// We don't want a typo to refuse the call; the warning + zero
-		// fallback keeps the call running against the global default.
-		def := AgentDef{ID: "bad_timeout", Timeout: "5 minutes", SystemPrompt: "x"}
-		req := BuildGenerateRequest(def, []Message{{Role: "user", Content: "x"}})
-		assert.Zero(t, req.Timeout,
-			"malformed Timeout must NOT abort request build — fall back to default with a slog.Warn so the trace records the typo")
-	})
-}
-
 func TestLoadAgentDefsParsesTimeout(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, fsys.MkdirAll(".borg/agents", 0o755))
@@ -176,12 +98,16 @@ func TestLoadAgentDefsParsesTimeout(t *testing.T) {
 id: spec_feature_elaborator
 role: planning
 timeout: 5m
+models:
+  - {provider: anthropic, tier: balanced}
 ---
 You are the elaborator.
 `), 0o644))
 	require.NoError(t, fsys.WriteFile(".borg/agents/spec_architect.md", []byte(`---
 id: spec_architect
 role: planning
+models:
+  - {provider: anthropic, tier: strong}
 ---
 You are the architect.
 `), 0o644))
@@ -195,22 +121,9 @@ You are the architect.
 		byID[d.ID] = d
 	}
 	assert.Equal(t, "5m", byID["spec_feature_elaborator"].Timeout,
-		"frontmatter `timeout: 5m` round-trips as a string field; BuildGenerateRequest does the parse")
+		"frontmatter `timeout: 5m` round-trips as a string field; perCallTimeout does the parse")
 	assert.Empty(t, byID["spec_architect"].Timeout,
 		"missing key defaults to empty; the global default applies")
-}
-
-func TestBuildGenerateRequestThreadsGrounding(t *testing.T) {
-	def := AgentDef{
-		ID:           "spec_scout",
-		Role:         "survey",
-		Model:        "googleai/gemini-2.5-pro",
-		Grounding:    true,
-		SystemPrompt: "You are the scout.",
-	}
-	req := BuildGenerateRequest(def, []Message{{Role: "user", Content: "x"}})
-	assert.True(t, req.Grounding,
-		"Grounding from frontmatter must surface on GenerateRequest so the provider config can attach GoogleSearch")
 }
 
 func TestLoadAgentDefsParsesGrounding(t *testing.T) {
@@ -219,15 +132,17 @@ func TestLoadAgentDefsParsesGrounding(t *testing.T) {
 	require.NoError(t, fsys.WriteFile(".borg/agents/spec_scout.md", []byte(`---
 id: spec_scout
 role: survey
-capability: strong
 grounding: true
+models:
+  - {provider: googleai, tier: strong}
 ---
 You are the scout.
 `), 0o644))
 	require.NoError(t, fsys.WriteFile(".borg/agents/spec_architect.md", []byte(`---
 id: spec_architect
 role: planning
-capability: strong
+models:
+  - {provider: anthropic, tier: strong}
 ---
 You are the architect.
 `), 0o644))
@@ -246,49 +161,40 @@ You are the architect.
 		"missing grounding key must default to false; agents not opted-in stay ungrounded")
 }
 
-func TestBuildGenerateRequestDefaultModel(t *testing.T) {
-	def := AgentDef{
-		ID:           "reviewer",
-		Role:         "Reviewer",
-		Model:        "", // empty — should get a default
-		Temperature:  0.5,
-		SystemPrompt: "You review code.",
-	}
+func TestBuildSystemPromptAppendsSchemaDoc(t *testing.T) {
+	t.Run("no schema yields prompt unchanged", func(t *testing.T) {
+		def := AgentDef{ID: "noschema", SystemPrompt: "hello"}
+		out := BuildSystemPrompt(def)
+		assert.Equal(t, "hello", out)
+	})
 
-	messages := []Message{
-		{Role: "user", Content: "Review this diff."},
-	}
-
-	req := BuildGenerateRequest(def, messages)
-
-	// When Model is empty, a sensible default should be used.
-	assert.NotEmpty(t, req.Model)
-	assert.Equal(t, DefaultModel, req.Model)
-
-	// System prompt still prepended.
-	assert.Len(t, req.Messages, 2)
-	assert.Equal(t, "system", req.Messages[0].Role)
-	assert.Equal(t, "You review code.", req.Messages[0].Content)
+	t.Run("registered schema is appended as a fenced JSON block", func(t *testing.T) {
+		def := AgentDef{ID: "scout", SystemPrompt: "scout prompt", OutputSchema: "ScoutBrief"}
+		out := BuildSystemPrompt(def)
+		assert.Contains(t, out, "scout prompt")
+		assert.Contains(t, out, "## Output JSON Schema")
+		assert.Contains(t, out, "domain_read")
+	})
 }
 
-// TestLoadAgentDefsSkipsNonMarkdown ensures non-.md files are ignored.
 func TestLoadAgentDefsSkipsNonMarkdown(t *testing.T) {
 	fsys := specio.NewMemFS()
-	err := fsys.MkdirAll(agentDir, 0o755)
-	assert.NoError(t, err)
+	require.NoError(t, fsys.MkdirAll(agentDir, 0o755))
 
-	agent := `---
+	a := `---
 id: planner
 role: Planner
+models:
+  - {provider: anthropic, tier: balanced}
 ---
 System prompt here.
 `
-	assert.NoError(t, fsys.WriteFile(agentDir+"/planner.md", []byte(agent), os.FileMode(0o644)))
-	assert.NoError(t, fsys.WriteFile(agentDir+"/README.txt", []byte("not an agent"), os.FileMode(0o644)))
+	require.NoError(t, fsys.WriteFile(agentDir+"/planner.md", []byte(a), os.FileMode(0o644)))
+	require.NoError(t, fsys.WriteFile(agentDir+"/README.txt", []byte("not an agent"), os.FileMode(0o644)))
 
 	defs, err := LoadAgentDefs(fsys, agentDir)
 
-	assert.NoError(t, err)
-	assert.Len(t, defs, 1)
+	require.NoError(t, err)
+	require.Len(t, defs, 1)
 	assert.Equal(t, "planner", defs[0].ID)
 }

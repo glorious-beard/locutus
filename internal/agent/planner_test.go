@@ -226,7 +226,7 @@ func TestPlanProducesValidMasterPlan(t *testing.T) {
 	fs := setupPlannerFS(t)
 	planJSON := sampleMasterPlanJSON(t)
 
-	mock := NewMockLLM(
+	mock := NewMockExecutor(
 		// propose: planner outputs the JSON master plan
 		mockResp(planJSON),
 		// challenge: critic and stakeholder (parallel, but consumed in order)
@@ -299,7 +299,7 @@ func TestPlanWithSpecialists(t *testing.T) {
 	// The propose output mentions "schema" and "test" to trigger both specialists.
 	proposeOutput := planJSON[:len(planJSON)-1] + `,"notes":"need schema design and test strategy"}`
 
-	mock := NewMockLLM(
+	mock := NewMockExecutor(
 		// propose: planner — mentions schema and test to trigger conditionals
 		mockResp(proposeOutput),
 		// challenge: critic + stakeholder (parallel)
@@ -346,7 +346,7 @@ func TestPlanMissingCouncil(t *testing.T) {
 	// Empty MemFS — no .borg directory at all.
 	fs := specio.NewMemFS()
 
-	mock := NewMockLLM() // no responses needed — should fail before LLM calls
+	mock := NewMockExecutor() // no responses needed — should fail before LLM calls
 
 	req := PlanRequest{
 		Prompt:    "Build user auth",
@@ -365,7 +365,7 @@ func TestPlanRecordsHistory(t *testing.T) {
 	fs := setupPlannerFS(t)
 	planJSON := sampleMasterPlanJSON(t)
 
-	mock := NewMockLLM(
+	mock := NewMockExecutor(
 		mockResp(planJSON),                          // propose
 		mockResp("CONVERGED: looks good"),           // challenge: critic
 		mockResp("CONVERGED: aligned with goals"),   // challenge: stakeholder

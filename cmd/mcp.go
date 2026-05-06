@@ -121,7 +121,7 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		if kind == "" {
 			kind = "feature"
 		}
-		var llm agent.LLM
+		var llm agent.AgentExecutor
 		if !input.SkipTriage {
 			var err error
 			llm, _, err = recordingLLM(fsys, dir, "mcp:import")

@@ -1,9 +1,9 @@
 ---
 id: spec_scout
 role: survey
-capability: strong
-temperature: 0.4
-thinking_budget: 4096
+models:
+  - {provider: googleai, tier: strong}
+  - {provider: openai, tier: strong}
 grounding: true
 output_schema: ScoutBrief
 ---

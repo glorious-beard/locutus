@@ -26,12 +26,12 @@ type SupervisorConfig struct {
 	// LLM is the strong-tier client used for validation and the
 	// permission/question guardian. Must be non-nil when the supervisor is
 	// expected to validate.
-	LLM agent.LLM
+	LLM agent.AgentExecutor
 	// FastLLM is the fast-tier client used by the cycle-detection monitor
 	// (Part 6). Keeping it separate from LLM bounds monitoring cost before
 	// multi-tier routing lands. May be nil when no "monitor" agent is
 	// configured; required whenever AgentDefs["monitor"] is present.
-	FastLLM agent.LLM
+	FastLLM agent.AgentExecutor
 
 	MaxRetries int
 	// AgentDefs are the supervision council agents (validator, guide, reviewer,
@@ -227,7 +227,7 @@ func isPass(content string) bool {
 // Uses the "validator" agent def if available; otherwise falls back to a default prompt.
 // agentOutput is the final text the agent produced (typically the accumulated
 // EventResult text from runAttempt).
-func (s *Supervisor) validate(ctx context.Context, step spec.PlanStep, agentOutput string, retryCfg agent.RetryConfig) (*agent.GenerateResponse, error) {
+func (s *Supervisor) validate(ctx context.Context, step spec.PlanStep, agentOutput string, retryCfg agent.RetryConfig) (*agent.AgentOutput, error) {
 	var assertions strings.Builder
 	for _, a := range step.Assertions {
 		assertions.WriteString(fmt.Sprintf("- %s", string(a.Kind)))
@@ -247,14 +247,12 @@ func (s *Supervisor) validate(ctx context.Context, step spec.PlanStep, agentOutp
 		agentOutput,
 	)
 
-	messages := []agent.Message{{Role: "user", Content: userPrompt}}
+	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: userPrompt}}}
 
 	// Use the validator agent def if available.
 	if def, ok := s.cfg.AgentDefs["validator"]; ok {
-		req := agent.BuildGenerateRequest(def, messages)
-		return agent.GenerateWithRetry(ctx, s.cfg.LLM, req, retryCfg)
+		return agent.RunWithRetry(ctx, s.cfg.LLM, def, input, retryCfg)
 	}
 
-	req := agent.GenerateRequest{Messages: messages}
-	return agent.GenerateWithRetry(ctx, s.cfg.LLM, req, retryCfg)
+	return agent.RunWithRetry(ctx, s.cfg.LLM, agent.AgentDef{ID: "validator"}, input, retryCfg)
 }

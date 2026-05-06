@@ -1,8 +1,9 @@
 ---
 id: archivist
 role: history
-capability: fast
-temperature: 0.2
+models:
+  - {provider: anthropic, tier: fast}
+  - {provider: googleai, tier: fast}
 ---
 # Identity
 

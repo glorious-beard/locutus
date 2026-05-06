@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func judgeMock(t *testing.T, passed bool, reasoning string) *agent.MockLLM {
+func judgeMock(t *testing.T, passed bool, reasoning string) *agent.MockExecutor {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{
 		"passed":     passed,
@@ -21,8 +21,8 @@ func judgeMock(t *testing.T, passed bool, reasoning string) *agent.MockLLM {
 		"confidence": 0.9,
 	})
 	require.NoError(t, err)
-	return agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: string(payload)},
+	return agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: string(payload)},
 	})
 }
 

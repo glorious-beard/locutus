@@ -6,36 +6,31 @@ import (
 	"fmt"
 )
 
-// GenerateInto runs an LLM call with provider-enforced JSON output and
-// unmarshals the response into out. The schema is derived from out's type by
-// the LLM implementation (see GenKitLLM, which uses ai.WithOutputType).
-//
-// out must be a non-nil pointer to a JSON-decodable value. Any caller-set
-// req.OutputSchema is overwritten with out so the provider's structured-output
-// mode and the unmarshal target stay in sync.
-func GenerateInto(ctx context.Context, llm LLM, req GenerateRequest, out any) error {
-	req.OutputSchema = out
-	resp, err := llm.Generate(ctx, req)
+// RunInto runs an agent call and unmarshals the response Content
+// into out. out must be a non-nil pointer to a JSON-decodable value.
+// Suitable for ad-hoc agent dispatches where the caller has the
+// AgentDef in hand and wants the response decoded directly.
+func RunInto(ctx context.Context, exec AgentExecutor, def AgentDef, input AgentInput, out any) error {
+	resp, err := exec.Run(ctx, def, input)
 	if err != nil {
 		return err
 	}
-	return unmarshalLLMOutput(resp.Content, out)
+	return unmarshalAgentOutput(resp.Content, out)
 }
 
-// GenerateIntoWithRetry is GenerateInto layered over GenerateWithRetry, for
-// callers that want exponential backoff on rate-limit / timeout errors.
-func GenerateIntoWithRetry(ctx context.Context, llm LLM, req GenerateRequest, cfg RetryConfig, out any) error {
-	req.OutputSchema = out
-	resp, err := GenerateWithRetry(ctx, llm, req, cfg)
+// RunIntoWithRetry layers RunInto over RunWithRetry, for callers
+// that want exponential backoff on rate-limit / timeout errors.
+func RunIntoWithRetry(ctx context.Context, exec AgentExecutor, def AgentDef, input AgentInput, cfg RetryConfig, out any) error {
+	resp, err := RunWithRetry(ctx, exec, def, input, cfg)
 	if err != nil {
 		return err
 	}
-	return unmarshalLLMOutput(resp.Content, out)
+	return unmarshalAgentOutput(resp.Content, out)
 }
 
-func unmarshalLLMOutput(content string, out any) error {
+func unmarshalAgentOutput(content string, out any) error {
 	if err := json.Unmarshal([]byte(content), out); err != nil {
-		return fmt.Errorf("parse llm response: %w (content=%q)", err, content)
+		return fmt.Errorf("parse agent response: %w (content=%q)", err, content)
 	}
 	return nil
 }

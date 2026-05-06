@@ -1,8 +1,9 @@
 ---
 id: researcher
 role: research
-capability: balanced
-temperature: 0.4
+models:
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
 ---
 # Identity
 

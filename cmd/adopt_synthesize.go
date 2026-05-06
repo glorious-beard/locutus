@@ -29,7 +29,7 @@ import (
 // the writes are silently dropped.
 func synthesizeMissingApproaches(
 	ctx context.Context,
-	llm agent.LLM,
+	llm agent.AgentExecutor,
 	fsys specio.FS,
 	graph *spec.SpecGraph,
 	scope string,

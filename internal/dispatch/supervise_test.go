@@ -91,11 +91,11 @@ func TestSupervise_ChurnOnceThenPass(t *testing.T) {
 	// Attempt 1: 20 tool calls → monitor triggers → FastLLM flags cycle →
 	// runAttempt returns *churnDetected.
 	// Attempt 2: short happy-path stream → validator LLM says PASS.
-	fast := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: cycleVerdictJSON},
+	fast := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: cycleVerdictJSON},
 	})
-	validator := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: "PASS"},
+	validator := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: "PASS"},
 	})
 
 	sup := NewSupervisor(SupervisorConfig{
@@ -128,11 +128,11 @@ func TestSupervise_ChurnOnceThenPass(t *testing.T) {
 
 func TestSupervise_TwoChurnsInWindowEscalates(t *testing.T) {
 	// Both attempts churn → ≥2 of last 3 → escalate to RefineStep.
-	fast := agent.NewMockLLM(
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: cycleVerdictJSON}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: cycleVerdictJSON}},
+	fast := agent.NewMockExecutor(
+		agent.MockResponse{Response: &agent.AgentOutput{Content: cycleVerdictJSON}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: cycleVerdictJSON}},
 	)
-	validator := agent.NewMockLLM() // should never be consulted
+	validator := agent.NewMockExecutor() // should never be consulted
 
 	sup := NewSupervisor(SupervisorConfig{
 		LLM:        validator,
@@ -164,12 +164,12 @@ func TestSupervise_AlternatingChurnFailChurn_Escalates(t *testing.T) {
 	// Sliding window over last 3 attempts: [churn, fail, churn] = 2 churns.
 	// This test is the regression guard for the sliding-window rule vs. the
 	// simpler consecutive-churn counter it replaced.
-	fast := agent.NewMockLLM(
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: cycleVerdictJSON}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: cycleVerdictJSON}},
+	fast := agent.NewMockExecutor(
+		agent.MockResponse{Response: &agent.AgentOutput{Content: cycleVerdictJSON}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: cycleVerdictJSON}},
 	)
-	validator := agent.NewMockLLM(agent.MockResponse{
-		Response: &agent.GenerateResponse{Content: "FAIL: intermediate failure"},
+	validator := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: "FAIL: intermediate failure"},
 	})
 
 	sup := NewSupervisor(SupervisorConfig{
@@ -209,9 +209,9 @@ func TestSupervise_PermissionDuringAttempt_DoesNotSplitAttempt(t *testing.T) {
 	// Guardian responds ALLOW to the permission prompt; validator responds
 	// PASS to the acceptance check. Both go through s.cfg.LLM (same
 	// "validator" agent).
-	llm := agent.NewMockLLM(
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: "ALLOW"}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: "PASS"}},
+	llm := agent.NewMockExecutor(
+		agent.MockResponse{Response: &agent.AgentOutput{Content: "ALLOW"}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: "PASS"}},
 	)
 
 	sup := NewSupervisor(SupervisorConfig{
@@ -274,9 +274,9 @@ func TestSupervise_ValidationFailNoChurn_Retries(t *testing.T) {
 	// Validation fails on attempt 1, passes on attempt 2. No churn, no
 	// escalation. Regression guard that validation failures alone don't
 	// touch the churn sliding window.
-	validator := agent.NewMockLLM(
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: "FAIL: missing impl"}},
-		agent.MockResponse{Response: &agent.GenerateResponse{Content: "PASS"}},
+	validator := agent.NewMockExecutor(
+		agent.MockResponse{Response: &agent.AgentOutput{Content: "FAIL: missing impl"}},
+		agent.MockResponse{Response: &agent.AgentOutput{Content: "PASS"}},
 	)
 
 	sup := NewSupervisor(SupervisorConfig{

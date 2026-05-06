@@ -70,7 +70,7 @@ type DispatchFunc func(ctx context.Context, plan *spec.MasterPlan, repoDir strin
 // replaced with defaults where sensible.
 type AdoptConfig struct {
 	FS       specio.FS
-	LLM      agent.LLM
+	LLM      agent.AgentExecutor
 	RepoDir  string
 	Plan     PlanFunc
 	Dispatch DispatchFunc
@@ -1000,13 +1000,13 @@ func hasAnyFailedWorkstream(r *AdoptReport) bool {
 
 // --- Real planner + dispatcher constructors used by the CLI ---
 
-func realPlan(llm agent.LLM, fsys specio.FS) PlanFunc {
+func realPlan(llm agent.AgentExecutor, fsys specio.FS) PlanFunc {
 	return func(ctx context.Context, req agent.PlanRequest) (*spec.MasterPlan, error) {
 		return agent.Plan(ctx, llm, fsys, req)
 	}
 }
 
-func realDispatch(llm agent.LLM, fsys specio.FS) DispatchFunc {
+func realDispatch(llm agent.AgentExecutor, fsys specio.FS) DispatchFunc {
 	return func(ctx context.Context, plan *spec.MasterPlan, repoDir string, resume map[string]*dispatch.ResumePoint) ([]*dispatch.WorkstreamResult, error) {
 		wsStore := workstream.NewFileStore(fsys, workstreamsDir, plan.ID)
 		d := &dispatch.Dispatcher{

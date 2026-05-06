@@ -17,12 +17,12 @@ import (
 type Dispatcher struct {
 	// LLM is used by the supervisor for output validation and the
 	// permission guardian. Must be non-nil in production.
-	LLM agent.LLM
+	LLM agent.AgentExecutor
 
 	// FastLLM is the fast-tier client the cycle-detection monitor uses.
 	// Optional — if nil, monitors that require an LLM are silently
 	// disabled with a one-time INFO log from the supervisor.
-	FastLLM agent.LLM
+	FastLLM agent.AgentExecutor
 
 	// Drivers maps agent ID ("claude-code", "codex") to the StreamingDriver
 	// that builds commands and parses the NDJSON event stream for that CLI.

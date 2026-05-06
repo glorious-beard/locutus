@@ -23,16 +23,17 @@ type IntakeResult struct {
 	DuplicateOf     string   `json:"duplicate_of,omitempty"`
 }
 
-// IntakeDocument runs a single LLM call that derives a stable id and title
-// for the document, and (when goalsBody is non-empty) evaluates whether the
-// document aligns with project goals.
+// IntakeDocument runs a single agent call that derives a stable id
+// and title for the document, and (when goalsBody is non-empty)
+// evaluates whether the document aligns with project goals.
 //
 // kind selects the id prefix: "feature" → "feat-", "bug" → "bug-".
 //
-// The output schema is enforced at the provider layer via Genkit
-// WithOutputType (see GenKitLLM.Generate); the response is JSON-by-construction
-// rather than parsed out of free-form text.
-func IntakeDocument(ctx context.Context, llm LLM, kind, content, goalsBody string) (*IntakeResult, error) {
+// The output schema is enforced at the provider layer via the
+// adapter's strict-mode shape (Anthropic forced tool-use, Gemini
+// responseSchema, OpenAI json_schema strict); the response is
+// JSON-by-construction rather than parsed out of free-form text.
+func IntakeDocument(ctx context.Context, exec AgentExecutor, kind, content, goalsBody string) (*IntakeResult, error) {
 	prefix := idPrefix(kind)
 	system := fmt.Sprintf(`You are reviewing a candidate %s document for admission to a project's spec.
 
@@ -54,16 +55,15 @@ Respond with valid JSON.`,
 		user = "## GOALS.md\n\n" + goalsBody + "\n\n" + user
 	}
 
-	req := GenerateRequest{
-		Model: DefaultModel,
-		Messages: []Message{
-			{Role: "system", Content: system},
-			{Role: "user", Content: user},
-		},
+	def := AgentDef{
+		ID:           "intake",
+		SystemPrompt: system,
+		OutputSchema: "IntakeResult",
 	}
+	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
 
 	var result IntakeResult
-	if err := GenerateInto(ctx, llm, req, &result); err != nil {
+	if err := RunInto(ctx, exec, def, input, &result); err != nil {
 		return nil, fmt.Errorf("intake: %w", err)
 	}
 	if result.ID == "" {

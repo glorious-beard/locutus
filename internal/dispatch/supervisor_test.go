@@ -50,31 +50,31 @@ func mockRunner() CommandRunner {
 }
 
 // mockLLMPass creates a MockLLM that always responds with "PASS".
-func mockLLMPass(count int) *agent.MockLLM {
+func mockLLMPass(count int) *agent.MockExecutor {
 	responses := make([]agent.MockResponse, count)
 	for i := range responses {
-		responses[i] = agent.MockResponse{Response: &agent.GenerateResponse{Content: "PASS"}}
+		responses[i] = agent.MockResponse{Response: &agent.AgentOutput{Content: "PASS"}}
 	}
-	return agent.NewMockLLM(responses...)
+	return agent.NewMockExecutor(responses...)
 }
 
 // mockLLMFailThenPass creates a MockLLM that fails N times then passes.
-func mockLLMFailThenPass(failures int) *agent.MockLLM {
+func mockLLMFailThenPass(failures int) *agent.MockExecutor {
 	responses := make([]agent.MockResponse, failures+1)
 	for i := 0; i < failures; i++ {
-		responses[i] = agent.MockResponse{Response: &agent.GenerateResponse{Content: "FAIL: missing error handling"}}
+		responses[i] = agent.MockResponse{Response: &agent.AgentOutput{Content: "FAIL: missing error handling"}}
 	}
-	responses[failures] = agent.MockResponse{Response: &agent.GenerateResponse{Content: "PASS"}}
-	return agent.NewMockLLM(responses...)
+	responses[failures] = agent.MockResponse{Response: &agent.AgentOutput{Content: "PASS"}}
+	return agent.NewMockExecutor(responses...)
 }
 
 // mockLLMAlwaysFail creates a MockLLM that always responds with "FAIL".
-func mockLLMAlwaysFail(count int) *agent.MockLLM {
+func mockLLMAlwaysFail(count int) *agent.MockExecutor {
 	responses := make([]agent.MockResponse, count)
 	for i := range responses {
-		responses[i] = agent.MockResponse{Response: &agent.GenerateResponse{Content: "FAIL: tests do not pass"}}
+		responses[i] = agent.MockResponse{Response: &agent.AgentOutput{Content: "FAIL: tests do not pass"}}
 	}
-	return agent.NewMockLLM(responses...)
+	return agent.NewMockExecutor(responses...)
 }
 
 func newTestStep() spec.PlanStep {

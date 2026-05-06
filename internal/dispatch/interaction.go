@@ -45,8 +45,8 @@ func (s *Supervisor) handleInteraction(ctx context.Context, step spec.PlanStep, 
 	}
 
 	prompt := buildInteractionPrompt(step, evt)
-	req := agent.BuildGenerateRequest(def, []agent.Message{{Role: "user", Content: prompt}})
-	resp, err := agent.GenerateWithRetry(ctx, s.cfg.LLM, req, fastMonitorRetry)
+	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt}}}
+	resp, err := agent.RunWithRetry(ctx, s.cfg.LLM, def, input, fastMonitorRetry)
 	if err != nil {
 		// LLM call failed — the supervisor must still respond to the
 		// bridge so Claude doesn't hang. Default to deny with the

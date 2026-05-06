@@ -17,15 +17,13 @@ type ConvergenceVerdict struct {
 // CheckConvergence calls the convergence monitor agent to assess whether the
 // council has reached agreement. It uses a fast/cheap model (configured in the
 // convergence agent def) and evaluates the full planning state.
-func CheckConvergence(ctx context.Context, llm LLM, monitorDef AgentDef, state *PlanningState) (*ConvergenceVerdict, error) {
+func CheckConvergence(ctx context.Context, exec AgentExecutor, monitorDef AgentDef, state *PlanningState) (*ConvergenceVerdict, error) {
 	snap := state.Snapshot()
 
 	prompt := buildConvergencePrompt(snap)
-	req := BuildGenerateRequest(monitorDef, []Message{
-		{Role: "user", Content: prompt},
-	})
+	input := AgentInput{Messages: []Message{{Role: "user", Content: prompt}}}
 
-	resp, err := GenerateWithRetry(ctx, llm, req, executionRetryConfig())
+	resp, err := RunWithRetry(ctx, exec, monitorDef, input, executionRetryConfig())
 	if err != nil {
 		return nil, fmt.Errorf("convergence check: %w", err)
 	}
@@ -104,7 +102,7 @@ func parseConvergenceResponse(content string, round int) *ConvergenceVerdict {
 
 // CheckReadiness runs the readiness gate: critic and stakeholder each get a
 // final approval call. Returns true only if both approve.
-func CheckReadiness(ctx context.Context, llm LLM, agentDefs map[string]AgentDef, state *PlanningState) (bool, error) {
+func CheckReadiness(ctx context.Context, exec AgentExecutor, agentDefs map[string]AgentDef, state *PlanningState) (bool, error) {
 	snap := state.Snapshot()
 
 	approvers := []string{"critic", "stakeholder"}
@@ -119,8 +117,8 @@ func CheckReadiness(ctx context.Context, llm LLM, agentDefs map[string]AgentDef,
 			snap.ProposedSpec, snap.Revisions,
 		)
 
-		req := BuildGenerateRequest(def, []Message{{Role: "user", Content: prompt}})
-		resp, err := GenerateWithRetry(ctx, llm, req, executionRetryConfig())
+		input := AgentInput{Messages: []Message{{Role: "user", Content: prompt}}}
+		resp, err := RunWithRetry(ctx, exec, def, input, executionRetryConfig())
 		if err != nil {
 			return false, fmt.Errorf("readiness check (%s): %w", id, err)
 		}
