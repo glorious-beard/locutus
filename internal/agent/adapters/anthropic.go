@@ -5,21 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-)
-
-// Sentinel errors the executor pattern-matches for retry/timeout
-// classification. Re-defined per-adapter package so adapter callers
-// don't import internal/agent.
-var (
-	ErrRateLimit = errors.New("rate limited (429)")
-	ErrTimeout   = errors.New("generation timed out")
 )
 
 // defaultAnthropicMaxTokens is substituted when a request omits
@@ -126,10 +117,14 @@ func (a *AnthropicAdapter) Run(ctx context.Context, req Request) (*Response, err
 
 	if req.Grounding {
 		// anthropic-sdk-go doesn't expose web_search for client-side
-		// dispatch yet. Surface the gap loudly so an operator running
-		// on Anthropic only knows the call went out ungrounded.
-		slog.Warn("grounding requested but unsupported on Anthropic; proceeding ungrounded",
-			"model", req.Model)
+		// dispatch yet. Treat as a routing error: the agent asked
+		// for grounding and this preference can't deliver it. The
+		// executor falls back to the next preference (typically
+		// googleai or openai with web_search_preview); a deployer
+		// who pinned anthropic-only with grounding=true sees a
+		// clear failure rather than a silently ungrounded run.
+		return nil, fmt.Errorf("%w: anthropic SDK does not expose web_search (model=%s)",
+			ErrIncompatible, req.Model)
 	}
 
 	return a.dispatch(ctx, params, req, useForcedSchemaTool)
@@ -180,11 +175,19 @@ func (a *AnthropicAdapter) dispatch(ctx context.Context, params anthropicsdk.Mes
 					return finalizeRounds(out), nil
 				}
 			}
-			// Fall through — model emitted text-only somehow.
-			out.Content = text
+			// Model emitted no submit_response tool_use even with
+			// tool_choice forcing it. Should be impossible — fail
+			// loudly rather than handing downstream parsers an
+			// empty Content that surfaces as a confusing JSON
+			// parse error. stop_reason in the message gives the
+			// operator the actual cause (refusal, max_tokens,
+			// pause_turn, etc.).
 			out.Reasoning = reasoning
 			out.RawMessage = string(raw)
-			return finalizeRounds(out), nil
+			return out, fmt.Errorf(
+				"anthropic: forced schema tool %q not invoked (stop_reason=%s, text=%q)",
+				schemaToolName, msg.StopReason, text,
+			)
 		}
 
 		// Tool-use loop: dispatch every tool_use the model emitted
@@ -320,6 +323,13 @@ func splitContent(content []anthropicsdk.ContentBlockUnion) (text, reasoning str
 // dispatchAnthropicTools invokes each tool's Handler and packages
 // the results as ContentBlockParamUnion ToolResult blocks suitable
 // for the next user-message turn.
+//
+// Handler errors are fed back to the model as is_error tool_result
+// blocks so the model can recover (typo'd id → retry with manifest,
+// etc.). Two exceptions bubble up instead: context.Canceled and
+// context.DeadlineExceeded — these signal the caller's deadline,
+// not a recoverable input error, and feeding them to the model
+// would let the loop continue past cancellation.
 func dispatchAnthropicTools(ctx context.Context, registry []ToolDef, toolUses []anthropicsdk.ToolUseBlock) ([]anthropicsdk.ContentBlockParamUnion, error) {
 	byName := make(map[string]ToolDef, len(registry))
 	for _, t := range registry {
@@ -327,6 +337,9 @@ func dispatchAnthropicTools(ctx context.Context, registry []ToolDef, toolUses []
 	}
 	results := make([]anthropicsdk.ContentBlockParamUnion, 0, len(toolUses))
 	for _, tu := range toolUses {
+		if err := ctx.Err(); err != nil {
+			return nil, classifyAnthropicError(err)
+		}
 		def, ok := byName[tu.Name]
 		if !ok {
 			results = append(results, anthropicsdk.NewToolResultBlock(tu.ID,
@@ -335,6 +348,9 @@ func dispatchAnthropicTools(ctx context.Context, registry []ToolDef, toolUses []
 		}
 		out, err := def.Handler(ctx, tu.Input)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, ErrTimeout
+			}
 			results = append(results, anthropicsdk.NewToolResultBlock(tu.ID,
 				fmt.Sprintf(`{"error": %q}`, err.Error()), true))
 			continue

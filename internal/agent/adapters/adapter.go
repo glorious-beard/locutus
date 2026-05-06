@@ -13,6 +13,21 @@ package adapters
 import (
 	"context"
 	"encoding/json"
+	"errors"
+)
+
+// Sentinel errors classify dispatch failures for the executor's
+// fallback walk. ErrRateLimit and ErrTimeout are transient — the
+// executor advances to the next preference AND RunWithRetry backs
+// off and re-walks. ErrIncompatible is permanent for that
+// preference (the provider can't satisfy the agent's declared
+// capabilities); the executor advances to the next preference but
+// RunWithRetry does NOT loop on it because no amount of retrying
+// will satisfy the request against the same provider.
+var (
+	ErrRateLimit    = errors.New("rate limited (429)")
+	ErrTimeout      = errors.New("generation timed out")
+	ErrIncompatible = errors.New("agent capabilities incompatible with provider")
 )
 
 // Adapter is implemented by each provider-specific adapter

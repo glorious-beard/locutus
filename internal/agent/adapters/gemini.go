@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 
@@ -92,14 +91,23 @@ func (g *GeminiAdapter) Run(ctx context.Context, req Request) (*Response, error)
 	wantSchema := req.OutputSchema != nil
 	wantGrounding := req.Grounding
 
-	switch {
-	case wantSchema && hasCustomTools:
-		// Gemini rejects responseSchema together with function
-		// declarations. Fall back to prompt-only schema enforcement
-		// — the schema doc is already in the system prompt.
-		slog.Warn("gemini: schema + custom tools incompatible; using prompt-only schema enforcement",
-			"model", req.Model)
-	case wantSchema:
+	// Gemini's API rejects responseSchema together with function
+	// declarations, and rejects GoogleSearch together with function
+	// declarations. Both collisions are deployment-routing errors:
+	// the agent shouldn't have routed here in the first place.
+	// Surface ErrIncompatible so the executor advances to the next
+	// preference in def.Models rather than producing structurally
+	// wrong output the downstream parser can't handle.
+	if wantSchema && hasCustomTools {
+		return nil, fmt.Errorf("%w: gemini cannot combine responseSchema with custom tools (model=%s)",
+			ErrIncompatible, req.Model)
+	}
+	if wantGrounding && hasCustomTools {
+		return nil, fmt.Errorf("%w: gemini cannot combine GoogleSearch grounding with custom tools (model=%s)",
+			ErrIncompatible, req.Model)
+	}
+
+	if wantSchema {
 		cfg.ResponseMIMEType = "application/json"
 		cfg.ResponseSchema = jsonSchemaToGenaiSchema(req.OutputSchema)
 	}
@@ -114,10 +122,6 @@ func (g *GeminiAdapter) Run(ctx context.Context, req Request) (*Response, error)
 			})
 		}
 		cfg.Tools = []*genai.Tool{{FunctionDeclarations: decls}}
-		if wantGrounding {
-			slog.Warn("gemini: grounding + custom tools incompatible; preferring custom tools",
-				"model", req.Model)
-		}
 	} else if wantGrounding {
 		cfg.Tools = []*genai.Tool{{GoogleSearch: &genai.GoogleSearch{}}}
 	}
@@ -245,9 +249,14 @@ func geminiUsage(resp *genai.GenerateContentResponse) geminiUsageTotals {
 
 // dispatchGeminiTools invokes each tool's Handler and packages the
 // results as FunctionResponse parts for the next user turn. The
-// FunctionResponse.Response payload stores the handler's JSON output
-// under a uniform "output" key — Gemini's documented contract for
-// passing tool results back into the conversation.
+// FunctionResponse.Response payload stores the handler's JSON
+// output under a uniform "output" key — Gemini's documented
+// contract for passing tool results back into the conversation.
+//
+// Handler errors are fed back to the model so the loop can recover
+// from input mistakes. Context-cancellation / deadline errors
+// bubble up instead — these signal the caller's deadline, not a
+// recoverable input error.
 func dispatchGeminiTools(ctx context.Context, registry []ToolDef, calls []*genai.FunctionCall) ([]*genai.Part, error) {
 	byName := make(map[string]ToolDef, len(registry))
 	for _, t := range registry {
@@ -255,6 +264,9 @@ func dispatchGeminiTools(ctx context.Context, registry []ToolDef, calls []*genai
 	}
 	parts := make([]*genai.Part, 0, len(calls))
 	for _, call := range calls {
+		if err := ctx.Err(); err != nil {
+			return nil, classifyGeminiError(err)
+		}
 		def, ok := byName[call.Name]
 		if !ok {
 			parts = append(parts, &genai.Part{FunctionResponse: &genai.FunctionResponse{
@@ -275,6 +287,9 @@ func dispatchGeminiTools(ctx context.Context, registry []ToolDef, calls []*genai
 		}
 		out, err := def.Handler(ctx, input)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, ErrTimeout
+			}
 			parts = append(parts, &genai.Part{FunctionResponse: &genai.FunctionResponse{
 				ID:       call.ID,
 				Name:     call.Name,

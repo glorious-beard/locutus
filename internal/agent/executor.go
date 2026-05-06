@@ -70,8 +70,9 @@ type GenerateRound struct {
 // internal/agent can pattern-match adapter returns via errors.Is
 // against the agent-package name.
 var (
-	ErrRateLimit = adapters.ErrRateLimit
-	ErrTimeout   = adapters.ErrTimeout
+	ErrRateLimit    = adapters.ErrRateLimit
+	ErrTimeout      = adapters.ErrTimeout
+	ErrIncompatible = adapters.ErrIncompatible
 )
 
 // AgentExecutor is the agent-level boundary the workflow dispatches
@@ -187,13 +188,14 @@ func (e *Executor) Run(ctx context.Context, def AgentDef, input AgentInput) (*Ag
 			return out, nil
 		}
 		lastErr = err
-		if !errors.Is(err, ErrRateLimit) && !errors.Is(err, ErrTimeout) {
+		// Fallback-eligible: rate-limit / timeout (transient) or
+		// incompatibility (permanent for this provider but maybe
+		// satisfiable by the next preference). Anything else —
+		// programming errors, parse errors, schema errors — fails
+		// the call so the operator sees the real cause.
+		if !errors.Is(err, ErrRateLimit) && !errors.Is(err, ErrTimeout) && !errors.Is(err, ErrIncompatible) {
 			return out, err
 		}
-		// Retryable failure on this preference. Walk to the next
-		// preference if there is one. Final preference's failure
-		// surfaces to the caller (RunWithRetry can still back off
-		// and re-walk).
 		if i+1 < len(picks) {
 			next := picks[i+1]
 			slog.Warn("agent fallback: primary preference failed; advancing to next",

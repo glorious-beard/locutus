@@ -285,6 +285,11 @@ func splitOpenAIOutput(items []responses.ResponseOutputItemUnion) (text, reasoni
 
 // dispatchOpenAITools invokes each tool's Handler and packages the
 // results as function_call_output input items for the next turn.
+//
+// Handler errors are fed back to the model so the loop can recover
+// from input mistakes. Context-cancellation / deadline errors
+// bubble up instead — these signal the caller's deadline, not a
+// recoverable input error.
 func dispatchOpenAITools(ctx context.Context, registry []ToolDef, calls []openAICall) ([]responses.ResponseInputItemUnionParam, error) {
 	byName := make(map[string]ToolDef, len(registry))
 	for _, t := range registry {
@@ -292,6 +297,9 @@ func dispatchOpenAITools(ctx context.Context, registry []ToolDef, calls []openAI
 	}
 	results := make([]responses.ResponseInputItemUnionParam, 0, len(calls))
 	for _, call := range calls {
+		if err := ctx.Err(); err != nil {
+			return nil, classifyOpenAIError(err)
+		}
 		def, ok := byName[call.name]
 		if !ok {
 			results = append(results, responses.ResponseInputItemUnionParam{
@@ -304,6 +312,9 @@ func dispatchOpenAITools(ctx context.Context, registry []ToolDef, calls []openAI
 		}
 		out, err := def.Handler(ctx, json.RawMessage(call.arguments))
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, ErrTimeout
+			}
 			results = append(results, responses.ResponseInputItemUnionParam{
 				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 					CallID: call.callID,
