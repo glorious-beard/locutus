@@ -35,11 +35,51 @@ type Result struct {
 	Events            []history.Event // events recorded for historian (for tests and dry runs)
 }
 
+// briefKey is the unexported context key for threading the
+// refinement intent (the user's --brief argument) into the rewriter
+// prompt without changing every cascade signature. Mirrors the
+// agent.WithRole pattern: per-call metadata travels via context, the
+// exposed surface is two helpers.
+type briefKey struct{}
+
+// WithBrief returns ctx tagged with a refinement intent string. The
+// rewriter and synthesizer agents prepend this to their prompts so
+// the rewrite stays consistent with what the user asked for. Empty
+// strings are stored as-is; the rewriter checks for a non-empty
+// value before splicing the section into its prompt.
+func WithBrief(ctx context.Context, brief string) context.Context {
+	return context.WithValue(ctx, briefKey{}, brief)
+}
+
+// BriefFromContext returns the refinement intent set via WithBrief,
+// or "" if none. Used by the rewriter prompt builder.
+func BriefFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(briefKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // RewriteResult is the JSON shape the rewriter agent returns.
 type RewriteResult struct {
 	RevisedBody string `json:"revised_body"`
 	Changed     bool   `json:"changed"`
 	Rationale   string `json:"rationale"`
+}
+
+func init() {
+	// Register RewriteResult so the rewriter and synthesizer agents
+	// can declare it as their OutputSchema and get strict-mode JSON
+	// enforcement at the adapter layer. Without this, the rewriter
+	// silently returned `{"prose":"..."}` on Gemini 3 against the
+	// expected `revised_body` field, wiping the parent's Description.
+	// Lives in cascade (not internal/agent) so the registered example
+	// stays the source of truth alongside the consumer.
+	agent.RegisterSchema("RewriteResult", RewriteResult{
+		RevisedBody: "the revised parent prose",
+		Changed:     true,
+		Rationale:   "one-line summary of what changed and why",
+	})
 }
 
 // Cascade propagates the revision of a single Decision through the spec
@@ -268,6 +308,9 @@ func invokeRewriter(
 	applicable, changed []spec.Decision,
 ) (*RewriteResult, error) {
 	var prompt strings.Builder
+	if brief := BriefFromContext(ctx); brief != "" {
+		fmt.Fprintf(&prompt, "## Refinement intent\n%s\n\n", brief)
+	}
 	fmt.Fprintf(&prompt, "## Parent kind\n%s\n\n", parentKind)
 	fmt.Fprintf(&prompt, "## Parent ID\n%s\n\n", parentID)
 	fmt.Fprintf(&prompt, "## Parent title\n%s\n\n", parentTitle)
@@ -283,8 +326,25 @@ func invokeRewriter(
 	}
 
 	def := agent.AgentDef{
-		ID:           "rewriter",
-		SystemPrompt: "You are the cascade rewriter. Respond with valid JSON matching the RewriteResult schema.",
+		ID: "rewriter",
+		SystemPrompt: `You are the cascade rewriter. Your job is to update a parent
+spec node's prose to reflect either:
+1. Recently changed Decisions that the parent references, OR
+2. A user-supplied Refinement intent describing what should be different
+   about the prose.
+
+When a "## Refinement intent" section is present, treat it as a
+directive — produce revised prose that incorporates the user's intent.
+Set changed=true even when no Decisions appear in the "## Recently
+changed Decisions" section, since the intent itself is the change driver.
+
+When no Refinement intent is present, the rewrite is purely
+mechanical: rewrite only if the parent prose has drifted from its
+applicable Decisions. Set changed=false otherwise — don't paraphrase
+for the sake of change.
+
+Respond with valid JSON matching the RewriteResult schema.`,
+		OutputSchema: "RewriteResult",
 	}
 	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt.String()}}}
 	var out RewriteResult

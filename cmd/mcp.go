@@ -63,8 +63,11 @@ type assimilateInput struct {
 }
 
 type refineInput struct {
-	ID     string `json:"id"`
-	DryRun bool   `json:"dry_run,omitempty"`
+	ID       string `json:"id"`
+	DryRun   bool   `json:"dry_run,omitempty"`
+	Brief    string `json:"brief,omitempty"`
+	Diff     bool   `json:"diff,omitempty"`
+	Rollback bool   `json:"rollback,omitempty"`
 }
 
 type adoptInput struct {
@@ -219,10 +222,20 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 	// drive the council (currently Goals).
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "refine",
-		Description: "Council-driven deliberation on any spec node (decision, feature, strategy, bug, approach, or goals).",
+		Description: "Council-driven deliberation on any spec node (decision, feature, strategy, bug, approach, or goals). With brief, threads a focused refinement intent into the rewriter prompt. With diff, returns a unified diff against the prior version. With rollback, restores the most recent refine event's prior bytes.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input refineInput) (*mcp.CallToolResult, any, error) {
 		if input.ID == "" {
 			return errorResult("id is required"), nil, nil
+		}
+		if input.Rollback {
+			if input.Brief != "" || input.Diff || input.DryRun {
+				return errorResult("rollback is mutually exclusive with brief, diff, dry_run"), nil, nil
+			}
+			result, err := RunRollback(fsys, input.ID)
+			if err != nil {
+				return errorResult(err.Error()), nil, nil
+			}
+			return textResult(formatRefineResultForMCP(result)), nil, nil
 		}
 		kind, err := resolveNodeKind(fsys, input.ID)
 		if err != nil {
@@ -241,7 +254,8 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
-		result, err := dispatchRefine(ctx, llm, fsys, input.ID, kind, newMCPSink(ctx, req))
+		opts := RefineOptions{Brief: input.Brief, Diff: input.Diff}
+		result, err := dispatchRefineWithOptions(ctx, llm, fsys, input.ID, kind, opts, newMCPSink(ctx, req))
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
@@ -358,6 +372,16 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 func formatRefineResultForMCP(r *RefineResult) string {
 	if r == nil {
 		return "Refine: no result."
+	}
+	if r.Rollback != nil {
+		if !r.Rollback.Restored {
+			return fmt.Sprintf("Rollback %s: %s", r.NodeID, r.Rollback.Note)
+		}
+		return fmt.Sprintf("Rolled back %s %s (source: %s). %s",
+			r.NodeKind, r.NodeID, r.Rollback.SourceEventID, r.Rollback.Note)
+	}
+	if r.Diff != "" {
+		return r.Diff
 	}
 	if r.Cascade != nil {
 		c := r.Cascade
