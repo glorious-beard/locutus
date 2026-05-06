@@ -13,7 +13,11 @@ Locutus — a Go CLI and MCP server that acts as an autonomous project manager f
 
 When these documents conflict with any other file in the repo, `docs/` and `.claude/plans/` win.
 
-## Command Surface (8 verbs)
+## Command Surface
+
+The verb set splits into 8 mutating/operational verbs plus 2 read-only deliberation aids (DJ-101).
+
+**Mutating and operational (8):**
 
 1. `locutus init` — Bootstrap `.borg/` scaffold.
 2. `locutus update` — Refresh binary and embedded defaults.
@@ -21,10 +25,15 @@ When these documents conflict with any other file in the repo, `docs/` and `.cla
 4. `locutus refine <node>` — Council-driven deliberation on any spec node.
 5. `locutus assimilate` — Infer or update spec from code.
 6. `locutus adopt` — Bring code into alignment with spec (reconcile loop).
-7. `locutus status` — Show state, drift, and validation errors.
+7. `locutus status` — Show state, drift, and validation errors. With `--full` emits a comprehensive snapshot of the spec graph (DJ-100).
 8. `locutus history` — Query the past-tense record.
 
-Every mutating verb supports `--dry-run`. `locutus mcp` starts the MCP server; `locutus mcp-perm-bridge` is a hidden internal subprocess.
+**Read-only deliberation aids (2):**
+
+- `locutus explain <id>` — Render a single spec node's rationale, alternatives, citations, and back-references. No LLM.
+- `locutus justify <id> [--against "..."]` — Spec advocate writes an active defense; `--against` runs the challenger first for an adversarial dialogue.
+
+Every mutating verb supports `--dry-run`. `locutus mcp` starts the MCP server; `locutus mcp-perm-bridge` is a hidden internal subprocess. Every CLI verb has MCP parity.
 
 ## Build & Test
 
@@ -44,4 +53,4 @@ go test ./... -race                    # race detector
 - **Testing**: `github.com/stretchr/testify/assert`
 - **Console output**: `github.com/pterm/pterm`
 - **Logging**: `log/slog` (stdlib)
-- **LLM**: `github.com/firebase/genkit/go` (Anthropic + Google GenAI providers)
+- **LLM**: direct-SDK adapters per provider (DJ-099) — `github.com/anthropics/anthropic-sdk-go`, `google.golang.org/genai`, `github.com/openai/openai-go` (Responses API).
