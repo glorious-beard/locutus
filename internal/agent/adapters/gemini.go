@@ -94,29 +94,29 @@ func (g *GeminiAdapter) Run(ctx context.Context, req Request) (*Response, error)
 
 	// Gemini's API rejects ANY tool (custom function declarations
 	// OR GoogleSearch) when responseMimeType is application/json
-	// with responseSchema set. The error is "Tool use with a
-	// response mime type: 'application/json' is unsupported".
+	// with responseSchema set. Error: "Tool use with a response
+	// mime type: 'application/json' is unsupported".
 	//
-	// Schema + custom tools: hard fail. The agent that asked for
-	// both (e.g. spec_reconciler) needs both to function —
-	// neither can be silently dropped. ErrIncompatible lets the
-	// executor advance to the next preference; today
-	// spec_reconciler routes anthropic/strong → openai/strong,
-	// not googleai, so this only fires on a misrouted deployment.
+	// Capability collisions are handled by intersecting what the
+	// agent asked for with what the API supports, and decomposing
+	// the call accordingly:
 	//
-	// Grounding + custom tools (no schema): hard fail. The agent
-	// asked for both; no clear demotion target.
+	//   schema + custom tools — hard fail (ErrIncompatible). The
+	//     agent needs both to function; the executor advances to
+	//     the next preference. spec_reconciler routes
+	//     anthropic/strong → openai/strong (not googleai); this
+	//     fires only on a misrouted deployment.
 	//
-	// Schema + GoogleSearch grounding: keep BOTH but drop
-	// API-level schema enforcement and rely on prompt-only
-	// schema documentation. The system prompt already includes
-	// the indented JSON schema (BuildSystemPrompt) and tells the
-	// model "no prose, no commentary, no code fences". The
-	// grounded call returns text that unmarshalAgentOutput parses
-	// defensively (extracts a JSON span if the model wrapped its
-	// answer in a code fence). This preserves grounding's value
-	// — the cheaper-than-OpenAI search verification — without
-	// dropping the response contract entirely.
+	//   grounding + custom tools (no schema) — hard fail. The
+	//     agent asked for both; no clear demotion target.
+	//
+	//   schema + GoogleSearch grounding — two-phase split. Phase 1
+	//     is a grounded freeform call producing text. Phase 2 is a
+	//     schematize call: same model, no grounding, with the
+	//     phase-1 text as a model turn and a "convert this to
+	//     JSON" directive, gated by responseSchema strict mode.
+	//     Both capabilities preserved at full strength; cost is
+	//     ~1.5–2x a single call. See runGroundedThenSchematize.
 	if wantSchema && hasCustomTools {
 		return nil, fmt.Errorf("%w: gemini cannot combine responseSchema with custom tools (model=%s)",
 			ErrIncompatible, req.Model)
@@ -125,12 +125,11 @@ func (g *GeminiAdapter) Run(ctx context.Context, req Request) (*Response, error)
 		return nil, fmt.Errorf("%w: gemini cannot combine GoogleSearch grounding with custom tools (model=%s)",
 			ErrIncompatible, req.Model)
 	}
+	if wantSchema && wantGrounding {
+		return g.runGroundedThenSchematize(ctx, req, cfg)
+	}
 
 	switch {
-	case wantSchema && wantGrounding:
-		slog.Warn("gemini: responseSchema + GoogleSearch incompatible; using prompt-only schema enforcement (grounding preserved)",
-			"model", req.Model)
-		cfg.Tools = []*genai.Tool{{GoogleSearch: &genai.GoogleSearch{}}}
 	case wantSchema:
 		cfg.ResponseMIMEType = "application/json"
 		cfg.ResponseSchema = jsonSchemaToGenaiSchema(req.OutputSchema)
@@ -148,9 +147,114 @@ func (g *GeminiAdapter) Run(ctx context.Context, req Request) (*Response, error)
 		cfg.Tools = []*genai.Tool{{GoogleSearch: &genai.GoogleSearch{}}}
 	}
 
-
 	contents := buildGeminiContents(req.Messages)
 	return g.dispatch(ctx, req, contents, cfg)
+}
+
+// runGroundedThenSchematize executes a grounded → schematize
+// two-phase call when the agent declared both schema and grounding.
+// Gemini's API can't honor both in one call; splitting preserves
+// each capability at full strength.
+//
+// Phase 1: GoogleSearch tool attached, no responseSchema. The model
+// produces a grounded freeform answer that may include search-
+// verified citations / facts the training cutoff missed.
+//
+// Phase 2: no tools, with responseSchema strict. The conversation
+// the model sees is the original user messages + an assistant turn
+// containing phase-1 text + a user directive to convert that
+// analysis to the requested JSON shape. The schematize call has
+// nothing to discover — its job is purely structural.
+//
+// The two phases are reported as a single Response.Rounds slice so
+// the session recorder shows both — operator can inspect what the
+// grounded phase produced before schematization. Token counts are
+// summed across phases.
+func (g *GeminiAdapter) runGroundedThenSchematize(ctx context.Context, req Request, baseCfg *genai.GenerateContentConfig) (*Response, error) {
+	slog.Info("gemini: schema + grounding incompatible at API; running two-phase grounded→schematize",
+		"model", req.Model)
+
+	// Phase 1 config: clone base, attach GoogleSearch, leave
+	// schema/mime unset.
+	phase1Cfg := *baseCfg
+	phase1Cfg.Tools = []*genai.Tool{{GoogleSearch: &genai.GoogleSearch{}}}
+
+	contents1 := buildGeminiContents(req.Messages)
+	resp1, err := g.client.Models.GenerateContent(ctx, req.Model, contents1, &phase1Cfg)
+	if err != nil {
+		return nil, classifyGeminiError(err)
+	}
+	text1, reasoning1, _ := splitGeminiContent(resp1)
+	raw1, _ := json.Marshal(resp1)
+	usage1 := geminiUsage(resp1)
+
+	// Phase 2 config: clone base, attach schema, no tools.
+	phase2Cfg := *baseCfg
+	phase2Cfg.Tools = nil
+	phase2Cfg.ResponseMIMEType = "application/json"
+	phase2Cfg.ResponseSchema = jsonSchemaToGenaiSchema(req.OutputSchema)
+
+	contents2 := buildGeminiContents(req.Messages)
+	contents2 = append(contents2, genai.NewContentFromText(text1, genai.RoleModel))
+	contents2 = append(contents2, genai.NewContentFromText(
+		"Convert the analysis above into a single JSON object matching the schema declared in the system prompt. Preserve every fact and option from the analysis. No prose, no commentary, no code fences.",
+		genai.RoleUser,
+	))
+
+	if err := ctx.Err(); err != nil {
+		return nil, classifyGeminiError(err)
+	}
+	resp2, err := g.client.Models.GenerateContent(ctx, req.Model, contents2, &phase2Cfg)
+	if err != nil {
+		return nil, classifyGeminiError(err)
+	}
+	text2, reasoning2, _ := splitGeminiContent(resp2)
+	raw2, _ := json.Marshal(resp2)
+	usage2 := geminiUsage(resp2)
+
+	return &Response{
+		Model:          resp2.ModelVersion,
+		Content:        text2,
+		Reasoning:      joinReasoning(reasoning1, reasoning2),
+		RawMessage:     string(raw2),
+		InputTokens:    usage1.in + usage2.in,
+		OutputTokens:   usage1.out + usage2.out,
+		ThoughtsTokens: usage1.thoughts + usage2.thoughts,
+		TotalTokens:    usage1.total + usage2.total,
+		Rounds: []Round{
+			{
+				Index:          1,
+				Reasoning:      reasoning1,
+				Text:           text1,
+				Message:        string(raw1),
+				InputTokens:    usage1.in,
+				OutputTokens:   usage1.out,
+				ThoughtsTokens: usage1.thoughts,
+			},
+			{
+				Index:          2,
+				Reasoning:      reasoning2,
+				Text:           text2,
+				Message:        string(raw2),
+				InputTokens:    usage2.in,
+				OutputTokens:   usage2.out,
+				ThoughtsTokens: usage2.thoughts,
+			},
+		},
+	}, nil
+}
+
+func joinReasoning(a, b string) string {
+	switch {
+	case a == "" && b == "":
+		return ""
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + "\n\n" + b
+	}
 }
 
 // dispatch runs GenerateContent and drives the function-call loop
