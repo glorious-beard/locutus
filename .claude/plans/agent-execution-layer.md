@@ -1,5 +1,19 @@
 # Agent-Level Execution Layer
 
+> **SUPERSEDED 2026-05-05** by [.claude/plans/direct-sdk-agent-execution.md](.claude/plans/direct-sdk-agent-execution.md).
+>
+> The successor plan covers the same problem (replace Genkit Go) with significant refinements after a multi-round design review:
+> - Per-agent frontmatter `models:` priority list (replaces tier-only resolution).
+> - Provider-side strict-mode schema enforcement as the primary fix for the DJ-098 bug class.
+> - OpenAI Responses API instead of Chat Completions (OpenAI's forward-looking API; same surface coverage).
+> - LCD strategy (Chat Completions against arbitrary base URLs) deferred until real demand surfaces.
+> - Single non-phased migration; no feature flag.
+> - Coding-agent CLI executor explored and rejected as primary architecture (workflow orchestration via the CLI's own dispatcher doesn't generalize across CLIs; pre-auth requirement breaks CI/CD).
+>
+> This file is preserved for the design history. Refer to the successor for the active plan.
+
+---
+
 Replace Genkit Go with an in-house abstraction sized to Locutus's actual
 needs. **NOT** a generic LLM-glue rewrite. The boundary lives at the
 **agent level**, not at a `Generate(prompt) → response` interface.
