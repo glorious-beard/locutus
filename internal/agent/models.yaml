@@ -47,17 +47,17 @@ providers:
 
   googleai:
     fast:
-      model: gemini-2.5-flash-lite
+      model: gemini-3.1-flash-lite-preview
       max_output_tokens: 16384
       thinking: off
       concurrent_requests: 4
     balanced:
-      model: gemini-2.5-flash
+      model: gemini-3-flash-preview
       max_output_tokens: 32768
       thinking: on
       concurrent_requests: 4
     strong:
-      model: gemini-2.5-pro
+      model: gemini-3.1-pro-preview
       max_output_tokens: 65536
       thinking: high
       concurrent_requests: 2

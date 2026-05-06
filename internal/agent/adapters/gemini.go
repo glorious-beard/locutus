@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 
@@ -13,26 +12,31 @@ import (
 )
 
 // GeminiAdapter implements adapters.Adapter against the
-// google.golang.org/genai SDK. Strict-mode schemas land as
-// ResponseSchema on the GenerateContentConfig; custom tools are
-// expressed as FunctionDeclarations and driven through a function-
-// call loop. Grounding attaches the GoogleSearch tool.
+// google.golang.org/genai SDK targeting Gemini 3 series models.
 //
-// Provider constraints baked in:
+// Schemas land via responseJsonSchema (raw JSON Schema, broader
+// feature support than the legacy responseSchema's OpenAPI subset).
+// Custom tool parameters land via parametersJsonSchema for the same
+// reason. Per Gemini 3's "Migrating from 2.5 > Tool Support" note,
+// responseJsonSchema composes cleanly with built-in tools
+// (GoogleSearch, URLContext) AND custom function calling — the
+// schema XOR tools restriction that bit Gemini 2.5 is gone.
 //
-//   - ResponseSchema is incompatible with custom tools at the API
-//     level. When both are requested the adapter logs a Warn and
-//     falls back to prompt-only schema enforcement.
-//   - GoogleSearch grounding is incompatible with custom tools. The
-//     adapter prefers custom tools when both are set and logs a Warn.
+// Earlier branches handled 2.5's incompatibilities (two-phase
+// grounded→schematize, ErrIncompatible for schema+tools). They've
+// been removed; this adapter assumes Gemini 3+ and the embedded
+// models.yaml routes the googleai provider to gemini-3.x tiers.
+// A deployer who pins back to 2.5 will rediscover the API rejection
+// and either upgrade or hold off on agents that combine schema with
+// tools/grounding.
 type GeminiAdapter struct {
 	client        *genai.Client
 	maxToolRounds int
 }
 
 // NewGeminiAdapter constructs an adapter against GEMINI_API_KEY (or
-// GOOGLE_API_KEY as the alternate env var the SDK reads). Returns an
-// error when neither is set.
+// GOOGLE_API_KEY as the alternate env var the SDK reads). Returns
+// an error when neither is set.
 func NewGeminiAdapter(ctx context.Context) (*GeminiAdapter, error) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
@@ -54,16 +58,10 @@ func NewGeminiAdapter(ctx context.Context) (*GeminiAdapter, error) {
 // Provider returns the canonical name for this adapter.
 func (g *GeminiAdapter) Provider() string { return "googleai" }
 
-// Run dispatches a request through google.golang.org/genai. The
-// flow:
-//
-//  1. Build GenerateContentConfig (system instruction, max output
-//     tokens, thinking budget, schema, tools).
-//  2. Call GenerateContent with the user-side messages as Contents.
-//  3. If the response contains FunctionCall parts, dispatch them
-//     against the request's Tools, append FunctionResponse parts to
-//     the next turn, and loop. Otherwise return.
-//  4. Aggregate per-round telemetry.
+// Run dispatches a request through google.golang.org/genai. Schema,
+// custom tools, and grounding combine freely — Gemini 3 supports
+// the full matrix in a single call. The function-call loop handles
+// multi-round tool use; non-tool responses return immediately.
 func (g *GeminiAdapter) Run(ctx context.Context, req Request) (*Response, error) {
 	cfg := &genai.GenerateContentConfig{}
 	if req.SystemPrompt != "" {
@@ -88,173 +86,30 @@ func (g *GeminiAdapter) Run(ctx context.Context, req Request) (*Response, error)
 		}
 	}
 
-	hasCustomTools := len(req.Tools) > 0
-	wantSchema := req.OutputSchema != nil
-	wantGrounding := req.Grounding
-
-	// Gemini's API rejects ANY tool (custom function declarations
-	// OR GoogleSearch) when responseMimeType is application/json
-	// with responseSchema set. Error: "Tool use with a response
-	// mime type: 'application/json' is unsupported".
-	//
-	// Capability collisions are handled by intersecting what the
-	// agent asked for with what the API supports, and decomposing
-	// the call accordingly:
-	//
-	//   schema + custom tools — hard fail (ErrIncompatible). The
-	//     agent needs both to function; the executor advances to
-	//     the next preference. spec_reconciler routes
-	//     anthropic/strong → openai/strong (not googleai); this
-	//     fires only on a misrouted deployment.
-	//
-	//   grounding + custom tools (no schema) — hard fail. The
-	//     agent asked for both; no clear demotion target.
-	//
-	//   schema + GoogleSearch grounding — two-phase split. Phase 1
-	//     is a grounded freeform call producing text. Phase 2 is a
-	//     schematize call: same model, no grounding, with the
-	//     phase-1 text as a model turn and a "convert this to
-	//     JSON" directive, gated by responseSchema strict mode.
-	//     Both capabilities preserved at full strength; cost is
-	//     ~1.5–2x a single call. See runGroundedThenSchematize.
-	if wantSchema && hasCustomTools {
-		return nil, fmt.Errorf("%w: gemini cannot combine responseSchema with custom tools (model=%s)",
-			ErrIncompatible, req.Model)
-	}
-	if wantGrounding && hasCustomTools {
-		return nil, fmt.Errorf("%w: gemini cannot combine GoogleSearch grounding with custom tools (model=%s)",
-			ErrIncompatible, req.Model)
-	}
-	if wantSchema && wantGrounding {
-		return g.runGroundedThenSchematize(ctx, req, cfg)
-	}
-
-	switch {
-	case wantSchema:
+	if req.OutputSchema != nil {
 		cfg.ResponseMIMEType = "application/json"
-		cfg.ResponseSchema = jsonSchemaToGenaiSchema(req.OutputSchema)
-	case hasCustomTools:
+		cfg.ResponseJsonSchema = req.OutputSchema
+	}
+
+	var tools []*genai.Tool
+	if len(req.Tools) > 0 {
 		decls := make([]*genai.FunctionDeclaration, 0, len(req.Tools))
 		for _, t := range req.Tools {
 			decls = append(decls, &genai.FunctionDeclaration{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  jsonSchemaToGenaiSchema(t.InputSchema),
+				Name:                 t.Name,
+				Description:          t.Description,
+				ParametersJsonSchema: t.InputSchema,
 			})
 		}
-		cfg.Tools = []*genai.Tool{{FunctionDeclarations: decls}}
-	case wantGrounding:
-		cfg.Tools = []*genai.Tool{{GoogleSearch: &genai.GoogleSearch{}}}
+		tools = append(tools, &genai.Tool{FunctionDeclarations: decls})
 	}
+	if req.Grounding {
+		tools = append(tools, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
+	}
+	cfg.Tools = tools
 
 	contents := buildGeminiContents(req.Messages)
 	return g.dispatch(ctx, req, contents, cfg)
-}
-
-// runGroundedThenSchematize executes a grounded → schematize
-// two-phase call when the agent declared both schema and grounding.
-// Gemini's API can't honor both in one call; splitting preserves
-// each capability at full strength.
-//
-// Phase 1: GoogleSearch tool attached, no responseSchema. The model
-// produces a grounded freeform answer that may include search-
-// verified citations / facts the training cutoff missed.
-//
-// Phase 2: no tools, with responseSchema strict. The conversation
-// the model sees is the original user messages + an assistant turn
-// containing phase-1 text + a user directive to convert that
-// analysis to the requested JSON shape. The schematize call has
-// nothing to discover — its job is purely structural.
-//
-// The two phases are reported as a single Response.Rounds slice so
-// the session recorder shows both — operator can inspect what the
-// grounded phase produced before schematization. Token counts are
-// summed across phases.
-func (g *GeminiAdapter) runGroundedThenSchematize(ctx context.Context, req Request, baseCfg *genai.GenerateContentConfig) (*Response, error) {
-	slog.Info("gemini: schema + grounding incompatible at API; running two-phase grounded→schematize",
-		"model", req.Model)
-
-	// Phase 1 config: clone base, attach GoogleSearch, leave
-	// schema/mime unset.
-	phase1Cfg := *baseCfg
-	phase1Cfg.Tools = []*genai.Tool{{GoogleSearch: &genai.GoogleSearch{}}}
-
-	contents1 := buildGeminiContents(req.Messages)
-	resp1, err := g.client.Models.GenerateContent(ctx, req.Model, contents1, &phase1Cfg)
-	if err != nil {
-		return nil, classifyGeminiError(err)
-	}
-	text1, reasoning1, _ := splitGeminiContent(resp1)
-	raw1, _ := json.Marshal(resp1)
-	usage1 := geminiUsage(resp1)
-
-	// Phase 2 config: clone base, attach schema, no tools.
-	phase2Cfg := *baseCfg
-	phase2Cfg.Tools = nil
-	phase2Cfg.ResponseMIMEType = "application/json"
-	phase2Cfg.ResponseSchema = jsonSchemaToGenaiSchema(req.OutputSchema)
-
-	contents2 := buildGeminiContents(req.Messages)
-	contents2 = append(contents2, genai.NewContentFromText(text1, genai.RoleModel))
-	contents2 = append(contents2, genai.NewContentFromText(
-		"Convert the analysis above into a single JSON object matching the schema declared in the system prompt. Preserve every fact and option from the analysis. No prose, no commentary, no code fences.",
-		genai.RoleUser,
-	))
-
-	if err := ctx.Err(); err != nil {
-		return nil, classifyGeminiError(err)
-	}
-	resp2, err := g.client.Models.GenerateContent(ctx, req.Model, contents2, &phase2Cfg)
-	if err != nil {
-		return nil, classifyGeminiError(err)
-	}
-	text2, reasoning2, _ := splitGeminiContent(resp2)
-	raw2, _ := json.Marshal(resp2)
-	usage2 := geminiUsage(resp2)
-
-	return &Response{
-		Model:          resp2.ModelVersion,
-		Content:        text2,
-		Reasoning:      joinReasoning(reasoning1, reasoning2),
-		RawMessage:     string(raw2),
-		InputTokens:    usage1.in + usage2.in,
-		OutputTokens:   usage1.out + usage2.out,
-		ThoughtsTokens: usage1.thoughts + usage2.thoughts,
-		TotalTokens:    usage1.total + usage2.total,
-		Rounds: []Round{
-			{
-				Index:          1,
-				Reasoning:      reasoning1,
-				Text:           text1,
-				Message:        string(raw1),
-				InputTokens:    usage1.in,
-				OutputTokens:   usage1.out,
-				ThoughtsTokens: usage1.thoughts,
-			},
-			{
-				Index:          2,
-				Reasoning:      reasoning2,
-				Text:           text2,
-				Message:        string(raw2),
-				InputTokens:    usage2.in,
-				OutputTokens:   usage2.out,
-				ThoughtsTokens: usage2.thoughts,
-			},
-		},
-	}, nil
-}
-
-func joinReasoning(a, b string) string {
-	switch {
-	case a == "" && b == "":
-		return ""
-	case a == "":
-		return b
-	case b == "":
-		return a
-	default:
-		return a + "\n\n" + b
-	}
 }
 
 // dispatch runs GenerateContent and drives the function-call loop
@@ -437,77 +292,11 @@ func dispatchGeminiTools(ctx context.Context, registry []ToolDef, calls []*genai
 	return parts, nil
 }
 
-// jsonSchemaToGenaiSchema projects a JSON-Schema map onto the SDK's
-// *genai.Schema. Only the subset Gemini accepts is mapped: type,
-// properties, required, items, enum, description, additionalProperties.
-// Unknown / unmappable keys are silently dropped — Gemini rejects
-// schemas that contain fields it doesn't understand.
-func jsonSchemaToGenaiSchema(schema map[string]any) *genai.Schema {
-	if schema == nil {
-		return nil
-	}
-	out := &genai.Schema{}
-	if t, ok := schema["type"].(string); ok {
-		out.Type = jsonSchemaTypeToGenai(t)
-	}
-	if desc, ok := schema["description"].(string); ok {
-		out.Description = desc
-	}
-	if enum, ok := schema["enum"].([]any); ok {
-		for _, e := range enum {
-			if s, ok := e.(string); ok {
-				out.Enum = append(out.Enum, s)
-			}
-		}
-	}
-	if props, ok := schema["properties"].(map[string]any); ok {
-		out.Properties = map[string]*genai.Schema{}
-		for k, v := range props {
-			if m, ok := v.(map[string]any); ok {
-				out.Properties[k] = jsonSchemaToGenaiSchema(m)
-			}
-		}
-	}
-	if req, ok := schema["required"].([]any); ok {
-		for _, r := range req {
-			if s, ok := r.(string); ok {
-				out.Required = append(out.Required, s)
-			}
-		}
-	}
-	if items, ok := schema["items"].(map[string]any); ok {
-		out.Items = jsonSchemaToGenaiSchema(items)
-	}
-	return out
-}
-
-// jsonSchemaTypeToGenai maps the JSON-Schema primitive type to
-// genai.Type. Unknown primitives default to STRING — a safer
-// fallback than the SDK's zero value (which the API rejects).
-func jsonSchemaTypeToGenai(t string) genai.Type {
-	switch t {
-	case "object":
-		return genai.TypeObject
-	case "array":
-		return genai.TypeArray
-	case "string":
-		return genai.TypeString
-	case "integer":
-		return genai.TypeInteger
-	case "number":
-		return genai.TypeNumber
-	case "boolean":
-		return genai.TypeBoolean
-	default:
-		return genai.TypeString
-	}
-}
-
 // classifyGeminiError translates SDK errors into the neutral
 // sentinels the executor's retry layer pattern-matches. The genai
 // SDK surfaces 429s as a generic error containing the status text;
-// we string-match for the relevant patterns rather than coupling to
-// the SDK's internal error types.
+// we string-match for the relevant patterns rather than coupling
+// to the SDK's internal error types.
 func classifyGeminiError(err error) error {
 	if err == nil {
 		return nil
