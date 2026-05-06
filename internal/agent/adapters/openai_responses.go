@@ -80,7 +80,15 @@ func (a *OpenAIResponsesAdapter) Run(ctx context.Context, req Request) (*Respons
 			),
 		}
 		if vt := params.Text.Format.OfJSONSchema; vt != nil {
-			vt.Strict = openai.Bool(true)
+			// OpenAI strict mode demands every property listed in
+			// `required` and uses `["type","null"]` unions for
+			// optional fields. Schemas with `,omitempty` semantics
+			// have a partial required list; setting Strict:true
+			// here would force the model to fabricate values. Drop
+			// strict for those schemas — the schema doc is still
+			// passed and json_schema (non-strict) constrains the
+			// shape; the model can omit fields cleanly.
+			vt.Strict = openai.Bool(schemaIsFullyRequired(req.OutputSchema))
 		}
 	}
 
@@ -125,25 +133,27 @@ func (a *OpenAIResponsesAdapter) dispatch(ctx context.Context, params responses.
 			return finalizeRounds(out), nil
 		}
 
-		// Append the function_call items + their outputs to the
-		// input list for the next turn. The Responses API keeps
-		// conversation state on the client side here (no
-		// previous_response_id) so tool outputs route back.
-		for _, c := range calls {
-			params.Input.OfInputItemList = append(params.Input.OfInputItemList,
-				responses.ResponseInputItemUnionParam{
-					OfFunctionCall: &responses.ResponseFunctionToolCallParam{
-						CallID:    c.callID,
-						Name:      c.name,
-						Arguments: c.arguments,
-					},
-				})
-		}
+		// Chain the next turn via previous_response_id. The
+		// Responses API stores reasoning items, function_call
+		// items, and tool/instruction config server-side under
+		// the response id; replaying just the tool outputs as
+		// new input is the documented pattern for tool-use
+		// loops on reasoning-effort models. Without this, the
+		// reasoning items emitted in resp.Output would be
+		// dropped — and on o-series tiers the API rejects with
+		// "Item rs_… of type 'reasoning' was provided without
+		// its required following item". The function_call items
+		// themselves don't need to be re-sent; the call-id
+		// linkage in function_call_output is enough.
 		results, err := dispatchOpenAITools(ctx, req.Tools, calls)
 		if err != nil {
 			return out, err
 		}
-		params.Input.OfInputItemList = append(params.Input.OfInputItemList, results...)
+		params = responses.ResponseNewParams{
+			Model:              params.Model,
+			PreviousResponseID: openai.String(resp.ID),
+			Input:              responses.ResponseNewParamsInputUnion{OfInputItemList: results},
+		}
 	}
 
 	return out, fmt.Errorf("openai-responses adapter: tool-use loop exceeded %d rounds", a.maxToolRounds)

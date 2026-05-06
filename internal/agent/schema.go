@@ -49,16 +49,21 @@ func SchemaExample(name string) (any, bool) {
 
 // SchemaFor returns the JSON Schema (as a generic map) reflected
 // from the registered example struct. Caches per name so reflection
-// runs once per process. Strict-mode fields the adapters require are
-// baked in: AdditionalProperties:false at every object level,
-// Required: every property at every level (since strict mode treats
-// optional fields as "must be explicitly null"; our schemas use
-// `omitempty` semantically rather than as a contract).
+// runs once per process. AdditionalProperties:false is baked in at
+// every object level via enforceStrict; the `required` list comes
+// from invopop reflection over `,omitempty` JSON tags so optional
+// fields stay optional.
+//
+// Returns a deep copy of the cached schema on every call. Adapters
+// alias inner maps into provider-specific param types (e.g.
+// anthropic-sdk-go's ToolInputSchemaParam.Properties) and SDKs are
+// free to mutate downstream; sharing the cached map across calls
+// would let one mutation poison every concurrent reader.
 func SchemaFor(name string) (map[string]any, error) {
 	schemaCacheMu.Lock()
 	if cached, ok := schemaCache[name]; ok {
 		schemaCacheMu.Unlock()
-		return cached, nil
+		return deepCopySchema(cached), nil
 	}
 	schemaCacheMu.Unlock()
 
@@ -94,7 +99,36 @@ func SchemaFor(name string) (map[string]any, error) {
 	schemaCacheMu.Lock()
 	schemaCache[name] = schema
 	schemaCacheMu.Unlock()
-	return schema, nil
+	return deepCopySchema(schema), nil
+}
+
+// deepCopySchema clones a JSON-Schema-shaped map[string]any
+// recursively. Values are restricted to the JSON-decodable set
+// (string, float64, bool, nil, []any, map[string]any) since the
+// schema came in via json.Unmarshal — types outside that set are
+// returned as-is, which would be a programming error in the
+// caller (no mutable types in our schemas today).
+func deepCopySchema(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = deepCopyValue(v)
+	}
+	return out
+}
+
+func deepCopyValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		return deepCopySchema(t)
+	case []any:
+		c := make([]any, len(t))
+		for i, item := range t {
+			c[i] = deepCopyValue(item)
+		}
+		return c
+	default:
+		return v
+	}
 }
 
 // stripJSONSchemaArtifacts removes draft / version metadata that
@@ -120,11 +154,21 @@ func stripJSONSchemaArtifacts(node map[string]any) {
 }
 
 // enforceStrict walks the schema tree and ensures every object node
-// carries additionalProperties:false plus a required: array listing
-// all of its properties. This is the strict-mode contract OpenAI
-// json_schema enforces and that Anthropic forced tool-use respects;
-// Gemini's responseSchema also benefits (the model is less likely
-// to omit a required field when it sees it in the schema).
+// carries additionalProperties:false. It does NOT rewrite required:
+// the invopop reflector already produces the correct list from
+// `,omitempty` JSON tags (RequiredFromJSONSchemaTags:false treats
+// omitempty as "not required"). Forcing every property required
+// would break agents whose example struct has mutually-exclusive
+// or context-conditional fields — e.g. ReconciliationAction's
+// Canonical / Loser / RejectedBecause / ExistingID, where each
+// action kind populates a different subset.
+//
+// OpenAI's strict json_schema mode separately requires every
+// property in `required` and uses `["type", "null"]` unions for
+// optional fields. The OpenAI Responses adapter detects partial-
+// required schemas and drops Strict:true rather than fabricating
+// values; cheaper than rewriting Go example structs to add null
+// unions everywhere.
 func enforceStrict(node map[string]any) {
 	if node == nil {
 		return
@@ -132,11 +176,6 @@ func enforceStrict(node map[string]any) {
 	if t, ok := node["type"].(string); ok && t == "object" {
 		node["additionalProperties"] = false
 		if props, ok := node["properties"].(map[string]any); ok {
-			required := make([]any, 0, len(props))
-			for k := range props {
-				required = append(required, k)
-			}
-			node["required"] = required
 			for _, v := range props {
 				if child, ok := v.(map[string]any); ok {
 					enforceStrict(child)

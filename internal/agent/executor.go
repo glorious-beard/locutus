@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -63,12 +64,14 @@ type GenerateRound struct {
 	ThoughtsTokens int    `json:"thoughts_tokens,omitempty"`
 }
 
-// Sentinel errors for retry and timeout classification. Adapters
-// wrap their provider-specific 429 / context-deadline detection in
-// these so callers can pattern-match without importing each SDK.
+// Sentinel errors for retry and timeout classification. Aliased
+// from the adapters package so adapters can return them without
+// importing internal/agent (which would cycle), and callers in
+// internal/agent can pattern-match adapter returns via errors.Is
+// against the agent-package name.
 var (
-	ErrRateLimit = fmt.Errorf("rate limited (429)")
-	ErrTimeout   = fmt.Errorf("generation timed out")
+	ErrRateLimit = adapters.ErrRateLimit
+	ErrTimeout   = adapters.ErrTimeout
 )
 
 // AgentExecutor is the agent-level boundary the workflow dispatches
@@ -156,17 +159,57 @@ func (e *Executor) Banner() string {
 //  5. Translate to adapters.Request; dispatch through the adapter;
 //     translate adapters.Response back to AgentOutput.
 //
-// On retryable failure (ErrRateLimit / ErrTimeout) the caller is
-// expected to advance to the next preference via the retry layer in
-// callers — Run itself does NOT walk the preferences list on error;
-// the executor reports the error from the resolved pick and lets the
-// caller decide. This keeps Run's behavior predictable for the
-// session recorder (one call = one resolved provider).
+// Run walks the agent's models[] preference list in declaration
+// order. For each preference, it dispatches one adapter call. On a
+// retryable failure (ErrRateLimit / ErrTimeout) it advances to the
+// next preference and emits a slog.Warn so sustained primary
+// failures show up in the operator log. On a non-retryable failure
+// it returns immediately. If every preference is exhausted, Run
+// returns the last error so RunWithRetry's exponential backoff sees
+// a retryable sentinel and can re-walk after a delay.
 func (e *Executor) Run(ctx context.Context, def AgentDef, input AgentInput) (*AgentOutput, error) {
-	pick, err := ResolveModel(def, e.providers, e.cfg)
+	picks, err := ResolveAvailable(def, e.providers, e.cfg)
 	if err != nil {
 		return nil, err
 	}
+
+	timeout := perCallTimeout(def)
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	var lastErr error
+	for i, pick := range picks {
+		out, err := e.runOne(ctx, def, input, pick)
+		if err == nil {
+			return out, nil
+		}
+		lastErr = err
+		if !errors.Is(err, ErrRateLimit) && !errors.Is(err, ErrTimeout) {
+			return out, err
+		}
+		// Retryable failure on this preference. Walk to the next
+		// preference if there is one. Final preference's failure
+		// surfaces to the caller (RunWithRetry can still back off
+		// and re-walk).
+		if i+1 < len(picks) {
+			next := picks[i+1]
+			slog.Warn("agent fallback: primary preference failed; advancing to next",
+				"agent", def.ID,
+				"failed_provider", pick.Provider, "failed_tier", pick.Tier,
+				"next_provider", next.Provider, "next_tier", next.Tier,
+				"error", err)
+		}
+	}
+	return nil, lastErr
+}
+
+// runOne dispatches a single adapter call against a resolved pick.
+// Concurrency, the acquired-callback, request build, and response
+// translation all live here; Run is the loop driver.
+func (e *Executor) runOne(ctx context.Context, def AgentDef, input AgentInput, pick *ResolvedModel) (*AgentOutput, error) {
 	adapter, ok := e.adapters[pick.Provider]
 	if !ok {
 		return nil, fmt.Errorf("agent %q: no adapter registered for provider %q", def.ID, pick.Provider)
@@ -177,13 +220,6 @@ func (e *Executor) Run(ctx context.Context, def AgentDef, input AgentInput) (*Ag
 		return nil, err
 	}
 	defer release()
-
-	timeout := perCallTimeout(def)
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
 
 	if cb := AcquiredCallbackFromContext(ctx); cb != nil {
 		cb()
@@ -244,7 +280,7 @@ func outputFromResponse(resp *adapters.Response, model string) *AgentOutput {
 func buildAdapterRequest(def AgentDef, input AgentInput, pick *ResolvedModel, registry *ToolRegistry) (adapters.Request, error) {
 	req := adapters.Request{
 		Model:           pick.Model,
-		SystemPrompt:    def.SystemPrompt,
+		SystemPrompt:    BuildSystemPrompt(def),
 		MaxOutputTokens: pick.MaxOutputTokens,
 		Thinking:        pick.Thinking,
 		Grounding:       def.Grounding,

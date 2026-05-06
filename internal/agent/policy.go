@@ -41,19 +41,19 @@ var DefaultModels = []ModelPreference{
 	{Provider: string(ProviderOpenAI), Tier: string(TierBalanced)},
 }
 
-// ResolveModel walks the agent's models[] preference list and
-// returns the first preference whose provider is configured AND
-// has a (provider, tier) entry in the model config. Returns an
-// error when no preference matches — callers should surface this
-// to the workflow rather than substitute a default; an
-// unresolvable agent indicates a misconfigured deployment, not a
+// ResolveAvailable walks the agent's models[] preference list and
+// returns every preference whose provider is configured AND has a
+// (provider, tier) entry in the model config — in declaration
+// order. The caller (Executor.Run) dispatches against picks[0] and
+// advances on retryable failure. Returns an error when no
+// preference resolves; that's a misconfigured deployment, not a
 // transient failure.
 //
 // Empty def.Models falls back to DefaultModels — the helper path
 // for ad-hoc agents that aren't loaded from a .md file. Preference
 // shape is enforced at parse time: an entry with empty Provider or
 // Tier returns an error.
-func ResolveModel(def AgentDef, providers DetectedProviders, cfg *ModelConfig) (*ResolvedModel, error) {
+func ResolveAvailable(def AgentDef, providers DetectedProviders, cfg *ModelConfig) ([]*ResolvedModel, error) {
 	prefs := def.Models
 	if len(prefs) == 0 {
 		prefs = DefaultModels
@@ -61,6 +61,7 @@ func ResolveModel(def AgentDef, providers DetectedProviders, cfg *ModelConfig) (
 	if cfg == nil {
 		return nil, fmt.Errorf("agent %q: nil model config", def.ID)
 	}
+	var picks []*ResolvedModel
 	var attempted []string
 	for _, pref := range prefs {
 		if pref.Provider == "" || pref.Tier == "" {
@@ -78,16 +79,30 @@ func ResolveModel(def AgentDef, providers DetectedProviders, cfg *ModelConfig) (
 				def.ID, pref.Provider, pref.Tier,
 			)
 		}
-		return &ResolvedModel{
+		picks = append(picks, &ResolvedModel{
 			Provider:           ProviderName(pref.Provider),
 			Tier:               pref.Tier,
 			Model:              tierCfg.Model,
 			MaxOutputTokens:    tierCfg.MaxOutputTokens,
 			Thinking:           thinkingLevel(tierCfg.Thinking),
 			ConcurrentRequests: tierCfg.ConcurrentRequests,
-		}, nil
+		})
 	}
-	return nil, fmt.Errorf("agent %q: none of %v are configured", def.ID, attempted)
+	if len(picks) == 0 {
+		return nil, fmt.Errorf("agent %q: none of %v are configured", def.ID, attempted)
+	}
+	return picks, nil
+}
+
+// ResolveModel returns the first available pick for an agent.
+// Convenience wrapper around ResolveAvailable for callers that
+// don't want the fallback list.
+func ResolveModel(def AgentDef, providers DetectedProviders, cfg *ModelConfig) (*ResolvedModel, error) {
+	picks, err := ResolveAvailable(def, providers, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return picks[0], nil
 }
 
 // thinkingLevel maps the YAML enum string ("off"/"on"/"high") to
