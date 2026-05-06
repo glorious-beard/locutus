@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/chetan/locutus/internal/agent"
@@ -42,7 +43,12 @@ type initInput struct {
 	Name string `json:"name"`
 }
 
-type statusInput struct{}
+type statusInput struct {
+	Full   bool     `json:"full,omitempty"`
+	Format string   `json:"format,omitempty"`
+	Kind   []string `json:"kind,omitempty"`
+	Status []string `json:"status,omitempty"`
+}
 
 type importInput struct {
 	Content    string `json:"content"`
@@ -101,11 +107,37 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 	// --- status ---
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "status",
-		Description: "Show spec summary: GOALS.md presence, feature/decision/strategy/bug counts, orphans.",
+		Description: "Show spec summary. With full=true, returns a comprehensive snapshot (markdown by default; format=json for the structured form). Optional kind/status filters narrow the visible set.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input statusInput) (*mcp.CallToolResult, any, error) {
-		sd := GatherStatus(fsys)
-		summary := render.StatusSummary(sd)
-		return textResult(summary), nil, nil
+		if !input.Full {
+			sd := GatherStatus(fsys)
+			return textResult(render.StatusSummary(sd)), nil, nil
+		}
+
+		data, err := GatherSnapshotData(fsys, render.SnapshotFilters{
+			Kinds:    input.Kind,
+			Statuses: input.Status,
+		})
+		if err != nil {
+			return errorResult(fmt.Sprintf("snapshot: %v", err)), nil, nil
+		}
+
+		format := input.Format
+		if format == "" {
+			format = "markdown"
+		}
+		switch format {
+		case "json":
+			j, err := json.MarshalIndent(data, "", "  ")
+			if err != nil {
+				return errorResult(fmt.Sprintf("snapshot json: %v", err)), nil, nil
+			}
+			return textResult(string(j)), nil, nil
+		case "markdown":
+			return textResult(render.SnapshotMarkdown(data)), nil, nil
+		default:
+			return errorResult(fmt.Sprintf("unknown format %q (want markdown or json)", format)), nil, nil
+		}
 	})
 
 	// --- import (admits with built-in triage gate; Phase B folded the

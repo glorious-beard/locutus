@@ -11,9 +11,14 @@ import (
 	"github.com/chetan/locutus/internal/workstream"
 )
 
-// StatusCmd shows spec summary, and optionally in-flight plans.
+// StatusCmd shows spec summary, and optionally in-flight plans or a
+// comprehensive snapshot.
 type StatusCmd struct {
-	InFlight bool `help:"Only print in-flight plans (leftover .locutus/workstreams/ subdirectories from interrupted adopt runs)."`
+	InFlight bool     `help:"Only print in-flight plans (leftover .locutus/workstreams/ subdirectories from interrupted adopt runs)."`
+	Full     bool     `help:"Emit a comprehensive snapshot of the spec graph instead of counts-only."`
+	Format   string   `help:"Snapshot output format: markdown or json. Defaults to markdown when --full is set." enum:"markdown,json,," default:""`
+	Kind     []string `help:"Filter snapshot by kind (repeatable): feature, strategy, decision, approach, bug." enum:"feature,strategy,decision,approach,bug" optional:""`
+	Status   []string `help:"Filter snapshot by status (repeatable): proposed, active, inferred, assumed, removed." optional:""`
 }
 
 func (c *StatusCmd) Run(cli *CLI) error {
@@ -34,12 +39,50 @@ func (c *StatusCmd) Run(cli *CLI) error {
 		return nil
 	}
 
+	if c.Full {
+		return c.runFull(cli, fsys)
+	}
+
 	sd := GatherStatus(fsys)
 	if cli.JSON {
 		return json.NewEncoder(os.Stdout).Encode(sd)
 	}
 	fmt.Print(render.StatusSummary(sd))
 	return nil
+}
+
+// runFull executes the comprehensive-snapshot path. Format defaults
+// to markdown when --full is set; --json (the global flag) is treated
+// as a synonym for --format json.
+func (c *StatusCmd) runFull(cli *CLI, fsys specio.FS) error {
+	format := c.Format
+	if format == "" {
+		if cli.JSON {
+			format = "json"
+		} else {
+			format = "markdown"
+		}
+	}
+
+	data, err := GatherSnapshotData(fsys, render.SnapshotFilters{
+		Kinds:    c.Kind,
+		Statuses: c.Status,
+	})
+	if err != nil {
+		return err
+	}
+
+	switch format {
+	case "json":
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(data)
+	case "markdown":
+		fmt.Print(render.SnapshotMarkdown(data))
+		return nil
+	default:
+		return fmt.Errorf("unknown --format %q (want markdown or json)", format)
+	}
 }
 
 // GatherStatus reads the spec from the FS and returns a StatusData struct

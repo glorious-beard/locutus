@@ -1,17 +1,18 @@
-package specio
+package specio_test
 
 import (
 	"io"
 	"testing"
 	"time"
 
+	"github.com/chetan/locutus/internal/specio"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestMemFSReadWriteFile(t *testing.T) {
-	mfs := NewMemFS()
+	mfs := specio.NewMemFS()
 	data := []byte("hello, locutus")
 
 	err := mfs.WriteFile("test.txt", data, 0o644)
@@ -23,7 +24,7 @@ func TestMemFSReadWriteFile(t *testing.T) {
 }
 
 func TestMemFSMkdirAll(t *testing.T) {
-	mfs := NewMemFS()
+	mfs := specio.NewMemFS()
 
 	err := mfs.MkdirAll("a/b/c", 0o755)
 	assert.NoError(t, err)
@@ -37,7 +38,7 @@ func TestMemFSMkdirAll(t *testing.T) {
 }
 
 func TestMemFSRemove(t *testing.T) {
-	mfs := NewMemFS()
+	mfs := specio.NewMemFS()
 
 	err := mfs.WriteFile("gone.txt", []byte("ephemeral"), 0o644)
 	assert.NoError(t, err)
@@ -50,7 +51,7 @@ func TestMemFSRemove(t *testing.T) {
 }
 
 func TestMemFSOpen(t *testing.T) {
-	mfs := NewMemFS()
+	mfs := specio.NewMemFS()
 	content := []byte("open me")
 
 	err := mfs.WriteFile("readable.txt", content, 0o644)
@@ -78,14 +79,14 @@ func newTestDecision(id, title string) spec.Decision {
 }
 
 func TestSavePairAndLoadPair(t *testing.T) {
-	mfs := NewMemFS()
+	mfs := specio.NewMemFS()
 	err := mfs.MkdirAll("decisions", 0o755)
 	assert.NoError(t, err)
 
 	original := newTestDecision("d-001", "Backend Language")
 	body := "Go was selected for its strong concurrency model."
 
-	err = SavePair[spec.Decision](mfs, "decisions/d-001", original, body)
+	err = specio.SavePair[spec.Decision](mfs, "decisions/d-001", original, body)
 	assert.NoError(t, err)
 
 	// Verify both sidecar files exist.
@@ -96,7 +97,7 @@ func TestSavePairAndLoadPair(t *testing.T) {
 	assert.NoError(t, err, ".md sidecar should exist")
 
 	// Load the pair back and verify fields.
-	loaded, loadedBody, err := LoadPair[spec.Decision](mfs, "decisions/d-001")
+	loaded, loadedBody, err := specio.LoadPair[spec.Decision](mfs, "decisions/d-001")
 	assert.NoError(t, err)
 
 	assert.Equal(t, original.ID, loaded.ID)
@@ -110,19 +111,19 @@ func TestSavePairAndLoadPair(t *testing.T) {
 }
 
 func TestWalkPairs(t *testing.T) {
-	mfs := NewMemFS()
+	mfs := specio.NewMemFS()
 	err := mfs.MkdirAll("decisions", 0o755)
 	assert.NoError(t, err)
 
 	d1 := newTestDecision("d-001", "Backend Language")
 	d2 := newTestDecision("d-002", "Database Choice")
 
-	err = SavePair[spec.Decision](mfs, "decisions/d-001", d1, "Body one.")
+	err = specio.SavePair[spec.Decision](mfs, "decisions/d-001", d1, "Body one.")
 	assert.NoError(t, err)
-	err = SavePair[spec.Decision](mfs, "decisions/d-002", d2, "Body two.")
+	err = specio.SavePair[spec.Decision](mfs, "decisions/d-002", d2, "Body two.")
 	assert.NoError(t, err)
 
-	results, err := WalkPairs[spec.Decision](mfs, "decisions")
+	results, err := specio.WalkPairs[spec.Decision](mfs, "decisions")
 	assert.NoError(t, err)
 	assert.Len(t, results, 2)
 
@@ -134,7 +135,7 @@ func TestWalkPairs(t *testing.T) {
 }
 
 func TestFindOrphans(t *testing.T) {
-	mfs := NewMemFS()
+	mfs := specio.NewMemFS()
 	err := mfs.MkdirAll("decisions", 0o755)
 	assert.NoError(t, err)
 
@@ -152,7 +153,7 @@ func TestFindOrphans(t *testing.T) {
 	err = mfs.WriteFile("decisions/d-003.md", []byte("---\nid: d-003\n---\n"), 0o644)
 	assert.NoError(t, err)
 
-	jsonOnly, mdOnly, err := FindOrphans(mfs, "decisions")
+	jsonOnly, mdOnly, err := specio.FindOrphans(mfs, "decisions")
 	assert.NoError(t, err)
 
 	assert.Equal(t, []string{"decisions/d-002.json"}, jsonOnly)
@@ -160,7 +161,7 @@ func TestFindOrphans(t *testing.T) {
 }
 
 func TestSaveLoadMarkdown(t *testing.T) {
-	mfs := NewMemFS()
+	mfs := specio.NewMemFS()
 	require.NoError(t, mfs.MkdirAll(".borg/spec/approaches", 0o755))
 
 	orig := spec.Approach{
@@ -176,9 +177,9 @@ func TestSaveLoadMarkdown(t *testing.T) {
 	}
 	body := "## What to build\n\nImplement OAuth2 PKCE flow.\n"
 
-	require.NoError(t, SaveMarkdown(mfs, ".borg/spec/approaches/app-oauth.md", orig, body))
+	require.NoError(t, specio.SaveMarkdown(mfs, ".borg/spec/approaches/app-oauth.md", orig, body))
 
-	gotObj, gotBody, err := LoadMarkdown[spec.Approach](mfs, ".borg/spec/approaches/app-oauth.md")
+	gotObj, gotBody, err := specio.LoadMarkdown[spec.Approach](mfs, ".borg/spec/approaches/app-oauth.md")
 	require.NoError(t, err)
 
 	assert.Equal(t, orig.ID, gotObj.ID)
@@ -193,7 +194,7 @@ func TestSaveLoadMarkdown(t *testing.T) {
 }
 
 func TestLoadMarkdownMissingFile(t *testing.T) {
-	mfs := NewMemFS()
-	_, _, err := LoadMarkdown[spec.Approach](mfs, "nonexistent.md")
+	mfs := specio.NewMemFS()
+	_, _, err := specio.LoadMarkdown[spec.Approach](mfs, "nonexistent.md")
 	assert.Error(t, err)
 }
