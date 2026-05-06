@@ -1,6 +1,11 @@
 package agent
 
-import "github.com/chetan/locutus/internal/spec"
+import (
+	"encoding/json"
+
+	"github.com/chetan/locutus/internal/spec"
+	"github.com/invopop/jsonschema"
+)
 
 func init() {
 	// Register spec types for output_schema injection.
@@ -154,6 +159,21 @@ func init() {
 		}},
 	})
 
+	// Hand-authored override for ReconciliationVerdict. The Go struct
+	// is flat with everything `,omitempty` (because each kind needs a
+	// different subset of the fields), so reflection produces a
+	// permissive schema. The model exploits the freedom: observed in
+	// the wild on Gemini Pro emitting dedupe actions with no
+	// `canonical` despite the prompt saying it's required, which
+	// downstream blows up ApplyReconciliation.
+	//
+	// Discriminated union by `kind` makes the API itself reject
+	// malformed actions:
+	//   - dedupe          → required: kind, sources, canonical
+	//   - resolve_conflict → required: kind, sources, canonical, loser, rejected_because
+	//   - reuse_existing  → required: kind, sources, existing_id
+	RegisterSchemaOverride("ReconciliationVerdict", buildReconciliationVerdictSchema())
+
 	RegisterSchema("CriticIssues", CriticIssues{
 		Issues: []string{"feature feat-x references dec-y but dec-y is not generated"},
 	})
@@ -184,4 +204,94 @@ func init() {
 		Query:  "the question investigated",
 		Result: "evidence-based analysis",
 	})
+}
+
+// buildReconciliationVerdictSchema authors the discriminated-union
+// JSON Schema for the reconciler's output. Sub-shapes (source ref,
+// inline decision) are reflected from their Go structs to stay in
+// sync with the canonical types; the top-level oneOf is hand-rolled
+// because invopop can't express "different required fields per
+// kind" from struct tags alone.
+//
+// Each variant pins `kind` via an enum of one literal so the model
+// commits to a discriminator at output time. Strict-mode adapters
+// (Anthropic forced tool-use, Gemini responseJsonSchema, OpenAI
+// json_schema strict) all honor oneOf with enum discriminants.
+func buildReconciliationVerdictSchema() map[string]any {
+	sourceSchema := reflectStrictSchema(DecisionSourceRef{})
+	inlineSchema := reflectStrictSchema(InlineDecisionProposal{})
+
+	dedupeAction := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"kind", "sources", "canonical"},
+		"properties": map[string]any{
+			"kind":      map[string]any{"type": "string", "enum": []any{"dedupe"}},
+			"sources":   map[string]any{"type": "array", "items": sourceSchema},
+			"canonical": inlineSchema,
+		},
+	}
+	resolveAction := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"kind", "sources", "canonical", "loser", "rejected_because"},
+		"properties": map[string]any{
+			"kind":             map[string]any{"type": "string", "enum": []any{"resolve_conflict"}},
+			"sources":          map[string]any{"type": "array", "items": sourceSchema},
+			"canonical":        inlineSchema,
+			"loser":            inlineSchema,
+			"rejected_because": map[string]any{"type": "string"},
+		},
+	}
+	reuseAction := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"kind", "sources", "existing_id"},
+		"properties": map[string]any{
+			"kind":        map[string]any{"type": "string", "enum": []any{"reuse_existing"}},
+			"sources":     map[string]any{"type": "array", "items": sourceSchema},
+			"existing_id": map[string]any{"type": "string"},
+		},
+	}
+
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"actions"},
+		"properties": map[string]any{
+			"actions": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"oneOf": []any{dedupeAction, resolveAction, reuseAction},
+				},
+			},
+		},
+	}
+}
+
+// reflectStrictSchema returns a JSON Schema map for the given example
+// value, with stripJSONSchemaArtifacts + enforceStrict applied so the
+// shape matches what the rest of the pipeline produces. Used to build
+// sub-schemas for hand-authored discriminated unions without hand-
+// authoring every field.
+func reflectStrictSchema(example any) map[string]any {
+	r := jsonschema.Reflector{
+		AllowAdditionalProperties:  false,
+		DoNotReference:             true,
+		ExpandedStruct:             true,
+		RequiredFromJSONSchemaTags: false,
+	}
+	reflected := r.Reflect(example)
+	data, err := json.Marshal(reflected)
+	if err != nil {
+		// Static example values; failure here is a programming bug.
+		panic("reflectStrictSchema marshal: " + err.Error())
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		panic("reflectStrictSchema unmarshal: " + err.Error())
+	}
+	stripJSONSchemaArtifacts(schema)
+	enforceStrict(schema)
+	return schema
 }

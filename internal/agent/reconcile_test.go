@@ -190,7 +190,11 @@ func TestApplyReconciliationReusesExistingID(t *testing.T) {
 	assert.Equal(t, []string{"dec-existing-postgres"}, out.Features[0].Decisions)
 }
 
-func TestApplyReconciliationReuseExistingRejectsUnknownID(t *testing.T) {
+func TestApplyReconciliationReuseExistingUnknownIDDegrades(t *testing.T) {
+	// reuse_existing pointing at an unknown id is a bad LLM verdict.
+	// Skip the action and let the implicit-keep-separate pass mint a
+	// canonical from the source. Workflow proceeds with a valid (un-
+	// deduped) SpecProposal instead of failing the whole council.
 	raw := &RawSpecProposal{
 		Features: []RawFeatureProposal{{
 			ID:        "feat-x",
@@ -208,9 +212,11 @@ func TestApplyReconciliationReuseExistingRejectsUnknownID(t *testing.T) {
 		}},
 	}
 
-	_, _, err := ApplyReconciliation(raw, verdict, &ExistingSpec{})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "dec-not-in-snapshot")
+	out, applied, err := ApplyReconciliation(raw, verdict, &ExistingSpec{})
+	require.NoError(t, err)
+	assert.Empty(t, applied, "skipped action emits no AppliedAction")
+	require.Len(t, out.Decisions, 1, "source falls through to keep-separate; mints its own canonical")
+	assert.Equal(t, "dec-use-postgres", out.Decisions[0].ID)
 }
 
 func TestApplyReconciliationIsDeterministic(t *testing.T) {
@@ -257,19 +263,34 @@ func TestApplyReconciliationIDCollisionGetsSuffix(t *testing.T) {
 		"slug collision ⇒ second decision gets a numeric suffix")
 }
 
-func TestApplyReconciliationRejectsUnknownActionKind(t *testing.T) {
+func TestApplyReconciliationUnknownActionKindDegrades(t *testing.T) {
+	// Unknown action kind: skip with a Warn. Sources stay unclaimed
+	// and fall to implicit-keep-separate. Workflow proceeds.
 	raw := &RawSpecProposal{
-		Features: []RawFeatureProposal{{ID: "feat-x", Title: "X"}},
+		Features: []RawFeatureProposal{{
+			ID:        "feat-x",
+			Title:     "X",
+			Decisions: []InlineDecisionProposal{{Title: "Use Postgres"}},
+		}},
 	}
 	verdict := ReconciliationVerdict{
-		Actions: []ReconciliationAction{{Kind: "merge"}}, // not one of dedupe/resolve_conflict/reuse_existing
+		Actions: []ReconciliationAction{{
+			Kind: "merge", // not one of dedupe/resolve_conflict/reuse_existing
+			Sources: []DecisionSourceRef{
+				{ParentKind: "feature", ParentID: "feat-x", Index: 0},
+			},
+		}},
 	}
-	_, _, err := ApplyReconciliation(raw, verdict, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown kind")
+	out, applied, err := ApplyReconciliation(raw, verdict, nil)
+	require.NoError(t, err)
+	assert.Empty(t, applied)
+	require.Len(t, out.Decisions, 1, "source falls through to keep-separate")
 }
 
-func TestApplyReconciliationRejectsBadSourceParent(t *testing.T) {
+func TestApplyReconciliationBadSourceParentDegrades(t *testing.T) {
+	// A dedupe action whose ONLY source points at a parent not in the
+	// proposal degrades to "no-op": no canonical lands (would dangle
+	// with no parent referring to it), no applied entry, no error.
 	raw := &RawSpecProposal{
 		Features: []RawFeatureProposal{{ID: "feat-x", Title: "X"}},
 	}
@@ -280,9 +301,10 @@ func TestApplyReconciliationRejectsBadSourceParent(t *testing.T) {
 			Canonical: &InlineDecisionProposal{Title: "Use Postgres"},
 		}},
 	}
-	_, _, err := ApplyReconciliation(raw, verdict, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "feat-not-in-proposal")
+	out, applied, err := ApplyReconciliation(raw, verdict, nil)
+	require.NoError(t, err)
+	assert.Empty(t, applied)
+	assert.Empty(t, out.Decisions, "no canonical when every source is rejected")
 }
 
 // TestApplyReconciliationDropsEmptyInlineDecisions — Gemini Flash has
@@ -327,10 +349,12 @@ func TestApplyReconciliationDropsEmptyInlineDecisions(t *testing.T) {
 		"strategy with only empty placeholders ends up with no decisions; integrity critic will flag")
 }
 
-func TestApplyReconciliationRejectsEmptyCanonicalInVerdict(t *testing.T) {
+func TestApplyReconciliationEmptyCanonicalDegrades(t *testing.T) {
 	// A reconciler that emits a dedupe action with an empty canonical
-	// is malformed. ApplyReconciliation must error rather than silently
-	// minting dec-untitled.
+	// is malformed (DJ-098 bug class — observed on Gemini Pro skipping
+	// the canonical field for dedupe actions). Skip the action and
+	// let the source fall through to keep-separate; never mint a
+	// dec-untitled id.
 	raw := &RawSpecProposal{
 		Features: []RawFeatureProposal{{
 			ID: "feat-x", Title: "X",
@@ -344,9 +368,12 @@ func TestApplyReconciliationRejectsEmptyCanonicalInVerdict(t *testing.T) {
 			Canonical: &InlineDecisionProposal{}, // empty title
 		}},
 	}
-	_, _, err := ApplyReconciliation(raw, verdict, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "empty title")
+	out, applied, err := ApplyReconciliation(raw, verdict, nil)
+	require.NoError(t, err)
+	assert.Empty(t, applied)
+	require.Len(t, out.Decisions, 1)
+	assert.Equal(t, "dec-use-postgres", out.Decisions[0].ID,
+		"source falls through to keep-separate")
 }
 
 func TestSlugify(t *testing.T) {

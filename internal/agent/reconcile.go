@@ -17,6 +17,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
@@ -230,14 +231,26 @@ func ApplyReconciliation(raw *RawSpecProposal, verdict ReconciliationVerdict, ex
 		return nil
 	}
 
+	// Action-shape errors are bad LLM output, not programming bugs.
+	// Degrade gracefully: skip the malformed action and let the
+	// implicit-keep-separate pass below mint canonicals from the
+	// unclaimed source decisions. The workflow proceeds with a valid
+	// (un-deduped) SpecProposal instead of failing the council and
+	// losing every elaborator's output. slog.Warn surfaces the
+	// degradation so an operator scanning logs can see which actions
+	// the model botched and consider tightening the schema.
 	for i, action := range verdict.Actions {
 		switch action.Kind {
 		case "dedupe", "resolve_conflict":
 			if action.Canonical == nil {
-				return nil, applied, fmt.Errorf("reconcile action %d (%s): canonical decision missing", i, action.Kind)
+				slog.Warn("reconcile: action missing canonical; sources kept separate",
+					"index", i, "kind", action.Kind, "sources", len(action.Sources))
+				continue
 			}
 			if isEmptyInlineDecision(*action.Canonical) {
-				return nil, applied, fmt.Errorf("reconcile action %d (%s): canonical decision has empty title", i, action.Kind)
+				slog.Warn("reconcile: action canonical has empty title; sources kept separate",
+					"index", i, "kind", action.Kind, "sources", len(action.Sources))
+				continue
 			}
 			id := mintDecisionID(action.Canonical.Title, usedIDs)
 			usedIDs[id] = struct{}{}
@@ -249,38 +262,65 @@ func ApplyReconciliation(raw *RawSpecProposal, verdict ReconciliationVerdict, ex
 					RejectedBecause: action.RejectedBecause,
 				})
 			}
-			out.Decisions = append(out.Decisions, canonical)
+			// Apply the action to the parent refs. If a source ref
+			// is bogus (unknown parent), skip just that source —
+			// other valid sources still claim their slot, and the
+			// bogus one stays unclaimed (becomes its own canonical
+			// in the keep-separate pass).
+			actionApplied := false
 			for _, s := range action.Sources {
-				claimed[claimKey(s)] = struct{}{}
 				if err := addDecisionRef(s, id); err != nil {
-					return nil, applied, err
+					slog.Warn("reconcile: action source rejected; keeping that source separate",
+						"index", i, "kind", action.Kind, "source", s, "error", err)
+					continue
 				}
+				claimed[claimKey(s)] = struct{}{}
+				actionApplied = true
 			}
-			applied = append(applied, AppliedAction{
-				Kind:          action.Kind,
-				CanonicalID:   id,
-				AffectedNodes: action.Sources,
-			})
+			if actionApplied {
+				out.Decisions = append(out.Decisions, canonical)
+				applied = append(applied, AppliedAction{
+					Kind:          action.Kind,
+					CanonicalID:   id,
+					AffectedNodes: action.Sources,
+				})
+			} else {
+				// All sources rejected — drop the canonical we minted
+				// since it would dangle with no parent referring to
+				// it. Roll back the ID reservation too.
+				delete(usedIDs, id)
+			}
 		case "reuse_existing":
 			if action.ExistingID == "" {
-				return nil, applied, fmt.Errorf("reconcile action %d (reuse_existing): existing_id missing", i)
+				slog.Warn("reconcile: reuse_existing missing existing_id; sources kept separate",
+					"index", i, "sources", len(action.Sources))
+				continue
 			}
 			if existing == nil || !existingHasDecision(existing, action.ExistingID) {
-				return nil, applied, fmt.Errorf("reconcile action %d: reuse_existing references unknown id %q", i, action.ExistingID)
+				slog.Warn("reconcile: reuse_existing references unknown id; sources kept separate",
+					"index", i, "existing_id", action.ExistingID)
+				continue
 			}
+			actionApplied := false
 			for _, s := range action.Sources {
-				claimed[claimKey(s)] = struct{}{}
 				if err := addDecisionRef(s, action.ExistingID); err != nil {
-					return nil, applied, err
+					slog.Warn("reconcile: reuse_existing source rejected; keeping that source separate",
+						"index", i, "source", s, "error", err)
+					continue
 				}
+				claimed[claimKey(s)] = struct{}{}
+				actionApplied = true
 			}
-			applied = append(applied, AppliedAction{
-				Kind:          action.Kind,
-				CanonicalID:   action.ExistingID,
-				AffectedNodes: action.Sources,
-			})
+			if actionApplied {
+				applied = append(applied, AppliedAction{
+					Kind:          action.Kind,
+					CanonicalID:   action.ExistingID,
+					AffectedNodes: action.Sources,
+				})
+			}
 		default:
-			return nil, applied, fmt.Errorf("reconcile action %d: unknown kind %q", i, action.Kind)
+			slog.Warn("reconcile: unknown action kind; sources kept separate",
+				"index", i, "kind", action.Kind, "sources", len(action.Sources))
 		}
 	}
 

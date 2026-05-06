@@ -22,8 +22,9 @@ import (
 // prompt — providers without strict-mode coverage still get a
 // concrete shape to target.
 var (
-	schemaMu       sync.RWMutex
-	schemaRegistry = map[string]any{}
+	schemaMu        sync.RWMutex
+	schemaRegistry  = map[string]any{}
+	schemaOverrides = map[string]map[string]any{}
 
 	schemaCacheMu sync.Mutex
 	schemaCache   = map[string]map[string]any{}
@@ -35,6 +36,24 @@ func RegisterSchema(name string, example any) {
 	schemaMu.Lock()
 	defer schemaMu.Unlock()
 	schemaRegistry[name] = example
+}
+
+// RegisterSchemaOverride installs a hand-authored JSON Schema for
+// name, bypassing reflection-based generation. Use when the Go
+// example struct can't express the constraint the adapters need to
+// enforce — discriminated unions in particular: a struct whose
+// fields are all `,omitempty` reflects to a permissive schema, but
+// the agent's prompt requires different field subsets per kind. A
+// hand-authored schema with `oneOf` discriminated by `kind` lets the
+// API reject malformed actions.
+//
+// Override takes precedence over RegisterSchema's reflected output;
+// SchemaExample (used by the prompt-doc renderer) still returns the
+// reflected example for inline documentation.
+func RegisterSchemaOverride(name string, schema map[string]any) {
+	schemaMu.Lock()
+	defer schemaMu.Unlock()
+	schemaOverrides[name] = schema
 }
 
 // SchemaExample returns the example struct registered under name and
@@ -66,6 +85,20 @@ func SchemaFor(name string) (map[string]any, error) {
 		return deepCopySchema(cached), nil
 	}
 	schemaCacheMu.Unlock()
+
+	// Hand-authored override wins over reflection. Used for
+	// constraints invopop can't express (discriminated unions, etc.).
+	schemaMu.RLock()
+	override, hasOverride := schemaOverrides[name]
+	schemaMu.RUnlock()
+	if hasOverride {
+		schema := deepCopySchema(override)
+		stripJSONSchemaArtifacts(schema)
+		schemaCacheMu.Lock()
+		schemaCache[name] = schema
+		schemaCacheMu.Unlock()
+		return deepCopySchema(schema), nil
+	}
 
 	example, ok := SchemaExample(name)
 	if !ok {
