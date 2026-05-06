@@ -2,8 +2,9 @@
 id: spec_architect
 role: planning
 models:
-  - {provider: anthropic, tier: strong}
   - {provider: googleai, tier: strong}
+  - {provider: anthropic, tier: strong}
+  - {provider: openai, tier: strong}
 output_schema: RawSpecProposal
 ---
 # Identity

@@ -2,8 +2,9 @@
 id: llm_judge
 role: evaluation
 models:
-  - {provider: anthropic, tier: fast}
   - {provider: googleai, tier: fast}
+  - {provider: anthropic, tier: fast}
+  - {provider: openai, tier: fast}
 output_schema: LLMJudgeResult
 ---
 

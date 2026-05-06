@@ -2,8 +2,9 @@
 id: convergence
 role: synthesis
 models:
-  - {provider: anthropic, tier: fast}
   - {provider: googleai, tier: fast}
+  - {provider: anthropic, tier: fast}
+  - {provider: openai, tier: fast}
 ---
 # Identity
 

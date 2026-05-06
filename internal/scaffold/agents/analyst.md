@@ -2,8 +2,9 @@
 id: analyst
 role: history
 models:
-  - {provider: anthropic, tier: balanced}
   - {provider: googleai, tier: balanced}
+  - {provider: anthropic, tier: balanced}
+  - {provider: openai, tier: balanced}
 ---
 # Identity
 

@@ -2,8 +2,9 @@
 id: spec_feature_elaborator
 role: planning
 models:
-  - {provider: anthropic, tier: strong}
   - {provider: googleai, tier: strong}
+  - {provider: anthropic, tier: strong}
+  - {provider: openai, tier: strong}
 timeout: 5m
 output_schema: RawFeatureProposal
 ---

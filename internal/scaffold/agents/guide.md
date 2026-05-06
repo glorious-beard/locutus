@@ -2,8 +2,9 @@
 id: guide
 role: guidance
 models:
-  - {provider: anthropic, tier: strong}
   - {provider: googleai, tier: strong}
+  - {provider: anthropic, tier: strong}
+  - {provider: openai, tier: strong}
 ---
 # Identity
 

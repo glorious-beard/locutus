@@ -4,6 +4,7 @@ role: survey
 models:
   - {provider: googleai, tier: strong}
   - {provider: openai, tier: strong}
+  - {provider: anthropic, tier: strong}
 grounding: true
 output_schema: ScoutBrief
 ---
