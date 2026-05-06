@@ -79,6 +79,17 @@ type historyInput struct {
 	Limit        int    `json:"limit,omitempty"`
 }
 
+type explainInput struct {
+	ID     string `json:"id"`
+	Format string `json:"format,omitempty"`
+}
+
+type justifyInput struct {
+	ID      string `json:"id"`
+	Against string `json:"against,omitempty"`
+	Format  string `json:"format,omitempty"`
+}
+
 // NewMCPServerWithDir creates a configured MCP server with all Locutus tools
 // registered, operating on the given base directory.
 func NewMCPServerWithDir(dir string) *mcp.Server {
@@ -264,6 +275,76 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		Description: "Query the past-tense record of spec changes.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input historyInput) (*mcp.CallToolResult, any, error) {
 		return runHistoryMCP(fsys, input)
+	})
+
+	// --- explain ---
+	// Read-only, no LLM. Lets a connected agent look up a single
+	// spec node by id without dumping the directory.
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "explain",
+		Description: "Render a single spec node's rationale, alternatives, citations, lineage, and back-references. No LLM. id prefix selects kind (dec-, feat-, strat-, app-, bug-).",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input explainInput) (*mcp.CallToolResult, any, error) {
+		if input.ID == "" {
+			return errorResult("id is required"), nil, nil
+		}
+		result, err := RunExplain(fsys, input.ID)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		format := input.Format
+		if format == "" {
+			format = "markdown"
+		}
+		switch format {
+		case "json":
+			j, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				return errorResult(fmt.Sprintf("explain json: %v", err)), nil, nil
+			}
+			return textResult(string(j)), nil, nil
+		case "markdown":
+			return textResult(result.Markdown), nil, nil
+		default:
+			return errorResult(fmt.Sprintf("unknown format %q (want markdown or json)", format)), nil, nil
+		}
+	})
+
+	// --- justify ---
+	// Fires LLM calls. Without `against`, runs the advocate solo;
+	// with `against`, runs the challenger then the advocate for an
+	// adversarial dialogue. Treat as "ask a specialist," not "filter
+	// every decision" — calling this in a loop nests LLM activity.
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "justify",
+		Description: "Have the spec advocate defend a node. With `against`, the spec challenger formulates the critique first and the advocate addresses it point-by-point.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input justifyInput) (*mcp.CallToolResult, any, error) {
+		if input.ID == "" {
+			return errorResult("id is required"), nil, nil
+		}
+		llm, _, err := recordingLLM(fsys, dir, justifyCommandLabel(input.ID, input.Against))
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		result, err := RunJustifyCommand(ctx, llm, fsys, input.ID, input.Against)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		format := input.Format
+		if format == "" {
+			format = "markdown"
+		}
+		switch format {
+		case "json":
+			j, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				return errorResult(fmt.Sprintf("justify json: %v", err)), nil, nil
+			}
+			return textResult(string(j)), nil, nil
+		case "markdown":
+			return textResult(result.Markdown), nil, nil
+		default:
+			return errorResult(fmt.Sprintf("unknown format %q (want markdown or json)", format)), nil, nil
+		}
 	})
 
 	return server

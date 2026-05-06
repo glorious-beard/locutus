@@ -26,6 +26,8 @@ type CLI struct {
 	Adopt      AdoptCmd      `cmd:"" help:"Bring code into alignment with spec (the reconcile loop)."`
 	Status     StatusCmd     `cmd:"" help:"Show spec summary: state, drift, validation errors."`
 	History    HistoryCmd    `cmd:"" help:"Query the past-tense record of spec changes."`
+	Explain    ExplainCmd    `cmd:"" help:"Render a spec node's rationale, alternatives, and back-references (no LLM)."`
+	Justify    JustifyCmd    `cmd:"" help:"Have the spec advocate write a defense for a node, optionally vs a challenge."`
 
 	Mcp McpCmd `cmd:"" help:"Start the MCP server."`
 

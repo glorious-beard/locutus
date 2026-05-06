@@ -204,6 +204,35 @@ func init() {
 		Query:  "the question investigated",
 		Result: "evidence-based analysis",
 	})
+
+	RegisterSchema("JustificationBrief", JustificationBrief{
+		Defense:                     "two to four paragraphs of prose argument naming the goal-clauses being satisfied, why the chosen path beats the listed alternatives, and what trade-offs are accepted.",
+		GoalClausesCited:            []string{"verbatim excerpt from GOALS.md the defense relies on"},
+		ConditionsUnderWhichInvalid: []string{"a constraint change that would prompt revisiting this node"},
+	})
+
+	RegisterSchema("ChallengeBrief", ChallengeBrief{
+		Concerns: []AdversarialConcern{{
+			Weakness:        "the specific weakness in the chosen approach",
+			Evidence:        "GOALS clause, search result, or known pattern that supports the concern",
+			Counterproposal: "an alternative or test that would resolve the question",
+		}},
+	})
+
+	RegisterSchema("AdversarialDefense", AdversarialDefense{
+		JustificationBrief: JustificationBrief{
+			Defense:                     "two to four paragraphs of prose addressing the specific challenge.",
+			GoalClausesCited:            []string{"verbatim excerpt from GOALS.md"},
+			ConditionsUnderWhichInvalid: []string{"a constraint change that would prompt revisiting this node"},
+		},
+		PointByPointAddressed: []AddressedConcern{{
+			ConcernSummary: "one-line restatement of the challenger's concern",
+			Response:       "the advocate's response paragraph",
+			StillStands:    true,
+		}},
+		Verdict:        "held_up",
+		BreakingPoints: []string{"specific gap in the original rationale that the challenge surfaced"},
+	})
 }
 
 // buildReconciliationVerdictSchema authors the discriminated-union
