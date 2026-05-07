@@ -33,6 +33,20 @@ type AnthropicAdapter struct {
 	maxToolRounds int
 }
 
+// anthropicRequestTimeout is the per-attempt timeout we hand to the
+// SDK via WithRequestTimeout. Any non-zero value here bypasses the
+// SDK's CalculateNonStreamingTimeout preflight check (client.go:140
+// in v1.23.0: "if the user has set a specific request timeout, use
+// that"), which would otherwise reject Opus 4.7 + max_tokens=32768
+// requests upfront because their estimated wall-clock — derived
+// from (3600s * max_tokens / 128000) — exceeds the SDK's 10-minute
+// default. Observed Anthropic call durations on the strong tier
+// top out at 1-3 minutes; 9m45s gives 3-10× headroom while staying
+// just under the SDK's nominal "you should probably stream" mark.
+// If real calls start exceeding this, that's the signal to migrate
+// to streaming — not to keep raising this number.
+const anthropicRequestTimeout = 9*time.Minute + 45*time.Second
+
 // NewAnthropicAdapter builds an adapter from ANTHROPIC_API_KEY.
 // Returns an error when the env var is unset; callers should gate
 // adapter construction on DetectProviders.
@@ -41,7 +55,10 @@ func NewAnthropicAdapter() (*AnthropicAdapter, error) {
 	if key == "" {
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY not set")
 	}
-	c := anthropicsdk.NewClient(option.WithAPIKey(key))
+	c := anthropicsdk.NewClient(
+		option.WithAPIKey(key),
+		option.WithRequestTimeout(anthropicRequestTimeout),
+	)
 	return &AnthropicAdapter{client: &c, maxToolRounds: 10}, nil
 }
 
