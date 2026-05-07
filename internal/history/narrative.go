@@ -65,6 +65,13 @@ type NarrativeConfig struct {
 	// gets its own detail file. Zero defaults to 2 — one event is
 	// usually too thin to warrant narrative expansion.
 	MinEventsForDetail int
+
+	// OutputDir overrides where the narrative summary + details/ are
+	// written. Empty means "co-located with the event store" (the
+	// historian's dir) — preserved for tests and back-compat. Production
+	// callers route narrative output to .locutus/history/ since the
+	// rendered prose is a regenerable cache, not source-of-truth (DJ-103).
+	OutputDir string
 }
 
 // NarrativeReport summarises what `GenerateNarrative` did.
@@ -124,7 +131,11 @@ func (h *Historian) GenerateNarrative(ctx context.Context, cfg NarrativeConfig) 
 
 	report := &NarrativeReport{}
 
-	manifestPath := path.Join(h.dir, "summary.md")
+	outputDir := cfg.OutputDir
+	if outputDir == "" {
+		outputDir = h.dir
+	}
+	manifestPath := path.Join(outputDir, "summary.md")
 	overallHash := hashEvents(events)
 
 	storedManifestHash := readEmbeddedHash(h.fsys, manifestPath)
@@ -151,7 +162,7 @@ func (h *Historian) GenerateNarrative(ctx context.Context, cfg NarrativeConfig) 
 	// hash against the current subset hash.
 	detailsToRegen := make([]string, 0)
 	for _, tid := range eligibleTargets {
-		detailPath := path.Join(h.dir, "details", tid+".md")
+		detailPath := path.Join(outputDir, "details", tid+".md")
 		if cfg.Force {
 			detailsToRegen = append(detailsToRegen, tid)
 			continue
@@ -176,8 +187,8 @@ func (h *Historian) GenerateNarrative(ctx context.Context, cfg NarrativeConfig) 
 			return report, fmt.Errorf("narrative: archivist: %w", err)
 		}
 		body = stampHash(body, overallHash)
-		if err := h.fsys.MkdirAll(h.dir, 0o755); err != nil {
-			return report, fmt.Errorf("narrative: mkdir %s: %w", h.dir, err)
+		if err := h.fsys.MkdirAll(outputDir, 0o755); err != nil {
+			return report, fmt.Errorf("narrative: mkdir %s: %w", outputDir, err)
 		}
 		if err := h.fsys.WriteFile(manifestPath, []byte(body), 0o644); err != nil {
 			return report, fmt.Errorf("narrative: write manifest: %w", err)
@@ -192,7 +203,7 @@ func (h *Historian) GenerateNarrative(ctx context.Context, cfg NarrativeConfig) 
 			return report, fmt.Errorf("narrative: analyst %s: %w", tid, err)
 		}
 		body = stampHash(body, targetHashes[tid])
-		detailPath := path.Join(h.dir, "details", tid+".md")
+		detailPath := path.Join(outputDir, "details", tid+".md")
 		if err := h.fsys.MkdirAll(path.Dir(detailPath), 0o755); err != nil {
 			return report, fmt.Errorf("narrative: mkdir %s: %w", path.Dir(detailPath), err)
 		}
@@ -237,6 +248,30 @@ func groupByTarget(events []Event) map[string][]Event {
 		out[e.TargetID] = append(out[e.TargetID], e)
 	}
 	return out
+}
+
+// EventsHash returns the deterministic hash of the events stored in
+// the historian's directory, applying the same time-window filter
+// GenerateNarrative would. Used by cmd/history to detect a stale
+// narrative cache without re-running the LLM. since/until may be
+// nil for unbounded windows.
+func (h *Historian) EventsHash(since, until *time.Time) (string, error) {
+	events, err := h.Events()
+	if err != nil {
+		return "", err
+	}
+	events = filterEventsByWindow(events, since, until)
+	return hashEvents(events), nil
+}
+
+// CachedNarrativeHash reads the embedded hash from a previously
+// rendered summary.md. Returns "" when the file doesn't exist or
+// the marker is absent — both treated as "no cache; regenerate."
+func (h *Historian) CachedNarrativeHash(outputDir string) string {
+	if outputDir == "" {
+		outputDir = h.dir
+	}
+	return readEmbeddedHash(h.fsys, path.Join(outputDir, "summary.md"))
 }
 
 // hashEvents produces a stable SHA-256 over the events' identifying
@@ -303,29 +338,67 @@ func stampHash(body, hash string) string {
 	return body[:idx+1] + "\n" + marker + "\n" + body[idx+1:]
 }
 
-// invokeArchivist asks the fast-tier callback to render the manifest.
-// Input: every event in the filtered window, in chronological order.
-// The agent's identity and role live in `.borg/agents/archivist.md` per
-// DJ-036 — callers bake that system prompt into the GenerateFn closure.
+// invokeArchivist asks the archivist callback to render the summary.
+// Input: every event in the filtered window in chronological order,
+// with full structured payload (old/new values, rationale,
+// alternatives). The archivist's job is to turn that record into
+// narrative prose; data-only projection per DJ-097.
+//
+// Per-rationale: the archivist used to receive only id/timestamp/
+// kind/target/rationale, paired with a "one-line summary per event
+// is plenty" directive. Result: a summary worse than `git log`.
+// DJ-103 unstarves it — full payload plus the substantive prompt
+// in the agent's .md file.
 func invokeArchivist(ctx context.Context, fn GenerateFn, events []Event, cfg NarrativeConfig) (string, error) {
 	var b strings.Builder
-	b.WriteString("Write a concise project-history manifest in markdown. Include a timeline of the events below, grouped by date, and a `## Targets with history` section linking to per-target detail files under `details/<target-id>.md`. Keep the prose tight — a one-line summary per event is plenty for the timeline. Do not invent events or narrative detail not supported by the event list.\n\n")
+	b.WriteString("Write the project-history summary per the archivist agent's instructions. The events below are the full record for the requested window.\n\n")
 	if cfg.Since != nil || cfg.Until != nil {
-		b.WriteString("Event window: ")
+		b.WriteString("## Event window\n")
 		if cfg.Since != nil {
-			fmt.Fprintf(&b, "since %s ", cfg.Since.Format("2006-01-02"))
+			fmt.Fprintf(&b, "Since: %s\n", cfg.Since.Format("2006-01-02"))
 		}
 		if cfg.Until != nil {
-			fmt.Fprintf(&b, "until %s ", cfg.Until.Format("2006-01-02"))
+			fmt.Fprintf(&b, "Until: %s\n", cfg.Until.Format("2006-01-02"))
 		}
-		b.WriteString("\n\n")
+		b.WriteString("\n")
 	}
 	b.WriteString("## Events\n")
 	for _, e := range events {
-		fmt.Fprintf(&b, "- [%s] %s | %s | target=%s | rationale=%q\n",
-			e.ID, e.Timestamp.Format(time.RFC3339), e.Kind, e.TargetID, e.Rationale)
+		fmt.Fprintf(&b, "### %s\n", e.ID)
+		fmt.Fprintf(&b, "- timestamp: %s\n", e.Timestamp.Format(time.RFC3339))
+		fmt.Fprintf(&b, "- kind: %s\n", e.Kind)
+		fmt.Fprintf(&b, "- target: %s\n", e.TargetID)
+		if e.Rationale != "" {
+			fmt.Fprintf(&b, "- rationale: %s\n", quoteForPrompt(e.Rationale))
+		}
+		if e.OldValue != "" {
+			fmt.Fprintf(&b, "- old_value: %s\n", quoteForPrompt(e.OldValue))
+		}
+		if e.NewValue != "" {
+			fmt.Fprintf(&b, "- new_value: %s\n", quoteForPrompt(e.NewValue))
+		}
+		if len(e.Alternatives) > 0 {
+			fmt.Fprintf(&b, "- alternatives:\n")
+			for _, a := range e.Alternatives {
+				fmt.Fprintf(&b, "  - %s\n", quoteForPrompt(a))
+			}
+		}
+		b.WriteString("\n")
 	}
 	return fn(ctx, b.String())
+}
+
+// quoteForPrompt formats a possibly-multiline string so the
+// archivist can read it without confusion. Replaces newlines with
+// `\n` literals when short; uses fenced block when long. The
+// archivist's prompt expects the events as "data", and ambiguous
+// indentation in long old_value/new_value blocks would corrupt the
+// markdown structure.
+func quoteForPrompt(s string) string {
+	if !strings.ContainsAny(s, "\n\r") && len(s) < 200 {
+		return strings.TrimSpace(s)
+	}
+	return "<<\n" + strings.TrimRight(s, "\n") + "\n>>"
 }
 
 // invokeAnalyst asks the balanced-tier callback to render a per-target

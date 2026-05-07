@@ -26,7 +26,7 @@ The verb set splits into 8 mutating/operational verbs plus 2 read-only deliberat
 5. `locutus assimilate` — Infer or update spec from code.
 6. `locutus adopt` — Bring code into alignment with spec (reconcile loop).
 7. `locutus status` — Show state, drift, and validation errors. With `--full` emits a comprehensive snapshot of the spec graph (DJ-100).
-8. `locutus history` — Query the past-tense record.
+8. `locutus history` — Query the past-tense record. `--narrative` auto-regenerates the LLM-authored summary from `.borg/history/evt-*.json` (committed events) into `.locutus/history/summary.md` (gitignored cache) when the event hash diverges (DJ-103).
 
 **Read-only deliberation aids (2):**
 
