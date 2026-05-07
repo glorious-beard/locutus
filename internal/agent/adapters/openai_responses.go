@@ -118,15 +118,23 @@ func (a *OpenAIResponsesAdapter) dispatch(ctx context.Context, params responses.
 		out.InputTokens = int(resp.Usage.InputTokens)
 		out.OutputTokens = int(resp.Usage.OutputTokens)
 		out.TotalTokens = int(resp.Usage.TotalTokens)
+		// OpenAI Responses surfaces cached-prefix tokens via
+		// usage.input_tokens_details.cached_tokens. There is no
+		// separate "creation" charge — automatic prefix caching
+		// folds the write into the regular input_tokens count on
+		// the first call, so CacheCreationInputTokens stays zero.
+		cachedTokens := int(resp.Usage.InputTokensDetails.CachedTokens)
+		out.CacheReadInputTokens += cachedTokens
 
 		out.Rounds = append(out.Rounds, Round{
-			Index:        round,
-			Reasoning:    reasoning,
-			Text:         text,
-			Message:      string(raw),
-			InputTokens:  int(resp.Usage.InputTokens),
-			OutputTokens: int(resp.Usage.OutputTokens),
-			Citations:    citations,
+			Index:                round,
+			Reasoning:            reasoning,
+			Text:                 text,
+			Message:              string(raw),
+			InputTokens:          int(resp.Usage.InputTokens),
+			OutputTokens:         int(resp.Usage.OutputTokens),
+			CacheReadInputTokens: cachedTokens,
+			Citations:            citations,
 		})
 		out.Citations = mergeCitations(out.Citations, citations)
 

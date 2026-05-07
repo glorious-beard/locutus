@@ -208,6 +208,15 @@ type recordedCall struct {
 	OutputTokens   int               `yaml:"output_tokens,omitempty"`
 	ThoughtsTokens int               `yaml:"thoughts_tokens,omitempty"`
 	TotalTokens    int               `yaml:"total_tokens,omitempty"`
+	// CacheCreationInputTokens / CacheReadInputTokens surface the
+	// provider's prompt-cache metering. Anthropic populates both;
+	// OpenAI Responses populates only Read (no separate creation
+	// charge); Gemini leaves both at zero today. Operators read the
+	// trace to confirm DJ-106 user-message caching is firing — a
+	// non-zero CacheReadInputTokens on later council fanout calls is
+	// the signal that the static prefix hit the cache.
+	CacheCreationInputTokens int `yaml:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `yaml:"cache_read_input_tokens,omitempty"`
 	// Citations is the aggregate of provider-native search sources
 	// the call grounded against. Mirror of AgentOutput.Citations.
 	// Surfaced at the top level so single-round grounded calls (the
@@ -231,14 +240,16 @@ type recordedCall struct {
 // model's *ai.Message for that round (text + reasoning + tool_request
 // parts).
 type recordedRound struct {
-	Index          int                `yaml:"index"`
-	Reasoning      string             `yaml:"reasoning,omitempty"`
-	Text           string             `yaml:"text,omitempty"`
-	Message        string             `yaml:"message,omitempty"`
-	InputTokens    int                `yaml:"input_tokens,omitempty"`
-	OutputTokens   int                `yaml:"output_tokens,omitempty"`
-	ThoughtsTokens int                `yaml:"thoughts_tokens,omitempty"`
-	Citations      []recordedCitation `yaml:"citations,omitempty"`
+	Index                    int                `yaml:"index"`
+	Reasoning                string             `yaml:"reasoning,omitempty"`
+	Text                     string             `yaml:"text,omitempty"`
+	Message                  string             `yaml:"message,omitempty"`
+	InputTokens              int                `yaml:"input_tokens,omitempty"`
+	OutputTokens             int                `yaml:"output_tokens,omitempty"`
+	ThoughtsTokens           int                `yaml:"thoughts_tokens,omitempty"`
+	CacheCreationInputTokens int                `yaml:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int                `yaml:"cache_read_input_tokens,omitempty"`
+	Citations                []recordedCitation `yaml:"citations,omitempty"`
 }
 
 // recordedCitation is one provider-native search source surfaced in
@@ -431,6 +442,8 @@ func (h *callHandle) finishAt(out *AgentOutput, callErr error, completedAt time.
 		h.call.OutputTokens = out.OutputTokens
 		h.call.ThoughtsTokens = out.ThoughtsTokens
 		h.call.TotalTokens = out.TotalTokens
+		h.call.CacheCreationInputTokens = out.CacheCreationInputTokens
+		h.call.CacheReadInputTokens = out.CacheReadInputTokens
 		if h.call.Model == "" {
 			h.call.Model = out.Model
 		}
@@ -450,13 +463,15 @@ func (h *callHandle) finishAt(out *AgentOutput, callErr error, completedAt time.
 			h.call.Rounds = make([]recordedRound, len(out.Rounds))
 			for i, r := range out.Rounds {
 				rr := recordedRound{
-					Index:          r.Index,
-					Reasoning:      r.Reasoning,
-					Text:           r.Text,
-					Message:        r.Message,
-					InputTokens:    r.InputTokens,
-					OutputTokens:   r.OutputTokens,
-					ThoughtsTokens: r.ThoughtsTokens,
+					Index:                    r.Index,
+					Reasoning:                r.Reasoning,
+					Text:                     r.Text,
+					Message:                  r.Message,
+					InputTokens:              r.InputTokens,
+					OutputTokens:             r.OutputTokens,
+					ThoughtsTokens:           r.ThoughtsTokens,
+					CacheCreationInputTokens: r.CacheCreationInputTokens,
+					CacheReadInputTokens:     r.CacheReadInputTokens,
 				}
 				if len(r.Citations) > 0 {
 					rr.Citations = make([]recordedCitation, len(r.Citations))

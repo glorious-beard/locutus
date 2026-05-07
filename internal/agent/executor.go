@@ -58,6 +58,11 @@ type AgentOutput struct {
 	OutputTokens   int
 	ThoughtsTokens int
 	TotalTokens    int
+	// CacheCreationInputTokens / CacheReadInputTokens mirror the
+	// provider's prompt-cache metering. See adapters.Response for
+	// per-provider semantics. Zero on Gemini today.
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
 	// Citations aggregates the provider-native search sources cited
 	// across all rounds of a grounded call. Empty when grounding was
 	// off or the model returned no sources. Mirrors
@@ -70,14 +75,16 @@ type AgentOutput struct {
 // tool-use loop. Mirrors adapters.Round with the field names the
 // session recorder writes to YAML.
 type GenerateRound struct {
-	Index          int        `json:"index"`
-	Reasoning      string     `json:"reasoning,omitempty"`
-	Text           string     `json:"text,omitempty"`
-	Message        string     `json:"message,omitempty"`
-	InputTokens    int        `json:"input_tokens,omitempty"`
-	OutputTokens   int        `json:"output_tokens,omitempty"`
-	ThoughtsTokens int        `json:"thoughts_tokens,omitempty"`
-	Citations      []Citation `json:"citations,omitempty"`
+	Index                    int        `json:"index"`
+	Reasoning                string     `json:"reasoning,omitempty"`
+	Text                     string     `json:"text,omitempty"`
+	Message                  string     `json:"message,omitempty"`
+	InputTokens              int        `json:"input_tokens,omitempty"`
+	OutputTokens             int        `json:"output_tokens,omitempty"`
+	ThoughtsTokens           int        `json:"thoughts_tokens,omitempty"`
+	CacheCreationInputTokens int        `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int        `json:"cache_read_input_tokens,omitempty"`
+	Citations                []Citation `json:"citations,omitempty"`
 }
 
 // Citation is a provider-native search source the model cited in
@@ -282,6 +289,8 @@ func outputFromResponse(resp *adapters.Response, model string) *AgentOutput {
 	out.OutputTokens = resp.OutputTokens
 	out.ThoughtsTokens = resp.ThoughtsTokens
 	out.TotalTokens = resp.TotalTokens
+	out.CacheCreationInputTokens = resp.CacheCreationInputTokens
+	out.CacheReadInputTokens = resp.CacheReadInputTokens
 	if len(resp.Citations) > 0 {
 		out.Citations = make([]Citation, len(resp.Citations))
 		for i, c := range resp.Citations {
@@ -292,13 +301,15 @@ func outputFromResponse(resp *adapters.Response, model string) *AgentOutput {
 		out.Rounds = make([]GenerateRound, len(resp.Rounds))
 		for i, r := range resp.Rounds {
 			gr := GenerateRound{
-				Index:          r.Index,
-				Reasoning:      r.Reasoning,
-				Text:           r.Text,
-				Message:        r.Message,
-				InputTokens:    r.InputTokens,
-				OutputTokens:   r.OutputTokens,
-				ThoughtsTokens: r.ThoughtsTokens,
+				Index:                    r.Index,
+				Reasoning:                r.Reasoning,
+				Text:                     r.Text,
+				Message:                  r.Message,
+				InputTokens:              r.InputTokens,
+				OutputTokens:             r.OutputTokens,
+				ThoughtsTokens:           r.ThoughtsTokens,
+				CacheCreationInputTokens: r.CacheCreationInputTokens,
+				CacheReadInputTokens:     r.CacheReadInputTokens,
 			}
 			if len(r.Citations) > 0 {
 				gr.Citations = make([]Citation, len(r.Citations))

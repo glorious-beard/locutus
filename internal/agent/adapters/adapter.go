@@ -252,6 +252,20 @@ type Response struct {
 	ThoughtsTokens int
 	TotalTokens    int
 
+	// CacheCreationInputTokens counts tokens written to the provider's
+	// prompt cache on this call (charged at ~1.25× on Anthropic). Zero
+	// when the provider does not separately bill cache writes (OpenAI's
+	// automatic prefix caching folds creation into the regular input
+	// charge) or when caching is not in play.
+	CacheCreationInputTokens int
+
+	// CacheReadInputTokens counts tokens served from the provider's
+	// prompt cache on this call (charged at ~10% on Anthropic; OpenAI
+	// reports the same shape via input_tokens_details.cached_tokens).
+	// Zero when the provider doesn't expose the metadata (Gemini today)
+	// or when no cached prefix matched.
+	CacheReadInputTokens int
+
 	// Citations is the aggregate of provider-native search sources
 	// the model cited across the call (all rounds, deduped on URL).
 	// Empty when grounding was off or the model returned no sources.
@@ -273,13 +287,15 @@ type Response struct {
 // Mirrors the per-round shape session traces already record so the
 // adapter doesn't need a translation layer in the executor.
 type Round struct {
-	Index          int
-	Reasoning      string
-	Text           string
-	Message        string
-	InputTokens    int
-	OutputTokens   int
-	ThoughtsTokens int
+	Index                    int
+	Reasoning                string
+	Text                     string
+	Message                  string
+	InputTokens              int
+	OutputTokens             int
+	ThoughtsTokens           int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
 	// Citations are the provider-native search-grounding sources the
 	// model cited in this round. Populated by adapters whose provider
 	// returned grounding metadata (Gemini groundingMetadata, OpenAI

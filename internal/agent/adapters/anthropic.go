@@ -180,6 +180,13 @@ func (a *AnthropicAdapter) dispatch(ctx context.Context, params anthropicsdk.Mes
 		out.InputTokens = int(msg.Usage.InputTokens)
 		out.OutputTokens = int(msg.Usage.OutputTokens)
 		out.TotalTokens = int(msg.Usage.InputTokens + msg.Usage.OutputTokens)
+		// DJ-106 visibility: cache write/read counters surface
+		// directly in the trace so operators can confirm
+		// user-message caching is firing on a fanout. Per-round
+		// values aggregate to the top-level fields below; for
+		// single-round calls these values represent the entire call.
+		out.CacheCreationInputTokens += int(msg.Usage.CacheCreationInputTokens)
+		out.CacheReadInputTokens += int(msg.Usage.CacheReadInputTokens)
 		totalUsage.in += int(msg.Usage.InputTokens)
 		totalUsage.outTok += int(msg.Usage.OutputTokens)
 		totalUsage.total += int(msg.Usage.InputTokens + msg.Usage.OutputTokens)
@@ -189,13 +196,15 @@ func (a *AnthropicAdapter) dispatch(ctx context.Context, params anthropicsdk.Mes
 		citations := extractAnthropicCitations(raw)
 
 		out.Rounds = append(out.Rounds, Round{
-			Index:        round,
-			Reasoning:    reasoning,
-			Text:         text,
-			Message:      string(raw),
-			InputTokens:  int(msg.Usage.InputTokens),
-			OutputTokens: int(msg.Usage.OutputTokens),
-			Citations:    citations,
+			Index:                    round,
+			Reasoning:                reasoning,
+			Text:                     text,
+			Message:                  string(raw),
+			InputTokens:              int(msg.Usage.InputTokens),
+			OutputTokens:             int(msg.Usage.OutputTokens),
+			CacheCreationInputTokens: int(msg.Usage.CacheCreationInputTokens),
+			CacheReadInputTokens:     int(msg.Usage.CacheReadInputTokens),
+			Citations:                citations,
 		})
 		out.Citations = mergeCitations(out.Citations, citations)
 
