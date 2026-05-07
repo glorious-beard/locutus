@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -15,29 +14,14 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
-// thinkingAllowed reports whether extended thinking can coexist
-// with the request's other settings on Anthropic. The API rejects
-// thinking when tool_choice forces a specific tool — which strict-
-// mode JSON enforcement does via the synthetic schema tool. The
-// gate keeps the conflict from reaching the wire as a 400.
-func thinkingAllowed(useForcedSchemaTool bool) bool {
-	return !useForcedSchemaTool
-}
-
 // defaultAnthropicMaxTokens is substituted when a request omits
 // MaxOutputTokens. The Anthropic API rejects MaxTokens=0
 // ("maxTokens not set"), so we always supply a value.
 const defaultAnthropicMaxTokens = 4096
 
-// schemaToolName is the synthetic tool name the adapter forces the
-// model to call when a strict-mode schema is required and no custom
-// tools are present. The model's tool_use Input becomes the
-// schema-conformant JSON output.
-const schemaToolName = "submit_response"
-
 // AnthropicAdapter implements adapters.Adapter against
-// anthropic-sdk-go's Messages API. It uses forced tool-use to
-// enforce strict-mode schemas, attaches cache_control markers to
+// anthropic-sdk-go's Messages API. It uses native OutputConfig to
+// enforce strict-mode schemas (DJ-108), attaches cache_control markers to
 // the system prompt for prompt caching, and drives a multi-round
 // tool-use loop when custom tools are supplied.
 type AnthropicAdapter struct {
@@ -66,29 +50,41 @@ func (a *AnthropicAdapter) Provider() string { return "anthropic" }
 
 // Run dispatches a request through anthropic-sdk-go. The flow:
 //
-//  1. Build the system prompt (with cache_control marker), user
-//     messages, tool list, and thinking config from the request.
-//  2. If the request has an OutputSchema and no custom tools, force
-//     tool-use against a synthetic schema tool — the model literally
-//     cannot return text, only the tool call with schema-conformant
-//     JSON.
-//  3. If custom tools are present, advertise them; loop on tool_use
-//     responses until the model emits a non-tool stop reason. With
-//     both schema + custom tools, the schema is documented in the
-//     system prompt only and not enforced via forced-tool — running
-//     forced-tool on a custom-tool agent would prevent the loop.
+//  1. Build params via buildAnthropicMessageNewParams (system prompt
+//     with cache_control marker, user messages, tools, thinking
+//     config, and OutputConfig when an output schema is requested).
+//  2. Strict-mode JSON enforcement uses MessageNewParams.OutputConfig
+//     .Format.Schema (DJ-108: native structured output). The synthetic-
+//     tool / forced-tool_choice path used historically is gone — it
+//     conflicted with extended thinking on Opus 4.7+ (the deprecated
+//     enabled-budget thinking API).
+//  3. Custom tools (when present) loop on tool_use responses until the
+//     model emits a non-tool stop reason. OutputConfig and tools
+//     compose: the model is free to call tools first, then emit the
+//     structured response.
 //  4. Aggregate per-round telemetry into Response.Rounds when more
 //     than one round fired.
 func (a *AnthropicAdapter) Run(ctx context.Context, req Request) (*Response, error) {
+	params := buildAnthropicMessageNewParams(req)
+	return a.dispatch(ctx, params, req)
+}
+
+// buildAnthropicMessageNewParams projects a neutral Request into the
+// SDK's MessageNewParams shape. Pure function so the param-construction
+// logic (especially the structured-output / thinking interplay) can be
+// unit-tested without touching the network.
+//
+// DJ-108: structured output uses MessageNewParams.OutputConfig.Format
+// .Schema. Thinking uses ThinkingConfigAdaptiveParam (the
+// enabled-budget API is deprecated on Opus 4.7+; adaptive composes
+// cleanly with everything). When OutputSchema is set, the OutputConfig
+// .Effort knob hints the model's reasoning budget; otherwise adaptive
+// thinking runs without an Effort hint and the model self-pacing.
+func buildAnthropicMessageNewParams(req Request) anthropicsdk.MessageNewParams {
 	maxTokens := int64(req.MaxOutputTokens)
 	if maxTokens <= 0 {
 		maxTokens = defaultAnthropicMaxTokens
 	}
-
-	// Forced tool-use is gated on "schema set, no custom tools."
-	// With custom tools we can't force a single tool because the
-	// model needs to be free to call the custom ones.
-	useForcedSchemaTool := req.OutputSchema != nil && len(req.Tools) == 0
 
 	system := []anthropicsdk.TextBlockParam{
 		{
@@ -97,68 +93,63 @@ func (a *AnthropicAdapter) Run(ctx context.Context, req Request) (*Response, err
 		},
 	}
 
-	tools := buildAnthropicTools(req, useForcedSchemaTool)
-
 	params := anthropicsdk.MessageNewParams{
 		Model:     anthropicsdk.Model(req.Model),
 		MaxTokens: maxTokens,
 		System:    system,
 		Messages:  buildAnthropicMessages(req.Messages),
-		Tools:     tools,
+		Tools:     buildAnthropicTools(req),
 	}
 
-	// Anthropic's API rejects extended thinking when tool_choice
-	// forces a specific tool ("Thinking may not be enabled when
-	// tool_choice forces tool use"). Strict-mode JSON enforcement on
-	// this provider IS done via forced tool_choice (the synthetic
-	// schema tool), so any agent with output_schema + a
-	// thinking-enabled tier would hit a 400 from the API. We honor
-	// the constraint by suppressing thinking on those calls and
-	// emitting a Warn so the operator can see why their tier's
-	// thinking budget didn't apply. The model still reasons
-	// internally; it just doesn't get the extended-thinking budget.
-	if thinkingAllowed(useForcedSchemaTool) {
-		switch req.Thinking {
-		case ThinkingOn:
-			budget := int64(4096)
-			if budget >= maxTokens {
-				budget = maxTokens - 1
-			}
-			params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
-		case ThinkingHigh:
-			budget := int64(8192)
-			if budget >= maxTokens {
-				budget = maxTokens - 1
-			}
-			params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
+	useNativeStructured := req.OutputSchema != nil
+	if useNativeStructured {
+		params.OutputConfig = anthropicsdk.OutputConfigParam{
+			Format: anthropicsdk.JSONOutputFormatParam{
+				Schema: req.OutputSchema,
+			},
 		}
-	} else if req.Thinking != ThinkingOff {
-		slog.Warn("anthropic: thinking suppressed by forced tool_choice",
-			"model", req.Model,
-			"reason", "Anthropic API rejects extended thinking + forced tool_choice; strict-mode schema enforcement uses forced tool_choice")
 	}
 
-	if useForcedSchemaTool {
-		params.ToolChoice = anthropicsdk.ToolChoiceParamOfTool(schemaToolName)
+	switch req.Thinking {
+	case ThinkingOn:
+		params.Thinking = anthropicsdk.ThinkingConfigParamUnion{
+			OfAdaptive: &anthropicsdk.ThinkingConfigAdaptiveParam{},
+		}
+		if useNativeStructured {
+			params.OutputConfig.Effort = anthropicsdk.OutputConfigEffortMedium
+		}
+	case ThinkingHigh:
+		params.Thinking = anthropicsdk.ThinkingConfigParamUnion{
+			OfAdaptive: &anthropicsdk.ThinkingConfigAdaptiveParam{},
+		}
+		if useNativeStructured {
+			params.OutputConfig.Effort = anthropicsdk.OutputConfigEffortHigh
+		}
+	case ThinkingOff:
+		// Leave Thinking unset; default is no thinking.
 	}
 
 	if req.Grounding {
 		// Server-side web_search tool. Anthropic returns search hits
 		// as web_search_tool_result content blocks; extractAnthropic-
 		// Citations flattens those (and any text-block citations
-		// referencing them) into Round.Citations.
+		// referencing them) into Round.Citations. Composes with
+		// OutputConfig — the model can search before producing the
+		// structured response (per the Anthropic docs example).
 		params.Tools = append(params.Tools, anthropicsdk.ToolUnionParam{
 			OfWebSearchTool20250305: &anthropicsdk.WebSearchTool20250305Param{},
 		})
 	}
 
-	return a.dispatch(ctx, params, req, useForcedSchemaTool)
+	return params
 }
 
 // dispatch runs the request and drives the multi-round tool-use loop
-// when custom tools are present. Single-round calls (forced-tool or
-// no tools) take the loop's first iteration and return.
-func (a *AnthropicAdapter) dispatch(ctx context.Context, params anthropicsdk.MessageNewParams, req Request, forcedSchema bool) (*Response, error) {
+// when custom tools are present. With native structured output (DJ-108)
+// the model emits its response as text content blocks even when an
+// OutputSchema is set — the API enforces conformance server-side, so
+// the dispatch path is uniform across schema and free-form calls.
+func (a *AnthropicAdapter) dispatch(ctx context.Context, params anthropicsdk.MessageNewParams, req Request) (*Response, error) {
 	out := &Response{Model: req.Model}
 	totalUsage := struct{ in, outTok, total int }{}
 
@@ -191,36 +182,12 @@ func (a *AnthropicAdapter) dispatch(ctx context.Context, params anthropicsdk.Mes
 		})
 		out.Citations = mergeCitations(out.Citations, citations)
 
-		// Forced schema-tool path: extract the tool_use Input as
-		// the JSON content. No second round; the model already
-		// produced the strict-conformant response.
-		if forcedSchema {
-			for _, tu := range toolUses {
-				if tu.Name == schemaToolName {
-					out.Content = string(tu.Input)
-					out.Reasoning = reasoning
-					out.RawMessage = string(raw)
-					return finalizeRounds(out), nil
-				}
-			}
-			// Model emitted no submit_response tool_use even with
-			// tool_choice forcing it. Should be impossible — fail
-			// loudly rather than handing downstream parsers an
-			// empty Content that surfaces as a confusing JSON
-			// parse error. stop_reason in the message gives the
-			// operator the actual cause (refusal, max_tokens,
-			// pause_turn, etc.).
-			out.Reasoning = reasoning
-			out.RawMessage = string(raw)
-			return out, fmt.Errorf(
-				"anthropic: forced schema tool %q not invoked (stop_reason=%s, text=%q)",
-				schemaToolName, msg.StopReason, text,
-			)
-		}
-
-		// Tool-use loop: dispatch every tool_use the model emitted
-		// and feed the results back as a user message. The model
-		// continues until it emits a non-tool stop_reason.
+		// Tool-use loop: dispatch every custom-tool tool_use the model
+		// emitted and feed the results back as a user message. The
+		// model continues until it emits a non-tool stop_reason.
+		// Server tools (web_search) are handled by Anthropic itself
+		// and arrive as web_search_tool_result content blocks rather
+		// than tool_use blocks — they don't drive this loop.
 		if msg.StopReason == anthropicsdk.StopReasonToolUse && len(toolUses) > 0 {
 			results, err := dispatchAnthropicTools(ctx, req.Tools, toolUses)
 			if err != nil {
@@ -332,21 +299,17 @@ func anthropicMessageRole(r Role) anthropicsdk.MessageParamRole {
 	return anthropicsdk.MessageParamRoleUser
 }
 
-// buildAnthropicTools translates request tools + (optionally) the
-// synthetic schema tool into the SDK's ToolUnionParam shape. Each
-// tool's input_schema is taken verbatim — the executor's
-// schema.go has already enforced strict-mode shape.
-func buildAnthropicTools(req Request, includeSchemaTool bool) []anthropicsdk.ToolUnionParam {
+// buildAnthropicTools translates request tools into the SDK's
+// ToolUnionParam shape. Each tool's input_schema is taken verbatim —
+// the executor's schema.go has already enforced strict-mode shape.
+//
+// DJ-108: the synthetic schema tool path is gone; strict-mode JSON is
+// enforced via MessageNewParams.OutputConfig.Format.Schema directly.
+// Only request-supplied custom tools (e.g., spec_lookup for the
+// reconciler) are advertised here. Server tools (web_search) are
+// appended separately by the caller when Grounding is set.
+func buildAnthropicTools(req Request) []anthropicsdk.ToolUnionParam {
 	var tools []anthropicsdk.ToolUnionParam
-	if includeSchemaTool {
-		schemaParam := jsonSchemaToInputSchema(req.OutputSchema)
-		tool := anthropicsdk.ToolParam{
-			Name:        schemaToolName,
-			Description: anthropicsdk.String("Submit your response in the structured shape the caller requires. This is the only way to return your answer."),
-			InputSchema: schemaParam,
-		}
-		tools = append(tools, anthropicsdk.ToolUnionParam{OfTool: &tool})
-	}
 	for _, t := range req.Tools {
 		tool := anthropicsdk.ToolParam{
 			Name:        t.Name,
