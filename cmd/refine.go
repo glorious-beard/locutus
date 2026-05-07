@@ -13,6 +13,7 @@ import (
 	"github.com/chetan/locutus/internal/cascade"
 	"github.com/chetan/locutus/internal/history"
 	"github.com/chetan/locutus/internal/render"
+	"github.com/chetan/locutus/internal/scaffold"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/chetan/locutus/internal/state"
@@ -532,7 +533,7 @@ func RunRefineApproach(ctx context.Context, llm agent.AgentExecutor, fsys specio
 	}
 
 	applicable := applicableDecisionsFor(g, a.Decisions)
-	resp, err := invokeSynthesizer(ctx, llm, *a, parent, applicable)
+	resp, err := invokeSynthesizer(ctx, llm, fsys, *a, parent, applicable)
 	if err != nil {
 		return nil, fmt.Errorf("refine approach: %w", err)
 	}
@@ -617,8 +618,10 @@ func resolveParentContext(fsys specio.FS, g *spec.SpecGraph, parentID string) (p
 
 // invokeSynthesizer assembles the synthesizer prompt and parses the JSON
 // reply. Shares the RewriteResult output schema with the rewriter so
-// callers can reuse cascade.RewriteResult for parsing.
-func invokeSynthesizer(ctx context.Context, llm agent.AgentExecutor, a spec.Approach, parent parentContext, applicable []spec.Decision) (*cascade.RewriteResult, error) {
+// callers can reuse cascade.RewriteResult for parsing. AgentDef is
+// loaded from `.borg/agents/synthesizer.md` (with the embedded
+// scaffold as fallback) so per-project prompt edits take effect.
+func invokeSynthesizer(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, a spec.Approach, parent parentContext, applicable []spec.Decision) (*cascade.RewriteResult, error) {
 	var prompt strings.Builder
 	if brief := cascade.BriefFromContext(ctx); brief != "" {
 		fmt.Fprintf(&prompt, "## Refinement intent\n%s\n\n", brief)
@@ -637,10 +640,9 @@ func invokeSynthesizer(ctx context.Context, llm agent.AgentExecutor, a spec.Appr
 	prompt.WriteString("\n## Current Approach body\n")
 	prompt.WriteString(a.Body)
 
-	def := agent.AgentDef{
-		ID:           "synthesizer",
-		SystemPrompt: "You are the approach synthesizer. Respond with valid JSON matching the RewriteResult schema. Set revised_body to the new approach Markdown, changed=true if the body changed, and rationale to a one-line summary.",
-		OutputSchema: "RewriteResult",
+	def, err := scaffold.LoadAgent(fsys, "synthesizer")
+	if err != nil {
+		return nil, fmt.Errorf("synthesizer: %w", err)
 	}
 	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt.String()}}}
 	var out cascade.RewriteResult

@@ -54,7 +54,7 @@ func synthesizeMissingApproaches(
 			ParentID:  p.ID,
 			Decisions: p.Decisions,
 		}
-		resp, err := invokeSynthesizer(ctx, llm, approach, p, applicable)
+		resp, err := invokeSynthesizer(ctx, llm, fsys, approach, p, applicable)
 		if err != nil {
 			return synthesized, fmt.Errorf("synthesize approach for %s: %w", p.ID, err)
 		}

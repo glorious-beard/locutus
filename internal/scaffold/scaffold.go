@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chetan/locutus/internal/agent"
+	"github.com/chetan/locutus/internal/frontmatter"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 )
@@ -222,6 +223,38 @@ func Reset(fsys specio.FS) (*ResetReport, error) {
 	report.ModelsReset = true
 
 	return report, nil
+}
+
+// LoadAgent reads one AgentDef by id, preferring the project's
+// `.borg/agents/<id>.md` so an advanced user's per-project edits win.
+// Falls back to the embedded scaffold copy when the project file is
+// missing — supports tests and freshly-built binaries running on
+// uninitialized FSes. The scaffold is the source of truth for the
+// initial prompt; project copies are user-owned overrides.
+//
+// Used by cascade and cmd to load `rewriter` / `synthesizer` (and
+// any future single-shot helper that has a scaffold .md). Helpers
+// without a scaffold .md (intake, advocate, challenger) inline their
+// prompts in Go because there's nothing to override.
+func LoadAgent(fsys specio.FS, id string) (agent.AgentDef, error) {
+	if data, err := fsys.ReadFile(".borg/agents/" + id + ".md"); err == nil {
+		return parseAgentDef(data)
+	}
+	data, err := agentsFS.ReadFile("agents/" + id + ".md")
+	if err != nil {
+		return agent.AgentDef{}, fmt.Errorf("load agent %q: project copy missing and embedded copy unreadable: %w", id, err)
+	}
+	return parseAgentDef(data)
+}
+
+func parseAgentDef(data []byte) (agent.AgentDef, error) {
+	var def agent.AgentDef
+	body, err := frontmatter.Parse(data, &def)
+	if err != nil {
+		return def, fmt.Errorf("parse agent frontmatter: %w", err)
+	}
+	def.SystemPrompt = body
+	return def, nil
 }
 
 // writeIfMissing writes a file only if it does not already exist (idempotency).

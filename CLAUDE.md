@@ -22,7 +22,7 @@ The verb set splits into 8 mutating/operational verbs plus 2 read-only deliberat
 1. `locutus init` — Bootstrap `.borg/` scaffold.
 2. `locutus update` — Refresh binary and embedded defaults.
 3. `locutus import <source>` — Admit a new feature/bug with GOALS.md triage.
-4. `locutus refine <node>` — Council-driven deliberation on any spec node.
+4. `locutus refine <node>` — Council-driven deliberation on any spec node. Flags: `--brief "..."` threads a focused refinement intent through to the dedicated `refiner` agent (DJ-102); `--diff` prints a unified diff over the rendered Markdown after the rewrite; `--rollback` undoes the most recent refine using the prior bytes captured in `.borg/history/`.
 5. `locutus assimilate` — Infer or update spec from code.
 6. `locutus adopt` — Bring code into alignment with spec (reconcile loop).
 7. `locutus status` — Show state, drift, and validation errors. With `--full` emits a comprehensive snapshot of the spec graph (DJ-100).

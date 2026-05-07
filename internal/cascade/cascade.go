@@ -20,6 +20,7 @@ import (
 
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/history"
+	"github.com/chetan/locutus/internal/scaffold"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/chetan/locutus/internal/state"
@@ -217,7 +218,7 @@ func RewriteFeature(
 	f spec.Feature,
 	applicable, changed []spec.Decision,
 ) (bool, string, error) {
-	result, err := invokeRewriter(ctx, llm, "feature", f.ID, f.Title, f.Description, applicable, changed)
+	result, err := invokeRewriter(ctx, llm, fsys, "feature", f.ID, f.Title, f.Description, applicable, changed)
 	if err != nil {
 		return false, "", err
 	}
@@ -244,7 +245,7 @@ func RewriteStrategy(
 	applicable, changed []spec.Decision,
 ) (bool, string, error) {
 	currentBody, _ := fsys.ReadFile(".borg/spec/strategies/" + s.ID + ".md")
-	result, err := invokeRewriter(ctx, llm, "strategy", s.ID, s.Title, string(currentBody), applicable, changed)
+	result, err := invokeRewriter(ctx, llm, fsys, "strategy", s.ID, s.Title, string(currentBody), applicable, changed)
 	if err != nil {
 		return false, "", err
 	}
@@ -268,7 +269,7 @@ func RewriteBug(
 	b spec.Bug,
 	applicable, changed []spec.Decision,
 ) (bool, string, error) {
-	result, err := invokeRewriter(ctx, llm, "bug", b.ID, b.Title, b.Description, applicable, changed)
+	result, err := invokeRewriter(ctx, llm, fsys, "bug", b.ID, b.Title, b.Description, applicable, changed)
 	if err != nil {
 		return false, "", err
 	}
@@ -287,28 +288,50 @@ func RewriteBug(
 // RewriteStrategy wrap it with disk I/O for the persisted-spec flow;
 // callers operating on in-memory proposals (e.g. the council's post-
 // reconcile cascade pass before persistence) call this directly.
+//
+// fsys lets the rewriter load its agent definition from
+// `.borg/agents/rewriter.md` so per-project prompt edits take effect;
+// passes through to invokeRewriter and falls back to the embedded
+// scaffold copy when the project file is absent.
 func InvokeRewriter(
 	ctx context.Context,
 	llm agent.AgentExecutor,
+	fsys specio.FS,
 	parentKind, parentID, parentTitle, currentBody string,
 	applicable, changed []spec.Decision,
 ) (*RewriteResult, error) {
-	return invokeRewriter(ctx, llm, parentKind, parentID, parentTitle, currentBody, applicable, changed)
+	return invokeRewriter(ctx, llm, fsys, parentKind, parentID, parentTitle, currentBody, applicable, changed)
 }
 
-// invokeRewriter assembles the rewriter prompt and runs the LLM call with
-// provider-enforced structured output (via agent.GenerateInto → Genkit
-// WithOutputType). The schema for RewriteResult is derived from the Go
-// type, so Gemini's responseSchema and Anthropic's OutputConfig
-// constrain the response at the API layer rather than after the fact.
+// invokeRewriter assembles the rewriter prompt and runs the LLM call.
+// AgentDef (system prompt + output_schema) is loaded via
+// scaffold.LoadAgent so an advanced user can edit
+// `.borg/agents/rewriter.md` to tune the rewriter's behavior; the
+// embedded scaffold serves as fallback for fresh installs and tests
+// running on uninitialized FSes.
 func invokeRewriter(
 	ctx context.Context,
 	llm agent.AgentExecutor,
+	fsys specio.FS,
 	parentKind, parentID, parentTitle, currentBody string,
 	applicable, changed []spec.Decision,
 ) (*RewriteResult, error) {
+	brief := BriefFromContext(ctx)
+
+	// Dispatch by mode: refiner is the deliberate, intent-driven
+	// agent for `refine --brief`; rewriter is the conservative,
+	// cascade-driven agent. Two purpose-built prompts beat one
+	// prompt with an "if intent is present" branch — the model
+	// arbitrates the conditional at inference time and can hew too
+	// hard to "minimum diff" when the user explicitly asked for
+	// substantive change.
+	agentID := "rewriter"
+	if brief != "" {
+		agentID = "refiner"
+	}
+
 	var prompt strings.Builder
-	if brief := BriefFromContext(ctx); brief != "" {
+	if brief != "" {
 		fmt.Fprintf(&prompt, "## Refinement intent\n%s\n\n", brief)
 	}
 	fmt.Fprintf(&prompt, "## Parent kind\n%s\n\n", parentKind)
@@ -320,36 +343,25 @@ func invokeRewriter(
 	for _, d := range applicable {
 		fmt.Fprintf(&prompt, "- %s (%s, confidence=%.2f): %s — %s\n", d.ID, d.Status, d.Confidence, d.Title, d.Rationale)
 	}
-	prompt.WriteString("\n## Recently changed Decisions\n")
-	for _, d := range changed {
-		fmt.Fprintf(&prompt, "- %s — %s\n", d.ID, d.Title)
+	if brief == "" {
+		// Cascade mode only: the rewriter agent uses this list to
+		// focus the diff on Decisions that actually moved. The
+		// refiner ignores it because the change driver is the
+		// user's intent, not the cascade.
+		prompt.WriteString("\n## Recently changed Decisions\n")
+		for _, d := range changed {
+			fmt.Fprintf(&prompt, "- %s — %s\n", d.ID, d.Title)
+		}
 	}
 
-	def := agent.AgentDef{
-		ID: "rewriter",
-		SystemPrompt: `You are the cascade rewriter. Your job is to update a parent
-spec node's prose to reflect either:
-1. Recently changed Decisions that the parent references, OR
-2. A user-supplied Refinement intent describing what should be different
-   about the prose.
-
-When a "## Refinement intent" section is present, treat it as a
-directive — produce revised prose that incorporates the user's intent.
-Set changed=true even when no Decisions appear in the "## Recently
-changed Decisions" section, since the intent itself is the change driver.
-
-When no Refinement intent is present, the rewrite is purely
-mechanical: rewrite only if the parent prose has drifted from its
-applicable Decisions. Set changed=false otherwise — don't paraphrase
-for the sake of change.
-
-Respond with valid JSON matching the RewriteResult schema.`,
-		OutputSchema: "RewriteResult",
+	def, err := scaffold.LoadAgent(fsys, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", agentID, err)
 	}
 	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt.String()}}}
 	var out RewriteResult
-	if err := agent.RunInto(agent.WithRole(ctx, "rewriter"), llm, def, input, &out); err != nil {
-		return nil, fmt.Errorf("rewriter: %w", err)
+	if err := agent.RunInto(agent.WithRole(ctx, agentID), llm, def, input, &out); err != nil {
+		return nil, fmt.Errorf("%s: %w", agentID, err)
 	}
 	return &out, nil
 }
