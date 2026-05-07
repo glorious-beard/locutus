@@ -1,7 +1,6 @@
 package history
 
 import (
-	"fmt"
 	"sort"
 	"time"
 )
@@ -35,7 +34,7 @@ func RecordRefined(h *Historian, nodeID, priorJSON, newJSON, brief string) error
 		rationale = "refine without focused brief"
 	}
 	return h.Record(Event{
-		ID:        fmt.Sprintf("evt-refined-%s-%d", nodeID, now.UnixNano()),
+		ID:        EventID("refined", nodeID, now),
 		Timestamp: now,
 		Kind:      EventKindRefined,
 		TargetID:  nodeID,
@@ -52,7 +51,7 @@ func RecordRefined(h *Historian, nodeID, priorJSON, newJSON, brief string) error
 func RecordRolledBack(h *Historian, nodeID, currentJSON, restoredJSON, sourceEventID string) error {
 	now := time.Now()
 	return h.Record(Event{
-		ID:        fmt.Sprintf("evt-rollback-%s-%d", nodeID, now.UnixNano()),
+		ID:        EventID("rolled-back", nodeID, now),
 		Timestamp: now,
 		Kind:      EventKindRolledBack,
 		TargetID:  nodeID,

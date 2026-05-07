@@ -770,9 +770,14 @@ func printRollbackSummary(r *RefineResult) {
 }
 
 func refineEvent(nodeID, kind, rationale string) history.Event {
+	now := time.Now()
+	// kind comes from callers as the JSON-side label
+	// (`goals_refined`, etc.); hyphenize for the filename so it
+	// reads cleanly alongside the timestamp prefix.
+	idLabel := strings.ReplaceAll(kind, "_", "-")
 	return history.Event{
-		ID:        fmt.Sprintf("evt-refine-%s-%d", nodeID, time.Now().UnixNano()),
-		Timestamp: time.Now(),
+		ID:        history.EventID(idLabel, nodeID, now),
+		Timestamp: now,
 		Kind:      kind,
 		TargetID:  nodeID,
 		Rationale: rationale,

@@ -162,9 +162,10 @@ func Preflight(
 					report.DriftedApproaches = append(report.DriftedApproaches, cascadeResult.DriftedApproaches...)
 
 					// Historian event for the new assumed decision.
+					eventTime := time.Now()
 					_ = hist.Record(history.Event{
-						ID:        fmt.Sprintf("evt-preflight-%s-%d", decision.ID, time.Now().UnixNano()),
-						Timestamp: time.Now(),
+						ID:        history.EventID("preflight", decision.ID, eventTime),
+						Timestamp: eventTime,
 						Kind:      "decision_assumed",
 						TargetID:  decision.ID,
 						NewValue:  decision.Rationale,

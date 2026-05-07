@@ -394,9 +394,10 @@ func MarkApproachesDrifted(store *state.FileStateStore, approachIDs []string, ou
 }
 
 func cascadeEvent(decisionID, parentID, kind, rationale string) history.Event {
+	now := time.Now()
 	return history.Event{
-		ID:        fmt.Sprintf("evt-cascade-%s-%d", parentID, time.Now().UnixNano()),
-		Timestamp: time.Now(),
+		ID:        history.EventID("cascade", parentID, now),
+		Timestamp: now,
 		Kind:      kind,
 		TargetID:  parentID,
 		Rationale: fmt.Sprintf("Cascade from decision %s: %s", decisionID, rationale),

@@ -82,9 +82,10 @@ func Plan(ctx context.Context, exec AgentExecutor, fsys specio.FS, req PlanReque
 
 	// 7. Record history event.
 	h := history.NewHistorian(fsys, ".borg/history")
+	now := time.Now()
 	evt := history.Event{
-		ID:        fmt.Sprintf("evt-%s-%d", plan.ID, time.Now().UnixNano()),
-		Timestamp: time.Now(),
+		ID:        history.EventID("plan-created", plan.ID, now),
+		Timestamp: now,
 		Kind:      "plan_created",
 		TargetID:  plan.ID,
 		NewValue:  planJSON,

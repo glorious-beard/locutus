@@ -120,7 +120,7 @@ func recordRemediationRun(fsys specio.FS, gapCount int, r *remediate.Result) {
 	hist := history.NewHistorian(fsys, ".borg/history")
 	now := time.Now()
 	_ = hist.Record(history.Event{
-		ID:        fmt.Sprintf("evt-remediation-%d", now.UnixNano()),
+		ID:        history.EventID("remediation", "", now),
 		Timestamp: now,
 		Kind:      "remediation_run",
 		Rationale: fmt.Sprintf("Remediated %d gap(s): %d decisions, %d strategies, %d features created; %d features updated.",
