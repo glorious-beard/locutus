@@ -44,7 +44,12 @@ func TestLatestRefinedEventReturnsMostRecent(t *testing.T) {
 	_, h := newHistFS(t)
 
 	require.NoError(t, history.RecordRefined(h, "feat-a", "v1", "v2", "first"))
-	time.Sleep(2 * time.Millisecond) // separate timestamps
+	// Tiny sleep to make Timestamps strictly increasing — the
+	// same-second ordinal in EventID would disambiguate filenames
+	// even without it, but LatestRefinedEvent sorts by Timestamp,
+	// not by id, so we still want the second event's timestamp to
+	// land later.
+	time.Sleep(2 * time.Millisecond)
 	require.NoError(t, history.RecordRefined(h, "feat-a", "v2", "v3", "second"))
 
 	evt, err := history.LatestRefinedEvent(h, "feat-a")
@@ -61,10 +66,8 @@ func TestLatestRefinedEventSkipsRolledBack(t *testing.T) {
 	// refine #1 → rollback #1: this pair cancels out.
 	require.NoError(t, history.RecordRefined(h, "feat-a", "v1", "v2", "r1"))
 	time.Sleep(2 * time.Millisecond)
-	require.NoError(t, history.RecordRolledBack(h, "feat-a", "v2", "v1", "evt-refined-feat-a-irrelevant"))
+	require.NoError(t, history.RecordRolledBack(h, "feat-a", "v2", "v1", "irrelevant"))
 	time.Sleep(2 * time.Millisecond)
-
-	// refine #2: this is the standing refine.
 	require.NoError(t, history.RecordRefined(h, "feat-a", "v1", "v2-prime", "r2"))
 
 	evt, err := history.LatestRefinedEvent(h, "feat-a")
@@ -78,7 +81,7 @@ func TestLatestRefinedEventAllRolledBack(t *testing.T) {
 
 	require.NoError(t, history.RecordRefined(h, "feat-a", "v1", "v2", "r1"))
 	time.Sleep(2 * time.Millisecond)
-	require.NoError(t, history.RecordRolledBack(h, "feat-a", "v2", "v1", "evt-refined-feat-a-irrelevant"))
+	require.NoError(t, history.RecordRolledBack(h, "feat-a", "v2", "v1", "irrelevant"))
 
 	evt, err := history.LatestRefinedEvent(h, "feat-a")
 	require.NoError(t, err)

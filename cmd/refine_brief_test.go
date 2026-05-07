@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chetan/locutus/internal/cascade"
 	"github.com/chetan/locutus/internal/history"
@@ -147,6 +148,11 @@ func TestRollbackTwiceWalksThroughHistory(t *testing.T) {
 	require.NoError(t, err)
 	postA, _ := fs.ReadFile(".borg/spec/features/feat-auth.json")
 	require.NotEqual(t, string(pre), string(postA))
+
+	// Tiny sleep to make timestamps strictly increasing — the
+	// same-second ordinal in history.EventID handles filename
+	// disambiguation, but LatestRefinedEvent sorts by Timestamp.
+	time.Sleep(2 * time.Millisecond)
 
 	llm2 := scriptRewriter(t, true, "Body after B.", "refine B")
 	_, err = RunRefineFeature(context.Background(), llm2, fs, "feat-auth")

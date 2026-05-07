@@ -14,24 +14,27 @@ import (
 // EventID composes the canonical event id used as both the JSON
 // field and the on-disk filename (with `.json` appended). Format:
 //
-//	YYYY-MM-DDTHH-MM-SS-NNN[-target]-kind
+//	YYYYMMDDTHHMMSS-NNN[-target]-kind
 //
-// The timestamp is the prefix so a directory listing sorts
-// chronologically. Hyphens replace colons in the time-of-day so the
-// filename is portable across filesystems that reject `:` in names.
-// target may be empty for events that aren't node-specific (e.g.
-// plan-level events).
+// ISO 8601 basic form for the timestamp (no separators) so the time
+// section reads as one dense token, distinct from the target+kind
+// that follow. target may be empty for events that aren't
+// node-specific (e.g. plan-level events).
 //
-// NNN is a zero-padded same-second ordinal (process-local, resets
-// each new second). It exists so two events fired within the same
-// second disambiguate cleanly rather than silently overwriting on
-// disk. Tests with no sleep between events depend on this.
+// NNN is a zero-padded 1-based ordinal that increments for events
+// emitted in the same second and resets each new second. It defends
+// against same-target+same-kind collisions that two back-to-back
+// CLI invocations could hit (e.g. a script firing
+// `refine X --rollback` repeatedly — rollback has no LLM call and
+// runs comfortably in well under a second). Process-local; multi-
+// process races still collide, which the current single-process
+// design doesn't expose.
 //
 // kind is the human-readable label (`refined`, `rolled-back`,
 // `cascade`, `preflight`, etc.). Comes after the target so
 // hyphenated target ids (`feat-foo-bar`) don't run into the label.
 func EventID(kind, target string, ts time.Time) string {
-	stamp := ts.Format("2006-01-02T15-04-05")
+	stamp := ts.Format("20060102T150405")
 	ordinal := nextEventOrdinal(stamp)
 	if target == "" {
 		return fmt.Sprintf("%s-%03d-%s", stamp, ordinal, kind)
@@ -40,15 +43,13 @@ func EventID(kind, target string, ts time.Time) string {
 }
 
 var (
-	eventOrdMu   sync.Mutex
-	eventOrdSec  string
-	eventOrdSeq  int
+	eventOrdMu  sync.Mutex
+	eventOrdSec string
+	eventOrdSeq int
 )
 
 // nextEventOrdinal returns the 1-based ordinal for an event whose
 // formatted second-stamp is `stamp`. Resets to 1 each new second.
-// Process-local; a multi-process race would still collide, which
-// the current single-process design doesn't expose.
 func nextEventOrdinal(stamp string) int {
 	eventOrdMu.Lock()
 	defer eventOrdMu.Unlock()
