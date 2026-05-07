@@ -242,51 +242,44 @@ func init() {
 	})
 }
 
-// buildReconciliationVerdictSchema authors the discriminated-union
-// JSON Schema for the reconciler's output. Sub-shapes (source ref,
-// inline decision) are reflected from their Go structs to stay in
-// sync with the canonical types; the top-level oneOf is hand-rolled
-// because invopop can't express "different required fields per
-// kind" from struct tags alone.
+// buildReconciliationVerdictSchema authors the JSON Schema for the
+// reconciler's output. Sub-shapes (source ref, inline decision) are
+// reflected from their Go structs to stay in sync with the canonical
+// types.
 //
-// Each variant pins `kind` via an enum of one literal so the model
-// commits to a discriminator at output time. Strict-mode adapters
-// (Anthropic forced tool-use, Gemini responseJsonSchema, OpenAI
-// json_schema strict) all honor oneOf with enum discriminants.
+// DJ-111: the schema is a flat object with `kind` enum and all
+// variant-specific fields optional. The Go-side ReconciliationAction
+// is already flat (all variant fields tagged omitempty); the apply
+// switch in reconcile.go does per-kind validation downstream. The
+// earlier discriminated-union shape (oneOf of three variants, each
+// with its own required-fields set) was schema-only — consumer code
+// never relied on it. Anthropic's native output_config rejects oneOf
+// (Gemini and OpenAI accept it), so this flatter shape works
+// uniformly across providers.
+//
+// Per-kind required fields drift to prompt guidance + apply-time
+// validation, the same posture the rest of the codebase uses for
+// every other LLM output. The strict-schema layer enforces that
+// `kind` and `sources` are present and that `kind` is one of the
+// known enum values; everything else gets validated on apply.
 func buildReconciliationVerdictSchema() map[string]any {
 	sourceSchema := reflectStrictSchema(DecisionSourceRef{})
 	inlineSchema := reflectStrictSchema(InlineDecisionProposal{})
 
-	dedupeAction := map[string]any{
+	actionItem := map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
-		"required":             []any{"kind", "sources", "canonical"},
+		"required":             []any{"kind", "sources"},
 		"properties": map[string]any{
-			"kind":      map[string]any{"type": "string", "enum": []any{"dedupe"}},
-			"sources":   map[string]any{"type": "array", "items": sourceSchema},
-			"canonical": inlineSchema,
-		},
-	}
-	resolveAction := map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"required":             []any{"kind", "sources", "canonical", "loser", "rejected_because"},
-		"properties": map[string]any{
-			"kind":             map[string]any{"type": "string", "enum": []any{"resolve_conflict"}},
+			"kind": map[string]any{
+				"type": "string",
+				"enum": []any{"dedupe", "resolve_conflict", "reuse_existing"},
+			},
 			"sources":          map[string]any{"type": "array", "items": sourceSchema},
 			"canonical":        inlineSchema,
 			"loser":            inlineSchema,
 			"rejected_because": map[string]any{"type": "string"},
-		},
-	}
-	reuseAction := map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"required":             []any{"kind", "sources", "existing_id"},
-		"properties": map[string]any{
-			"kind":        map[string]any{"type": "string", "enum": []any{"reuse_existing"}},
-			"sources":     map[string]any{"type": "array", "items": sourceSchema},
-			"existing_id": map[string]any{"type": "string"},
+			"existing_id":      map[string]any{"type": "string"},
 		},
 	}
 
@@ -296,10 +289,8 @@ func buildReconciliationVerdictSchema() map[string]any {
 		"required":             []any{"actions"},
 		"properties": map[string]any{
 			"actions": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"oneOf": []any{dedupeAction, resolveAction, reuseAction},
-				},
+				"type":  "array",
+				"items": actionItem,
 			},
 		},
 	}

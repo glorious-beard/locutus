@@ -183,38 +183,51 @@ func (e *Executor) Banner() string {
 //
 //  1. Resolve the (provider, model) pick from the agent's models[]
 //     preference list against availability + the tier table.
-//  2. Acquire the per-(provider, model) concurrency slot.
-//  3. Apply the per-call timeout (agent override, env override, or
-//     default).
-//  4. Fire any acquired-callback the caller threaded via context
-//     (used by the workflow to flip a "queued" spinner to "running").
-//  5. Translate to adapters.Request; dispatch through the adapter;
-//     translate adapters.Response back to AgentOutput.
+//  2. For each pick: apply the per-pick timeout, acquire the
+//     concurrency slot, fire any acquired-callback, dispatch.
+//  3. Translate adapters.Response back to AgentOutput on success.
 //
-// Run walks the agent's models[] preference list in declaration
-// order. For each preference, it dispatches one adapter call. On a
-// retryable failure (ErrRateLimit / ErrTimeout) it advances to the
-// next preference and emits a slog.Warn so sustained primary
-// failures show up in the operator log. On a non-retryable failure
-// it returns immediately. If every preference is exhausted, Run
-// returns the last error so RunWithRetry's exponential backoff sees
-// a retryable sentinel and can re-walk after a delay.
+// DJ-110: per-pick timeout (was previously per-walk). The agent's
+// configured Timeout (frontmatter or LOCUTUS_LLM_TIMEOUT) bounds
+// each provider attempt INDIVIDUALLY, not the entire fallback walk.
+// Without this, a first provider that hung the full timeout would
+// leave the fallback path with zero budget — every subsequent pick
+// would fail instantly with context-canceled, and the "fallback
+// chain" the agent's preference list documented was theatrical.
+//
+// Worst-case wall clock is now N × per-pick timeout for an N-pick
+// preference list; a parent context with its own timeout (set by
+// the caller) is the right place to bound total walk time when
+// that matters. RunWithRetry's exponential backoff still re-walks
+// the whole list on retry-eligible failures.
+//
+// On a non-retryable failure (programming error, parse error,
+// schema rejection) Run returns immediately. On retryable
+// failure (ErrRateLimit / ErrTimeout / ErrIncompatible) it
+// advances to the next preference and emits a slog.Warn.
 func (e *Executor) Run(ctx context.Context, def AgentDef, input AgentInput) (*AgentOutput, error) {
 	picks, err := ResolveAvailable(def, e.providers, e.cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	timeout := perCallTimeout(def)
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
+	perPickTimeout := perCallTimeout(def)
 
 	var lastErr error
 	for i, pick := range picks {
-		out, err := e.runOne(ctx, def, input, pick)
+		// Each pick gets its own timeout budget. If the parent ctx
+		// is already done, context.WithTimeout returns a context
+		// that's immediately done too — failures in early picks
+		// don't leak into later picks.
+		pickCtx := ctx
+		var cancel context.CancelFunc
+		if perPickTimeout > 0 {
+			pickCtx, cancel = context.WithTimeout(ctx, perPickTimeout)
+		}
+		out, err := e.runOne(pickCtx, def, input, pick)
+		if cancel != nil {
+			cancel()
+		}
 		if err == nil {
 			return out, nil
 		}

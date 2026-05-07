@@ -8,13 +8,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReconciliationVerdictDiscriminatedSchema confirms the hand-
-// authored override produces a discriminated union that requires
-// canonical-per-kind. The original bug: ReconciliationAction has
-// every field `,omitempty` so reflection produced a permissive
-// schema, and the model emitted dedupe actions without canonical.
-// Strict-mode adapters now reject malformed actions at the API.
-func TestReconciliationVerdictDiscriminatedSchema(t *testing.T) {
+// TestReconciliationVerdictFlatSchema confirms the hand-authored
+// override produces a flat object schema with `kind` enum and
+// optional variant fields (DJ-111: replaced the oneOf
+// discriminated-union shape because Anthropic's native
+// output_config.format.schema rejects oneOf).
+//
+// The original bug this schema was authored to address —
+// ReconciliationAction's permissive omitempty fields letting the
+// model emit dedupe actions without canonical — moves from
+// schema-layer enforcement to prompt + apply-time validation.
+// spec_reconciler.md documents the per-kind requirements; the
+// reconcile.go apply switch validates per-kind on receipt.
+func TestReconciliationVerdictFlatSchema(t *testing.T) {
 	schema, err := SchemaFor("ReconciliationVerdict")
 	require.NoError(t, err)
 
@@ -26,39 +32,36 @@ func TestReconciliationVerdictDiscriminatedSchema(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "array", actions["type"])
 
-	// items must be a oneOf of three variants (dedupe, resolve_conflict,
-	// reuse_existing) — that's the discrimination.
+	// items must be a single flat object — NOT a oneOf union.
 	items, ok := actions["items"].(map[string]any)
 	require.True(t, ok)
-	oneOf, ok := items["oneOf"].([]any)
+	assert.NotContains(t, items, "oneOf",
+		"items must be a flat object schema (DJ-111: Anthropic native output_config rejects oneOf)")
+
+	// kind must be an enum constraining to the three known action variants.
+	itemProps, ok := items["properties"].(map[string]any)
 	require.True(t, ok)
-	require.Len(t, oneOf, 3, "three action kinds")
-
-	// Each variant pins kind via an enum of one literal AND requires
-	// the kind-specific fields. Verify by walking the variants.
-	gotKinds := map[string][]string{}
-	for _, v := range oneOf {
-		variant := v.(map[string]any)
-		variantProps := variant["properties"].(map[string]any)
-		kindProp := variantProps["kind"].(map[string]any)
-		kindEnum := kindProp["enum"].([]any)
-		require.Len(t, kindEnum, 1, "kind discriminator pinned to one literal")
-		kind := kindEnum[0].(string)
-
-		required := variant["required"].([]any)
-		var requiredStrs []string
-		for _, r := range required {
-			requiredStrs = append(requiredStrs, r.(string))
-		}
-		gotKinds[kind] = requiredStrs
+	kind, ok := itemProps["kind"].(map[string]any)
+	require.True(t, ok)
+	enum, ok := kind["enum"].([]any)
+	require.True(t, ok)
+	enumStrs := make([]string, 0, len(enum))
+	for _, v := range enum {
+		enumStrs = append(enumStrs, v.(string))
 	}
+	assert.ElementsMatch(t, []string{"dedupe", "resolve_conflict", "reuse_existing"}, enumStrs,
+		"kind enum must include exactly the three known action variants")
 
-	assert.ElementsMatch(t, []string{"kind", "sources", "canonical"}, gotKinds["dedupe"],
-		"dedupe requires canonical (the field the model was skipping)")
-	assert.ElementsMatch(t, []string{"kind", "sources", "canonical", "loser", "rejected_because"}, gotKinds["resolve_conflict"],
-		"resolve_conflict requires canonical + loser + rejected_because")
-	assert.ElementsMatch(t, []string{"kind", "sources", "existing_id"}, gotKinds["reuse_existing"],
-		"reuse_existing requires existing_id, not canonical")
+	// kind + sources required at the schema layer; everything else
+	// optional and validated downstream.
+	required, ok := items["required"].([]any)
+	require.True(t, ok)
+	requiredStrs := make([]string, 0, len(required))
+	for _, r := range required {
+		requiredStrs = append(requiredStrs, r.(string))
+	}
+	assert.ElementsMatch(t, []string{"kind", "sources"}, requiredStrs,
+		"only kind + sources are required at the schema layer; per-kind requirements are enforced via prompt + apply-time validation")
 }
 
 // TestReconciliationVerdictSchemaSerializes confirms the schema

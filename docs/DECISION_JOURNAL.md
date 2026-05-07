@@ -2467,3 +2467,84 @@ So the migration is uniform — no per-model branching. The Models API exposes p
 **Reversal criteria:** revert the constant downward if a real call legitimately needs more than 9m45s (signal: session traces show successful calls approaching the cap regularly), at which point streaming is the right migration. Or revert upward if the cap proves too low for a specific agent (in which case prefer per-agent timeout overrides over raising the global cap). The constant is a clear contract; both directions are addressable in the same file.
 
 **Reference:** triggered by a `refine goals` failure on the `spec_reconciler` step in winplan after DJ-107 routed strong-tier agents to anthropic-first. SDK source verified at `anthropic-sdk-go@v1.23.0/client.go:132-157` (`CalculateNonStreamingTimeout`). Anthropic SDK long-requests guidance at `platform.claude.com/docs/en/api/sdks/typescript`. Companion to DJ-108 (which moved Anthropic strict-mode to native `OutputConfig`); each fixed a different latent issue surfaced by the anthropic-first reorder.
+
+## DJ-110: Per-Pick Timeout in `Executor.Run` (Bug B)
+
+**Status:** shipped
+
+**Decision:** The per-call timeout (`AgentDef.Timeout` from frontmatter, or `LOCUTUS_LLM_TIMEOUT`, or the 15-minute default) now applies **per-pick** during the model preference walk, not as a single budget that wraps the entire walk. Each provider attempt gets its own fresh `context.WithTimeout` in `Executor.Run`'s loop body; the previous code wrapped the loop with a single `WithTimeout` that all picks shared.
+
+**Why:** when the first provider in a fallback chain hung the full timeout — a real failure mode observed in winplan's `0024-spec_strategy_elaborator-strat-auth-provider.yaml` (300041ms duration, `model: ""`, `error: context deadline exceeded`) — the per-call context was already dead by the time `Executor.Run` advanced to the next pick. Every subsequent pick failed instantly with `context.DeadlineExceeded`, and the agent's `models:` preference list became theatrical: it documented a fallback chain that only worked when the first provider failed *fast*.
+
+The user-visible failure shape is distinctive: a duration that exactly matches the agent's frontmatter timeout, an empty `model` field (no provider's response ever surfaced its name to the recorder because none completed), and a `context deadline exceeded` error message. Bug A's classifier extension would have routed this case correctly *if there had been budget left* — the issue isn't classification, it's that the budget was already consumed by the time fallback was attempted.
+
+**Why not a per-pick budget split (timeout / N picks):** considered and rejected. Splitting the budget across picks would mean every fallback walk ran with shorter individual budgets, regressing single-pick latency for the common case to subsidize the rare case. Cleaner to give each pick the full configured budget and let the parent context bound total wall clock when that matters (workflow-level deadlines, user Ctrl-C).
+
+**Trade-off:** worst-case wall clock for an N-pick preference list with N timeouts is now N × per-pick timeout instead of a single per-pick timeout. For the council's typical 3-pick lists (anthropic → googleai → openai), that means a triple-failure walk could run up to 3× the configured per-call duration. In practice this is acceptable because:
+
+1. The common case (first pick succeeds) is unchanged.
+2. The fallback case (first pick fails fast, second succeeds) gets a fresh budget instead of inheriting a near-empty one.
+3. The pathological case (all three pick attempts time out at the wall) was *already broken* before this change — it just failed fast with `context canceled` instead of failing slow with `context deadline exceeded`. The per-pick path actually *succeeds* if any later pick is healthy.
+
+If a deployer needs to bound total walk time for a specific agent, the right tool is a workflow-level context with timeout, not the per-call timeout.
+
+**What lands:**
+
+- [`Executor.Run`](../internal/agent/executor.go) drops the wrap-the-walk `context.WithTimeout` and instead applies `WithTimeout(ctx, perPickTimeout)` inside the per-pick loop, with `cancel()` after each `runOne` call.
+- The doc comment on `Run` is rewritten to describe the per-pick semantics and the worst-case wall-clock implication.
+- No tests added at this layer — the timeout behavior is hard to unit-test without slow mocks that respect context cancellation. The change is mechanically clear (move `WithTimeout` inside the loop) and verified by the existing test suite + manual verification on the next refine run.
+
+**What stays the same:**
+
+- `AgentDef.Timeout` semantics, env var precedence (`LOCUTUS_LLM_TIMEOUT`), and the 15-minute default (`DefaultLLMCallTimeout`). Operators don't need to retune anything.
+- `RunWithRetry`'s exponential backoff + Retry-After handling unchanged. It still re-walks the whole preference list on retry-eligible failures.
+- The classifier extensions from Bug A. Server-side 504s still classify as ErrTimeout and now get genuine fallback budget.
+
+**Reversal criteria:** revert if a deployer reports total-wall-clock surprises in production (a 5m timeout becoming a 15m total walk on a triple-failure path). Mitigation in that case is workflow-level context-with-timeout, not reverting per-pick — but the option is open if the change proves operationally surprising.
+
+**Reference:** the deferred fix from the post-DJ-105 / DJ-106 / DJ-107 / DJ-108 / DJ-109 sequence. Bug A and Bug C were prerequisites; without 504 classification (Bug A), the fallback walk wasn't fallback-eligible at all, and without schema enforcement (Bug C), the council couldn't survive even the success case. Bug B closes the chain. Triggered visibly in winplan session 20260507/1522/28-5d9ba2/calls/0024.
+
+## DJ-111: Flatten `ReconciliationVerdict` Schema (Drop `oneOf`)
+
+**Status:** shipped
+
+**Decision:** Replace the `actions[]` discriminated-union (`oneOf` of three variants — `dedupe`, `resolve_conflict`, `reuse_existing` — each with its own required-fields set) with a single flat object schema. The flat shape has `kind` (enum of the three variants) and `sources` as the only required fields; `canonical`, `loser`, `rejected_because`, and `existing_id` are all optional at the schema layer. Per-kind required fields move to prompt guidance (`spec_reconciler.md` already documents them) and apply-time validation (the switch in `reconcile.go:243+` already validates per-kind).
+
+**Why:** Anthropic's native `output_config.format.schema` API rejects `oneOf` constructs. The spec_reconciler dispatch produced a 400 — *"output_config.format.schema: Schema type 'oneOf' is not supported"* — every time it routed to Anthropic (which is now first per DJ-107). The DJ-098-era comment that said *"Strict-mode adapters (Anthropic forced tool-use, Gemini responseJsonSchema, OpenAI json_schema strict) all honor oneOf with enum discriminants"* was true under the legacy forced-tool path; the migration to native output_config (DJ-108) lost the oneOf support specifically on Anthropic, while Gemini and OpenAI still accept it.
+
+**Why flat instead of provider-specific schema:** considered and rejected. A per-provider schema would mean maintaining two shapes (oneOf for Gemini/OpenAI, flat for Anthropic), choosing per-dispatch which to send, and doubling the schema-test surface. The cost-benefit is wrong: the Go-side `ReconciliationAction` is already a flat struct ([reconcile.go:127-134](../internal/agent/reconcile.go#L127-L134)) with all variant-specific fields tagged `omitempty`, the apply switch already does per-kind validation, and the spec_reconciler prompt already documents per-kind requirements. The "loss of strict per-kind required fields at the API layer" is purely on the LLM input side; consumer code never relied on it.
+
+**Why this isn't a regression to "the model emits dedupe without canonical" (the bug DJ-098-era oneOf was preventing):** the original failure was strict-mode JSON enforcement gone permissive — `omitempty` on every Go field made the reflected schema treat everything as optional, so the model was free to produce empty actions. That issue is now addressed at three layers stacked together:
+
+1. The schema's `kind` enum still constrains the discriminator: the model can't emit a typo.
+2. The spec_reconciler prompt explicitly documents per-kind requirements (lines 36-38: *"emit it as `canonical`"*, *"emit the rejected decision as `loser`"*, etc.).
+3. The apply switch in `reconcile.go` validates per-kind and warns on mismatches (currently warns + skips; could promote to hard error if needed).
+
+So the structural defense against malformed actions is preserved, just reshuffled across layers.
+
+**Provider compatibility matrix:**
+
+| Provider | `oneOf` in JSON Schema |
+| --- | --- |
+| Anthropic forced tool-use input_schema | accepted (legacy) |
+| **Anthropic native `output_config.format`** | **rejected (current)** |
+| Gemini `responseJsonSchema` | accepted |
+| OpenAI `json_schema` strict | accepted |
+
+The flat shape works uniformly across all three providers.
+
+**What lands:**
+
+- [`buildReconciliationVerdictSchema`](../internal/agent/schemas.go) emits a single object schema for `actions[].items` instead of an `oneOf` of three variants.
+- [`TestReconciliationVerdictFlatSchema`](../internal/agent/schemas_reconcile_test.go) replaces the previous `TestReconciliationVerdictDiscriminatedSchema` — same shape of test, different assertions matching the new schema.
+- [`TestReconciliationVerdictSchema_NoOneOf`](../internal/agent/reconciliation_schema_test.go) walks the schema tree and asserts `oneOf` is absent at any nesting depth, locking in the cross-provider compatibility.
+
+**What stays the same:**
+
+- `ReconciliationAction` Go struct unchanged.
+- `reconcile.go` apply switch unchanged. Per-kind validation already lived there.
+- `spec_reconciler.md` prompt unchanged — already documents per-kind requirements.
+
+**Reversal criteria:** revert if (a) Anthropic adds `oneOf` support to `output_config.format.schema` AND (b) measurement shows the flat schema is producing more malformed actions than the discriminated-union shape did. Both conditions would have to hold; (a) without (b) means flatness is gratuitous but harmless, (b) without (a) means we have no provider-uniform alternative. Currently neither is true.
+
+**Reference:** triggered by `spec_reconciler` 400 in winplan session 20260507/1522/28-5d9ba2. Reverses the DJ-098-era oneOf decision specifically for Anthropic compatibility under DJ-108's native structured-output path. The "per-kind enforcement migrates to prompt + apply-time" posture matches the rest of the codebase's general pattern (most agent outputs aren't discriminated-union-validated at the schema layer either).
