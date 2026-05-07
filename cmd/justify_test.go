@@ -69,6 +69,12 @@ func TestJustifyAdversarialDispatch(t *testing.T) {
 			Counterproposal: "self-host alternative",
 		}},
 	}
+	research := agent.ResearchBrief{
+		Findings: []agent.Finding{{
+			Query:  "Does vendor X impose lock-in via proprietary APIs?",
+			Result: "Vendor X publishes an OSS export tool and a documented schema; portability is real.",
+		}},
+	}
 	defense := agent.AdversarialDefense{
 		JustificationBrief: agent.JustificationBrief{
 			Defense:                     "We choose this anyway because the operational savings outweigh the risk.",
@@ -77,7 +83,7 @@ func TestJustifyAdversarialDispatch(t *testing.T) {
 		},
 		PointByPointAddressed: []agent.AddressedConcern{{
 			ConcernSummary: "vendor lock-in",
-			Response:       "Mitigated by exit clause.",
+			Response:       "Mitigated by exit clause; the OSS export tool surfaced in research confirms portability.",
 			StillStands:    true,
 		}},
 		Verdict:        "held_up",
@@ -85,9 +91,10 @@ func TestJustifyAdversarialDispatch(t *testing.T) {
 	}
 
 	// Tagged responses so order doesn't matter and we can verify the
-	// challenger is invoked first regardless.
+	// challenger fires first, then researcher, then advocate.
 	mock := agent.NewMockExecutor(
 		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge), Model: "test"}},
+		agent.MockResponse{AgentID: "researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
 		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
 	)
 
@@ -95,28 +102,47 @@ func TestJustifyAdversarialDispatch(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NotNil(t, result.Challenger)
+	require.NotNil(t, result.Research)
 	require.NotNil(t, result.Adversarial)
 	assert.Nil(t, result.Brief)
 	assert.Equal(t, "held_up", result.Adversarial.Verdict)
 	assert.Equal(t, "vendor lock-in", result.Challenger.Concerns[0].Weakness)
+	require.Len(t, result.Research.Findings, 1)
+	assert.Contains(t, result.Research.Findings[0].Result, "OSS export tool")
 
-	// Markdown surfaces challenge, concerns, advocate response, verdict.
+	// Markdown surfaces challenge, concerns, research findings, advocate response, verdict.
 	assert.Contains(t, result.Markdown, "**Challenge:** What about vendor lock-in?")
 	assert.Contains(t, result.Markdown, "vendor lock-in")
-	assert.Contains(t, result.Markdown, "Mitigated by exit clause.")
+	assert.Contains(t, result.Markdown, "## Researcher's findings")
+	assert.Contains(t, result.Markdown, "OSS export tool")
+	assert.Contains(t, result.Markdown, "Mitigated by exit clause")
 	assert.Contains(t, result.Markdown, "Verdict: HELD UP")
 
-	// Two calls fired in order: challenger then advocate.
+	// Three calls fired in order: challenger, researcher, advocate.
 	calls := mock.Calls()
-	require.Len(t, calls, 2)
+	require.Len(t, calls, 3)
 	assert.Equal(t, "spec_challenger", calls[0].Def.ID)
-	assert.Equal(t, "spec_advocate", calls[1].Def.ID)
-	assert.Equal(t, "AdversarialDefense", calls[1].Def.OutputSchema)
+	assert.Equal(t, "researcher", calls[1].Def.ID)
+	assert.Equal(t, "spec_advocate", calls[2].Def.ID)
+	assert.Equal(t, "ResearchBrief", calls[1].Def.OutputSchema)
+	assert.Equal(t, "AdversarialDefense", calls[2].Def.OutputSchema)
 
-	// Advocate's user prompt includes the challenger's brief.
-	advocateUser := calls[1].Input.Messages[0].Content
+	// Researcher must have grounding enabled so its findings are
+	// drawn from current sources, not training data.
+	assert.True(t, calls[1].Def.Grounding, "researcher must run grounded")
+
+	// Researcher's user prompt includes the challenger's concerns.
+	researcherUser := calls[1].Input.Messages[0].Content
+	assert.Contains(t, researcherUser, "## Concerns to investigate")
+	assert.Contains(t, researcherUser, "vendor lock-in")
+
+	// Advocate's user prompt includes both challenger's brief and
+	// researcher's findings.
+	advocateUser := calls[2].Input.Messages[0].Content
 	assert.Contains(t, advocateUser, "## Challenger's concerns")
 	assert.Contains(t, advocateUser, "vendor lock-in")
+	assert.Contains(t, advocateUser, "## Researcher's findings")
+	assert.Contains(t, advocateUser, "OSS export tool")
 	assert.Contains(t, advocateUser, "## Challenge from user")
 }
 
@@ -128,6 +154,7 @@ func TestJustifyAdversarialBrokenDownSurfacesBreakingPoints(t *testing.T) {
 			Weakness: "scale assumptions wrong", Evidence: "evidence", Counterproposal: "use sharded approach",
 		}},
 	}
+	research := agent.ResearchBrief{Findings: []agent.Finding{{Query: "scale", Result: "evidence shows the chosen path saturates at 10k QPS"}}}
 	defense := agent.AdversarialDefense{
 		JustificationBrief: agent.JustificationBrief{Defense: "Concession: the approach doesn't hold at this scale."},
 		PointByPointAddressed: []agent.AddressedConcern{{
@@ -138,6 +165,7 @@ func TestJustifyAdversarialBrokenDownSurfacesBreakingPoints(t *testing.T) {
 	}
 	mock := agent.NewMockExecutor(
 		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge), Model: "test"}},
+		agent.MockResponse{AgentID: "researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
 		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
 	)
 
@@ -154,12 +182,14 @@ func TestJustifyAdversarialBrokenDownSurfacesBreakingPoints(t *testing.T) {
 func TestJustifyInvalidVerdictRejected(t *testing.T) {
 	fs := fixtureExplain(t)
 	challenge := agent.ChallengeBrief{Concerns: []agent.AdversarialConcern{{Weakness: "x"}}}
+	research := agent.ResearchBrief{Findings: []agent.Finding{{Query: "x", Result: "y"}}}
 	defense := agent.AdversarialDefense{
 		JustificationBrief: agent.JustificationBrief{Defense: "x"},
 		Verdict:            "maybe", // invalid
 	}
 	mock := agent.NewMockExecutor(
 		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge), Model: "test"}},
+		agent.MockResponse{AgentID: "researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
 		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
 	)
 

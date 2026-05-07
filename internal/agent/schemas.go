@@ -211,6 +211,13 @@ func init() {
 		ConditionsUnderWhichInvalid: []string{"a constraint change that would prompt revisiting this node"},
 	})
 
+	RegisterSchema("ResearchBrief", ResearchBrief{
+		Findings: []Finding{{
+			Query:  "the factual question raised by a challenger concern",
+			Result: "evidence-based analysis citing retrieved sources",
+		}},
+	})
+
 	RegisterSchema("ChallengeBrief", ChallengeBrief{
 		Concerns: []AdversarialConcern{{
 			Weakness:        "the specific weakness in the chosen approach",

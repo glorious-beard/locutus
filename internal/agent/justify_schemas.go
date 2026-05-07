@@ -35,6 +35,15 @@ type AddressedConcern struct {
 	StillStands    bool   `json:"still_stands"`
 }
 
+// ResearchBrief is the researcher's structured output for the
+// justify adversarial flow. Wraps a list of Findings (one per
+// challenger concern investigated) so strict-mode JSON schemas have
+// a struct root. Mirrors the council's Finding shape used in
+// PlanningState.ResearchResults.
+type ResearchBrief struct {
+	Findings []Finding `json:"findings"`
+}
+
 // AdversarialDefense extends JustificationBrief with the per-concern
 // rebuttal and a verdict. BreakingPoints is populated when the
 // advocate concedes that the concerns surfaced a real gap in the

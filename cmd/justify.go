@@ -23,15 +23,17 @@ type JustifyCmd struct {
 }
 
 // JustifyResult is the JSON-shaped output. Exactly one of Brief or
-// Adversarial is populated.
+// Adversarial is populated. Research is populated only on the
+// adversarial path, alongside Challenger and Adversarial.
 type JustifyResult struct {
-	ID          string                     `json:"id"`
-	Challenge   string                     `json:"challenge,omitempty"`
-	Brief       *agent.JustificationBrief  `json:"brief,omitempty"`
-	Challenger  *agent.ChallengeBrief      `json:"challenger,omitempty"`
-	Adversarial *agent.AdversarialDefense  `json:"adversarial,omitempty"`
-	Markdown    string                     `json:"markdown"`
-	SessionPath string                     `json:"session_path,omitempty"`
+	ID          string                    `json:"id"`
+	Challenge   string                    `json:"challenge,omitempty"`
+	Brief       *agent.JustificationBrief `json:"brief,omitempty"`
+	Challenger  *agent.ChallengeBrief     `json:"challenger,omitempty"`
+	Research    *agent.ResearchBrief      `json:"research,omitempty"`
+	Adversarial *agent.AdversarialDefense `json:"adversarial,omitempty"`
+	Markdown    string                    `json:"markdown"`
+	SessionPath string                    `json:"session_path,omitempty"`
 }
 
 func (c *JustifyCmd) Run(ctx context.Context, cli *CLI) error {
@@ -106,11 +108,12 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 		}
 		result.Brief = brief
 	} else {
-		ch, def, err := agent.RunJustifyAgainst(ctx, llm, in)
+		ch, research, def, err := agent.RunJustifyAgainst(ctx, llm, in)
 		if err != nil {
 			return nil, err
 		}
 		result.Challenger = ch
+		result.Research = research
 		result.Adversarial = def
 	}
 
@@ -120,7 +123,7 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 
 func renderJustifyMarkdown(r *JustifyResult) string {
 	if r.Adversarial != nil {
-		return render.JustifyAgainstMarkdown(r.ID, r.Challenge, r.Challenger, r.Adversarial, r.SessionPath)
+		return render.JustifyAgainstMarkdown(r.ID, r.Challenge, r.Challenger, r.Research, r.Adversarial, r.SessionPath)
 	}
 	if r.Brief != nil {
 		return render.JustifyMarkdown(r.ID, r.Brief, r.SessionPath)

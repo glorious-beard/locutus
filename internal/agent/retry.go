@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"time"
+
+	"github.com/chetan/locutus/internal/agent/adapters"
 )
 
 // RetryConfig controls retry behavior for agent calls.
@@ -54,18 +56,37 @@ func RunWithRetry(ctx context.Context, exec AgentExecutor, def AgentDef, input A
 			if notify != nil {
 				notify(attempt, err)
 			}
+			// Honor a provider-supplied Retry-After hint when one
+			// rode through on the rate-limit error. Sleeping for the
+			// exact duration the API asked for is materially better
+			// than guessing — it stops us from hammering early when
+			// the provider is in a measured cool-down, and stops us
+			// from overshooting when the provider would have served
+			// the next request quickly.
+			sleep := delay
+			source := "exponential"
+			var rlErr *adapters.RateLimitError
+			if errors.As(err, &rlErr) && rlErr.RetryAfter > 0 {
+				sleep = rlErr.RetryAfter
+				source = "retry-after"
+			}
 			slog.Debug("retrying agent call",
 				"agent", def.ID,
 				"attempt", attempt,
 				"max", cfg.MaxAttempts,
 				"error", err,
-				"delay", delay,
+				"delay", sleep,
+				"delay_source", source,
 			)
 			select {
 			case <-ctx.Done():
 				return nil, ErrTimeout
-			case <-time.After(delay):
+			case <-time.After(sleep):
 			}
+			// Advance the exponential schedule regardless of which
+			// source we used this round — if the next failure has
+			// no hint, we resume from a higher floor instead of
+			// resetting to BaseDelay.
 			delay *= 2
 			if delay > cfg.MaxDelay {
 				delay = cfg.MaxDelay

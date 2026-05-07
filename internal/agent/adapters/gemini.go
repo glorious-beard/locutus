@@ -125,6 +125,7 @@ func (g *GeminiAdapter) dispatch(ctx context.Context, req Request, contents []*g
 
 		text, reasoning, calls := splitGeminiContent(resp)
 		raw, _ := json.Marshal(resp)
+		citations := extractGeminiCitations(resp)
 
 		usage := geminiUsage(resp)
 		out.Model = resp.ModelVersion
@@ -141,7 +142,9 @@ func (g *GeminiAdapter) dispatch(ctx context.Context, req Request, contents []*g
 			InputTokens:    usage.in,
 			OutputTokens:   usage.out,
 			ThoughtsTokens: usage.thoughts,
+			Citations:      citations,
 		})
+		out.Citations = mergeCitations(out.Citations, citations)
 
 		if len(calls) == 0 {
 			out.Content = text
@@ -294,9 +297,16 @@ func dispatchGeminiTools(ctx context.Context, registry []ToolDef, calls []*genai
 
 // classifyGeminiError translates SDK errors into the neutral
 // sentinels the executor's retry layer pattern-matches. The genai
-// SDK surfaces 429s as a generic error containing the status text;
-// we string-match for the relevant patterns rather than coupling
-// to the SDK's internal error types.
+// SDK surfaces both 429s and 504s as generic errors carrying the
+// status text in the message; we string-match for the relevant
+// patterns rather than coupling to the SDK's internal error types.
+//
+// Server-side deadlines (504 / Status: DEADLINE_EXCEEDED) classify
+// as ErrTimeout — same sentinel as our local context timeout — so
+// the executor's fallback walk and RunWithRetry both fire. Without
+// this, a flaky preview-tier Gemini that exceeds its own server
+// deadline would produce a non-retryable wrapped error and the
+// agent would fail without trying its other model preferences.
 func classifyGeminiError(err error) error {
 	if err == nil {
 		return nil
@@ -305,7 +315,11 @@ func classifyGeminiError(err error) error {
 		return ErrTimeout
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "429") || strings.Contains(strings.ToLower(msg), "rate limit") || strings.Contains(strings.ToLower(msg), "resource_exhausted") {
+	lower := strings.ToLower(msg)
+	if strings.Contains(msg, "DEADLINE_EXCEEDED") || strings.Contains(lower, "deadline_exceeded") || strings.Contains(lower, "deadline expired") {
+		return ErrTimeout
+	}
+	if strings.Contains(msg, "429") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "resource_exhausted") {
 		return ErrRateLimit
 	}
 	return fmt.Errorf("gemini: %w", err)

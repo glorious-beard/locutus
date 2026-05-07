@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -111,6 +112,7 @@ func (a *OpenAIResponsesAdapter) dispatch(ctx context.Context, params responses.
 
 		text, reasoning, calls := splitOpenAIOutput(resp.Output)
 		raw, _ := json.Marshal(resp.Output)
+		citations := extractOpenAICitations(raw)
 
 		out.Model = string(resp.Model)
 		out.InputTokens = int(resp.Usage.InputTokens)
@@ -124,7 +126,9 @@ func (a *OpenAIResponsesAdapter) dispatch(ctx context.Context, params responses.
 			Message:      string(raw),
 			InputTokens:  int(resp.Usage.InputTokens),
 			OutputTokens: int(resp.Usage.OutputTokens),
+			Citations:    citations,
 		})
+		out.Citations = mergeCitations(out.Citations, citations)
 
 		if len(calls) == 0 {
 			out.Content = text
@@ -344,8 +348,15 @@ func classifyOpenAIError(err error) error {
 	}
 	var apiErr *openai.Error
 	if errors.As(err, &apiErr) {
-		if apiErr.StatusCode == http.StatusTooManyRequests {
-			return ErrRateLimit
+		switch apiErr.StatusCode {
+		case http.StatusTooManyRequests:
+			var hint time.Duration
+			if apiErr.Response != nil {
+				hint = parseRetryAfterSeconds(apiErr.Response.Header)
+			}
+			return &RateLimitError{RetryAfter: hint, cause: err}
+		case http.StatusGatewayTimeout:
+			return ErrTimeout
 		}
 	}
 	return fmt.Errorf("openai: %w", err)

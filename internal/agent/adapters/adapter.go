@@ -14,6 +14,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // Sentinel errors classify dispatch failures for the executor's
@@ -29,6 +33,61 @@ var (
 	ErrTimeout      = errors.New("generation timed out")
 	ErrIncompatible = errors.New("agent capabilities incompatible with provider")
 )
+
+// RateLimitError carries a provider's Retry-After hint when the 429
+// response included one. errors.Is(err, ErrRateLimit) still matches
+// (via the Is method below) so the executor's fallback walk and
+// RunWithRetry's retry-eligibility check both keep working without
+// changes. RunWithRetry additionally inspects RetryAfter and uses
+// that duration in place of its exponential backoff when the value
+// is non-zero — sleeping exactly as long as the provider asked for
+// is materially better than guessing.
+//
+// When the header is absent or unparseable, RetryAfter is zero and
+// the retry layer falls back to its baseline backoff schedule. The
+// genai SDK doesn't expose response headers through a typed error,
+// so the Gemini classifier returns plain ErrRateLimit instead of
+// this struct.
+type RateLimitError struct {
+	RetryAfter time.Duration
+	cause      error
+}
+
+func (e *RateLimitError) Error() string {
+	if e.RetryAfter > 0 {
+		return "rate limited (retry after " + e.RetryAfter.String() + ")"
+	}
+	return ErrRateLimit.Error()
+}
+
+// Is makes errors.Is(err, ErrRateLimit) return true so existing
+// retry-eligibility checks continue to recognize this as a
+// rate-limit failure.
+func (e *RateLimitError) Is(target error) bool {
+	return target == ErrRateLimit
+}
+
+// Unwrap exposes the underlying SDK error so adapter callers can
+// pattern-match on provider-typed errors when they need richer
+// detail than the sentinel surface provides.
+func (e *RateLimitError) Unwrap() error { return e.cause }
+
+// parseRetryAfterSeconds reads the Retry-After header and returns
+// the duration. Returns zero when the header is missing, non-
+// numeric (HTTP-date form is not supported — both Anthropic and
+// OpenAI use the seconds form per their docs as of 2026-05), or
+// non-positive.
+func parseRetryAfterSeconds(h http.Header) time.Duration {
+	v := h.Get("Retry-After")
+	if v == "" {
+		return 0
+	}
+	secs, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || secs <= 0 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
+}
 
 // Adapter is implemented by each provider-specific adapter
 // (Anthropic, Gemini, OpenAI Responses). Run executes one logical
@@ -62,9 +121,18 @@ const (
 // System prompts are passed as the first message with RoleSystem;
 // adapters split them out into provider-native system fields where
 // the API expects that shape (Anthropic, Gemini system_instruction).
+//
+// Cacheable marks this message's content as the trailing edge of a
+// cacheable prefix on providers that support explicit cache markers
+// (DJ-106). Adjacent same-role messages are merged into a single
+// API-level message; the cache_control marker is placed on the
+// last block flagged Cacheable. Other adapters ignore the flag —
+// Gemini caching uses a separate cachedContent resource, OpenAI's
+// Responses API caches identical prefixes server-side automatically.
 type Message struct {
-	Role    Role
-	Content string
+	Role      Role
+	Content   string
+	Cacheable bool
 }
 
 // ThinkingLevel is a coarse thinking-budget enum the executor
@@ -124,10 +192,11 @@ type Request struct {
 	// a Warn when both are set).
 	OutputSchema map[string]any
 
-	// Grounding requests provider-native search grounding. Anthropic
-	// has no native grounding through the SDK today; the adapter
-	// logs a Warn and proceeds ungrounded. Gemini attaches the
-	// GoogleSearch tool. OpenAI Responses attaches web_search_preview.
+	// Grounding requests provider-native search grounding. Each
+	// adapter attaches its provider's server-side search tool:
+	// Gemini GoogleSearch, OpenAI web_search_preview, Anthropic
+	// web_search_20250305. Provider-returned sources land on
+	// Round.Citations and Response.Citations.
 	Grounding bool
 
 	// Tools is the set of locutus-owned tools the model may dispatch.
@@ -183,6 +252,14 @@ type Response struct {
 	ThoughtsTokens int
 	TotalTokens    int
 
+	// Citations is the aggregate of provider-native search sources
+	// the model cited across the call (all rounds, deduped on URL).
+	// Empty when grounding was off or the model returned no sources.
+	// Surfaced separately from Rounds[].Citations so callers that
+	// don't care about per-round attribution can still inspect what
+	// the call grounded against.
+	Citations []Citation
+
 	// Rounds carries per-round captures across a multi-round tool-
 	// use loop. Single-round calls leave it nil and rely on the
 	// top-level Reasoning / Content / RawMessage fields. The
@@ -203,4 +280,23 @@ type Round struct {
 	InputTokens    int
 	OutputTokens   int
 	ThoughtsTokens int
+	// Citations are the provider-native search-grounding sources the
+	// model cited in this round. Populated by adapters whose provider
+	// returned grounding metadata (Gemini groundingMetadata, OpenAI
+	// url_citation annotations, Anthropic web_search_tool_result
+	// blocks). Empty when grounding was off or the model returned no
+	// sources.
+	Citations []Citation
+}
+
+// Citation is one provider-native search source surfaced from a
+// grounded call. URL is always populated; Title is best-effort
+// (Gemini and Anthropic always provide it; OpenAI sometimes omits).
+// Snippet is the cited excerpt where the provider returns one
+// (Anthropic web_search results carry encrypted_content / page text;
+// Gemini and OpenAI generally don't).
+type Citation struct {
+	URL     string `json:"url,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Snippet string `json:"snippet,omitempty"`
 }

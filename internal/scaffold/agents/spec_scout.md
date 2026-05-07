@@ -2,9 +2,9 @@
 id: spec_scout
 role: survey
 models:
-  - {provider: googleai, tier: strong}
-  - {provider: openai, tier: strong}
-  - {provider: anthropic, tier: strong}
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
+  - {provider: openai, tier: balanced}
 grounding: true
 output_schema: ScoutBrief
 ---

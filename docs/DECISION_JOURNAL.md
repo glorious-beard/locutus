@@ -2208,3 +2208,172 @@ The synthesizer (Approach refines) currently keeps a single agent with condition
 **Reversal criteria:** revert (1) auto-regen if stale-cache regeneration takes long enough that users prefer the explicit two-step (regenerate, then read) flow; the LLM call cost is real. Revert (2) location move if a workflow surfaces where teammates need the rendered narrative committed (e.g., reading on GitHub without running locutus). Revert (3) the archivist substantive rewrite if the longer summary turns out to drift from the events more often than the terse one did — the structural data inputs (Old/New values) make hallucination less likely than the rationale-only diet, but it's a measurement question, not a guaranteed win.
 
 **Reference:** depends on DJ-026 (layer-2 narrative pipeline), DJ-091 / DJ-073 (`.locutus/` for derived state), DJ-097 (rules belong in `.md`), DJ-102's `scaffold.LoadAgent` helper. Bridges from DJ-102's auto-history (`spec_refined` events with Old/New values) — without that structured payload, the substantive archivist would have nothing to chew on.
+
+## DJ-104: `scout_brief` Is a First-Class Citation Kind
+
+**Status:** shipped
+
+**Decision:** Add `scout_brief` to the `Citation.Kind` enum alongside `goals`, `doc`, `best_practice`, `spec_node`. Both spec elaborators (`spec_feature_elaborator.md`, `spec_strategy_elaborator.md`) drop the legacy rule that forbade citing the scout brief — *"if a fact came from the scout brief … do not fabricate a citation kind for it — find a `best_practice` or `goals` anchor that justifies the same conclusion"* — and gain explicit guidance to cite `scout_brief` when a decision rests on a fact the (grounded) scout retrieved. The new kind requires `excerpt` verbatim, mirroring `goals` and `doc`, so grounded provenance survives the survey artifact being gone.
+
+**Why:** the prior rule actively *severed* grounded provenance at the boundary between the scout (DJ-093, grounded) and the elaborators (ungrounded). When the scout's `technology_options` flagged a current major version or a vendor lifecycle shift, the elaborator was instructed to recast that grounded fact as a `best_practice` claim — which DJ-085 explicitly defines as a *"named precise best practice ('12-factor app: stateless processes' — not 'industry best practices')."* A version pin or vendor status is neither. The result was either (a) a vague best_practice citation that an architect_critic flag would catch under DJ-085 rule 6, or (b) the elaborator skipping the decision entirely. Either way, the system was discarding grounded provenance the scout had paid (in search-tool budget) to retrieve.
+
+**Why this isn't a re-introduction of the failures DJ-090's follow-up warned about:** that warning targeted *aspirational fields in LLM output schemas* — fields downstream code didn't consume, which created shape pressure on weaker models to fill them with degenerate content (the named precedent was the Span citation removal). DJ-104 does not add a field. It adds an enum value to an existing field that elaborators already populate. The shape pressure on the model is unchanged: the same `Citations []Citation` slot is filled with one more allowed kind. Models that have nothing scout-brief-derived to cite continue to cite `goals` / `doc` / `best_practice` / `spec_node` exactly as before — the new kind is opt-in by the model's content, not mandated by structure.
+
+**Why this doesn't trip DJ-093's reversal criterion (a):** DJ-093 reserved the right to revert grounding if scout output started "search-result-aggregation displacing engineering judgment," and was explicit that grounding is *"not a license to add output schema fields."* DJ-104 doesn't touch the scout's prompt, schema, or output shape — the scout brief is unchanged. What changes is downstream: an elaborator that *consumes* the brief is now allowed to cite it instead of laundering it. That puts more weight on the brief's existing fields (`technology_options`, `watch_outs`, `implicit_assumptions`) but doesn't ask the scout to produce more of them. Reversal criterion (a) was about scout *production* drift; this is consumption.
+
+**The strict-form choice (excerpt required):** `scout_brief` joins `goals` and `doc` in the excerpt-required tier rather than `best_practice` and `spec_node` in the excerpt-optional tier. Reasoning: an excerpt-optional `scout_brief` re-opens the laundering loophole — a model could cite "scout_brief: technology_options" as bare reference and lose the grounded text it was supposed to preserve. The whole point of the kind is that the verbatim scout claim travels with the decision durably; making excerpt optional defeats that. The cost is one extra rule the elaborator must follow, which is cheap relative to the laundering it prevents.
+
+**What lands:**
+
+- `spec.Citation` doc comment lists `scout_brief` and notes the excerpt requirement. The struct is unchanged — `Kind` is a string, `Excerpt` already exists — so no schema migration is needed for prior decisions.
+- Both elaborator scaffolds add the `scout_brief` row to the per-kind requirements list and replace the legacy "do not fabricate a citation kind" paragraph with positive guidance ("Prefer the most specific kind that fits…").
+- Render (`internal/render/spec.go`) needs no change — citation rendering is generic over `Kind`.
+- Reconciler (`internal/agent/reconcile.go`) needs no change — citations pass through untouched.
+- `TestElaboratorPromptsAllowScoutBriefCitations` in `internal/scaffold/scaffold_test.go` locks in the prompt-level change against accidental regression.
+
+**What stays the same:**
+
+- The scout's prompt, output schema (`ScoutBrief`), and grounding posture (DJ-093). The brief is an unchanged input to elaborators.
+- The other four citation kinds and their existing rules. `best_practice` still requires "named precise principle"; `goals` and `doc` still require excerpts.
+- DJ-085's denormalization model — citations live on the decision; they do not become pointers.
+- Existing decisions in `.borg/spec/` with `goals`/`doc`/`best_practice`/`spec_node` citations. Nothing about prior-authored content needs to change.
+
+**Reversal criteria:** revert if (a) elaborators in real council runs cite `scout_brief` for facts that aren't actually scout-derived (laundering in the other direction — using `scout_brief` as a synonym for "I don't have a real citation"), at which point the architect_critic's rule 6 needs sharpening to validate the cited excerpt actually appears in the scout brief; or (b) the strict excerpt requirement turns out to dramatically reduce `scout_brief` use in practice (model finds it easier to skip than to copy the verbatim text), suggesting either the prompt needs more instruction or the requirement should soften. Neither is structural; both are tunable in the existing files.
+
+**Reference:** extends DJ-085 (citation kinds), governed by DJ-090's follow-up (no aspirational fields) and DJ-093 (scout grounding's "shape unchanged" mandate). The architecture lesson — *grant grounding to discovery agents, propagate grounded provenance forward via citation rather than re-grounding every consumer* — is the same one that produced DJ-093 itself. DJ-104 closes the propagation step that DJ-093 left implicit.
+
+## DJ-105: Elaborator `decisions` Is API-Layer Required, Not Prompt-Layer Required
+
+**Status:** shipped
+
+**Decision:** Tighten both `RawFeatureProposal` and `RawStrategyProposal` so the strict-mode JSON schema requires `decisions` with `minItems=1`, and remove the contradicting "or omit `decisions` entirely" escape hatch from both elaborator scaffolds. Strict-mode-conformant providers (Gemini responseSchema, OpenAI json_schema strict, Anthropic forced tool-use) will now reject decision-less responses at the API layer; the executor's retry loop kicks in instead of the malformed proposal flowing through to reconcile and dying at the spec validator.
+
+**Why:** a `refine goals` run on the winplan project failed with six dangling-reference errors after two revise rounds — every error was "feature has no decisions; every feature must commit to at least one architectural choice." The session traces revealed two distinct pathologies that converged:
+
+1. *Decision-omitting outputs* (e.g., session call `0004-spec_feature_elaborator-feat-campaign-dashboard.yaml`): the model's thinking transcript planned two real decisions, then the final JSON emitted only `id`/`title`/`description` with no `decisions` field. `finishReason: STOP`, 14-second duration, 102 output tokens — the model voluntarily ended.
+2. *Mid-stream-redo-into-string-field* (e.g., session call `0035-spec_feature_elaborator-feat-win-calculator.yaml`): the model started emitting valid JSON, mid-stream realized it had spilled prose into the title field, wrote `"Wait, I shouldn't add prose. Let me start over"` and then a complete corrected JSON document — all captured *as part of the title string value*, with no escape from the structural commitment. Top-level object ended without `decisions`.
+
+Two contributing factors made the pathologies survivable in the pipeline:
+
+- The struct tag `Decisions []InlineDecisionProposal json:"decisions,omitempty"` made the field optional in the strict-mode schema. The reflector at [`internal/agent/schema.go`](../internal/agent/schema.go) computes the `required` array from `omitempty` tags via `RequiredFromJSONSchemaTags: false`, so the API contract didn't enforce presence.
+- The elaborator prompts carried mutually contradictory rules four lines apart: *"Every feature MUST have at least one inline decision"* and *"Emit real, complete inline decisions or omit `decisions` entirely (and reconsider whether the feature belongs)."* The second rule gave the model a permission slip the first rule denied. Under uncertainty, `gemini-3.1-pro-preview` repeatedly took the easier path.
+
+**Why API-layer enforcement, not post-receive validation:** strict-mode JSON schema rejection happens server-side at the provider, *before* a non-conformant response is returned to us. The executor's retry loop re-issues the call, and the model has to produce a conformant output to satisfy the API. Post-receive validation in the elaborator dispatch path would also work but is downstream of where the cost is paid: the model has already burned thinking tokens and output tokens on a malformed response, and the operator sees the failure as a soft error rather than an automatic retry. Schema enforcement is structural; post-receive validation is reactive.
+
+**Why this isn't a re-introduction of the failures DJ-090's follow-up warned about:** that warning targeted *aspirational fields in LLM output schemas* — fields downstream code didn't consume, which created shape pressure on weaker models to fill them with degenerate content (the named precedent was the Span citation removal). DJ-105 does not add a field. It tightens the constraint on a field that downstream code (reconciler, validator, render) already requires for the spec to be well-formed. The shape pressure is unchanged in cardinality; the API just stops accepting empty arrays where empty arrays were never going to survive the rest of the pipeline anyway.
+
+**What lands:**
+
+- `RawFeatureProposal.Decisions` and `RawStrategyProposal.Decisions` lose `omitempty` and gain `jsonschema:"minItems=1"`. The reflector emits `required: ["...", "decisions"]` and `decisions.minItems: 1` in the generated schema.
+- Both elaborator scaffolds delete the "or omit `decisions` entirely" clause and replace it with positive guidance: when a complete decision genuinely cannot be authored, emit a minimal "Defer architectural commitment" decision so the critic can route the feature/strategy for removal — but always emit a conformant response.
+- `TestRawProposalSchemasRequireDecisions` in [`internal/agent/raw_proposal_schema_test.go`](../internal/agent/raw_proposal_schema_test.go) locks in the schema requirement against accidental regression (e.g., someone re-introducing `omitempty`).
+- `TestElaboratorPromptsForbidDecisionsOmission` in [`internal/scaffold/scaffold_test.go`](../internal/scaffold/scaffold_test.go) locks in the prompt-level change.
+
+**What stays the same:**
+
+- The reconciler ([internal/agent/reconcile.go](../internal/agent/reconcile.go)) still passes `Citations` and `Decisions` through unchanged. The integrity validator catches dangling references as a defense-in-depth backstop, but the API-layer enforcement makes that path much rarer.
+- The architect's own `RawSpecProposal` shape (different from the elaborator's per-node shapes). The architect operates pre-fanout; this DJ scopes to the per-node elaborators only.
+- The acceptance_criteria field on RawFeatureProposal stays optional (`omitempty`). It's a quality-of-life field, not load-bearing for spec integrity.
+
+**Reversal criteria:** revert if (a) the strict schema causes legitimate retries to spiral on edge cases where a model genuinely cannot produce a decision (would surface as repeated retry failures on the same node — at which point the prompt needs better guidance on the "Defer architectural commitment" escape pattern, not relaxed schema); or (b) a future architecture genuinely needs decision-less proposal nodes (would mean the elaborator's contract has changed and this DJ should be replaced rather than relaxed). Neither is structural; both are addressable in the same files.
+
+**Reference:** governed by DJ-085 (decision-citation completeness), DJ-090's follow-up (no aspirational fields — and what that rule actually targets vs. what it doesn't). Companion to DJ-104 (citation-kind expansion). Distinct from the timeout / fallback bugs surfaced in the same session — `gemini`-side 504 misclassification and per-call timeout wrapping the entire fallback walk are real but separate concerns; the symptom user-visible from the failed run was DJ-105's pathology, not those.
+
+## DJ-106: User-Message Prompt Caching for Anthropic via `Cacheable` Flag
+
+**Status:** shipped
+
+**Decision:** The neutral `Message` type carried by `AgentInput` and `adapters.Request` gains a `Cacheable bool` field. Projection layers that build the user-side conversation emit the static prefix shared across council fanout (GOALS body, scout brief, outline) as a `Cacheable=true` message, followed by a `Cacheable=false` message carrying the per-call variation. The Anthropic adapter merges adjacent same-role messages into a single `MessageParam` with one `TextBlockParam` per source `Message`, attaching `CacheControl: NewCacheControlEphemeralParam()` to the block whose source was flagged `Cacheable`. Other adapters ignore the flag — Gemini caching uses a separate `cachedContent` resource API; OpenAI's Responses API caches identical prefixes server-side automatically without explicit markers.
+
+The cache_control marker on the system prompt was already in place ([`anthropic.go`](../internal/agent/adapters/anthropic.go#L82-L87) since DJ-099); DJ-106 extends caching to the much larger user-message prefix.
+
+**Why:** the spec-generation council's elaborator fanout (DJ-090) dispatches 15-25 calls per `refine goals` invocation, every one carrying the same ~3-5k tokens of GOALS + scout brief + outline as the prefix of its user message. With no user-message caching, the fanout pays input-token cost for that prefix on every call AND consumes TPM budget proportional to (prefix tokens × N calls). Anthropic's ephemeral prompt cache (5-minute TTL, ~10% input-token cost on cache reads) is a near-perfect match for fanout-shaped workloads where N parallel calls fire within seconds of each other:
+
+- **Cost:** the second-through-Nth call's static prefix bills at cache-read rates instead of full-input rates. For a 25-call fanout with a 4k-token static prefix, that's roughly 96k tokens shifted from full-cost to ~10% cost per refine.
+- **TPM pressure:** cached input tokens count differently against rate limits (per Anthropic docs as of May 2026), so the same fanout consumes less TPM budget — meaningful on lower-tier accounts where the council can otherwise saturate the bucket.
+- **Latency:** cache reads are faster than full prefix reprocessing, especially noticeable when the parallel batch hits the same node simultaneously.
+
+**Why a `Cacheable bool` per-Message field, not a richer cache-region API:** the projection layer already emits `[]Message` and the boundary between "static across fanout" and "varies per call" is a single break — for the elaborator, between the outline section and the per-target header. A boolean per message is the smallest API surface that captures the boundary. Richer designs (multiple cache regions, TTL hints, tool/system markers as separate fields) would lock in design choices that haven't been measured yet. The flag is additive and cheap to extend later if a future projection needs more than two regions.
+
+**Why grouping adjacent same-role messages, not preserving 1:1 Message→MessageParam:** Anthropic's API rejects consecutive same-role messages — alternation is required. More importantly, the cache marker's positional semantics ("everything in the request up to and including this block is the cacheable prefix") only work within a single message that holds multiple TextBlocks. A 1:1 mapping would split the prefix and the variation across two separate API messages, which makes the cache marker apply to a fragment that doesn't include the system prompt or any earlier content — defeating the purpose. Grouping is mandatory, not optional.
+
+The grouping path activates only when at least one input Message carries `Cacheable=true`; otherwise the per-Message MessageParam shape is preserved so callers that don't care about caching see no behavioral change.
+
+**Why now, not earlier:** the council fanout, the direct-SDK migration (DJ-099), and explicit cache markers on the system prompt all landed before today, but the user-message prefix wasn't getting cached because the projection layer concatenated GOALS + scout + outline + per-call target into a single `Message` content string. The boundary information was lost at the projection layer; the adapter had nothing to mark. DJ-106 plumbs the boundary through as a `Cacheable bool` on `Message` and lets the adapter act on it.
+
+**What lands:**
+
+- `agent.Message` and `adapters.Message`: new `Cacheable bool` field with comments explaining the cross-adapter behavior.
+- `executor.go` `buildAdapterRequest`: passes the flag from `AgentInput.Messages` through to `adapters.Request.Messages`.
+- `adapters/anthropic.go` `buildAnthropicMessages`: new grouping path triggered by `anyCacheable`; same-role runs merge into one `MessageParam` with multiple `TextBlockParam` blocks; cache_control set on Cacheable blocks via `NewCacheControlEphemeralParam`. Helpers `textBlockFromMessage`, `oneBlockMessageParam`, `anthropicMessageRole` factor the construction.
+- `projection.go` `projectElaborateOne`: now emits two `Message`s — `Cacheable=true` prefix (GOALS + scout brief + outline) and `Cacheable=false` suffix (per-call fanout target). The semantic content of the user message is unchanged; only its segmentation differs.
+- `TestBuildAnthropicMessages_CacheableMarksBlock` and `TestBuildAnthropicMessages_NoCacheableUnchanged` lock in the adapter behavior. `TestProjectElaborateOne_SplitsCacheableFromVariable` locks in the projection split.
+
+**What stays the same:**
+
+- The Gemini and OpenAI adapters. Gemini's `cachedContent` API is a separate workstream — it requires explicit cache resource creation/destruction with TTL management, which doesn't fit the interactive `refine goals` UX as cleanly. Defer until measurement justifies it. OpenAI's Responses API already does automatic prefix caching server-side; explicit markers would add complexity without clear benefit.
+- All other projections. Only `projectElaborateOne` (the per-feature/per-strategy elaborator) splits today. The cluster-finding projection ([`projection.go:226`](../internal/agent/projection.go#L226)) is a candidate for the same treatment when fanout-shape behavior shows up there in real runs; it's not free and shouldn't ship pre-emptively.
+- The system-prompt cache_control already in place since DJ-099. DJ-106 adds a second cache marker; Anthropic's API allows up to 4 per request, so we're well within budget.
+
+**Reversal criteria:** revert if (a) cached prefix invalidation patterns produce *worse* aggregate latency than the uncached path (would suggest the 5-minute TTL is mismatched to actual fanout cadence — possible if a single `refine goals` run takes >5 minutes between scout and elaborator fanout, in which case the cache expires before the fanout dispatches, but the second-through-Nth elaborator call within the fanout would still hit the cache, so net positive); or (b) a future projection needs to mark non-contiguous cacheable regions and the simple boolean shape becomes a structural blocker (in which case the field evolves to a richer cache-region API rather than disappearing). Neither is structural; both can be addressed in the same files.
+
+**Reference:** governed by the 2026-05 best-practice guidance (Anthropic ephemeral prompt cache: 5-min TTL, 1024-token minimum prefix, up to 4 markers per request, ~10% input cost on cache reads, billing/TPM accounting per the Anthropic Build documentation). Builds on DJ-099 (direct-SDK migration that exposed cache_control as a first-class API surface), DJ-090 (the per-node fanout that creates the caching opportunity), and DJ-099-era system-prompt caching (which added the first cache marker; DJ-106 adds the second). Distinct from the planned Anthropic Sonnet/Opus tier pricing review and from any future Gemini `cachedContent` integration — those are separate workstreams.
+
+## DJ-107: Council Model-Tier Audit + Anthropic-First Provider Order
+
+**Status:** shipped
+
+**Decision:** Three coordinated changes to agent frontmatter across the 32-agent council:
+
+1. **Tier downgrades on four agents.** `spec_feature_elaborator`, `spec_strategy_elaborator`, `spec_scout`, and `guide` move from strong → balanced. Strong tier is now reserved for `spec_architect` and `spec_reconciler` only.
+2. **Provider order flipped to anthropic-first** on every agent whose primary work is structured-output generation or critique (~25 of 32 agents). Cost-first ordering (`googleai → anthropic → openai`) is retained only for mechanical / cost-sensitive agents — `historian`, `monitor`, `convergence` — and for `spec_reconciler` which was already anthropic-first.
+3. **`cost_critic` gains `grounding: true`** with prompt guidance to use search for verifying current pricing/free-tier limits/vendor lifecycle, since training-data pricing ages quickly. Brings the count of grounded agents to three (`spec_scout`, `researcher`, `cost_critic`).
+
+**Why the tier downgrades:**
+
+The two elaborators are the council's biggest fanout (15-25 calls per `refine goals`). Per-feature / per-strategy elaboration is a medium-complexity strict-JSON task — committing on architectural shape with rationale, alternatives, and citations — not deep multi-step reasoning. Sonnet 4.6 (balanced) handles this shape well; Opus 4.7 / o3-pro / `gemini-3.1-pro-preview` (strong) are paying a substantial cost premium for a marginal capability premium that doesn't materially change output quality on this task. Combined with DJ-106's prompt caching, the cost compression on the elaborator fanout is the single biggest operational win in this set.
+
+`spec_scout` runs once per refine and produces a `ScoutBrief` (domain read + technology options + implicit assumptions + watch-outs). It needs grounding (per DJ-093) but doesn't need strong-tier reasoning — `gemini-3-flash-preview` supports grounding+schema together and is more stable under strict JSON than `gemini-3.1-pro-preview` (which exhibited the title-stuffing pathology in the winplan run that produced DJ-105). Downgrade is both a quality and cost win.
+
+`guide` is a conversational/narrative role; strong tier is paying for reasoning depth the agent doesn't use.
+
+**Why anthropic-first provider order on most agents:**
+
+Three observed-evidence reasons:
+
+1. The strict-JSON pathology that killed the winplan `refine goals` run (DJ-105) was on `gemini-3.1-pro-preview`. Putting Anthropic first for any agent with a non-trivial `output_schema` reduces exposure to that failure mode without removing Gemini as a fallback.
+2. With DJ-106 prompt caching on Anthropic, the cost differential between Anthropic and Gemini on cached fanout calls compresses significantly — the historical cost-first argument for `googleai-first` was load-bearing in 2023-2024 but is much weaker in 2026 with caching.
+3. With DJ-093/DJ-104 putting all grounded agents (`spec_scout`, `researcher`, now `cost_critic`) on grounding-capable models, the "Gemini first because Google has the strongest search index" argument also weakens — Anthropic and OpenAI both have native grounding now, and Sonnet's reasoning over retrieved content compensates for any modest search-quality gap.
+
+**Bias acknowledgment.** This audit was authored by Claude (Anthropic's model) and the recommendation to put Anthropic first carries a real bias surface that the operator (Chetan) flagged explicitly during review. Self-reported claims about Sonnet's strict-JSON reliability, reasoning quality on retrieved content, and synthesis prose quality are model-mediated and lack independent benchmark evidence in this conversation. The defensible evidence is narrower:
+
+- Concrete observation: `gemini-3.1-pro-preview` produced pathological JSON on specific elaborator calls in the winplan run (DJ-105).
+- Concrete observation: the `gemini-3-flash-preview` swap is a viable mitigation per the user's grounding+schema constraint analysis.
+- Conjecture (model-mediated, not benchmarked): Anthropic generally handles strict JSON more reliably than Gemini on the same workload.
+
+The third claim is the load-bearing one for "anthropic-first across the council," and it is the weakest link in the chain. The reversal criteria below treat it as such: if measurement contradicts the conjecture in real runs, the order flips back without ceremony.
+
+**What lands:**
+
+- 22 agents reordered to `anthropic-first` at balanced tier (analyst, architect_critic, archivist, backend_analyzer, cost_critic, critic, devops_critic, frontend_analyzer, gap_analyst, infra_analyzer, planner, preflight, refiner, remediator, reviewer, scout, spec_finding_clusterer, spec_outliner, sre_critic, stakeholder, synthesizer, validator).
+- `researcher` reordered to anthropic-first balanced (was googleai-first), grounding flag retained.
+- `rewriter` and `llm_judge` reordered to anthropic-first fast.
+- `spec_architect` reordered to anthropic → openai → googleai at strong tier (avoid `gemini-3.1-pro-preview` second on the largest schema in the system).
+- `spec_feature_elaborator`, `spec_strategy_elaborator` downgraded to anthropic-first balanced (S → B).
+- `spec_scout`, `guide` downgraded to anthropic-first balanced.
+- `cost_critic` gains `grounding: true` and a "Use Search to Verify Current Pricing" section in its prompt mirroring `spec_scout`'s sanity-check framing.
+
+**What stays the same:**
+
+- `historian`, `monitor`, `convergence` keep `googleai-first fast` ordering. These are mechanical / cost-sensitive roles where the bias-corrected logic still favors cost over quality, and the failure modes aren't strict-JSON-pathology-shaped.
+- `spec_reconciler` keeps its existing `anthropic → openai → googleai strong` ordering. Already correct.
+
+**Reversal criteria:**
+
+- Revert tier downgrades if balanced-tier elaborator output proves substantively shallower than strong-tier in real runs (would surface as repeat critic findings on rationale depth, named-principle imprecision, or alternative-list thinness). Concrete signal: `architect_critic` rule 6 firings increase materially after the downgrade.
+- Revert anthropic-first ordering if Anthropic-side rate-limit cascades become the dominant failure mode in production runs, suggesting the Anthropic Build tier ceiling is the binding constraint and `googleai-first` was load-balancing better than I credited.
+- Revert `cost_critic` grounding if the agent starts citing tangential pricing data (overfilling against DJ-093's reversal criterion (a)) — would suggest the prompt's "sanity check, not enumeration" framing needs sharpening rather than the flag being wrong.
+
+None of these are structural; all are addressable in agent frontmatter without code changes.
+
+**Reference:** governed by DJ-093 (grounding mandate) and its reversal criterion (a) for the cost_critic addition; DJ-099 (direct-SDK migration that made tier choice meaningful per-provider); DJ-105 (the strict-JSON pathology that motivated the anthropic-first lean); DJ-106 (prompt caching that compresses the cost-of-anthropic argument). Bias caveat: the operator flagged the model's self-favoring lean during the audit conversation — the reversal criteria above are written to honor measurement-driven correction rather than defending the recommendation against revision.

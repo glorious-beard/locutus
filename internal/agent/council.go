@@ -34,11 +34,12 @@ type AgentDef struct {
 	// "ScoutBrief", "RawSpecProposal"). Empty means free-form
 	// output.
 	OutputSchema string `yaml:"output_schema,omitempty"`
-	// Grounding requests provider-native search grounding when
-	// the resolved adapter supports it (Gemini GoogleSearch,
-	// OpenAI web_search_preview). Anthropic falls back to
-	// ungrounded with a Warn — the SDK doesn't expose web_search
-	// today.
+	// Grounding requests provider-native search grounding. Each
+	// adapter attaches its provider's server-side search tool:
+	// Gemini GoogleSearch, OpenAI web_search_preview, Anthropic
+	// web_search_20250305. Retrieved sources land on the call's
+	// Citations field (top-level and per-round) and propagate into
+	// the session trace.
 	Grounding bool `yaml:"grounding,omitempty"`
 	// Tools names tools this agent may invoke. Each must be
 	// registered in the Executor's ToolRegistry; resolution

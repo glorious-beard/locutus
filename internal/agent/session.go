@@ -208,6 +208,12 @@ type recordedCall struct {
 	OutputTokens   int               `yaml:"output_tokens,omitempty"`
 	ThoughtsTokens int               `yaml:"thoughts_tokens,omitempty"`
 	TotalTokens    int               `yaml:"total_tokens,omitempty"`
+	// Citations is the aggregate of provider-native search sources
+	// the call grounded against. Mirror of AgentOutput.Citations.
+	// Surfaced at the top level so single-round grounded calls (the
+	// common case for the researcher) emit citations without forcing
+	// a Rounds entry.
+	Citations []recordedCitation `yaml:"citations,omitempty"`
 	// Rounds is populated only for multi-round tool-use calls
 	// (Genkit's tool-dispatch loop drives multiple model invocations
 	// for one Generate call). Each entry records what the model
@@ -225,13 +231,22 @@ type recordedCall struct {
 // model's *ai.Message for that round (text + reasoning + tool_request
 // parts).
 type recordedRound struct {
-	Index          int    `yaml:"index"`
-	Reasoning      string `yaml:"reasoning,omitempty"`
-	Text           string `yaml:"text,omitempty"`
-	Message        string `yaml:"message,omitempty"`
-	InputTokens    int    `yaml:"input_tokens,omitempty"`
-	OutputTokens   int    `yaml:"output_tokens,omitempty"`
-	ThoughtsTokens int    `yaml:"thoughts_tokens,omitempty"`
+	Index          int                `yaml:"index"`
+	Reasoning      string             `yaml:"reasoning,omitempty"`
+	Text           string             `yaml:"text,omitempty"`
+	Message        string             `yaml:"message,omitempty"`
+	InputTokens    int                `yaml:"input_tokens,omitempty"`
+	OutputTokens   int                `yaml:"output_tokens,omitempty"`
+	ThoughtsTokens int                `yaml:"thoughts_tokens,omitempty"`
+	Citations      []recordedCitation `yaml:"citations,omitempty"`
+}
+
+// recordedCitation is one provider-native search source surfaced in
+// the session trace. Mirrors agent.Citation with YAML tags.
+type recordedCitation struct {
+	URL     string `yaml:"url,omitempty"`
+	Title   string `yaml:"title,omitempty"`
+	Snippet string `yaml:"snippet,omitempty"`
 }
 
 type recordedMessage struct {
@@ -425,10 +440,16 @@ func (h *callHandle) finishAt(out *AgentOutput, callErr error, completedAt time.
 		// just the final response. Single-round calls leave Rounds
 		// nil — the top-level Reasoning/Response/RawMessage already
 		// carry that round's data.
+		if len(out.Citations) > 0 {
+			h.call.Citations = make([]recordedCitation, len(out.Citations))
+			for i, c := range out.Citations {
+				h.call.Citations[i] = recordedCitation{URL: c.URL, Title: c.Title, Snippet: c.Snippet}
+			}
+		}
 		if len(out.Rounds) > 0 {
 			h.call.Rounds = make([]recordedRound, len(out.Rounds))
 			for i, r := range out.Rounds {
-				h.call.Rounds[i] = recordedRound{
+				rr := recordedRound{
 					Index:          r.Index,
 					Reasoning:      r.Reasoning,
 					Text:           r.Text,
@@ -437,6 +458,13 @@ func (h *callHandle) finishAt(out *AgentOutput, callErr error, completedAt time.
 					OutputTokens:   r.OutputTokens,
 					ThoughtsTokens: r.ThoughtsTokens,
 				}
+				if len(r.Citations) > 0 {
+					rr.Citations = make([]recordedCitation, len(r.Citations))
+					for j, c := range r.Citations {
+						rr.Citations[j] = recordedCitation{URL: c.URL, Title: c.Title, Snippet: c.Snippet}
+					}
+				}
+				h.call.Rounds[i] = rr
 			}
 		}
 	}

@@ -43,10 +43,12 @@ func JustifyMarkdown(nodeID string, brief *agent.JustificationBrief, sessionPath
 }
 
 // JustifyAgainstMarkdown renders the adversarial dialogue: the
-// challenge prompt, the challenger's concerns, and the advocate's
-// rebuttal. nodeID identifies the spec node; challenge is the
-// user-supplied prompt; sessionPath is optional.
-func JustifyAgainstMarkdown(nodeID, challenge string, ch *agent.ChallengeBrief, def *agent.AdversarialDefense, sessionPath string) string {
+// challenge prompt, the challenger's concerns, the researcher's
+// grounded findings, and the advocate's rebuttal. nodeID identifies
+// the spec node; challenge is the user-supplied prompt; research may
+// be nil when the researcher returned no findings; sessionPath is
+// optional.
+func JustifyAgainstMarkdown(nodeID, challenge string, ch *agent.ChallengeBrief, research *agent.ResearchBrief, def *agent.AdversarialDefense, sessionPath string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Justifying `%s`\n\n", nodeID)
 	fmt.Fprintf(&b, "**Challenge:** %s\n\n", challenge)
@@ -59,6 +61,17 @@ func JustifyAgainstMarkdown(nodeID, challenge string, ch *agent.ChallengeBrief, 
 		}
 		if c.Counterproposal != "" {
 			fmt.Fprintf(&b, "*Counterproposal:* %s\n\n", c.Counterproposal)
+		}
+	}
+
+	if research != nil && len(research.Findings) > 0 {
+		b.WriteString("## Researcher's findings\n\n")
+		for i, f := range research.Findings {
+			fmt.Fprintf(&b, "### %d. %s\n\n", i+1, f.Query)
+			if f.Result != "" {
+				b.WriteString(strings.TrimSpace(f.Result))
+				b.WriteString("\n\n")
+			}
 		}
 	}
 

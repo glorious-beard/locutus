@@ -23,9 +23,19 @@ const DefaultLLMCallTimeout = 15 * time.Minute
 // Message is one turn in the conversation handed to an agent. The
 // system prompt comes from AgentDef.SystemPrompt; Messages here
 // contain only the user-side turns produced by ProjectState.
+//
+// Cacheable, when set, marks the message as the tail of a cacheable
+// prefix on providers that support explicit cache markers (DJ-106:
+// Anthropic). Projection layers emit a Cacheable=true message for
+// the static prefix shared across council fanout (GOALS, scout
+// brief, outline) followed by a Cacheable=false message carrying
+// the per-call variation. The Anthropic adapter places a
+// cache_control marker on the Cacheable block; other adapters
+// ignore the flag.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Cacheable bool   `json:"cacheable,omitempty"`
 }
 
 // AgentInput carries the per-call data the executor needs to dispatch
@@ -48,20 +58,34 @@ type AgentOutput struct {
 	OutputTokens   int
 	ThoughtsTokens int
 	TotalTokens    int
-	Rounds         []GenerateRound
+	// Citations aggregates the provider-native search sources cited
+	// across all rounds of a grounded call. Empty when grounding was
+	// off or the model returned no sources. Mirrors
+	// adapters.Response.Citations.
+	Citations []Citation
+	Rounds    []GenerateRound
 }
 
 // GenerateRound captures one model invocation inside a multi-round
 // tool-use loop. Mirrors adapters.Round with the field names the
 // session recorder writes to YAML.
 type GenerateRound struct {
-	Index          int    `json:"index"`
-	Reasoning      string `json:"reasoning,omitempty"`
-	Text           string `json:"text,omitempty"`
-	Message        string `json:"message,omitempty"`
-	InputTokens    int    `json:"input_tokens,omitempty"`
-	OutputTokens   int    `json:"output_tokens,omitempty"`
-	ThoughtsTokens int    `json:"thoughts_tokens,omitempty"`
+	Index          int        `json:"index"`
+	Reasoning      string     `json:"reasoning,omitempty"`
+	Text           string     `json:"text,omitempty"`
+	Message        string     `json:"message,omitempty"`
+	InputTokens    int        `json:"input_tokens,omitempty"`
+	OutputTokens   int        `json:"output_tokens,omitempty"`
+	ThoughtsTokens int        `json:"thoughts_tokens,omitempty"`
+	Citations      []Citation `json:"citations,omitempty"`
+}
+
+// Citation is a provider-native search source the model cited in
+// one round of a grounded call. Mirrors adapters.Citation.
+type Citation struct {
+	URL     string `json:"url,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Snippet string `json:"snippet,omitempty"`
 }
 
 // Sentinel errors for retry and timeout classification. Aliased
@@ -258,10 +282,16 @@ func outputFromResponse(resp *adapters.Response, model string) *AgentOutput {
 	out.OutputTokens = resp.OutputTokens
 	out.ThoughtsTokens = resp.ThoughtsTokens
 	out.TotalTokens = resp.TotalTokens
+	if len(resp.Citations) > 0 {
+		out.Citations = make([]Citation, len(resp.Citations))
+		for i, c := range resp.Citations {
+			out.Citations[i] = Citation{URL: c.URL, Title: c.Title, Snippet: c.Snippet}
+		}
+	}
 	if len(resp.Rounds) > 1 {
 		out.Rounds = make([]GenerateRound, len(resp.Rounds))
 		for i, r := range resp.Rounds {
-			out.Rounds[i] = GenerateRound{
+			gr := GenerateRound{
 				Index:          r.Index,
 				Reasoning:      r.Reasoning,
 				Text:           r.Text,
@@ -270,6 +300,13 @@ func outputFromResponse(resp *adapters.Response, model string) *AgentOutput {
 				OutputTokens:   r.OutputTokens,
 				ThoughtsTokens: r.ThoughtsTokens,
 			}
+			if len(r.Citations) > 0 {
+				gr.Citations = make([]Citation, len(r.Citations))
+				for j, c := range r.Citations {
+					gr.Citations[j] = Citation{URL: c.URL, Title: c.Title, Snippet: c.Snippet}
+				}
+			}
+			out.Rounds[i] = gr
 		}
 	}
 	return out
@@ -289,8 +326,9 @@ func buildAdapterRequest(def AgentDef, input AgentInput, pick *ResolvedModel, re
 	}
 	for _, m := range input.Messages {
 		req.Messages = append(req.Messages, adapters.Message{
-			Role:    adapters.Role(m.Role),
-			Content: m.Content,
+			Role:      adapters.Role(m.Role),
+			Content:   m.Content,
+			Cacheable: m.Cacheable,
 		})
 	}
 	if def.OutputSchema != "" {

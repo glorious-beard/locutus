@@ -12,6 +12,60 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestElaboratorPromptsAllowScoutBriefCitations locks in DJ-104:
+// the feature and strategy elaborator scaffolds must list
+// `scout_brief` as an allowed citation kind alongside the original
+// four, and must not retain the legacy "do not fabricate a citation
+// kind for it" instruction that severed grounded provenance from
+// elaborator decisions.
+func TestElaboratorPromptsAllowScoutBriefCitations(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	for _, file := range []string{
+		".borg/agents/spec_feature_elaborator.md",
+		".borg/agents/spec_strategy_elaborator.md",
+	} {
+		body, err := fsys.ReadFile(file)
+		require.NoError(t, err, "read %s", file)
+		text := string(body)
+
+		assert.Contains(t, text, "scout_brief",
+			"%s should list scout_brief as an allowed citation kind", file)
+		assert.NotContains(t, text, "do not fabricate a citation kind for it",
+			"%s should not retain the legacy anti-grounding rule that forced scout-derived facts into best_practice citations", file)
+	}
+}
+
+// TestElaboratorPromptsForbidDecisionsOmission locks in DJ-105: the
+// feature and strategy elaborator prompts must NOT carry the legacy
+// "or omit `decisions` entirely" escape hatch that contradicted the
+// "every feature/strategy MUST have at least one inline decision"
+// mandate four lines later. The contradiction (combined with the
+// schema's omitempty on Decisions) gave preview-tier models like
+// gemini-3.1-pro-preview a permission slip to emit decision-less
+// outputs that passed strict-mode validation at the API layer but
+// failed the spec-validator at the persist layer, killing
+// `refine goals` runs.
+func TestElaboratorPromptsForbidDecisionsOmission(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	for _, file := range []string{
+		".borg/agents/spec_feature_elaborator.md",
+		".borg/agents/spec_strategy_elaborator.md",
+	} {
+		body, err := fsys.ReadFile(file)
+		require.NoError(t, err, "read %s", file)
+		text := string(body)
+
+		assert.NotContains(t, text, "or omit `decisions` entirely",
+			"%s must not authorize omitting the decisions array; that contradicts the 'every feature/strategy MUST have at least one inline decision' mandate", file)
+		assert.NotContains(t, text, "omit `decisions` entirely",
+			"%s must not carry any phrasing of the decisions-omission escape hatch", file)
+	}
+}
+
 func TestScaffoldCreatesDirectories(t *testing.T) {
 	fsys := specio.NewMemFS()
 	err := scaffold.Scaffold(fsys, "test-project")

@@ -2,8 +2,8 @@
 id: archivist
 role: history
 models:
-  - {provider: googleai, tier: balanced}
   - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
   - {provider: openai, tier: balanced}
 ---
 

@@ -33,11 +33,16 @@ type Alternative struct {
 
 // Citation is one durable reference backing a decision: a span of
 // GOALS.md, a feature document the user imported, a named engineering
-// best practice ("12-factor app: stateless processes"), or another spec
-// node. Excerpt holds the verbatim text when relevant so the citation
-// survives the source file being moved or rewritten.
+// best practice ("12-factor app: stateless processes"), another spec
+// node, or a fact lifted from the scout brief (DJ-104). Excerpt holds
+// the verbatim text when relevant so the citation survives the source
+// file being moved or rewritten.
 type Citation struct {
-	// Kind is one of "goals", "doc", "best_practice", "spec_node".
+	// Kind is one of "goals", "doc", "best_practice", "spec_node",
+	// "scout_brief". The scout_brief variant requires Excerpt — the
+	// scout's grounded output is the load-bearing source for that
+	// citation, and the verbatim copy keeps the provenance durable
+	// even after the survey artifact is gone.
 	Kind string `json:"kind" yaml:"kind"`
 	// Reference identifies the source: a path ("GOALS.md",
 	// "docs/dashboard.md"), a named principle ("12-factor app: stateless

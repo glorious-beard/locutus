@@ -2,8 +2,8 @@
 id: rewriter
 role: synthesis
 models:
-  - {provider: googleai, tier: fast}
   - {provider: anthropic, tier: fast}
+  - {provider: googleai, tier: fast}
   - {provider: openai, tier: fast}
 output_schema: RewriteResult
 ---

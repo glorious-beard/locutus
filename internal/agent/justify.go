@@ -25,6 +25,11 @@ You receive:
 - GOALS.md (verbatim) under "## Goals".
 - (Optional) The user's challenge prompt under "## Challenge from user".
 - (Optional) The challenger's brief under "## Challenger's concerns".
+- (Optional) Researcher's findings under "## Researcher's findings".
+  When present, treat these as the load-bearing source of facts —
+  they were produced by a grounded research pass and supersede your
+  training-data recall on the questions they cover. Cite them
+  explicitly when addressing the corresponding concerns.
 
 Write a 2-4 paragraph defense in plain prose. Cover:
 1. What problem this node solves and which goal-clauses motivate it.
@@ -58,6 +63,49 @@ breaking_points with the specific gaps that need follow-up.
 
 Respond with valid JSON matching the supplied schema.`
 
+// researcherSystemPrompt is the justify-flow researcher's instruction
+// set. Inlined for the same reason advocate/challenger are inlined —
+// `locutus justify --against` works on any project regardless of
+// whether the user has refreshed `.borg/agents/researcher.md`. Mirrors
+// the council researcher's mandate (evidence-based, neutral, no
+// advocacy) but is scoped to the challenger's concerns about a single
+// spec node.
+const researcherSystemPrompt = `You are a research investigator working alongside a spec
+advocate and a spec challenger. The challenger has flagged
+weaknesses in a specific spec node; your job is to investigate
+those concerns with evidence, so the advocate's response addresses
+reality rather than its own training data.
+
+You are a neutral expert witness, not a participant in the debate.
+Your job is to make claims verifiable.
+
+You have web search available for this call. Use it to verify
+version numbers, vendor status, current best-practice positions,
+and any factual claim the challenger has raised that benefits from
+checking against current material rather than your training data.
+
+You receive:
+- The full node content under "## Node under review".
+- GOALS.md (verbatim) under "## Goals".
+- The user's challenge prompt under "## Challenge".
+- The challenger's concerns under "## Concerns to investigate".
+
+For each concern, produce a Finding object:
+- query: the specific factual question this concern raises.
+- result: evidence-based analysis citing concrete data —
+  version numbers, benchmarks, vendor positions, documented
+  behavior. Cite retrieved sources where you used search. When
+  evidence is insufficient, say "insufficient evidence to
+  determine this" rather than speculating.
+
+Skip concerns that are pure judgment calls with no factual
+component (e.g., "this is over-engineered"). Investigate only
+concerns where facts can inform the dispute. An empty Findings
+list is a valid response when no concern admits factual
+investigation.
+
+Respond with valid JSON matching the supplied schema.`
+
 // challengerSystemPrompt is the spec challenger's instruction set.
 const challengerSystemPrompt = `You are the spec challenger. A user has flagged a possible weakness
 in a specific spec node and wants you to formulate the strongest
@@ -86,11 +134,12 @@ Respond with valid JSON matching the supplied schema.`
 // render.ExplainNode + readGoals; kept as a separate struct so tests
 // can fabricate them without touching the FS.
 type JustifyInputs struct {
-	NodeID         string
-	NodeMarkdown   string
-	GoalsBody      string
-	Challenge      string
-	ChallengerOut  *ChallengeBrief
+	NodeID        string
+	NodeMarkdown  string
+	GoalsBody     string
+	Challenge     string
+	ChallengerOut *ChallengeBrief
+	ResearcherOut *ResearchBrief
 }
 
 // RunJustify dispatches the spec_advocate agent against the rendered
@@ -120,16 +169,60 @@ func RunJustify(ctx context.Context, exec AgentExecutor, in JustifyInputs) (*Jus
 	return &out, nil
 }
 
-// RunJustifyAgainst dispatches the challenger first, then the
-// advocate with the challenger's brief, returning the adversarial
-// defense. The challenge string MUST be non-empty; an empty one is a
-// programming error caught by the cmd layer.
-func RunJustifyAgainst(ctx context.Context, exec AgentExecutor, in JustifyInputs) (*ChallengeBrief, *AdversarialDefense, error) {
+// RunResearch dispatches the grounded researcher against the
+// challenger's concerns. The caller must populate in.ChallengerOut
+// (the researcher needs concerns to investigate); an empty challenge
+// or challenger output is a programming error.
+//
+// Grounding is requested via AgentDef.Grounding so the executor
+// attaches provider-native search (Gemini GoogleSearch, OpenAI
+// web_search_preview, Anthropic web_search_20250305). Findings may be
+// empty when the challenger's concerns are pure judgment calls with
+// no factual component — that is an allowed outcome, not an error.
+func RunResearch(ctx context.Context, exec AgentExecutor, in JustifyInputs) (*ResearchBrief, error) {
+	if in.NodeMarkdown == "" {
+		return nil, fmt.Errorf("justify: empty node content for %q", in.NodeID)
+	}
 	if in.Challenge == "" {
-		return nil, nil, fmt.Errorf("justify: empty challenge")
+		return nil, fmt.Errorf("justify: empty challenge")
+	}
+	if in.ChallengerOut == nil || len(in.ChallengerOut.Concerns) == 0 {
+		return nil, fmt.Errorf("justify: research requires challenger concerns")
+	}
+
+	def := AgentDef{
+		ID:           "researcher",
+		SystemPrompt: researcherSystemPrompt,
+		OutputSchema: "ResearchBrief",
+		Grounding:    true,
+	}
+	user := buildResearcherUserMessage(in)
+	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
+
+	var brief ResearchBrief
+	if err := RunInto(WithRole(ctx, "research"), exec, def, input, &brief); err != nil {
+		return nil, fmt.Errorf("justify: researcher dispatch: %w", err)
+	}
+	return &brief, nil
+}
+
+// RunJustifyAgainst dispatches the challenger, then the researcher
+// (grounded) on the challenger's concerns, then the advocate with
+// both upstream outputs. Returns the structured outputs from each
+// step so the caller can render the full adversarial dialogue.
+//
+// The research hop puts retrieved facts into the advocate's context
+// rather than letting the advocate confabulate from training data.
+// It mirrors the council's critic → researcher → planner pattern.
+//
+// The challenge string MUST be non-empty; an empty one is a
+// programming error caught by the cmd layer.
+func RunJustifyAgainst(ctx context.Context, exec AgentExecutor, in JustifyInputs) (*ChallengeBrief, *ResearchBrief, *AdversarialDefense, error) {
+	if in.Challenge == "" {
+		return nil, nil, nil, fmt.Errorf("justify: empty challenge")
 	}
 	if in.NodeMarkdown == "" {
-		return nil, nil, fmt.Errorf("justify: empty node content for %q", in.NodeID)
+		return nil, nil, nil, fmt.Errorf("justify: empty node content for %q", in.NodeID)
 	}
 
 	challengeDef := AgentDef{
@@ -142,14 +235,22 @@ func RunJustifyAgainst(ctx context.Context, exec AgentExecutor, in JustifyInputs
 
 	var challenge ChallengeBrief
 	if err := RunInto(WithRole(ctx, "challenge"), exec, challengeDef, challengeInput, &challenge); err != nil {
-		return nil, nil, fmt.Errorf("justify: challenger dispatch: %w", err)
+		return nil, nil, nil, fmt.Errorf("justify: challenger dispatch: %w", err)
 	}
 	if len(challenge.Concerns) == 0 {
-		return &challenge, nil, fmt.Errorf("justify: challenger returned no concerns for %q", in.NodeID)
+		return &challenge, nil, nil, fmt.Errorf("justify: challenger returned no concerns for %q", in.NodeID)
 	}
 
-	advocateIn := in
-	advocateIn.ChallengerOut = &challenge
+	researchIn := in
+	researchIn.ChallengerOut = &challenge
+
+	research, err := RunResearch(ctx, exec, researchIn)
+	if err != nil {
+		return &challenge, nil, nil, err
+	}
+
+	advocateIn := researchIn
+	advocateIn.ResearcherOut = research
 
 	advocateDef := AgentDef{
 		ID:           "spec_advocate",
@@ -161,15 +262,15 @@ func RunJustifyAgainst(ctx context.Context, exec AgentExecutor, in JustifyInputs
 
 	var defense AdversarialDefense
 	if err := RunInto(WithRole(ctx, "justification"), exec, advocateDef, advocateInput, &defense); err != nil {
-		return &challenge, nil, fmt.Errorf("justify: advocate dispatch: %w", err)
+		return &challenge, research, nil, fmt.Errorf("justify: advocate dispatch: %w", err)
 	}
 	if defense.Defense == "" {
-		return &challenge, &defense, fmt.Errorf("justify: advocate returned empty defense for %q", in.NodeID)
+		return &challenge, research, &defense, fmt.Errorf("justify: advocate returned empty defense for %q", in.NodeID)
 	}
 	if !validVerdict(defense.Verdict) {
-		return &challenge, &defense, fmt.Errorf("justify: advocate returned invalid verdict %q (want held_up|partially_held_up|broke_down)", defense.Verdict)
+		return &challenge, research, &defense, fmt.Errorf("justify: advocate returned invalid verdict %q (want held_up|partially_held_up|broke_down)", defense.Verdict)
 	}
-	return &challenge, &defense, nil
+	return &challenge, research, &defense, nil
 }
 
 func buildAdvocateUserMessage(in JustifyInputs) string {
@@ -183,6 +284,9 @@ func buildAdvocateUserMessage(in JustifyInputs) string {
 	if in.ChallengerOut != nil && len(in.ChallengerOut.Concerns) > 0 {
 		parts = append(parts, "## Challenger's concerns\n\n"+formatConcerns(in.ChallengerOut.Concerns))
 	}
+	if in.ResearcherOut != nil && len(in.ResearcherOut.Findings) > 0 {
+		parts = append(parts, "## Researcher's findings\n\n"+formatFindings(in.ResearcherOut.Findings))
+	}
 	return joinSections(parts)
 }
 
@@ -195,11 +299,31 @@ func buildChallengerUserMessage(in JustifyInputs) string {
 	return joinSections(parts)
 }
 
+func buildResearcherUserMessage(in JustifyInputs) string {
+	parts := []string{"## Node under review\n\n" + in.NodeMarkdown}
+	if in.GoalsBody != "" {
+		parts = append(parts, "## Goals\n\n"+in.GoalsBody)
+	}
+	parts = append(parts, "## Challenge\n\n"+in.Challenge)
+	if in.ChallengerOut != nil && len(in.ChallengerOut.Concerns) > 0 {
+		parts = append(parts, "## Concerns to investigate\n\n"+formatConcerns(in.ChallengerOut.Concerns))
+	}
+	return joinSections(parts)
+}
+
 func formatConcerns(concerns []AdversarialConcern) string {
 	out := ""
 	for i, c := range concerns {
 		out += fmt.Sprintf("%d. **Weakness:** %s\n   **Evidence:** %s\n   **Counterproposal:** %s\n\n",
 			i+1, c.Weakness, c.Evidence, c.Counterproposal)
+	}
+	return out
+}
+
+func formatFindings(findings []Finding) string {
+	out := ""
+	for i, f := range findings {
+		out += fmt.Sprintf("%d. **Query:** %s\n   **Result:** %s\n\n", i+1, f.Query, f.Result)
 	}
 	return out
 }

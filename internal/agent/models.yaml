@@ -33,48 +33,48 @@ providers:
       model: claude-haiku-4-5-20251001
       max_output_tokens: 8192
       thinking: off
-      concurrent_requests: 5
+      concurrent_requests: 10
     balanced:
       model: claude-sonnet-4-6
       max_output_tokens: 16384
       thinking: on
-      concurrent_requests: 4
+      concurrent_requests: 12
     strong:
       model: claude-opus-4-7
       max_output_tokens: 32768
       thinking: high
-      concurrent_requests: 3
+      concurrent_requests: 8
 
   googleai:
     fast:
       model: gemini-3.1-flash-lite-preview
       max_output_tokens: 16384
       thinking: off
-      concurrent_requests: 4
+      concurrent_requests: 10
     balanced:
       model: gemini-3-flash-preview
       max_output_tokens: 32768
       thinking: on
-      concurrent_requests: 4
+      concurrent_requests: 12
     strong:
       model: gemini-3.1-pro-preview
       max_output_tokens: 65536
       thinking: high
-      concurrent_requests: 2
+      concurrent_requests: 8
 
   openai:
     fast:
       model: gpt-5-mini
       max_output_tokens: 8192
       thinking: off
-      concurrent_requests: 5
+      concurrent_requests: 10
     balanced:
       model: gpt-5
       max_output_tokens: 16384
       thinking: on
-      concurrent_requests: 4
+      concurrent_requests: 12
     strong:
       model: o3-pro
       max_output_tokens: 32768
       thinking: high
-      concurrent_requests: 3
+      concurrent_requests: 8

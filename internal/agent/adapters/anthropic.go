@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -116,15 +117,13 @@ func (a *AnthropicAdapter) Run(ctx context.Context, req Request) (*Response, err
 	}
 
 	if req.Grounding {
-		// anthropic-sdk-go doesn't expose web_search for client-side
-		// dispatch yet. Treat as a routing error: the agent asked
-		// for grounding and this preference can't deliver it. The
-		// executor falls back to the next preference (typically
-		// googleai or openai with web_search_preview); a deployer
-		// who pinned anthropic-only with grounding=true sees a
-		// clear failure rather than a silently ungrounded run.
-		return nil, fmt.Errorf("%w: anthropic SDK does not expose web_search (model=%s)",
-			ErrIncompatible, req.Model)
+		// Server-side web_search tool. Anthropic returns search hits
+		// as web_search_tool_result content blocks; extractAnthropic-
+		// Citations flattens those (and any text-block citations
+		// referencing them) into Round.Citations.
+		params.Tools = append(params.Tools, anthropicsdk.ToolUnionParam{
+			OfWebSearchTool20250305: &anthropicsdk.WebSearchTool20250305Param{},
+		})
 	}
 
 	return a.dispatch(ctx, params, req, useForcedSchemaTool)
@@ -153,6 +152,7 @@ func (a *AnthropicAdapter) dispatch(ctx context.Context, params anthropicsdk.Mes
 
 		text, reasoning, toolUses := splitContent(msg.Content)
 		raw, _ := json.Marshal(msg.Content)
+		citations := extractAnthropicCitations(raw)
 
 		out.Rounds = append(out.Rounds, Round{
 			Index:        round,
@@ -161,7 +161,9 @@ func (a *AnthropicAdapter) dispatch(ctx context.Context, params anthropicsdk.Mes
 			Message:      string(raw),
 			InputTokens:  int(msg.Usage.InputTokens),
 			OutputTokens: int(msg.Usage.OutputTokens),
+			Citations:    citations,
 		})
+		out.Citations = mergeCitations(out.Citations, citations)
 
 		// Forced schema-tool path: extract the tool_use Input as
 		// the JSON content. No second round; the model already
@@ -226,17 +228,82 @@ func finalizeRounds(out *Response) *Response {
 // MessageParam shape. RoleSystem is not handled here — the executor
 // places the system prompt in the System field, not the Messages
 // list.
+//
+// DJ-106: when ANY message in `in` carries Cacheable=true, adjacent
+// same-role messages are merged into a single MessageParam with one
+// TextBlock per Message. The Cacheable=true block receives a
+// cache_control marker so the API caches everything up to and
+// including it. When no Cacheable hint is set on any input, the
+// per-Message MessageParam shape is preserved (keeps existing
+// caller behavior unchanged).
 func buildAnthropicMessages(in []Message) []anthropicsdk.MessageParam {
-	out := make([]anthropicsdk.MessageParam, 0, len(in))
-	for _, m := range in {
-		switch m.Role {
-		case RoleAssistant:
-			out = append(out, anthropicsdk.NewAssistantMessage(anthropicsdk.NewTextBlock(m.Content)))
-		default: // user / system-as-user
-			out = append(out, anthropicsdk.NewUserMessage(anthropicsdk.NewTextBlock(m.Content)))
+	if !anyCacheable(in) {
+		out := make([]anthropicsdk.MessageParam, 0, len(in))
+		for _, m := range in {
+			out = append(out, oneBlockMessageParam(m))
 		}
+		return out
+	}
+
+	// Group runs of adjacent same-role messages into a single
+	// MessageParam with N TextBlocks. The cache marker on a
+	// Cacheable block applies positionally, so the grouping must
+	// preserve order within a role.
+	var out []anthropicsdk.MessageParam
+	i := 0
+	for i < len(in) {
+		role := in[i].Role
+		j := i
+		var blocks []anthropicsdk.ContentBlockParamUnion
+		for j < len(in) && in[j].Role == role {
+			blocks = append(blocks, textBlockFromMessage(in[j]))
+			j++
+		}
+		out = append(out, anthropicsdk.MessageParam{
+			Role:    anthropicMessageRole(role),
+			Content: blocks,
+		})
+		i = j
 	}
 	return out
+}
+
+func anyCacheable(in []Message) bool {
+	for _, m := range in {
+		if m.Cacheable {
+			return true
+		}
+	}
+	return false
+}
+
+// textBlockFromMessage constructs a ContentBlockParamUnion holding a
+// TextBlockParam, with cache_control set when the source message is
+// Cacheable. Used by the multi-block grouping path.
+func textBlockFromMessage(m Message) anthropicsdk.ContentBlockParamUnion {
+	block := anthropicsdk.TextBlockParam{Text: m.Content}
+	if m.Cacheable {
+		block.CacheControl = anthropicsdk.NewCacheControlEphemeralParam()
+	}
+	return anthropicsdk.ContentBlockParamUnion{OfText: &block}
+}
+
+// oneBlockMessageParam preserves the historical 1-Message → 1-Param
+// shape used when no Cacheable hint is present anywhere in the
+// input. Avoids gratuitous structural changes for callers that
+// don't care about caching.
+func oneBlockMessageParam(m Message) anthropicsdk.MessageParam {
+	if m.Role == RoleAssistant {
+		return anthropicsdk.NewAssistantMessage(anthropicsdk.NewTextBlock(m.Content))
+	}
+	return anthropicsdk.NewUserMessage(anthropicsdk.NewTextBlock(m.Content))
+}
+
+func anthropicMessageRole(r Role) anthropicsdk.MessageParamRole {
+	if r == RoleAssistant {
+		return anthropicsdk.MessageParamRoleAssistant
+	}
+	return anthropicsdk.MessageParamRoleUser
 }
 
 // buildAnthropicTools translates request tools + (optionally) the
@@ -373,8 +440,15 @@ func classifyAnthropicError(err error) error {
 	}
 	var apiErr *anthropicsdk.Error
 	if errors.As(err, &apiErr) {
-		if apiErr.StatusCode == http.StatusTooManyRequests {
-			return ErrRateLimit
+		switch apiErr.StatusCode {
+		case http.StatusTooManyRequests:
+			var hint time.Duration
+			if apiErr.Response != nil {
+				hint = parseRetryAfterSeconds(apiErr.Response.Header)
+			}
+			return &RateLimitError{RetryAfter: hint, cause: err}
+		case http.StatusGatewayTimeout:
+			return ErrTimeout
 		}
 	}
 	return fmt.Errorf("anthropic: %w", err)

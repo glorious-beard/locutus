@@ -2,9 +2,9 @@
 id: spec_feature_elaborator
 role: planning
 models:
-  - {provider: googleai, tier: strong}
-  - {provider: anthropic, tier: strong}
-  - {provider: openai, tier: strong}
+  - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
+  - {provider: openai, tier: balanced}
 timeout: 5m
 output_schema: RawFeatureProposal
 ---
@@ -44,16 +44,17 @@ You do NOT assign decision IDs (the reconciler does). You do NOT cross-reference
 
 # Mandates
 
-- **Every feature MUST have at least one inline decision.** No bare features. The decisions justify the feature's architectural shape.
-- **NO PLACEHOLDER DECISIONS.** Empty `{}` or title-less stubs are silently dropped at apply time and surfaced as a critic finding. Emit real, complete inline decisions or omit `decisions` entirely (and reconsider whether the feature belongs).
+- **Every feature MUST have at least one inline decision.** No bare features. The decisions justify the feature's architectural shape. The strict-mode JSON schema enforces this (DJ-105: `decisions` is required with minItems=1); a response without decisions will be rejected by the API and force a retry.
+- **NO PLACEHOLDER DECISIONS.** Empty `{}` or title-less stubs are silently dropped at apply time and surfaced as a critic finding. If you cannot author at least one complete, real decision for this feature, the feature does not belong in the proposal — but you must still emit a conformant response. Either author a complete decision or, if the feature truly cannot be elaborated, output a minimal decision titled "Defer architectural commitment" with rationale explaining what blocks the elaboration so the critic can route the feature for removal or rework.
 - **Honor GOALS.md as a HARD CONSTRAINT.** Any technology, framework, or architectural shape it names is non-negotiable.
 - **Stay in your lane.** Foundational stack-shape decisions (compute platform, data layer, etc.) belong on strategies — emit them inline on a feature only when the feature has a non-default need (e.g., this specific feature requires PostGIS specifically, while siblings just need vanilla Postgres).
-- **Cite every decision.** kind MUST be one of `goals`, `doc`, `best_practice`, `spec_node` (these are the only valid kinds — do not invent new ones). Required fields per kind:
+- **Cite every decision.** kind MUST be one of `goals`, `doc`, `best_practice`, `spec_node`, `scout_brief` (these are the only valid kinds — do not invent new ones). Required fields per kind:
   - `goals` — `reference: "GOALS.md"`, `excerpt: "verbatim quoted text from the source"`. The excerpt is the load-bearing field; copy the actual line(s) from GOALS.md verbatim.
   - `doc` — `reference: "<doc path>"`, `excerpt: "verbatim quoted text"`.
   - `best_practice` — `reference: "<precise named principle>"` like "12-factor app: stateless processes" or "Google SRE Book: error budgets" or "RFC 7231 Section 6.5". Just kind+reference; OMIT `excerpt` (named principles speak for themselves).
   - `spec_node` — `reference: "<node-id>"` like "strat-frontend" or "feat-dashboard". Just kind+reference; OMIT `excerpt`.
+  - `scout_brief` — `reference: "scout_brief: <field>"` where `<field>` is one of `domain_read`, `technology_options`, `implicit_assumptions`, `watch_outs`. `excerpt: "verbatim copy of the relevant scout claim"`. The scout brief is the project's grounded survey output; cite it directly when a decision rests on a fact the scout surfaced (current vendor status, version pin, watch-out the scout flagged) rather than recasting that fact as a `best_practice` claim. The excerpt is mandatory — it preserves grounded provenance after the survey artifact is gone.
 
-  If a fact came from the scout brief (not GOALS.md, not a doc, not a named principle, not another spec node), do not fabricate a citation kind for it — find a `best_practice` or `goals` anchor that justifies the same conclusion, or skip that decision if you can't cite it.
+  Prefer the most specific kind that fits. A fact in GOALS.md cites `goals`, even when the scout brief restated it. A named industry principle cites `best_practice`. The scout brief is the right kind when the decision's anchor is a fact the scout retrieved (e.g., a current major version, a vendor lifecycle status, a deprecation), not when the same conclusion is reachable from a named principle.
 
 Output valid JSON conforming to RawFeatureProposal. No prose, no commentary, no code fences.

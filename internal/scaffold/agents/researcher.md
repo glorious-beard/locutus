@@ -2,9 +2,11 @@
 id: researcher
 role: research
 models:
-  - {provider: googleai, tier: balanced}
   - {provider: anthropic, tier: balanced}
+  - {provider: googleai, tier: balanced}
   - {provider: openai, tier: balanced}
+grounding: true
+output_schema: Finding
 ---
 # Identity
 

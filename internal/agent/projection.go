@@ -99,19 +99,31 @@ func projectElaborateStrategy(snap StateSnapshot) []Message {
 }
 
 func projectElaborateOne(snap StateSnapshot, kind string) []Message {
-	var b strings.Builder
-	b.WriteString(snap.Prompt)
+	// DJ-106: split the user message into a cacheable static prefix
+	// (GOALS + scout brief + outline — identical across every
+	// elaborator call in this fanout) and a per-call variable
+	// suffix (the fanout target). The Anthropic adapter places a
+	// cache_control marker on the Cacheable block; on a 25-call
+	// fanout the second-through-Nth call hit the cached prefix at
+	// ~10% input-token cost, slashing both billing and TPM
+	// pressure. Other adapters ignore the flag — Gemini caching
+	// uses a separate cachedContent resource, OpenAI's Responses
+	// API caches identical prefixes server-side automatically.
+	var prefix strings.Builder
+	prefix.WriteString(snap.Prompt)
 	if snap.ScoutBrief != "" {
 		if formatted := formatScoutBrief(snap.ScoutBrief); formatted != "" {
-			b.WriteString("\n\n## Scout brief\n\n")
-			b.WriteString(formatted)
+			prefix.WriteString("\n\n## Scout brief\n\n")
+			prefix.WriteString(formatted)
 		}
 	}
 	if snap.Outline != "" {
-		b.WriteString("\n\n## Outline (sibling features and strategies for situational context)\n\n")
-		b.WriteString(formatOutlineForElaborator(snap.Outline))
+		prefix.WriteString("\n\n## Outline (sibling features and strategies for situational context)\n\n")
+		prefix.WriteString(formatOutlineForElaborator(snap.Outline))
 	}
-	b.WriteString(fmt.Sprintf("\n\n## %s to elaborate\n\n", kind))
+
+	var suffix strings.Builder
+	suffix.WriteString(fmt.Sprintf("## %s to elaborate\n\n", kind))
 	if snap.FanoutItem != "" {
 		// Plain key-value, NOT raw JSON. The fanout item used to be
 		// dumped as `{"id":...,"title":...}` directly above the
@@ -122,14 +134,17 @@ func projectElaborateOne(snap StateSnapshot, kind string) []Message {
 		// "context I read" vs "shape I extend" and were observed
 		// looping on field values they couldn't decide how to fill.
 		// Plain-text presentation removes the ambiguity.
-		b.WriteString(formatFanoutItem(snap.FanoutItem, kind))
+		suffix.WriteString(formatFanoutItem(snap.FanoutItem, kind))
 	} else {
-		b.WriteString("(missing — fanout did not populate FanoutItem)")
+		suffix.WriteString("(missing — fanout did not populate FanoutItem)")
 	}
 	// Directive ("Produce the full Raw...Proposal") lives in the
 	// elaborator's .md system prompt (Task section). Adding it here
 	// would create the same drift surface that broke DJ-095's triage.
-	return []Message{{Role: "user", Content: b.String()}}
+	return []Message{
+		{Role: "user", Content: prefix.String(), Cacheable: true},
+		{Role: "user", Content: suffix.String()},
+	}
 }
 
 // formatFanoutItem renders a single OutlineFeature or OutlineStrategy
