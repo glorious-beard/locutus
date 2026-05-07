@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -13,6 +14,15 @@ import (
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
+
+// thinkingAllowed reports whether extended thinking can coexist
+// with the request's other settings on Anthropic. The API rejects
+// thinking when tool_choice forces a specific tool — which strict-
+// mode JSON enforcement does via the synthetic schema tool. The
+// gate keeps the conflict from reaching the wire as a 400.
+func thinkingAllowed(useForcedSchemaTool bool) bool {
+	return !useForcedSchemaTool
+}
 
 // defaultAnthropicMaxTokens is substituted when a request omits
 // MaxOutputTokens. The Anthropic API rejects MaxTokens=0
@@ -97,19 +107,35 @@ func (a *AnthropicAdapter) Run(ctx context.Context, req Request) (*Response, err
 		Tools:     tools,
 	}
 
-	switch req.Thinking {
-	case ThinkingOn:
-		budget := int64(4096)
-		if budget >= maxTokens {
-			budget = maxTokens - 1
+	// Anthropic's API rejects extended thinking when tool_choice
+	// forces a specific tool ("Thinking may not be enabled when
+	// tool_choice forces tool use"). Strict-mode JSON enforcement on
+	// this provider IS done via forced tool_choice (the synthetic
+	// schema tool), so any agent with output_schema + a
+	// thinking-enabled tier would hit a 400 from the API. We honor
+	// the constraint by suppressing thinking on those calls and
+	// emitting a Warn so the operator can see why their tier's
+	// thinking budget didn't apply. The model still reasons
+	// internally; it just doesn't get the extended-thinking budget.
+	if thinkingAllowed(useForcedSchemaTool) {
+		switch req.Thinking {
+		case ThinkingOn:
+			budget := int64(4096)
+			if budget >= maxTokens {
+				budget = maxTokens - 1
+			}
+			params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
+		case ThinkingHigh:
+			budget := int64(8192)
+			if budget >= maxTokens {
+				budget = maxTokens - 1
+			}
+			params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
 		}
-		params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
-	case ThinkingHigh:
-		budget := int64(8192)
-		if budget >= maxTokens {
-			budget = maxTokens - 1
-		}
-		params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
+	} else if req.Thinking != ThinkingOff {
+		slog.Warn("anthropic: thinking suppressed by forced tool_choice",
+			"model", req.Model,
+			"reason", "Anthropic API rejects extended thinking + forced tool_choice; strict-mode schema enforcement uses forced tool_choice")
 	}
 
 	if useForcedSchemaTool {
