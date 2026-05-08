@@ -193,13 +193,17 @@ func runFeatureGeneration(ctx context.Context, llm agent.AgentExecutor, fsys spe
 		return nil, nil
 	}
 	existing := loadExistingSpec(fsys)
-	return runSpecGeneration(ctx, llm, fsys, agent.SpecGenRequest{
+	gen, err := runSpecGeneration(ctx, llm, fsys, agent.SpecGenRequest{
 		GoalsBody:    goalsBody,
 		DocumentBody: meta.body,
 		DocumentID:   meta.id,
 		Existing:     existing,
 		Sink:         sink,
 	})
+	if err != nil || gen == nil {
+		return nil, err
+	}
+	return gen.Summary, nil
 }
 
 // importAssetsForNode walks meta.body for image references, copies any

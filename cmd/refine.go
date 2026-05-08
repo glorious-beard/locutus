@@ -72,6 +72,11 @@ type RefineResult struct {
 	Cascade   *cascade.Result    `json:"cascade,omitempty"`
 	Rewrite   *RewriteSummary    `json:"rewrite,omitempty"`
 	Generated *GenerationSummary `json:"generated,omitempty"`
+	// SpecDiff is the operator-visible delta of what the refine
+	// changed in `.borg/spec/` — added / modified / abandoned /
+	// stable per node. Only populated for the `refine goals`
+	// path where a council run produces or mutates spec nodes.
+	SpecDiff *agent.SpecDiff `json:"spec_diff,omitempty"`
 	// Diff is the unified-diff text computed against the prior
 	// stored version. Populated when --diff is set and the refine
 	// produced an actual change. Empty otherwise.
@@ -354,7 +359,7 @@ func RunRefineGoals(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS
 
 	hist := history.NewHistorian(fsys, ".borg/history")
 	rationale := fmt.Sprintf("Generated %d feature(s), %d decision(s), %d strategy(ies), %d approach(es) from GOALS.md.",
-		gen.Features, gen.Decisions, gen.Strategies, gen.Approaches)
+		gen.Summary.Features, gen.Summary.Decisions, gen.Summary.Strategies, gen.Summary.Approaches)
 	if err := hist.Record(refineEvent(spec.RootID, "goals_refined", rationale)); err != nil {
 		slog.Warn("failed to record goals_refined event", "error", err)
 	}
@@ -362,7 +367,8 @@ func RunRefineGoals(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS
 	return &RefineResult{
 		NodeID:    spec.RootID,
 		NodeKind:  spec.KindGoals,
-		Generated: gen,
+		Generated: gen.Summary,
+		SpecDiff:  &gen.Diff,
 	}, nil
 }
 
@@ -803,6 +809,9 @@ func printRefineSummary(r *RefineResult) {
 				fmt.Printf("    - %s\n", w)
 			}
 		}
+		if r.SpecDiff != nil {
+			printSpecDiffSummary(r.SpecDiff)
+		}
 		return
 	}
 	if r.Rewrite == nil {
@@ -824,6 +833,42 @@ func printRefineSummary(r *RefineResult) {
 		fmt.Printf("  Approaches drifted: %d\n", len(r.Rewrite.DriftedApproaches))
 		for _, a := range r.Rewrite.DriftedApproaches {
 			fmt.Printf("    - %s\n", a)
+		}
+	}
+}
+
+// printSpecDiffSummary renders the operator-facing delta of what
+// the refine actually changed in `.borg/spec/`. The one-line counts
+// answer "what just happened?"; the per-category lists let an
+// operator audit specific IDs that were added, modified, or
+// abandoned. Stable nodes are summarized as a count only —
+// listing 50+ unchanged IDs every run would bury the signal.
+func printSpecDiffSummary(d *agent.SpecDiff) {
+	if d == nil {
+		return
+	}
+	added, modified, abandoned, stable := d.Counts()
+	if added+modified+abandoned == 0 && stable == 0 {
+		return
+	}
+	fmt.Printf("\nSpec changes (%d added, %d modified, %d abandoned, %d stable):\n",
+		added, modified, abandoned, stable)
+	if added > 0 {
+		fmt.Println("  Added:")
+		for _, c := range d.Added {
+			fmt.Printf("    + %s  %s\n", c.ID, c.Title)
+		}
+	}
+	if modified > 0 {
+		fmt.Println("  Modified:")
+		for _, c := range d.Modified {
+			fmt.Printf("    ~ %s  %s\n", c.ID, c.Title)
+		}
+	}
+	if abandoned > 0 {
+		fmt.Println("  Abandoned (still on disk; the next run can archive):")
+		for _, c := range d.Abandoned {
+			fmt.Printf("    - %s  %s\n", c.ID, c.Title)
 		}
 	}
 }

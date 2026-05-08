@@ -24,6 +24,16 @@ type GenerationSummary struct {
 	IntegrityWarnings []string `json:"integrity_warnings,omitempty"`
 }
 
+// SpecGenerationResult bundles the generation summary with the
+// before/after spec snapshots, which `refine goals` and `import`
+// surface to the operator as a delta report. The shape avoids
+// reloading the post-persist spec twice (once for the diff, once
+// for any caller that needs the full snapshot).
+type SpecGenerationResult struct {
+	Summary *GenerationSummary
+	Diff    agent.SpecDiff
+}
+
 // runSpecGeneration is the shared entry point for both `refine goals` and
 // the post-admission step in `import`. It calls agent.GenerateSpec, then
 // persists the resulting nodes through the same pipeline as
@@ -33,7 +43,7 @@ type GenerationSummary struct {
 // Strategy bodies are captured separately because spec.Strategy has no
 // body field; they are written into the .md sidecar via SavePair after
 // the JSON has been normalised.
-func runSpecGeneration(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, req agent.SpecGenRequest) (*GenerationSummary, error) {
+func runSpecGeneration(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, req agent.SpecGenRequest) (*SpecGenerationResult, error) {
 	// Default the critic to one round when the caller hasn't been
 	// explicit. The propose→critique→revise cycle catches the dangling
 	// references and missing-alternative violations that the proposer
@@ -71,10 +81,20 @@ func runSpecGeneration(ctx context.Context, llm agent.AgentExecutor, fsys specio
 		slog.Warn("cascade rewrite after reconcile produced errors", "error", err)
 	}
 
-	return &GenerationSummary{
-		Features:   len(proposal.Features),
-		Decisions:  len(proposal.Decisions),
-		Strategies: len(proposal.Strategies),
+	// Compute the operator-visible delta. Reload after persistence
+	// (cheap — small JSON files) rather than translating the proposal
+	// shape into ExistingSpec, so the diff reflects what's actually
+	// on disk including any partial-save state.
+	after := loadExistingSpec(fsys)
+	diff := agent.ComputeSpecDiff(req.Existing, after)
+
+	return &SpecGenerationResult{
+		Summary: &GenerationSummary{
+			Features:   len(proposal.Features),
+			Decisions:  len(proposal.Decisions),
+			Strategies: len(proposal.Strategies),
+		},
+		Diff: diff,
 	}, nil
 }
 
