@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -407,8 +406,16 @@ func canonicalDecisionFromInline(d InlineDecisionProposal, id string) DecisionPr
 // against `used` get a numeric suffix appended. Caller MUST guard
 // against empty titles via isEmptyInlineDecision; minting from an empty
 // title would produce a `dec-` slug that pollutes the spec graph.
+//
+// Slug derivation goes through spec.SlugID, which caps the slug at
+// 50 chars — the cap is load-bearing. A model going off-rails into
+// the title field (observed: 5000-char self-narrating ramble that
+// pushed past the OS filename length limit when used to derive a
+// path) would otherwise produce filenames the filesystem rejects,
+// failing the save and leaving the spec graph in an inconsistent
+// half-saved state.
 func mintDecisionID(title string, used map[string]struct{}) string {
-	base := "dec-" + slugify(title)
+	base := "dec-" + spec.SlugID(title)
 	if _, taken := used[base]; !taken {
 		return base
 	}
@@ -420,24 +427,38 @@ func mintDecisionID(title string, used map[string]struct{}) string {
 	}
 }
 
+// maxInlineDecisionTitleChars is the upper bound on title length the
+// reconciler will accept. A normal decision title is a clear, short
+// commitment (5-15 words; 30-100 chars). Anything past this limit is
+// model-pathology: observed in winplan after a model went off-rails
+// in the title field, producing a 5000+ char self-narrating ramble
+// that the slug cap (spec.SlugID) protected against at the filename
+// layer but that would otherwise pollute the spec graph with a
+// title field longer than the rationale it was supposed to summarize.
+// 256 chars is a generous cap; legitimate titles are well under it.
+const maxInlineDecisionTitleChars = 256
+
 // isEmptyInlineDecision reports whether the inline decision is a
 // placeholder with no usable content. The architect's contract requires
 // title + rationale + at least one alternative + at least one citation;
-// empty objects (`{}`) and title-only stubs are dropped at apply time
-// rather than persisted as `dec-untitled` noise. Title is the load-
-// bearing field — the slug ID derives from it, and a decision with no
-// title is meaningless to a coding agent or auditor.
+// empty objects (`{}`), title-only stubs, and pathologically-long
+// titles (a model spiraling into the title field) are dropped at apply
+// time rather than persisted as noise. Title is the load-bearing
+// field — the slug ID derives from it, and a decision with no title
+// (or a degenerate title) is meaningless to a coding agent or auditor.
 func isEmptyInlineDecision(d InlineDecisionProposal) bool {
-	return strings.TrimSpace(d.Title) == ""
-}
-
-var nonAlphaNum = regexp.MustCompile(`[^a-z0-9]+`)
-
-func slugify(s string) string {
-	out := strings.ToLower(strings.TrimSpace(s))
-	out = nonAlphaNum.ReplaceAllString(out, "-")
-	out = strings.Trim(out, "-")
-	return out
+	title := strings.TrimSpace(d.Title)
+	if title == "" {
+		return true
+	}
+	if len(title) > maxInlineDecisionTitleChars {
+		slog.Warn("dropping decision with pathological title length",
+			"title_chars", len(title),
+			"title_excerpt", title[:64]+"...",
+			"reason", "model output appears to have spiraled into the title field; treating as empty")
+		return true
+	}
+	return false
 }
 
 func existingHasDecision(e *ExistingSpec, id string) bool {

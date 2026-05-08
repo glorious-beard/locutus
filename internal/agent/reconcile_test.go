@@ -2,6 +2,7 @@ package agent
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/chetan/locutus/internal/spec"
@@ -376,17 +377,40 @@ func TestApplyReconciliationEmptyCanonicalDegrades(t *testing.T) {
 		"source falls through to keep-separate")
 }
 
-func TestSlugify(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"Use Postgres", "use-postgres"},
-		{"Use TanStack Start", "use-tanstack-start"},
-		{"Provision for 1k concurrent at p99", "provision-for-1k-concurrent-at-p99"},
-		{"  spaces  ", "spaces"},
-		{"!@#", ""},
+func TestIsEmptyInlineDecision_DropsPathologicalTitle(t *testing.T) {
+	// Same pathology that triggered the slug-cap fix: a model
+	// spirals into the title field producing thousands of chars
+	// of self-narrating prose. Even with the slug cap protecting
+	// the filename, persisting a 5000-char title to the spec graph
+	// would bloat YAML, break renders, and surface in audit
+	// outputs as nonsense. Treat such decisions as empty so the
+	// apply pass drops them with a warning, same as title-only
+	// stubs.
+	d := InlineDecisionProposal{
+		Title: strings.Repeat("the-end-the-very-end-the-absolute-end-", 50),
 	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, slugify(c.in), "slugify(%q)", c.in)
-	}
+	assert.True(t, isEmptyInlineDecision(d),
+		"decision with pathologically long title must be treated as empty (apply pass drops it with a warning)")
+}
+
+func TestIsEmptyInlineDecision_AcceptsNormalTitle(t *testing.T) {
+	d := InlineDecisionProposal{Title: "Use PostgreSQL 16 with PostGIS for geospatial workloads"}
+	assert.False(t, isEmptyInlineDecision(d), "normal title length is not pathological")
+}
+
+func TestMintDecisionID_CapsRunawayTitleLength(t *testing.T) {
+	// Observed pathology: a model went off-rails in the title field of
+	// an InlineDecisionProposal and produced a 5000+ char self-narrating
+	// ramble. Without a slug-length cap, the resulting `dec-<slug>` ID
+	// became a filename longer than the OS limit (typically 255 bytes),
+	// failing the spec save and leaving the spec graph half-written.
+	//
+	// mintDecisionID now delegates to spec.SlugID which caps slug length
+	// at 50 chars; total filename `dec-<slug>.json` stays well under any
+	// filesystem's filename limit even before any collision suffix.
+	runawayTitle := strings.Repeat("the-end-the-very-end-the-absolute-end-", 50)
+	id := mintDecisionID(runawayTitle, map[string]struct{}{})
+
+	assert.Less(t, len(id), 256, "decision ID must fit within OS filename length limits even when title is degenerate")
+	assert.True(t, strings.HasPrefix(id, "dec-"), "decision IDs always carry the dec- prefix")
 }
