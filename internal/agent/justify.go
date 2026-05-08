@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // advocateSystemPrompt is the spec advocate's instruction set. The
@@ -42,6 +43,44 @@ You receive:
   skepticism you would apply to any training-data-recall claim.
   Do not echo specific dates, version numbers, or third-party
   citations from a finding whose query is in this ungrounded list.
+
+GROUNDING DISCIPLINE WHEN RESEARCH IS ABSENT.
+
+If the "## Researcher's findings" section is missing or empty, you
+have NO retrieved evidence for this call. In that case:
+
+- Defend the spec node strictly on the rationale that already exists
+  in the node content (## Node under review) and the goal clauses
+  in ## Goals. Those are the only authoritative inputs.
+- Do NOT make specific factual claims about competing technologies,
+  vendors, or alternatives — version numbers, release dates, ecosystem
+  maturity, hiring-pool size, library adapter quality, production
+  case studies, vendor pricing, performance benchmarks, GitHub issue
+  references, download counts, framework adoption percentages, or any
+  similar quantitative or comparative assertion. These all require
+  retrieved evidence to be defensible; without it you would be
+  reciting training-data recall and presenting it as fact.
+- When the user's challenge or the challenger's brief invokes a
+  specific alternative (e.g. "use TanStack Start instead of Next.js"),
+  it is acceptable to acknowledge the alternative's stated motivation
+  and note that the spec node's listed reasons still apply. It is NOT
+  acceptable to make specific claims about the alternative's current
+  state, maturity, or ecosystem. If you would naturally write
+  something like "Library X has the most mature adapter for…" or
+  "Framework Y is still pre-1.0 as of …" or "Tool Z's adoption is
+  around N% of developers…", STOP and replace it with: "I don't have
+  grounded evidence about <X>'s current state at this time; the
+  comparison rests on the spec node's stated rationale." It is far
+  better to leave a comparison unmade than to fabricate one.
+- If the challenger surfaced a concern that genuinely needs evidence
+  to settle and none was retrieved, mark its still_stands honestly
+  (often "false" — the concern stands as legitimately raised) rather
+  than answering it with unsourced specifics.
+
+This rule is symmetric with the researcher's anti-fallback directive.
+Operators reading the trace will compare your prose against the
+per-call tool_calls record (Anthropic web_search outcomes); claims
+that exceed the retrieved evidence will be flagged as ungrounded.
 
 Write a 2-4 paragraph defense in plain prose. Cover:
 1. What problem this node solves and which goal-clauses motivate it.
@@ -324,6 +363,17 @@ func RunJustifyAgainst(ctx context.Context, exec AgentExecutor, in JustifyInputs
 	if len(challenge.Concerns) == 0 {
 		return &challenge, nil, nil, fmt.Errorf("justify: challenger returned no concerns for %q", in.NodeID)
 	}
+	if reason, degenerate := degenerateChallengerBrief(&challenge); degenerate {
+		// Backstop for the schema-skeleton failure mode observed when
+		// Sonnet 4.6's native structured output occasionally short-
+		// circuits to minimum-viable JSON despite the thinking trace
+		// showing the model understood the task. Fail loudly with the
+		// offending content rather than feed garbage to the researcher
+		// and advocate downstream — those agents would either burn
+		// tokens producing nothing useful (researcher) or paper the
+		// gap with training-data confabulation (advocate).
+		return &challenge, nil, nil, fmt.Errorf("justify: challenger emitted degenerate brief for %q (%s); re-run, or report this if it persists", in.NodeID, reason)
+	}
 
 	researchIn := in
 	researchIn.ChallengerOut = &challenge
@@ -444,6 +494,86 @@ func joinSections(parts []string) string {
 		out += p
 	}
 	return out
+}
+
+// challengerPlaceholderTokens lists the literal strings observed (or
+// likely to be observed) when the model short-circuits to minimum-
+// viable schema-conforming JSON instead of engaging with the prompt.
+// Compared after lower-casing and trimming.
+var challengerPlaceholderTokens = map[string]struct{}{
+	"dummy":       {},
+	"placeholder": {},
+	"todo":        {},
+	"tbd":         {},
+	"foo":         {},
+	"bar":         {},
+	"baz":         {},
+	"example":     {},
+	"sample":      {},
+	"lorem":       {},
+	"ipsum":       {},
+	"n/a":         {},
+	"none":        {},
+	"...":         {},
+}
+
+// degenerateChallengerBrief reports whether a ChallengeBrief looks
+// like the schema-skeleton output mode rather than a real critique.
+// Returns (reason, true) when degenerate; ("", false) otherwise.
+//
+// Triggers (any one is sufficient):
+//
+//   - Any concern field (weakness/evidence/counterproposal) is, after
+//     trim+lowercase, in challengerPlaceholderTokens. The model
+//     emitting "dummy" three times in a row is the canonical case
+//     this exists to catch.
+//   - Any concern field is shorter than minChallengerFieldLen runes.
+//     A real weakness/evidence/counterproposal is at least a short
+//     sentence; one-word answers are a placeholder.
+//   - Every concern in the brief is an exact duplicate of another
+//     (same weakness AND evidence AND counterproposal). Real critiques
+//     don't repeat themselves; minimum-JSON output sometimes does.
+//
+// The minimum length is intentionally permissive: the goal is to
+// catch obvious skeletons, not to enforce prose quality. A well-
+// engaged challenger emits paragraphs; the floor here is barely
+// "would this be a real sentence?"
+const minChallengerFieldLen = 20
+
+func degenerateChallengerBrief(b *ChallengeBrief) (string, bool) {
+	if b == nil || len(b.Concerns) == 0 {
+		return "", false
+	}
+	for i, c := range b.Concerns {
+		for label, val := range map[string]string{
+			"weakness":        c.Weakness,
+			"evidence":        c.Evidence,
+			"counterproposal": c.Counterproposal,
+		} {
+			trimmed := strings.TrimSpace(val)
+			lower := strings.ToLower(trimmed)
+			if _, isPlaceholder := challengerPlaceholderTokens[lower]; isPlaceholder {
+				return fmt.Sprintf("concern[%d].%s is a known placeholder token %q", i, label, trimmed), true
+			}
+			if len([]rune(trimmed)) < minChallengerFieldLen {
+				return fmt.Sprintf("concern[%d].%s is shorter than %d runes (%q)", i, label, minChallengerFieldLen, trimmed), true
+			}
+		}
+	}
+	if len(b.Concerns) >= 2 {
+		first := b.Concerns[0]
+		allDup := true
+		for _, c := range b.Concerns[1:] {
+			if c.Weakness != first.Weakness || c.Evidence != first.Evidence || c.Counterproposal != first.Counterproposal {
+				allDup = false
+				break
+			}
+		}
+		if allDup {
+			return fmt.Sprintf("all %d concerns are exact duplicates", len(b.Concerns)), true
+		}
+	}
+	return "", false
 }
 
 func validVerdict(v string) bool {

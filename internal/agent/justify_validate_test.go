@@ -1,0 +1,170 @@
+package agent
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestDegenerateChallengerBrief_DummyTokens — the canonical case
+// observed in winplan: the model emits a single concern with every
+// field set to "dummy". Triggers the placeholder-token branch.
+func TestDegenerateChallengerBrief_DummyTokens(t *testing.T) {
+	b := &ChallengeBrief{
+		Concerns: []AdversarialConcern{
+			{Weakness: "dummy", Evidence: "dummy", Counterproposal: "dummy"},
+		},
+	}
+	reason, degenerate := degenerateChallengerBrief(b)
+	require.True(t, degenerate)
+	assert.Contains(t, reason, "placeholder")
+}
+
+// TestDegenerateChallengerBrief_PlaceholderVariants — the validator
+// should catch the common-suspect placeholder vocabulary, lowercased,
+// trimmed.
+func TestDegenerateChallengerBrief_PlaceholderVariants(t *testing.T) {
+	for _, tok := range []string{"DUMMY", " placeholder ", "TODO", "tbd", "Foo", "bar", "lorem", "ipsum", "n/a", "NONE", "..."} {
+		b := &ChallengeBrief{
+			Concerns: []AdversarialConcern{
+				{Weakness: tok, Evidence: "real evidence with substance", Counterproposal: "real counterproposal here"},
+			},
+		}
+		_, degenerate := degenerateChallengerBrief(b)
+		assert.True(t, degenerate, "expected %q to trigger placeholder detection", tok)
+	}
+}
+
+// TestDegenerateChallengerBrief_TooShort — fields under
+// minChallengerFieldLen runes are flagged as degenerate even if not
+// in the placeholder vocabulary. A real challenger writes at least a
+// short sentence per field.
+func TestDegenerateChallengerBrief_TooShort(t *testing.T) {
+	b := &ChallengeBrief{
+		Concerns: []AdversarialConcern{
+			{Weakness: "short", Evidence: "evidence with substance and more text", Counterproposal: "counterproposal with substance and more"},
+		},
+	}
+	reason, degenerate := degenerateChallengerBrief(b)
+	require.True(t, degenerate)
+	assert.Contains(t, reason, "shorter than")
+	assert.Contains(t, reason, "weakness")
+}
+
+// TestDegenerateChallengerBrief_AllDuplicates — when every concern is
+// an exact duplicate of the first, the model is producing minimum-
+// JSON output rather than enumerating distinct concerns.
+func TestDegenerateChallengerBrief_AllDuplicates(t *testing.T) {
+	concern := AdversarialConcern{
+		Weakness:        "the spec doesn't address authentication boundaries clearly",
+		Evidence:        "GOALS.md line 14 calls out auth as a top-level requirement",
+		Counterproposal: "introduce a dedicated auth strategy with per-role boundaries",
+	}
+	b := &ChallengeBrief{
+		Concerns: []AdversarialConcern{concern, concern, concern},
+	}
+	reason, degenerate := degenerateChallengerBrief(b)
+	require.True(t, degenerate)
+	assert.Contains(t, reason, "duplicates")
+}
+
+// TestDegenerateChallengerBrief_HealthyBrief — a real-shaped brief
+// with substantive distinct concerns is not flagged. Mirrors the
+// shape of the first (working) winplan run's challenger output.
+func TestDegenerateChallengerBrief_HealthyBrief(t *testing.T) {
+	b := &ChallengeBrief{
+		Concerns: []AdversarialConcern{
+			{
+				Weakness:        "The RSC/SSR rationale is a solution looking for a problem in a pure authenticated application",
+				Evidence:        "The spec's own justification for RSCs is data security and avoiding excessive client-side logic, not SEO or TTFB on public pages",
+				Counterproposal: "Audit the actual RSC usage planned for feat-voter-file-management; if the primary benefit is avoiding raw data endpoints, that concern is better addressed at the API/auth layer",
+			},
+			{
+				Weakness:        "The 'compatibility with GCP Cloud Run' framing treats Next.js standalone mode as a feature rather than acknowledging it as an operational liability",
+				Evidence:        "strat-compute-platform specifies GCP Cloud Run, which bills per-request and has cold-start sensitivity",
+				Counterproposal: "Benchmark Next.js App Router on GCP Cloud Run against a TanStack Start SPA deployment",
+			},
+		},
+	}
+	reason, degenerate := degenerateChallengerBrief(b)
+	assert.False(t, degenerate, "healthy brief should not be flagged (reason: %q)", reason)
+}
+
+// TestDegenerateChallengerBrief_NilOrEmpty — a nil brief or an empty
+// concerns slice is NOT degenerate; that's a separate "no concerns"
+// state handled by the existing len(Concerns) == 0 check upstream.
+func TestDegenerateChallengerBrief_NilOrEmpty(t *testing.T) {
+	_, degenerate := degenerateChallengerBrief(nil)
+	assert.False(t, degenerate, "nil brief is empty, not degenerate")
+
+	_, degenerate = degenerateChallengerBrief(&ChallengeBrief{})
+	assert.False(t, degenerate, "zero-concerns brief is empty, not degenerate")
+}
+
+// TestRunJustifyAgainst_FailsLoudOnDegenerateChallenger — the
+// orchestrator must surface the degenerate-output condition with a
+// clear error message rather than feeding the dummy brief to the
+// researcher and advocate. The challenger output IS returned so the
+// cmd layer can render it for the user to inspect.
+func TestRunJustifyAgainst_FailsLoudOnDegenerateChallenger(t *testing.T) {
+	mock := NewMockExecutor(MockResponse{Response: &AgentOutput{
+		Content: `{"concerns":[{"weakness":"dummy","evidence":"dummy","counterproposal":"dummy"}]}`,
+	}})
+
+	in := JustifyInputs{
+		NodeID:       "feat-x",
+		NodeMarkdown: "# feat-x\n\nbody",
+		GoalsBody:    "goals",
+		Challenge:    "why",
+	}
+
+	challenge, research, defense, err := RunJustifyAgainst(context.Background(), mock, in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "degenerate")
+	assert.Contains(t, err.Error(), "feat-x")
+	assert.Contains(t, err.Error(), "re-run")
+
+	// The orchestrator should NOT have called the researcher or
+	// advocate. Mock had only one scripted response, so any further
+	// call would have failed; the error path above proves only the
+	// challenger ran.
+	require.NotNil(t, challenge, "challenger output must be returned so the cmd layer can show what the model produced")
+	assert.Len(t, challenge.Concerns, 1)
+	assert.Equal(t, "dummy", challenge.Concerns[0].Weakness)
+	assert.Nil(t, research, "researcher must not run when challenger output is degenerate")
+	assert.Nil(t, defense, "advocate must not run when challenger output is degenerate")
+	assert.Equal(t, 1, mock.CallCount(), "only the challenger should have dispatched")
+}
+
+// TestAdvocateSystemPrompt_HasGroundingDiscipline — the system prompt
+// shipped to the advocate must contain the empty-research-case
+// guidance. Brittle by design: changes to the prompt should be
+// deliberate, not silent regressions to confabulation-friendly text.
+//
+// Whitespace-normalized substring matching tolerates the prompt's
+// line wraps; the actual model sees the wrapped text but understands
+// it as continuous prose.
+func TestAdvocateSystemPrompt_HasGroundingDiscipline(t *testing.T) {
+	flat := strings.Join(strings.Fields(advocateSystemPrompt), " ")
+
+	assert.Contains(t, flat, "GROUNDING DISCIPLINE WHEN RESEARCH IS ABSENT",
+		"the advocate must be told what to do when research findings are missing or empty")
+	assert.Contains(t, flat, "I don't have grounded evidence",
+		"the advocate must have an explicit alternative phrase to substitute for unsourced specifics")
+	for _, forbidden := range []string{"version numbers", "ecosystem maturity", "hiring-pool", "case studies"} {
+		assert.Contains(t, flat, forbidden,
+			"the empty-research disclaimer must enumerate %q as a forbidden assertion class so the model has a concrete rule to follow", forbidden)
+	}
+	// Sanity: the directive must precede the per-concern point-by-point
+	// instructions so the model reads the constraint before producing
+	// the structured response.
+	idxDiscipline := strings.Index(advocateSystemPrompt, "GROUNDING DISCIPLINE WHEN RESEARCH IS ABSENT")
+	idxPointByPoint := strings.Index(advocateSystemPrompt, "ALSO address each concern")
+	require.True(t, idxDiscipline > 0)
+	require.True(t, idxPointByPoint > 0)
+	assert.Less(t, idxDiscipline, idxPointByPoint,
+		"grounding discipline rule must appear before the structured-response instructions so it constrains the per-concern responses too")
+}

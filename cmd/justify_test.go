@@ -64,9 +64,9 @@ func TestJustifyAdversarialDispatch(t *testing.T) {
 
 	challenge := agent.ChallengeBrief{
 		Concerns: []agent.AdversarialConcern{{
-			Weakness:        "vendor lock-in",
-			Evidence:        "GOALS §4: cost discipline",
-			Counterproposal: "self-host alternative",
+			Weakness:        "the chosen path introduces vendor lock-in via proprietary APIs",
+			Evidence:        "GOALS §4 calls out cost discipline; switching costs from a sole-source vendor erode that posture",
+			Counterproposal: "self-host the equivalent OSS alternative or pick a vendor with a documented data-export path",
 		}},
 	}
 	research := agent.ResearchBrief{
@@ -106,7 +106,7 @@ func TestJustifyAdversarialDispatch(t *testing.T) {
 	require.NotNil(t, result.Adversarial)
 	assert.Nil(t, result.Brief)
 	assert.Equal(t, "held_up", result.Adversarial.Verdict)
-	assert.Equal(t, "vendor lock-in", result.Challenger.Concerns[0].Weakness)
+	assert.Contains(t, result.Challenger.Concerns[0].Weakness, "vendor lock-in")
 	require.Len(t, result.Research.Findings, 1)
 	assert.Contains(t, result.Research.Findings[0].Result, "OSS export tool")
 
@@ -151,7 +151,9 @@ func TestJustifyAdversarialBrokenDownSurfacesBreakingPoints(t *testing.T) {
 
 	challenge := agent.ChallengeBrief{
 		Concerns: []agent.AdversarialConcern{{
-			Weakness: "scale assumptions wrong", Evidence: "evidence", Counterproposal: "use sharded approach",
+			Weakness:        "the scale assumptions baked into this design break above 10k QPS",
+			Evidence:        "the chosen single-writer path saturates a single node well before the stated load target",
+			Counterproposal: "introduce a sharded-write topology with a per-key router rather than a single primary",
 		}},
 	}
 	research := agent.ResearchBrief{Findings: []agent.Finding{{Query: "scale", Result: "evidence shows the chosen path saturates at 10k QPS"}}}
@@ -181,7 +183,11 @@ func TestJustifyAdversarialBrokenDownSurfacesBreakingPoints(t *testing.T) {
 
 func TestJustifyInvalidVerdictRejected(t *testing.T) {
 	fs := fixtureExplain(t)
-	challenge := agent.ChallengeBrief{Concerns: []agent.AdversarialConcern{{Weakness: "x"}}}
+	challenge := agent.ChallengeBrief{Concerns: []agent.AdversarialConcern{{
+		Weakness:        "the design assumes synchronous writes and that's a real risk for the audit trail",
+		Evidence:        "GOALS §7 mandates an immutable audit trail and the current write path is fire-and-forget",
+		Counterproposal: "use a write-ahead-log per request with a downstream consumer that emits the audit record",
+	}}}
 	research := agent.ResearchBrief{Findings: []agent.Finding{{Query: "x", Result: "y"}}}
 	defense := agent.AdversarialDefense{
 		JustificationBrief: agent.JustificationBrief{Defense: "x"},
