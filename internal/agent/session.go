@@ -223,6 +223,12 @@ type recordedCall struct {
 	// common case for the researcher) emit citations without forcing
 	// a Rounds entry.
 	Citations []recordedCitation `yaml:"citations,omitempty"`
+	// ToolCalls is the flat per-tool-invocation summary for
+	// server-side tools (Anthropic web_search). Surfaced at the top
+	// level so an operator inspecting a trace can immediately see
+	// whether a query returned evidence or errored — without grepping
+	// the encrypted raw_message blob.
+	ToolCalls []recordedToolCall `yaml:"tool_calls,omitempty"`
 	// Rounds is populated only for multi-round tool-use calls
 	// (Genkit's tool-dispatch loop drives multiple model invocations
 	// for one Generate call). Each entry records what the model
@@ -258,6 +264,28 @@ type recordedCitation struct {
 	URL     string `yaml:"url,omitempty"`
 	Title   string `yaml:"title,omitempty"`
 	Snippet string `yaml:"snippet,omitempty"`
+}
+
+// recordedToolCall is one server-side tool invocation surfaced in the
+// session trace. Mirrors agent.ToolCall with YAML tags so a per-call
+// file shows the query plus its outcome inline:
+//
+//	tool_calls:
+//	  - name: web_search
+//	    query: "TanStack Start production ready stable release 2025"
+//	    status: error
+//	  - name: web_search
+//	    query: "Next.js App Router cold start GCP Cloud Run performance 2024 2025"
+//	    status: success
+//
+// Auditors reading a trace can immediately identify queries that
+// returned no evidence — claims attributed to those queries should be
+// treated as ungrounded regardless of what the model wrote.
+type recordedToolCall struct {
+	Name      string `yaml:"name"`
+	Query     string `yaml:"query,omitempty"`
+	Status    string `yaml:"status"`
+	ErrorCode string `yaml:"error_code,omitempty"`
 }
 
 type recordedMessage struct {
@@ -457,6 +485,17 @@ func (h *callHandle) finishAt(out *AgentOutput, callErr error, completedAt time.
 			h.call.Citations = make([]recordedCitation, len(out.Citations))
 			for i, c := range out.Citations {
 				h.call.Citations[i] = recordedCitation{URL: c.URL, Title: c.Title, Snippet: c.Snippet}
+			}
+		}
+		if len(out.ToolCalls) > 0 {
+			h.call.ToolCalls = make([]recordedToolCall, len(out.ToolCalls))
+			for i, t := range out.ToolCalls {
+				h.call.ToolCalls[i] = recordedToolCall{
+					Name:      t.Name,
+					Query:     t.Query,
+					Status:    t.Status,
+					ErrorCode: t.ErrorCode,
+				}
 			}
 		}
 		if len(out.Rounds) > 0 {

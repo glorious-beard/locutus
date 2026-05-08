@@ -65,17 +65,27 @@ func (s *plainSink) OnEvent(e agent.WorkflowEvent) {
 func (s *plainSink) Close() {}
 
 func (s *cliSink) key(e agent.WorkflowEvent) string {
-	if e.AgentID != "" {
+	switch {
+	case e.AgentID != "" && e.StepID != "":
 		return e.StepID + "/" + e.AgentID
+	case e.AgentID != "":
+		// Direct LLM call (NotifyingExecutor): no enclosing workflow
+		// step. Key on agent alone so each call gets its own spinner.
+		return e.AgentID
+	default:
+		return e.StepID
 	}
-	return e.StepID
 }
 
 func (s *cliSink) label(e agent.WorkflowEvent) string {
-	if e.AgentID != "" {
+	switch {
+	case e.AgentID != "" && e.StepID != "":
 		return fmt.Sprintf("%s · %s", e.StepID, e.AgentID)
+	case e.AgentID != "":
+		return e.AgentID
+	default:
+		return e.StepID
 	}
-	return e.StepID
 }
 
 // OnEvent updates the spinner state for the agent referenced in the

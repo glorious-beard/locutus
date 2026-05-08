@@ -194,6 +194,7 @@ func (a *AnthropicAdapter) dispatch(ctx context.Context, params anthropicsdk.Mes
 		text, reasoning, toolUses := splitContent(msg.Content)
 		raw, _ := json.Marshal(msg.Content)
 		citations := extractAnthropicCitations(raw)
+		toolCalls := extractAnthropicToolCalls(raw)
 
 		out.Rounds = append(out.Rounds, Round{
 			Index:                    round,
@@ -207,6 +208,7 @@ func (a *AnthropicAdapter) dispatch(ctx context.Context, params anthropicsdk.Mes
 			Citations:                citations,
 		})
 		out.Citations = mergeCitations(out.Citations, citations)
+		out.ToolCalls = append(out.ToolCalls, toolCalls...)
 
 		// Tool-use loop: dispatch every custom-tool tool_use the model
 		// emitted and feed the results back as a user message. The

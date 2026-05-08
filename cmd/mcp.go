@@ -168,14 +168,18 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 			kind = "feature"
 		}
 		var llm agent.AgentExecutor
+		var sink agent.EventSink = agent.SilentSink{}
 		if !input.SkipTriage {
 			var err error
 			llm, _, err = recordingLLM(fsys, dir, "mcp:import")
 			if err != nil {
 				return errorResult(err.Error()), nil, nil
 			}
+			sink = newMCPSink(ctx, req)
+			llm = &agent.NotifyingExecutor{Inner: llm, Sink: sink}
 		}
-		result, err := RunImport(ctx, llm, fsys, []byte(input.Content), "", kind, input.SkipTriage, input.NoPlan, input.DryRun, newMCPSink(ctx, req))
+		defer sink.Close()
+		result, err := RunImport(ctx, llm, fsys, []byte(input.Content), "", kind, input.SkipTriage, input.NoPlan, input.DryRun, sink)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
@@ -206,7 +210,10 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
-		result, err := RunAssimilate(ctx, llm, fsys, true, newMCPSink(ctx, req))
+		sink := newMCPSink(ctx, req)
+		defer sink.Close()
+		llm = &agent.NotifyingExecutor{Inner: llm, Sink: sink}
+		result, err := RunAssimilate(ctx, llm, fsys, true, sink)
 		if err != nil {
 			return errorResult(fmt.Sprintf("assimilate failed: %v", err)), nil, nil
 		}
@@ -254,8 +261,11 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
+		sink := newMCPSink(ctx, req)
+		defer sink.Close()
+		llm = &agent.NotifyingExecutor{Inner: llm, Sink: sink}
 		opts := RefineOptions{Brief: input.Brief, Diff: input.Diff}
-		result, err := dispatchRefineWithOptions(ctx, llm, fsys, input.ID, kind, opts, newMCPSink(ctx, req))
+		result, err := dispatchRefineWithOptions(ctx, llm, fsys, input.ID, kind, opts, sink)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
@@ -339,6 +349,9 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
+		sink := newMCPSink(ctx, req)
+		defer sink.Close()
+		llm = &agent.NotifyingExecutor{Inner: llm, Sink: sink}
 		result, err := RunJustifyCommand(ctx, llm, fsys, input.ID, input.Against)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil

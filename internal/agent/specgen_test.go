@@ -28,39 +28,42 @@ func TestSpecProposalNoApproaches(t *testing.T) {
 	}
 }
 
-// testWorkflowYAML mirrors internal/scaffold/workflows/spec_generation.yaml
-// at the level of detail the executor cares about — kept inline so tests
-// don't depend on the scaffold package (which would create an import
-// cycle: scaffold imports agent).
-const testWorkflowYAML = `rounds:
-  - id: survey
-    agent: spec_scout
-    merge_as: scout_brief
-  - id: propose
-    agent: spec_architect
-    depends_on: [survey]
-    merge_as: raw_proposal
-  - id: reconcile
-    agent: spec_reconciler
-    depends_on: [propose]
-    merge_as: reconciled_proposal
-  - id: critique
-    agents: [architect_critic, devops_critic, sre_critic, cost_critic]
-    parallel: true
-    depends_on: [reconcile]
-    merge_as: critic_issues
-  - id: revise
-    agent: spec_architect
-    depends_on: [critique]
-    conditional: has_concerns
-    merge_as: raw_proposal
-  - id: reconcile_revise
-    agent: spec_reconciler
-    depends_on: [revise]
-    conditional: has_concerns
-    merge_as: reconciled_proposal
-max_rounds: 1
-`
+// testHasConcerns is a test-only conditional matching the simpler
+// pre-DJ-098 shape — revise fires when any concern was raised by
+// challenge or critique. Production uses hasUnmatchedFindings /
+// hasFindingClusters via DJ-098's per-cluster fanout.
+func testHasConcerns(s *PlanningState) bool { return len(s.Concerns) > 0 }
+
+// testMergeRawProposal stores the architect's raw output verbatim.
+// The simpler test workflow goes architect → reconcile (no
+// outline + elaborate fanout), so this maps the architect's response
+// straight into RawProposal where the reconciler reads it.
+func testMergeRawProposal(s *PlanningState, results []RoundResult) {
+	if v := firstNonEmpty(results); v != "" {
+		s.RawProposal = v
+	}
+}
+
+// testSpecGenWorkflow is a simplified spec-generation workflow used by
+// the GenerateSpec tests so each assertion can exercise a specific
+// behavior (event bridging, scout-brief threading, critic→revise wiring)
+// without setting up the full DJ-098 outline + per-cluster fanout. The
+// shape mirrors the pre-DJ-098 council:
+//
+//	survey → propose → reconcile → critique → revise → reconcile_revise.
+//
+// Production callers always go through SpecGenerationWorkflow.
+var testSpecGenWorkflow = &Workflow{
+	Rounds: []WorkflowStep{
+		{ID: "survey", Agents: []string{"spec_scout"}, Project: projectDefault, Merge: mergeScoutBrief},
+		{ID: "propose", Agents: []string{"spec_architect"}, DependsOn: []string{"survey"}, Project: projectPropose, Merge: testMergeRawProposal},
+		{ID: "reconcile", Agents: []string{"spec_reconciler"}, DependsOn: []string{"propose"}, Project: projectReconcile, Merge: mergeReconciledProposal},
+		{ID: "critique", Agents: []string{"architect_critic", "devops_critic", "sre_critic", "cost_critic"}, Parallel: true, DependsOn: []string{"reconcile"}, Project: projectChallenge, Merge: mergeCriticIssues},
+		{ID: "revise", Agents: []string{"spec_architect"}, DependsOn: []string{"critique"}, Conditional: testHasConcerns, Project: projectRevise, Merge: testMergeRawProposal},
+		{ID: "reconcile_revise", Agents: []string{"spec_reconciler"}, DependsOn: []string{"revise"}, Conditional: testHasConcerns, Project: projectReconcile, Merge: mergeReconciledProposal},
+	},
+	MaxRounds: 1,
+}
 
 // minAgentMD builds a minimal agent .md file that LoadAgentDefs can
 // parse. We don't care about the prose body in tests — the mock LLM is
@@ -78,14 +81,13 @@ Test agent %s.
 `, id, role, capability, schema, id)
 }
 
-// setupSpecGenFixture builds a MemFS with the six council agents and the
-// spec-generation workflow YAML pre-populated. Tests use this as the
-// fsys argument to GenerateSpec.
+// setupSpecGenFixture builds a MemFS with the six council agents
+// testSpecGenWorkflow expects. Tests pass this fs alongside
+// testSpecGenWorkflow to generateSpecWithWorkflow.
 func setupSpecGenFixture(t *testing.T) specio.FS {
 	t.Helper()
 	fs := specio.NewMemFS()
 	require.NoError(t, fs.MkdirAll(".borg/agents", 0o755))
-	require.NoError(t, fs.MkdirAll(".borg/workflows", 0o755))
 	for _, a := range []struct{ id, role, cap, schema string }{
 		{"spec_scout", "survey", "balanced", "ScoutBrief"},
 		{"spec_architect", "planning", "strong", "RawSpecProposal"},
@@ -100,7 +102,6 @@ func setupSpecGenFixture(t *testing.T) specio.FS {
 			[]byte(minAgentMD(a.id, a.role, a.cap, a.schema)),
 			0o644))
 	}
-	require.NoError(t, fs.WriteFile(".borg/workflows/spec_generation.yaml", []byte(testWorkflowYAML), 0o644))
 	return fs
 }
 
@@ -151,9 +152,9 @@ func TestGenerateSpecCleanProposalSkipsRevise(t *testing.T) {
 	)
 	fs := setupSpecGenFixture(t)
 
-	out, err := GenerateSpec(context.Background(), mock, fs, SpecGenRequest{
+	out, err := generateSpecWithWorkflow(context.Background(), mock, fs, SpecGenRequest{
 		GoalsBody: "Build something useful.",
-	})
+	}, testSpecGenWorkflow)
 	require.NoError(t, err)
 	require.Equal(t, 1, len(out.Features))
 	assert.Equal(t, "feat-x", out.Features[0].ID)
@@ -184,10 +185,10 @@ func TestGenerateSpecBridgesEventsToSink(t *testing.T) {
 	fs := setupSpecGenFixture(t)
 
 	sink := &CapturingSink{}
-	_, err := GenerateSpec(context.Background(), mock, fs, SpecGenRequest{
+	_, err := generateSpecWithWorkflow(context.Background(), mock, fs, SpecGenRequest{
 		GoalsBody: "Build something useful.",
 		Sink:      sink,
-	})
+	}, testSpecGenWorkflow)
 	require.NoError(t, err)
 
 	events := sink.Events()
@@ -218,8 +219,8 @@ func TestGenerateSpecBridgesEventsToSink(t *testing.T) {
 		assert.True(t, seenAgents[want], "expected events for agent %q", want)
 	}
 
-	assert.True(t, sink.Closed(),
-		"GenerateSpec must call sink.Close() after the run finishes")
+	assert.False(t, sink.Closed(),
+		"GenerateSpec must NOT close the caller's sink — the cmd layer keeps it open for post-workflow direct LLM calls and is responsible for closing it itself")
 }
 
 func TestValidateIsPure(t *testing.T) {
@@ -284,9 +285,9 @@ func TestGenerateSpecCritiqueRevisesProposal(t *testing.T) {
 	)
 	fs := setupSpecGenFixture(t)
 
-	out, err := GenerateSpec(context.Background(), mock, fs, SpecGenRequest{
+	out, err := generateSpecWithWorkflow(context.Background(), mock, fs, SpecGenRequest{
 		GoalsBody: "Build something.",
-	})
+	}, testSpecGenWorkflow)
 	require.NoError(t, err)
 	require.Equal(t, 1, len(out.Features))
 	require.Equal(t, 2, len(out.Decisions),
@@ -315,9 +316,9 @@ func TestGenerateSpecScoutBriefReachesProposer(t *testing.T) {
 	)
 	fs := setupSpecGenFixture(t)
 
-	_, err := GenerateSpec(context.Background(), mock, fs, SpecGenRequest{
+	_, err := generateSpecWithWorkflow(context.Background(), mock, fs, SpecGenRequest{
 		GoalsBody: "Build something.",
-	})
+	}, testSpecGenWorkflow)
 	require.NoError(t, err)
 
 	// Find the proposer call. Order: 0=scout, 1=propose, 2=reconcile, 3-6=critics.
@@ -350,9 +351,9 @@ func TestGenerateSpecCriticIssuesReachReviser(t *testing.T) {
 	)
 	fs := setupSpecGenFixture(t)
 
-	_, err := GenerateSpec(context.Background(), mock, fs, SpecGenRequest{
+	_, err := generateSpecWithWorkflow(context.Background(), mock, fs, SpecGenRequest{
 		GoalsBody: "x",
-	})
+	}, testSpecGenWorkflow)
 	require.NoError(t, err)
 
 	calls := mock.Calls()

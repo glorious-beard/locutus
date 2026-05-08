@@ -53,8 +53,9 @@ func sampleMasterPlanJSON(t *testing.T) string {
 	return string(data)
 }
 
-// setupPlannerFS creates a MemFS pre-populated with agent definitions
-// and a standard planning-workflow.yaml, matching the scaffold layout under .borg/.
+// setupPlannerFS creates a MemFS pre-populated with agent definitions,
+// matching the scaffold layout under .borg/. The planning workflow is
+// defined in code (PlanningWorkflow) and does not need on-disk seeding.
 func setupPlannerFS(t *testing.T) *specio.MemFS {
 	t.Helper()
 
@@ -62,7 +63,6 @@ func setupPlannerFS(t *testing.T) *specio.MemFS {
 
 	// Create directory structure.
 	assert.NoError(t, fs.MkdirAll(".borg/agents", 0o755))
-	assert.NoError(t, fs.MkdirAll(".borg/workflows", 0o755))
 	assert.NoError(t, fs.MkdirAll(".borg/history", 0o755))
 
 	// Council agent definitions (YAML frontmatter + markdown body).
@@ -111,102 +111,6 @@ and rationale for the decision journal.
 	for name, content := range agents {
 		assert.NoError(t, fs.WriteFile(".borg/agents/"+name, []byte(content), 0o644))
 	}
-
-	// Standard planning workflow.
-	wfYAML := `rounds:
-  - id: propose
-    agent: planner
-    parallel: false
-  - id: challenge
-    agents: [critic, stakeholder]
-    parallel: true
-    depends_on: [propose]
-  - id: research
-    agent: researcher
-    parallel: false
-    depends_on: [challenge]
-    conditional: open_questions
-  - id: revise
-    agent: planner
-    parallel: false
-    depends_on: [research]
-  - id: record
-    agent: historian
-    parallel: false
-    depends_on: [revise]
-max_rounds: 5
-`
-	assert.NoError(t, fs.WriteFile(".borg/workflows/planning.yaml", []byte(wfYAML), 0o644))
-
-	return fs
-}
-
-// setupPlannerFSWithSpecialists extends setupPlannerFS with specialist steps
-// and agent definitions for test_architect and schema_designer.
-func setupPlannerFSWithSpecialists(t *testing.T) *specio.MemFS {
-	t.Helper()
-
-	fs := setupPlannerFS(t)
-
-	// Additional specialist agent definitions.
-	specialists := map[string]string{
-		"test_architect.md": `---
-id: test_architect
-role: specialist
-temperature: 0.4
----
-You are the test architect. Design test strategies and define acceptance
-criteria for each workstream step.
-`,
-		"schema_designer.md": `---
-id: schema_designer
-role: specialist
-temperature: 0.4
----
-You are the schema designer. Define data models, API contracts, and
-interface types that enable parallel workstreams.
-`,
-	}
-	for name, content := range specialists {
-		assert.NoError(t, fs.WriteFile(".borg/agents/"+name, []byte(content), 0o644))
-	}
-
-	// Workflow with specialist steps. Specialists run conditionally when the
-	// proposed spec mentions "schema" or "test".
-	wfYAML := `rounds:
-  - id: propose
-    agent: planner
-    parallel: false
-  - id: challenge
-    agents: [critic, stakeholder]
-    parallel: true
-    depends_on: [propose]
-  - id: research
-    agent: researcher
-    parallel: false
-    depends_on: [challenge]
-    conditional: open_questions
-  - id: specialist_schema
-    agent: schema_designer
-    parallel: false
-    depends_on: [challenge]
-    conditional: schema
-  - id: specialist_test
-    agent: test_architect
-    parallel: false
-    depends_on: [challenge]
-    conditional: test
-  - id: revise
-    agent: planner
-    parallel: false
-    depends_on: [research, specialist_schema, specialist_test]
-  - id: record
-    agent: historian
-    parallel: false
-    depends_on: [revise]
-max_rounds: 5
-`
-	assert.NoError(t, fs.WriteFile(".borg/workflows/planning.yaml", []byte(wfYAML), 0o644))
 
 	return fs
 }
@@ -287,57 +191,6 @@ func TestPlanProducesValidMasterPlan(t *testing.T) {
 	assert.Equal(t, "step-2", ws.Steps[1].ID)
 	assert.Equal(t, 2, ws.Steps[1].Order)
 	assert.Equal(t, "Implement auth handlers", ws.Steps[1].Description)
-}
-
-// TestPlanWithSpecialists verifies that specialist agents (test_architect,
-// schema_designer) are invoked when their conditionals fire, and that their
-// outputs feed into the revise step.
-func TestPlanWithSpecialists(t *testing.T) {
-	fs := setupPlannerFSWithSpecialists(t)
-	planJSON := sampleMasterPlanJSON(t)
-
-	// The propose output mentions "schema" and "test" to trigger both specialists.
-	proposeOutput := planJSON[:len(planJSON)-1] + `,"notes":"need schema design and test strategy"}`
-
-	mock := NewMockExecutor(
-		// propose: planner — mentions schema and test to trigger conditionals
-		mockResp(proposeOutput),
-		// challenge: critic + stakeholder (parallel)
-		mockResp("CONVERGED: looks good"),
-		mockResp("CONVERGED: aligned with goals"),
-		// research: skipped (no "open_questions")
-		// specialist_schema: fires because propose mentions "schema"
-		mockResp("Schema: User(id, email, password_hash) with sessions table"),
-		// specialist_test: fires because propose mentions "test"
-		mockResp("Test strategy: integration tests for auth endpoints, unit tests for JWT"),
-		// revise: planner revises with specialist input
-		mockResp(planJSON),
-		// record: historian
-		mockResp("Decision recorded with schema and test notes"),
-		// convergence check
-		mockResp("CONVERGED"),
-		// readiness: critic + stakeholder
-		mockResp("APPROVED"),
-		mockResp("APPROVED"),
-	)
-
-	req := PlanRequest{
-		Prompt:    "Build user auth with schema and test coverage",
-		GoalsBody: "# Goals\n\nFull auth system.",
-	}
-
-	plan, err := Plan(context.Background(), mock, fs, req)
-	assert.NoError(t, err)
-	assert.NotNil(t, plan)
-
-	// Verify specialists actually ran by checking total call count.
-	// Without specialists: 5 workflow + 3 orchestration = 8
-	// With 2 specialists: 7 workflow + 3 orchestration = 10
-	assert.Equal(t, 10, mock.CallCount())
-
-	// Plan should still be valid.
-	assert.Equal(t, "plan-001", plan.ID)
-	assert.Len(t, plan.Workstreams, 1)
 }
 
 // TestPlanMissingCouncil verifies that Plan returns an error when the council

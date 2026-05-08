@@ -281,6 +281,35 @@ type Response struct {
 	// operator can see what the model asked tools to do, not just
 	// the final response after the loop completed.
 	Rounds []Round
+
+	// ToolCalls captures per-tool-invocation outcomes for server-side
+	// tools (currently Anthropic web_search). Each entry pairs the
+	// query the model issued with whether the tool returned data or
+	// an error. Surfaced for two reasons:
+	//
+	//   1. Honest accounting downstream — RunResearch checks this so a
+	//      grounded call whose searches errored doesn't silently
+	//      degrade into training-data confabulation.
+	//   2. Operator visibility — the session recorder writes a flat
+	//      tool_calls summary alongside the encrypted raw_message so
+	//      an operator can spot ungrounded findings without grepping
+	//      the raw content blocks.
+	//
+	// Empty for non-grounded calls and for providers whose adapters
+	// don't yet populate this (Gemini and OpenAI today).
+	ToolCalls []ToolCall
+}
+
+// ToolCall records one server-side tool invocation. Status is
+// "success" when the tool returned usable data, "error" otherwise.
+// ErrorCode is the provider-emitted code on failure (Anthropic's
+// max_uses_exceeded, too_many_requests, query_too_long, invalid_input,
+// unavailable, or empty when the provider didn't populate one).
+type ToolCall struct {
+	Name      string `json:"name"`
+	Query     string `json:"query,omitempty"`
+	Status    string `json:"status"`
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 // Round is one model invocation inside a multi-round tool-use loop.

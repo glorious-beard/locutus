@@ -69,6 +69,24 @@ type AgentOutput struct {
 	// adapters.Response.Citations.
 	Citations []Citation
 	Rounds    []GenerateRound
+
+	// ToolCalls captures per-tool-invocation outcomes for server-side
+	// tools (Anthropic web_search currently). Each entry pairs the
+	// query with whether the tool returned data or errored. Used by
+	// RunResearch to detect ungrounded calls and by the session
+	// recorder to surface a flat tool-call summary in traces.
+	// Mirrors adapters.Response.ToolCalls.
+	ToolCalls []ToolCall
+}
+
+// ToolCall records one server-side tool invocation. Mirrors
+// adapters.ToolCall with the field names the session recorder writes
+// to YAML.
+type ToolCall struct {
+	Name      string `json:"name" yaml:"name"`
+	Query     string `json:"query,omitempty" yaml:"query,omitempty"`
+	Status    string `json:"status" yaml:"status"`
+	ErrorCode string `json:"error_code,omitempty" yaml:"error_code,omitempty"`
 }
 
 // GenerateRound captures one model invocation inside a multi-round
@@ -308,6 +326,17 @@ func outputFromResponse(resp *adapters.Response, model string) *AgentOutput {
 		out.Citations = make([]Citation, len(resp.Citations))
 		for i, c := range resp.Citations {
 			out.Citations[i] = Citation{URL: c.URL, Title: c.Title, Snippet: c.Snippet}
+		}
+	}
+	if len(resp.ToolCalls) > 0 {
+		out.ToolCalls = make([]ToolCall, len(resp.ToolCalls))
+		for i, t := range resp.ToolCalls {
+			out.ToolCalls[i] = ToolCall{
+				Name:      t.Name,
+				Query:     t.Query,
+				Status:    t.Status,
+				ErrorCode: t.ErrorCode,
+			}
 		}
 	}
 	if len(resp.Rounds) > 1 {

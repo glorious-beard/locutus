@@ -7,13 +7,9 @@ import (
 	"strings"
 )
 
-// ProjectState builds the LLM messages for a specific agent role, drawing only
-// the fields from the snapshot that are relevant to that agent's job. This keeps
-// each agent's context window focused and avoids leaking irrelevant information.
-//
 // Projections are data-only. Rules of behavior — what schema to emit,
 // how to handle empty buckets, what counts as actionable — live in the
-// agent's .md system prompt, NOT in the user message generated here.
+// agent's .md system prompt, NOT in the user message produced here.
 // This separation is structural: when system-prompt rules and
 // user-message directives drift, the user message wins at inference
 // time and silently overrides the system prompt. DJ-095's lossless
@@ -23,51 +19,10 @@ import (
 // won and 22 of 32 findings got dropped. The fix is to never let
 // projections carry directives — see DJ-097.
 //
-// Fanout steps (Phase 3) tag each call with a per-item suffix in the
-// stepID — e.g. "elaborate_features (feat-dashboard)" — so progress
-// sinks render one entry per item. We strip the suffix before routing
-// to the projection switch so all per-item calls land in the same
-// projection function.
-func ProjectState(stepID string, snap StateSnapshot) []Message {
-	base := stepID
-	if i := strings.Index(base, " ("); i > 0 {
-		base = base[:i]
-	}
-	switch base {
-	case "propose":
-		return projectPropose(snap)
-	case "outline":
-		return projectOutline(snap)
-	case "elaborate_features":
-		return projectElaborateFeature(snap)
-	case "elaborate_strategies":
-		return projectElaborateStrategy(snap)
-	case "reconcile", "reconcile_revise":
-		return projectReconcile(snap)
-	case "challenge", "critique":
-		return projectChallenge(snap)
-	case "research":
-		return projectResearch(snap)
-	case "revise":
-		// DJ-098: unified per-cluster fanout. Each fanout call hits
-		// this branch (with a base step ID of "revise" after the
-		// per-item suffix is stripped). The cluster-aware projection
-		// dispatches off snap.FanoutItem (a FindingCluster JSON).
-		// Legacy non-fanout "revise" calls (older workflows) fall
-		// through to projectRevise via the empty-FanoutItem branch.
-		if snap.FanoutItem != "" {
-			return projectFindingCluster(snap)
-		}
-		return projectRevise(snap)
-	case "cluster_findings":
-		return projectClusterFindings(snap)
-	case "record":
-		return projectRecord(snap)
-	default:
-		// Fallback: provide the prompt and any existing spec.
-		return projectDefault(snap)
-	}
-}
+// Each WorkflowStep declares its Project closure directly in
+// workflows.go; there is no central stepID dispatch. Steps that don't
+// need a per-step projection use projectDefault (prompt verbatim, with
+// any prior ProposedSpec attached).
 
 // projectOutline renders the outliner's user message: GOALS.md +
 // scout brief in human-readable form. Same scout-brief formatting

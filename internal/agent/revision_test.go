@@ -21,7 +21,7 @@ func TestExtractFanoutItemsFindingClusters(t *testing.T) {
 		},
 	}
 
-	items, err := extractFanoutItems(state, "findings.clusters")
+	items, err := fanoutFindingClusters(state)
 	require.NoError(t, err)
 	require.Len(t, items, 2)
 
@@ -47,7 +47,7 @@ func TestExtractFanoutItemsFindingClustersDropsEmpty(t *testing.T) {
 			{Topic: "empty", AgentID: "spec_strategy_elaborator", Findings: nil},
 		},
 	}
-	items, err := extractFanoutItems(state, "findings.clusters")
+	items, err := fanoutFindingClusters(state)
 	require.NoError(t, err)
 	require.Len(t, items, 1, "empty-findings cluster must be dropped before dispatch")
 }
@@ -161,26 +161,26 @@ func TestFanoutItemIDFallsBackToTopic(t *testing.T) {
 	assert.Equal(t, "", fanoutItemID(malformed))
 }
 
-// TestShouldRunConditionalClusters — DJ-098 conditionals.
+// TestClusterConditionals — DJ-098 conditionals.
 //
-//   - has_unmatched_findings gates the LLM clusterer step.
-//   - has_finding_clusters gates the revise fanout and reconcile_revise.
-func TestShouldRunConditionalClusters(t *testing.T) {
-	t.Run("has_unmatched_findings: empty when nothing unmatched", func(t *testing.T) {
-		assert.False(t, shouldRunConditional("has_unmatched_findings", &PlanningState{}))
+//   - hasUnmatchedFindings gates the LLM clusterer step.
+//   - hasFindingClusters gates the revise fanout and reconcile_revise.
+func TestClusterConditionals(t *testing.T) {
+	t.Run("hasUnmatchedFindings: empty when nothing unmatched", func(t *testing.T) {
+		assert.False(t, hasUnmatchedFindings(&PlanningState{}))
 	})
-	t.Run("has_unmatched_findings: true with findings", func(t *testing.T) {
+	t.Run("hasUnmatchedFindings: true with findings", func(t *testing.T) {
 		state := &PlanningState{UnmatchedFindings: []string{"x"}}
-		assert.True(t, shouldRunConditional("has_unmatched_findings", state))
+		assert.True(t, hasUnmatchedFindings(state))
 	})
-	t.Run("has_finding_clusters: empty when nothing clustered", func(t *testing.T) {
-		assert.False(t, shouldRunConditional("has_finding_clusters", &PlanningState{}))
+	t.Run("hasFindingClusters: empty when nothing clustered", func(t *testing.T) {
+		assert.False(t, hasFindingClusters(&PlanningState{}))
 	})
-	t.Run("has_finding_clusters: true with clusters", func(t *testing.T) {
+	t.Run("hasFindingClusters: true with clusters", func(t *testing.T) {
 		state := &PlanningState{
 			FindingClusters: []FindingCluster{{Topic: "x", AgentID: "spec_strategy_elaborator", Findings: []string{"y"}}},
 		}
-		assert.True(t, shouldRunConditional("has_finding_clusters", state))
+		assert.True(t, hasFindingClusters(state))
 	})
 }
 
@@ -307,8 +307,8 @@ func TestExecuteRoundReviseFanoutSkipsWithoutClusters(t *testing.T) {
 	}
 	step := WorkflowStep{
 		ID:     "revise",
-		Agent:  "spec_strategy_elaborator",
-		Fanout: "findings.clusters",
+		Agents: []string{"spec_strategy_elaborator"},
+		Fanout: fanoutFindingClusters,
 	}
 	results, err := ex.ExecuteRound(context.Background(), step, state)
 	require.NoError(t, err)
@@ -323,8 +323,7 @@ func TestExecuteRoundReviseFanoutSkipsWithoutClusters(t *testing.T) {
 // per-strategy/per-addition slices with one unified slice.
 func TestMergeResultsRevisedNodesAccumulates(t *testing.T) {
 	state := &PlanningState{}
-	step := WorkflowStep{ID: "revise", MergeAs: "revised_nodes"}
-	mergeResults(state, step, []RoundResult{
+	mergeRevisedNodes(state, []RoundResult{
 		{StepID: "revise (feat-a)", AgentID: "spec_feature_elaborator", Output: `{"id":"feat-a"}`},
 		{StepID: "revise (strat-iac)", AgentID: "spec_strategy_elaborator", Output: `{"id":"strat-iac"}`},
 	})
@@ -345,9 +344,8 @@ func TestMergeResultsFindingClustersPromotesLLMOutput(t *testing.T) {
 			{Topic: "feat-a", NodeID: "feat-a", AgentID: "spec_feature_elaborator", Findings: []string{"x"}},
 		},
 	}
-	step := WorkflowStep{ID: "cluster_findings", MergeAs: "finding_clusters"}
 	llmOutput := `{"clusters":[{"topic":"infrastructure-as-code","findings":["missing IaC"],"kind":"strategy"}]}`
-	mergeResults(state, step, []RoundResult{
+	mergeFindingClusters(state, []RoundResult{
 		{StepID: "cluster_findings", AgentID: "spec_finding_clusterer", Output: llmOutput},
 	})
 	require.Len(t, state.FindingClusters, 2, "mechanical pre-existing + LLM-promoted cluster")

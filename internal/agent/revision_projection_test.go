@@ -161,21 +161,22 @@ func TestProjectFindingClusterRendersAddMode(t *testing.T) {
 	})
 }
 
-// TestProjectStateRoutesClusterStepsCorrectly — the projection
-// dispatcher must route cluster_findings and revise (with fanout
-// suffix carrying a FindingCluster) to the right projections.
-func TestProjectStateRoutesClusterStepsCorrectly(t *testing.T) {
-	t.Run("cluster_findings routes to projectClusterFindings", func(t *testing.T) {
+// TestClusterStepProjectionsRenderTheirData — cluster_findings and
+// revise (with a FindingCluster fanout item) project the right data
+// shape; each step's WorkflowStep carries the correct Project closure
+// so the executor doesn't need a central dispatch.
+func TestClusterStepProjectionsRenderTheirData(t *testing.T) {
+	t.Run("projectClusterFindings renders unmatched findings", func(t *testing.T) {
 		snap := StateSnapshot{
 			Prompt:            "Build it.",
 			UnmatchedFindings: []string{"some finding"},
 		}
-		msgs := ProjectState("cluster_findings", snap)
+		msgs := projectClusterFindings(snap)
 		require.Len(t, msgs, 1)
 		assert.Contains(t, msgs[0].Content, "Findings to cluster")
 	})
 
-	t.Run("revise with fanout item routes to projectFindingCluster", func(t *testing.T) {
+	t.Run("projectFindingCluster renders the cluster's targeted node", func(t *testing.T) {
 		cluster := FindingCluster{
 			Topic:    "feat-a",
 			NodeID:   "feat-a",
@@ -187,7 +188,7 @@ func TestProjectStateRoutesClusterStepsCorrectly(t *testing.T) {
 			Prompt:     "Build it.",
 			FanoutItem: string(clusterRaw),
 		}
-		msgs := ProjectState("revise (feat-a)", snap)
+		msgs := projectFindingCluster(snap)
 		assert.Contains(t, msgs[0].Content, "feat-a")
 		assert.Contains(t, msgs[0].Content, "Findings to address")
 	})

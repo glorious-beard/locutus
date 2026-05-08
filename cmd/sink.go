@@ -25,3 +25,25 @@ func pickSink(cli *CLI) agent.EventSink {
 		return agent.SilentSink{}
 	}
 }
+
+// withProgressSink wraps the LLM with a NotifyingExecutor so direct
+// (non-workflow) LLM calls render per-call lifecycle events to the
+// chosen sink. Returns:
+//
+//   - the wrapped LLM (callers should use this from now on);
+//   - the underlying sink, suitable for passing to workflow-aware
+//     callers that bridge their own per-step events through it
+//     (GenerateSpec, Analyze);
+//   - a closer the caller MUST defer. The sink lifecycle now lives at
+//     the cmd layer rather than inside GenerateSpec/Analyze, so a
+//     single sink instance covers both workflow events and the
+//     post-workflow direct calls (rewriter, synthesizer, advocate,
+//     remediator) that previously had no UI.
+//
+// Workflow-driven calls suppress NotifyingExecutor emission via
+// WithSuppressLLMNotify in WorkflowExecutor.executeAgent so the per-
+// step events the workflow already fires aren't doubled.
+func withProgressSink(cli *CLI, llm agent.AgentExecutor) (agent.AgentExecutor, agent.EventSink, func()) {
+	sink := pickSink(cli)
+	return &agent.NotifyingExecutor{Inner: llm, Sink: sink}, sink, sink.Close
+}

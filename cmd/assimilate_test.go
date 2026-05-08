@@ -25,32 +25,15 @@ func setupAssimilateFS(t *testing.T) *specio.MemFS {
 	fs.MkdirAll(".borg/spec/strategies", 0o755)
 	fs.WriteFile(".borg/spec/traces.json", []byte(`{"entries":{}}`), 0o644)
 
-	// Assimilation agents and workflows.
+	// Assimilation agents. The workflow itself is defined in code as
+	// agent.AssimilationWorkflow — remediate runs as a separate pass in
+	// cmd/assimilate after Analyze (DJ-045).
 	fs.MkdirAll(".borg/agents", 0o755)
-	fs.MkdirAll(".borg/workflows", 0o755)
 	agents := []string{"scout", "backend_analyzer", "frontend_analyzer", "infra_analyzer", "gap_analyst", "remediator"}
 	for _, id := range agents {
 		content := "---\nid: " + id + "\nrole: " + id + "\n---\nYou are the " + id + ".\n"
 		fs.WriteFile(".borg/agents/"+id+".md", []byte(content), 0o644)
 	}
-
-	// Assimilation workflow matching embedded workflow.yaml — remediate
-	// is NOT a workflow round; it runs as a separate pass in
-	// cmd/assimilate after Analyze (Round 5 / DJ-045).
-	fs.WriteFile(".borg/workflows/assimilation.yaml", []byte(`rounds:
-  - id: scan
-    agent: scout
-    parallel: false
-  - id: analyze
-    agents: [backend_analyzer, frontend_analyzer, infra_analyzer]
-    parallel: true
-    depends_on: [scan]
-  - id: gaps
-    agent: gap_analyst
-    parallel: false
-    depends_on: [analyze]
-max_rounds: 1
-`), 0o644)
 
 	// Synthetic codebase.
 	fs.WriteFile("go.mod", []byte("module example.com/app\ngo 1.22\n"), 0o644)
@@ -116,8 +99,8 @@ func TestRunAssimilateBridgesEventsToSink(t *testing.T) {
 	assert.Equal(t, agentStarted, agentCompleted,
 		"every agent started should pair with a completed in a clean run")
 	assert.Greater(t, agentStarted, 0, "at least one agent should have run")
-	assert.True(t, sink.Closed(),
-		"RunAssimilate must call sink.Close() after the run finishes")
+	assert.False(t, sink.Closed(),
+		"RunAssimilate must NOT close the caller's sink — the cmd layer keeps it open for post-workflow direct LLM calls (the remediator) and is responsible for closing it itself")
 }
 
 func TestRunAssimilateMissingConfig(t *testing.T) {

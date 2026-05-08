@@ -163,6 +163,8 @@ func (c *AdoptCmd) Run(ctx context.Context, cli *CLI) error {
 		if err != nil {
 			return err
 		}
+		llm, _, closeSink := withProgressSink(cli, llm)
+		defer closeSink()
 		cfg.LLM = llm
 		if !c.DryRun {
 			cfg.Plan = realPlan(llm, fsys)

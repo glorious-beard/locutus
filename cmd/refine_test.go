@@ -200,9 +200,10 @@ func TestRefineGoalsRequiresNonEmptyGOALS(t *testing.T) {
 
 func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 	// Use scaffold.Scaffold to bootstrap a project FS — this writes the
-	// six council agents and spec_generation.yaml that the workflow
-	// executor needs to load. RunRefineGoals goes through GenerateSpec
-	// which loads .borg/agents/ and .borg/workflows/spec_generation.yaml.
+	// council agents the workflow executor needs to load. The workflow
+	// shape itself lives in code (agent.SpecGenerationWorkflow);
+	// RunRefineGoals goes through GenerateSpec which loads
+	// .borg/agents/ and binds them to the in-code workflow.
 	fs := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fs, "test-project"))
 	require.NoError(t, fs.WriteFile("GOALS.md", []byte("# WinPlan\nHelp candidates win elections.\n"), 0o644))

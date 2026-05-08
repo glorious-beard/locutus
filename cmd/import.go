@@ -63,14 +63,18 @@ func (c *ImportCmd) Run(ctx context.Context, cli *CLI) error {
 	// every council call lands under .locutus/sessions/.
 	var llm agent.AgentExecutor
 	var rec *agent.SessionRecorder
+	var sink agent.EventSink = agent.SilentSink{}
+	closeSink := func() {}
 	if !c.SkipTriage {
 		llm, rec, err = recordingLLM(fsys, root, "import "+c.Path)
 		if err != nil {
 			return err
 		}
+		llm, sink, closeSink = withProgressSink(cli, llm)
 	}
+	defer closeSink()
 
-	result, err := RunImport(ctx, llm, fsys, data, c.Path, c.Type, c.SkipTriage, c.NoPlan, c.DryRun, pickSink(cli))
+	result, err := RunImport(ctx, llm, fsys, data, c.Path, c.Type, c.SkipTriage, c.NoPlan, c.DryRun, sink)
 	if err != nil {
 		return err
 	}

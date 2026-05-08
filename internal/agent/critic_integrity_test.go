@@ -25,8 +25,7 @@ func TestIntegrityCriticAppendsFindings(t *testing.T) {
 	require.NoError(t, err)
 
 	state := &PlanningState{ProposedSpec: string(raw)}
-	step := WorkflowStep{ID: "critique", MergeAs: "critic_issues"}
-	mergeResults(state, step, nil) // no LLM critic results, only the integrity pass
+	mergeCriticIssues(state, nil) // no LLM critic results, only the integrity pass
 
 	require.Len(t, state.Concerns, 1, "integrity critic should flag the one dangling reference")
 	c := state.Concerns[0]
@@ -52,8 +51,7 @@ func TestIntegrityCriticSilentOnCleanProposal(t *testing.T) {
 	require.NoError(t, err)
 
 	state := &PlanningState{ProposedSpec: string(raw)}
-	step := WorkflowStep{ID: "critique", MergeAs: "critic_issues"}
-	mergeResults(state, step, nil)
+	mergeCriticIssues(state, nil)
 
 	assert.Empty(t, state.Concerns, "integrity critic must not flag clean proposals")
 }
@@ -74,8 +72,7 @@ func TestIntegrityCriticUsesExistingSnapshot(t *testing.T) {
 		ProposedSpec: string(raw),
 		Existing:     &ExistingSpec{Decisions: []spec.Decision{{ID: "dec-existing", Title: "Existing"}}},
 	}
-	step := WorkflowStep{ID: "critique", MergeAs: "critic_issues"}
-	mergeResults(state, step, nil)
+	mergeCriticIssues(state, nil)
 
 	assert.Empty(t, state.Concerns,
 		"references resolved by the existing-spec snapshot must not trigger integrity findings")
@@ -102,12 +99,11 @@ func TestCritiqueKindFor(t *testing.T) {
 // projection can group them by lens.
 func TestMergeResultsTagsCriticConcernsWithKind(t *testing.T) {
 	state := &PlanningState{}
-	step := WorkflowStep{ID: "critique", MergeAs: "critic_issues"}
 	results := []RoundResult{
 		{StepID: "critique", AgentID: "architect_critic", Output: `{"issues":["arch problem"]}`},
 		{StepID: "critique", AgentID: "devops_critic", Output: `{"issues":["devops problem"]}`},
 	}
-	mergeResults(state, step, results)
+	mergeCriticIssues(state, results)
 
 	require.Len(t, state.Concerns, 2)
 	kinds := map[string]string{}
@@ -170,8 +166,7 @@ func TestIntegrityCriticFlagsFeatureWithNoDecisions(t *testing.T) {
 	require.NoError(t, err)
 
 	state := &PlanningState{ProposedSpec: string(raw)}
-	step := WorkflowStep{ID: "critique", MergeAs: "critic_issues"}
-	mergeResults(state, step, nil)
+	mergeCriticIssues(state, nil)
 
 	require.Len(t, state.Concerns, 1, "feature with no decisions should produce one finding")
 	c := state.Concerns[0]

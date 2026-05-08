@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestExtractFanoutItems — outline.features and outline.strategies
-// resolve to one raw-JSON string per element, parseable back to the
-// original typed shape.
-func TestExtractFanoutItems(t *testing.T) {
+// TestFanoutOutlineSplitsByKind — fanoutOutlineFeatures and
+// fanoutOutlineStrategies each return one raw-JSON string per element
+// of the corresponding outline slice, parseable back to the typed shape.
+func TestFanoutOutlineSplitsByKind(t *testing.T) {
 	outline := Outline{
 		Features: []OutlineFeature{
 			{ID: "feat-a", Title: "A", Summary: "first"},
@@ -26,8 +26,8 @@ func TestExtractFanoutItems(t *testing.T) {
 	require.NoError(t, err)
 	state := &PlanningState{Outline: string(raw)}
 
-	t.Run("features path returns one item per feature", func(t *testing.T) {
-		items, err := extractFanoutItems(state, "outline.features")
+	t.Run("features fanout returns one item per feature", func(t *testing.T) {
+		items, err := fanoutOutlineFeatures(state)
 		require.NoError(t, err)
 		require.Len(t, items, 2)
 
@@ -37,8 +37,8 @@ func TestExtractFanoutItems(t *testing.T) {
 		assert.Equal(t, "first", first.Summary)
 	})
 
-	t.Run("strategies path returns one item per strategy", func(t *testing.T) {
-		items, err := extractFanoutItems(state, "outline.strategies")
+	t.Run("strategies fanout returns one item per strategy", func(t *testing.T) {
+		items, err := fanoutOutlineStrategies(state)
 		require.NoError(t, err)
 		require.Len(t, items, 1)
 
@@ -48,15 +48,9 @@ func TestExtractFanoutItems(t *testing.T) {
 		assert.Equal(t, "foundational", first.Kind)
 	})
 
-	t.Run("unknown path errors", func(t *testing.T) {
-		_, err := extractFanoutItems(state, "outline.bogus")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "unsupported fanout path")
-	})
-
 	t.Run("missing outline returns empty", func(t *testing.T) {
 		empty := &PlanningState{}
-		items, err := extractFanoutItems(empty, "outline.features")
+		items, err := fanoutOutlineFeatures(empty)
 		require.NoError(t, err)
 		assert.Empty(t, items)
 	})
@@ -104,10 +98,11 @@ func TestExecuteRoundFanoutSpawnsOnePerItem(t *testing.T) {
 	}
 	step := WorkflowStep{
 		ID:       "elaborate_features",
-		Agent:    "spec_feature_elaborator",
+		Agents:   []string{"spec_feature_elaborator"},
 		Parallel: true,
-		Fanout:   "outline.features",
-		MergeAs:  "elaborated_features",
+		Fanout:   fanoutOutlineFeatures,
+		Project:  projectElaborateFeature,
+		Merge:    mergeElaboratedFeatures,
 	}
 
 	results, err := ex.ExecuteRound(context.Background(), step, state)
@@ -153,8 +148,8 @@ func TestExecuteRoundFanoutEmptyOutlineNoOps(t *testing.T) {
 		AgentDefs: map[string]AgentDef{"spec_feature_elaborator": {ID: "spec_feature_elaborator"}},
 	}
 	step := WorkflowStep{
-		ID: "elaborate_features", Agent: "spec_feature_elaborator",
-		Fanout: "outline.features",
+		ID: "elaborate_features", Agents: []string{"spec_feature_elaborator"},
+		Fanout: fanoutOutlineFeatures,
 	}
 	results, err := ex.ExecuteRound(context.Background(), step, state)
 	require.NoError(t, err)

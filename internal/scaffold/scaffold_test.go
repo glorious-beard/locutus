@@ -164,20 +164,6 @@ func TestScaffoldCreatesAgents(t *testing.T) {
 	}
 }
 
-func TestScaffoldCreatesWorkflows(t *testing.T) {
-	fsys := specio.NewMemFS()
-	err := scaffold.Scaffold(fsys, "test-project")
-	assert.NoError(t, err)
-
-	planning, err := fsys.ReadFile(".borg/workflows/planning.yaml")
-	assert.NoError(t, err)
-	assert.NotEmpty(t, planning, "planning.yaml should be non-empty")
-
-	assimilation, err := fsys.ReadFile(".borg/workflows/assimilation.yaml")
-	assert.NoError(t, err)
-	assert.NotEmpty(t, assimilation, "assimilation.yaml should be non-empty")
-}
-
 func TestScaffoldSeedsModelsYAML(t *testing.T) {
 	fsys := specio.NewMemFS()
 	err := scaffold.Scaffold(fsys, "test-project")
@@ -214,10 +200,9 @@ func TestResetOverwritesEmbeddedArtifacts(t *testing.T) {
 	assert.Contains(t, string(got), "spec_architect",
 		"the new content should be the embedded spec_architect.md (frontmatter mentions its id)")
 
-	// Report should list the agent files and workflow files reset.
+	// Report should list the reset agent files and the models.yaml flag.
 	assert.NotEmpty(t, report.AgentsReset, "report should record reset agent files")
 	assert.Contains(t, report.AgentsReset, ".borg/agents/spec_architect.md")
-	assert.NotEmpty(t, report.WorkflowsReset, "report should record reset workflow files")
 	assert.True(t, report.ModelsReset, "report should record models.yaml refresh")
 }
 

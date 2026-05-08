@@ -29,23 +29,17 @@ func Plan(ctx context.Context, exec AgentExecutor, fsys specio.FS, req PlanReque
 		return nil, fmt.Errorf("loading agents: %w", err)
 	}
 
-	// 2. Load workflow.
-	wf, err := LoadWorkflow(fsys, ".borg/workflows/planning.yaml")
-	if err != nil {
-		return nil, fmt.Errorf("loading workflow: %w", err)
-	}
-
-	// 3. Build agent defs map keyed by ID.
+	// 2. Build agent defs map keyed by ID.
 	agentDefs := make(map[string]AgentDef, len(defs))
 	for _, d := range defs {
 		agentDefs[d.ID] = d
 	}
 
-	// 4. Create workflow executor.
+	// 3. Create workflow executor.
 	executor := &WorkflowExecutor{
 		Executor:  exec,
 		AgentDefs: agentDefs,
-		Workflow:  wf,
+		Workflow:  PlanningWorkflow,
 	}
 
 	// 5. Build a contextualized prompt that includes spec state.

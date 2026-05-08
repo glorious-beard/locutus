@@ -78,8 +78,8 @@ type StrategyProposal struct {
 // Capability, Model, and CritiqueRounds are retained for backwards
 // compatibility but are advisory in the workflow path: the council's
 // agents (defined in .borg/agents/<role>.md) declare their own model
-// tier, and the workflow YAML (.borg/workflows/spec_generation.yaml)
-// declares the round shape. Edit those files to tune behavior.
+// tier; the workflow shape is defined in code as SpecGenerationWorkflow.
+// Edit agent .md files to tune per-agent behavior.
 type SpecGenRequest struct {
 	GoalsBody    string
 	DocumentBody string
@@ -123,13 +123,13 @@ type CriticIssues struct {
 // The council is defined declaratively:
 //   - Agents in .borg/agents/spec_*.md and *_critic.md (loaded at runtime
 //     from the project's FS, originally seeded from internal/scaffold/agents/
-//     by `locutus init`).
-//   - Workflow shape in .borg/workflows/spec_generation.yaml, defining
-//     the rounds: survey → propose → critique (parallel) → revise.
+//     by `locutus init`). Editable per-project.
+//   - Workflow shape in SpecGenerationWorkflow (this package), defining
+//     the rounds: survey → outline → elaborate → reconcile → critique →
+//     cluster_findings → revise → reconcile_revise.
 //
-// Editing those files tunes the council without rebuilding. Per-agent
-// model tier comes from each agent's frontmatter, resolved against
-// .borg/models.yaml at LLM-call time.
+// Per-agent model tier comes from each agent's frontmatter, resolved
+// against .borg/models.yaml at LLM-call time.
 //
 // The returned proposal is guaranteed to be referentially clean —
 // every id referenced in features[].decisions, strategies[].decisions,
@@ -141,6 +141,14 @@ type CriticIssues struct {
 // IntegrityViolationError instead of producing a degraded proposal —
 // silent stripping would mask a council failure the user cares about.
 func GenerateSpec(ctx context.Context, exec AgentExecutor, fsys specio.FS, req SpecGenRequest) (*SpecProposal, error) {
+	return generateSpecWithWorkflow(ctx, exec, fsys, req, SpecGenerationWorkflow)
+}
+
+// generateSpecWithWorkflow runs the spec-generation council with the
+// given workflow. Production callers go through GenerateSpec, which
+// wires SpecGenerationWorkflow. Tests use this entry point to inject a
+// simpler workflow that focuses the assertion surface.
+func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys specio.FS, req SpecGenRequest, wf *Workflow) (*SpecProposal, error) {
 	if strings.TrimSpace(req.GoalsBody) == "" {
 		return nil, fmt.Errorf("GenerateSpec: GoalsBody is required")
 	}
@@ -157,11 +165,6 @@ func GenerateSpec(ctx context.Context, exec AgentExecutor, fsys specio.FS, req S
 		agentDefs[d.ID] = d
 	}
 
-	wf, err := LoadWorkflow(fsys, ".borg/workflows/spec_generation.yaml")
-	if err != nil {
-		return nil, fmt.Errorf("load spec-generation workflow: %w", err)
-	}
-
 	executor := &WorkflowExecutor{
 		Executor:  exec,
 		AgentDefs: agentDefs,
@@ -173,6 +176,14 @@ func GenerateSpec(ctx context.Context, exec AgentExecutor, fsys specio.FS, req S
 	// since emitEvent now blocks on a full channel — a stuck consumer
 	// would otherwise stall the council. 64 covers the worst case
 	// (every agent fires started+completed in tight succession).
+	//
+	// Sink lifecycle: the caller owns Close(). GenerateSpec drains and
+	// closes only the bridge channel, not the sink itself, so the cmd
+	// layer can keep using the same sink for direct LLM calls that
+	// happen after the spec-generation pass returns (rewriter,
+	// synthesizer, advocate, etc.). Closing the sink here would tear
+	// down the pterm MultiPrinter mid-run and silently drop those
+	// events.
 	sink := req.Sink
 	if sink == nil {
 		sink = SilentSink{}
@@ -189,7 +200,6 @@ func GenerateSpec(ctx context.Context, exec AgentExecutor, fsys specio.FS, req S
 	defer func() {
 		close(events)
 		<-bridgeDone
-		sink.Close()
 	}()
 
 	prompt := buildSpecGenPrompt(req)

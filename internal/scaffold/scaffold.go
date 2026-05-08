@@ -19,15 +19,6 @@ import (
 //go:embed agents
 var agentsFS embed.FS
 
-//go:embed workflows/planning.yaml
-var planningWorkflow []byte
-
-//go:embed workflows/assimilation.yaml
-var assimilationWorkflow []byte
-
-//go:embed workflows/spec_generation.yaml
-var specGenerationWorkflow []byte
-
 // directories is the set of directories created by Scaffold.
 var directories = []string{
 	".borg",
@@ -39,7 +30,6 @@ var directories = []string{
 	".borg/spec/entities",
 	".borg/history",
 	".borg/agents",
-	".borg/workflows",
 	".agents/skills",
 	".borg/state",
 }
@@ -89,24 +79,7 @@ func Scaffold(fsys specio.FS, projectName string) error {
 		return fmt.Errorf("copy agent files: %w", err)
 	}
 
-	// 6. Write workflow files.
-	if err := writeIfMissing(fsys, ".borg/workflows/planning.yaml", func() ([]byte, error) {
-		return planningWorkflow, nil
-	}); err != nil {
-		return err
-	}
-	if err := writeIfMissing(fsys, ".borg/workflows/assimilation.yaml", func() ([]byte, error) {
-		return assimilationWorkflow, nil
-	}); err != nil {
-		return err
-	}
-	if err := writeIfMissing(fsys, ".borg/workflows/spec_generation.yaml", func() ([]byte, error) {
-		return specGenerationWorkflow, nil
-	}); err != nil {
-		return err
-	}
-
-	// 7. Seed .borg/models.yaml from the embedded defaults so users can
+	// 6. Seed .borg/models.yaml from the embedded defaults so users can
 	// edit per-project model preferences (provider order, tier candidates)
 	// without rebuilding or setting LOCUTUS_MODELS_CONFIG. The runtime
 	// reads from this path on every invocation; absent file falls back
@@ -142,12 +115,11 @@ func copyEmbedded(fsys specio.FS, embedded embed.FS, root, targetPrefix string) 
 }
 
 // ResetReport tells the caller what `update --reset` overwrote. Surfaced
-// so the CLI can print "refreshed N agents, M workflows, models.yaml" or
-// the like — and so tests can assert exact behavior.
+// so the CLI can print "refreshed N agents, models.yaml" or the like —
+// and so tests can assert exact behavior.
 type ResetReport struct {
-	AgentsReset    []string // FS-relative paths of agent files written
-	WorkflowsReset []string // FS-relative paths of workflow files written
-	ModelsReset    bool     // true if .borg/models.yaml was rewritten
+	AgentsReset []string // FS-relative paths of agent files written
+	ModelsReset bool     // true if .borg/models.yaml was rewritten
 }
 
 // Reset overwrites scaffolded artifacts on fsys with the versions baked
@@ -156,9 +128,10 @@ type ResetReport struct {
 // project's .locutus/ runtime state, and .gitignore.
 //
 // Use this after upgrading the locutus binary to pick up new or
-// changed agent definitions and workflow shapes the upstream build
-// ships. It does NOT download anything — the caller is expected to
-// already have the desired binary running.
+// changed agent definitions the upstream build ships. It does NOT
+// download anything — the caller is expected to already have the
+// desired binary running. Workflow topology is defined in code and
+// rebuilt with the binary; nothing on disk to refresh for that.
 //
 // Custom agent files the user added under .borg/agents/ that aren't in
 // the embedded set are not touched. Embedded agents that have been
@@ -192,25 +165,6 @@ func Reset(fsys specio.FS) (*ResetReport, error) {
 		return nil
 	}); err != nil {
 		return report, err
-	}
-
-	// Overwrite the three embedded workflow YAMLs.
-	workflows := []struct {
-		path string
-		data []byte
-	}{
-		{".borg/workflows/planning.yaml", planningWorkflow},
-		{".borg/workflows/assimilation.yaml", assimilationWorkflow},
-		{".borg/workflows/spec_generation.yaml", specGenerationWorkflow},
-	}
-	if err := fsys.MkdirAll(".borg/workflows", 0o755); err != nil {
-		return report, err
-	}
-	for _, wf := range workflows {
-		if err := fsys.WriteFile(wf.path, wf.data, 0o644); err != nil {
-			return report, fmt.Errorf("write %s: %w", wf.path, err)
-		}
-		report.WorkflowsReset = append(report.WorkflowsReset, wf.path)
 	}
 
 	// Overwrite models.yaml.

@@ -19,7 +19,6 @@ func setupAssimilationFS(t *testing.T) *specio.MemFS {
 
 	// Create agent directory structure.
 	assert.NoError(t, fs.MkdirAll(".borg/agents", 0o755))
-	assert.NoError(t, fs.MkdirAll(".borg/workflows", 0o755))
 
 	// Agent definitions — minimal frontmatter with id + role.
 	agents := map[string]string{
@@ -52,39 +51,12 @@ id: gap_analyst
 role: analyst
 ---
 You are a gap analyst. Identify missing tests, undocumented decisions, and orphan code.`,
-
-		"remediator": `---
-id: remediator
-role: remediator
----
-You are a remediator. Propose assumed decisions and features to close detected gaps.`,
 	}
 
 	for name, content := range agents {
 		path := ".borg/agents/" + name + ".md"
 		assert.NoError(t, fs.WriteFile(path, []byte(content), 0o644))
 	}
-
-	// Assimilation workflow.
-	workflowContent := `rounds:
-  - id: scan
-    agent: scout
-    parallel: false
-  - id: analyze
-    agents: [backend_analyzer, frontend_analyzer, infra_analyzer]
-    parallel: true
-    depends_on: [scan]
-  - id: gaps
-    agent: gap_analyst
-    parallel: false
-    depends_on: [analyze]
-  - id: remediate
-    agent: remediator
-    parallel: false
-    depends_on: [gaps]
-max_rounds: 1
-`
-	assert.NoError(t, fs.WriteFile(".borg/workflows/assimilation.yaml", []byte(workflowContent), 0o644))
 
 	// Synthetic codebase files.
 	assert.NoError(t, fs.MkdirAll("internal/auth", 0o755))
@@ -224,33 +196,12 @@ func TestAnalyzeProducesSpec(t *testing.T) {
 		},
 	})
 
-	remediatorResp := mustJSON(t, map[string]any{
-		"decisions": []map[string]any{
-			{
-				"id":         "d-assumed-testing",
-				"title":      "Adopt table-driven tests",
-				"status":     "assumed",
-				"confidence": 0.7,
-				"rationale":  "Go best practice for test coverage",
-			},
-		},
-		"features": []map[string]any{
-			{
-				"id":          "f-test-coverage",
-				"title":       "Add test coverage for auth handler",
-				"status":      "proposed",
-				"description": "Write unit tests for internal/auth/handler.go",
-			},
-		},
-	})
-
 	mock := NewMockExecutor(
 		mockResp(scoutResp),
 		mockResp(backendResp),
 		mockResp(frontendResp),
 		mockResp(infraResp),
 		mockResp(gapResp),
-		mockResp(remediatorResp),
 	)
 
 	ctx := context.Background()
@@ -258,7 +209,7 @@ func TestAnalyzeProducesSpec(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 
-	// At least 2 decisions: backend Go + infra Docker (possibly more from remediator).
+	// At least 2 decisions: backend Go + infra Docker.
 	assert.GreaterOrEqual(t, len(result.Decisions), 2, "expected at least 2 decisions")
 
 	// At least 1 entity (User from backend analyzer).
@@ -267,8 +218,9 @@ func TestAnalyzeProducesSpec(t *testing.T) {
 	// At least 1 gap (missing_tests from gap analyst).
 	assert.GreaterOrEqual(t, len(result.Gaps), 1, "expected at least 1 gap")
 
-	// At least 1 feature (remediation from remediator).
-	assert.GreaterOrEqual(t, len(result.Features), 1, "expected at least 1 feature")
+	// Remediation runs outside the workflow per DJ-045; feature output
+	// from the remediator is exercised in cmd/assimilate's integration
+	// tests, not here.
 }
 
 func TestAnalyzeMissingAssimilationConfig(t *testing.T) {

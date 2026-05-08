@@ -47,6 +47,8 @@ func (c *JustifyCmd) Run(ctx context.Context, cli *CLI) error {
 	if err != nil {
 		return err
 	}
+	llm, _, closeSink := withProgressSink(cli, llm)
+	defer closeSink()
 
 	result, err := RunJustifyCommand(ctx, llm, fsys, c.ID, challenge)
 	if err != nil {

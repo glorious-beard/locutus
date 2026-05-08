@@ -15,15 +15,16 @@ const updateRepo = "glorious-beard/locutus"
 // UpdateCmd refreshes the locutus install. Default behavior checks GitHub
 // for a newer binary release and downloads it if found — local project
 // files are NOT touched, since the user may have edited
-// agents/workflows/models.yaml and we shouldn't silently overwrite them.
+// agents/models.yaml and we shouldn't silently overwrite them.
 //
 // Two flags compose orthogonally:
 //
 //   - --reset overwrites the project's scaffolded artifacts
-//     (.borg/agents/*.md, .borg/workflows/*.yaml, .borg/models.yaml)
-//     with the running binary's embedded versions. User content
-//     (GOALS.md, .borg/spec/, .borg/history/, .borg/manifest.json,
-//     .locutus/) is never modified.
+//     (.borg/agents/*.md and .borg/models.yaml) with the running
+//     binary's embedded versions. User content (GOALS.md, .borg/spec/,
+//     .borg/history/, .borg/manifest.json, .locutus/) is never modified.
+//     Workflow topology lives in code and rebuilds with the binary;
+//     nothing on disk to refresh for that.
 //
 //   - --offline skips the GitHub release check and download.
 //
@@ -37,7 +38,7 @@ const updateRepo = "glorious-beard/locutus"
 //	update --offline        → no-op with a friendly message
 //	update --offline --reset → reset only; no network
 type UpdateCmd struct {
-	Reset   bool `help:"Overwrite the project's scaffolded agents, workflows, and models.yaml with the running binary's embedded versions. Local edits to those files will be lost. Defaults to off so casual binary updates don't surprise users with overwritten edits."`
+	Reset   bool `help:"Overwrite the project's scaffolded agents and models.yaml with the running binary's embedded versions. Local edits to those files will be lost. Defaults to off so casual binary updates don't surprise users with overwritten edits."`
 	Offline bool `help:"Skip the GitHub release check and download. Useful when working without network or paired with --reset to refresh local files from the current binary."`
 }
 
@@ -72,7 +73,7 @@ func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 	// with --offline --reset using the new binary.
 	if binaryUpdated {
 		fmt.Println("Skipping --reset: the new binary's embedded artifacts haven't loaded into this process.")
-		fmt.Println("Run `locutus update --offline --reset` from your project to refresh agents/workflows/models.yaml from the new binary.")
+		fmt.Println("Run `locutus update --offline --reset` from your project to refresh agents/models.yaml from the new binary.")
 		return nil
 	}
 
@@ -143,13 +144,12 @@ func printResetReport(r *scaffold.ResetReport) {
 	if r == nil {
 		return
 	}
-	fmt.Printf("Refreshed %d agent file(s), %d workflow file(s)",
-		len(r.AgentsReset), len(r.WorkflowsReset))
+	fmt.Printf("Refreshed %d agent file(s)", len(r.AgentsReset))
 	if r.ModelsReset {
-		fmt.Print(", and models.yaml")
+		fmt.Print(" and models.yaml")
 	}
 	fmt.Println(".")
-	if len(r.AgentsReset)+len(r.WorkflowsReset) > 0 {
+	if len(r.AgentsReset) > 0 || r.ModelsReset {
 		fmt.Println("Note: any local edits to those files have been overwritten. User content (GOALS.md, .borg/spec/, .borg/history/, .borg/manifest.json, .locutus/) was not touched.")
 	}
 }

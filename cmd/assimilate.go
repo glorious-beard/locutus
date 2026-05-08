@@ -44,7 +44,10 @@ func (c *AssimilateCmd) Run(ctx context.Context, cli *CLI) error {
 		effective = newReadOnlyFS(fsys)
 	}
 
-	result, err := RunAssimilate(ctx, llm, effective, !c.NoRemediate, pickSink(cli))
+	llm, sink, closeSink := withProgressSink(cli, llm)
+	defer closeSink()
+
+	result, err := RunAssimilate(ctx, llm, effective, !c.NoRemediate, sink)
 	if err != nil {
 		return err
 	}

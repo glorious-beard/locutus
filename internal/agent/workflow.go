@@ -4,57 +4,47 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/chetan/locutus/internal/executor"
-	"github.com/chetan/locutus/internal/specio"
 )
 
-// WorkflowStep defines a single step in the council workflow.
+// WorkflowStep defines a single step in the council workflow. Steps carry
+// the data fields the DAG executor consumes (ID, Agents, Parallel,
+// DependsOn) plus four optional closures that describe what the step
+// does:
 //
-// Fanout, when set, names a slice on PlanningState (currently
-// "outline.features" or "outline.strategies") whose elements drive
-// per-element parallel agent calls — Phase 3's per-node elaborate.
-// Each element is exposed to the agent's projection function via
-// StateSnapshot.FanoutItem (raw JSON) so the projection can render
-// the element-specific prompt. Set together with Parallel: true
-// when calls should run concurrently (subject to per-model
-// concurrency caps configured in models.yaml).
+//   - Conditional: gates execution. If non-nil and returns false, the
+//     step is skipped (no agent calls, no merge). nil means unconditional.
+//   - Fanout: returns a slice of raw-JSON items. Each item drives one
+//     agent call with StateSnapshot.FanoutItem populated so the projection
+//     can render the per-element prompt. nil means the step runs the
+//     configured agents once each.
+//   - Project: builds the LLM messages for each agent call. Falls back
+//     to projectDefault when nil.
+//   - Merge: applies round results back into the planning state. nil is
+//     equivalent to mergeNoop.
+//
+// Per-model concurrency caps live in models.yaml (`concurrent_requests`).
+// Even with Parallel=true, fanout never floods a model past its
+// configured slot count.
 type WorkflowStep struct {
-	ID          string   `yaml:"id"`
-	Agent       string   `yaml:"agent,omitempty"`
-	Agents      []string `yaml:"agents,omitempty"`
-	Parallel    bool     `yaml:"parallel"`
-	DependsOn   []string `yaml:"depends_on,omitempty"`
-	Conditional string   `yaml:"conditional,omitempty"` // condition tag: "has_concerns", "has_open_questions", or custom keyword
-	MergeAs     string   `yaml:"merge_as,omitempty"`    // state field to merge into: "proposed_spec", "concerns", "research", "revisions", "record"
-	Fanout      string   `yaml:"fanout,omitempty"`      // Phase 3: dotted state path to a slice of items; one agent call per item
+	ID          string
+	Agents      []string
+	Parallel    bool
+	DependsOn   []string
+	Conditional func(*PlanningState) bool
+	Fanout      func(*PlanningState) ([]string, error)
+	Project     func(StateSnapshot) []Message
+	Merge       func(*PlanningState, []RoundResult)
 }
 
 // Workflow defines the full council workflow DAG.
 type Workflow struct {
-	Rounds    []WorkflowStep `yaml:"rounds"`
-	MaxRounds int            `yaml:"max_rounds"`
-}
-
-// LoadWorkflow reads and parses a workflow.yaml from the FS.
-func LoadWorkflow(fsys specio.FS, path string) (*Workflow, error) {
-	data, err := fsys.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading workflow %q: %w", path, err)
-	}
-
-	var wf Workflow
-	if err := yaml.Unmarshal(data, &wf); err != nil {
-		return nil, fmt.Errorf("parsing workflow %q: %w", path, err)
-	}
-
-	return &wf, nil
+	Rounds    []WorkflowStep
+	MaxRounds int
 }
 
 // RoundResult holds the output of executing one round.
@@ -117,18 +107,18 @@ func (e *WorkflowExecutor) emitEvent(stepID, agentID, status, message string) {
 // Emits three lifecycle events to the workflow events channel:
 //
 //   - "queued"    — the goroutine has been scheduled. The actual LLM
-//                   call may be sitting in the per-model concurrency
-//                   queue (models.yaml's concurrent_requests cap).
+//     call may be sitting in the per-model concurrency
+//     queue (models.yaml's concurrent_requests cap).
 //   - "started"   — the call left the queue and is hitting the
-//                   provider. Driven by an acquired-callback the LLM
-//                   wrapper invokes after its semaphore acquire.
+//     provider. Driven by an acquired-callback the LLM
+//     wrapper invokes after its semaphore acquire.
 //   - "completed" — the call returned (success or final retry failure
-//                   reported separately as "error").
+//     reported separately as "error").
 //
 // The cliSink renders "queued" with a distinct visual ("queued" prefix)
 // and updates the same spinner to "running" on the started event, so
 // the operator can tell waiting items from in-flight ones.
-func (e *WorkflowExecutor) executeAgent(ctx context.Context, stepID, agentID string, snap StateSnapshot) RoundResult {
+func (e *WorkflowExecutor) executeAgent(ctx context.Context, step WorkflowStep, stepID, agentID string, snap StateSnapshot) RoundResult {
 	def, ok := e.AgentDefs[agentID]
 	if !ok {
 		return RoundResult{StepID: stepID, AgentID: agentID, Err: fmt.Errorf("agent %q not found", agentID)}
@@ -136,12 +126,11 @@ func (e *WorkflowExecutor) executeAgent(ctx context.Context, stepID, agentID str
 
 	e.emitEvent(stepID, agentID, "queued", "")
 	ctx = WithAgentID(ctx, agentID)
-	// Per-call filename suffix for fanout dispatches: stepID has the
-	// shape "elaborate_features (feat-x)" when this is a fanout call.
-	// Extract the parenthetical so the recorder appends "-feat-x" to
-	// the per-call YAML filename — `ls calls/` then reads as named
-	// nodes instead of indistinguishable per-agent siblings. Empty
-	// for non-fanout calls; recorder leaves the filename agent-only.
+	// Workflow steps already emit their own queued/started/completed
+	// events on the sink; tell any wrapping NotifyingExecutor to stay
+	// silent so direct-call LLM events don't double up with workflow
+	// per-step events on the same sink.
+	ctx = WithSuppressLLMNotify(ctx)
 	if tag := stepIDFanoutTag(stepID); tag != "" {
 		ctx = WithCallTag(ctx, tag)
 	}
@@ -149,15 +138,14 @@ func (e *WorkflowExecutor) executeAgent(ctx context.Context, stepID, agentID str
 		e.emitEvent(stepID, agentID, "started", "")
 	})
 	ctx = WithRetryCallback(ctx, func(attempt int, retryErr error) {
-		// Surfaces the in-flight backoff state so the operator can
-		// distinguish a slow-running call from one stuck retrying
-		// rate-limit / timeout failures. cliSink renders this by
-		// updating the spinner's text to "· retrying" without
-		// changing its key.
 		e.emitEvent(stepID, agentID, "retrying", fmt.Sprintf("attempt %d failed: %s", attempt, retryErr))
 	})
 
-	messages := ProjectState(stepID, snap)
+	project := step.Project
+	if project == nil {
+		project = projectDefault
+	}
+	messages := project(snap)
 	input := AgentInput{Messages: messages}
 
 	resp, err := RunWithRetry(ctx, e.Executor, def, input, executionRetryConfig())
@@ -173,49 +161,36 @@ func (e *WorkflowExecutor) executeAgent(ctx context.Context, stepID, agentID str
 // ExecuteRound runs a single workflow step against the current state. For
 // parallel multi-agent steps, agents run concurrently with the same snapshot.
 func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, state *PlanningState) ([]RoundResult, error) {
-	// Check conditional.
-	if step.Conditional != "" {
-		if !shouldRunConditional(step.Conditional, state) {
-			return nil, nil
-		}
+	if step.Conditional != nil && !step.Conditional(state) {
+		return nil, nil
 	}
 
 	agents := step.Agents
-	if len(agents) == 0 && step.Agent != "" {
-		agents = []string{step.Agent}
-	}
 	if len(agents) == 0 {
 		return nil, nil
 	}
 
 	snap := state.Snapshot()
 
-	// Phase 3 fanout: spawn one agent invocation per element of the
-	// named state slice. Each invocation gets its own snapshot with
-	// FanoutItem populated so the agent's projection can render the
-	// per-element prompt. Per-model concurrency caps in
-	// LLM (models.yaml's concurrent_requests) bound the actual
-	// parallelism — even with `parallel: true`, fanout never floods
-	// a model past its configured slot count.
-	if step.Fanout != "" {
+	// Fanout: spawn one agent invocation per element returned by the
+	// step's Fanout function. Each invocation gets its own snapshot with
+	// FanoutItem populated so the projection can render the per-element
+	// prompt. Per-model concurrency caps in LLM (models.yaml's
+	// concurrent_requests) bound the actual parallelism — even with
+	// Parallel=true, fanout never floods a model past its configured
+	// slot count.
+	if step.Fanout != nil {
 		if len(agents) != 1 {
 			return nil, fmt.Errorf("fanout step %q must declare exactly one agent (got %d)", step.ID, len(agents))
 		}
-		items, err := extractFanoutItems(state, step.Fanout)
+		items, err := step.Fanout(state)
 		if err != nil {
 			return nil, fmt.Errorf("fanout %s: %w", step.ID, err)
 		}
 		if len(items) == 0 {
-			// No items to elaborate — return cleanly. Subsequent steps
-			// see an empty merged result and treat it as no-op.
 			return nil, nil
 		}
 		results := make([]RoundResult, len(items))
-		// Each fanout call gets a per-item stepID so progress sinks
-		// (cliSink spinners, MCP progress) surface one entry per item
-		// instead of collapsing N parallel goroutines into a single
-		// spinner. The merge handler keys on step.MergeAs, not the
-		// per-item stepID, so this rename only affects observability.
 		fanoutStepID := func(item string) string {
 			id := fanoutItemID(item)
 			if id == "" {
@@ -228,7 +203,7 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 		// the step's declared agent — different clusters in the same
 		// fanout step can dispatch to different elaborator agents.
 		// Items without an agent_id field fall back to the step's
-		// agent (preserves Phase 3 elaborate-fanout behavior).
+		// agent (preserves elaborate-fanout behavior).
 		itemAgent := func(raw string) string {
 			var v struct {
 				AgentID string `json:"agent_id"`
@@ -246,7 +221,7 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 					defer wg.Done()
 					itemSnap := snap
 					itemSnap.FanoutItem = raw
-					results[idx] = e.executeAgent(ctx, fanoutStepID(raw), itemAgent(raw), itemSnap)
+					results[idx] = e.executeAgent(ctx, step, fanoutStepID(raw), itemAgent(raw), itemSnap)
 				}(i, item)
 			}
 			wg.Wait()
@@ -254,7 +229,7 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 			for i, item := range items {
 				itemSnap := snap
 				itemSnap.FanoutItem = item
-				results[i] = e.executeAgent(ctx, fanoutStepID(item), itemAgent(item), itemSnap)
+				results[i] = e.executeAgent(ctx, step, fanoutStepID(item), itemAgent(item), itemSnap)
 			}
 		}
 		// Per-node failure isolation: a fanout step is the *only*
@@ -262,13 +237,10 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 		// elaborator should not abort the proposal — the merge
 		// handler accepts whatever results came back, the assembler
 		// stitches the surviving outputs into the RawSpecProposal,
-		// and the reconciler runs against what we have. Failed items
-		// surface as already-emitted "error" events on the
-		// per-item stepID so the operator sees which nodes are
-		// missing without losing the rest of the work. A single
+		// and the reconciler runs against what we have. A single
 		// failure used to short-circuit the whole pipeline (16 of
 		// 17 elaborators succeeding, all discarded), which defeated
-		// Phase 3's failure-isolation promise.
+		// the failure-isolation promise.
 		return results, nil
 	}
 
@@ -280,7 +252,7 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 		for i, agentID := range agents {
 			go func(idx int, aid string) {
 				defer wg.Done()
-				results[idx] = e.executeAgent(ctx, step.ID, aid, snap)
+				results[idx] = e.executeAgent(ctx, step, step.ID, aid, snap)
 			}(i, agentID)
 		}
 		wg.Wait()
@@ -296,7 +268,7 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 	// Sequential.
 	var results []RoundResult
 	for _, agentID := range agents {
-		r := e.executeAgent(ctx, step.ID, agentID, snap)
+		r := e.executeAgent(ctx, step, step.ID, agentID, snap)
 		results = append(results, r)
 		if r.Err != nil {
 			return results, r.Err
@@ -348,60 +320,6 @@ func fanoutItemID(rawJSON string) string {
 	return v.Topic
 }
 
-// extractFanoutItems resolves a dotted state path (e.g. "outline.features")
-// to a slice of raw-JSON strings, one per element. Each returned string is
-// the JSON encoding of a single element so the elaborator's projection can
-// re-parse it into the right typed shape.
-//
-// Supported paths:
-//   - "outline.features", "outline.strategies"           — Phase 3 elaborate
-//   - "findings.clusters"                                — DJ-098 unified revise
-//
-// Adding new fanout sources means parsing the corresponding state field
-// here — kept narrow to avoid hand-rolling a generic JSON-path resolver
-// against the typed PlanningState struct.
-func extractFanoutItems(state *PlanningState, path string) ([]string, error) {
-	if state == nil {
-		return nil, nil
-	}
-	switch path {
-	case "outline.features", "outline.strategies":
-		if strings.TrimSpace(state.Outline) == "" {
-			return nil, nil
-		}
-		var outline Outline
-		if err := json.Unmarshal([]byte(state.Outline), &outline); err != nil {
-			return nil, fmt.Errorf("parse outline: %w", err)
-		}
-		var items []any
-		if path == "outline.features" {
-			for _, f := range outline.Features {
-				items = append(items, f)
-			}
-		} else {
-			for _, s := range outline.Strategies {
-				items = append(items, s)
-			}
-		}
-		return marshalFanoutItems(items)
-	case "findings.clusters":
-		// DJ-098 unified revise: one fanout item per FindingCluster.
-		// AgentID is sniffed off each item by ExecuteRound so the
-		// dispatcher routes to the right elaborator per cluster.
-		var items []any
-		for _, c := range state.FindingClusters {
-			if len(c.Findings) == 0 {
-				slog.Warn("fanout: dropping FindingCluster with no findings", "topic", c.Topic)
-				continue
-			}
-			items = append(items, c)
-		}
-		return marshalFanoutItems(items)
-	default:
-		return nil, fmt.Errorf("unsupported fanout path %q", path)
-	}
-}
-
 func marshalFanoutItems(items []any) ([]string, error) {
 	out := make([]string, 0, len(items))
 	for _, it := range items {
@@ -412,214 +330,6 @@ func marshalFanoutItems(items []any) ([]string, error) {
 		out = append(out, string(data))
 	}
 	return out, nil
-}
-
-// shouldRunConditional checks whether a conditional step should execute.
-// Supports typed condition tags and falls back to keyword presence in state.
-func shouldRunConditional(cond string, state *PlanningState) bool {
-	// Typed conditions checked first.
-	switch cond {
-	case "has_concerns":
-		return len(state.Concerns) > 0
-	case "has_open_questions":
-		return state.HasOpenConcerns()
-	case "has_proposed_spec":
-		return state.ProposedSpec != ""
-	case "has_revisions":
-		return state.Revisions != ""
-	case "has_unmatched_findings":
-		// DJ-098: gates the LLM clusterer step. True when the
-		// mechanical pre-pass (run in mergeResults after critique)
-		// left any findings unmatched to existing-node ids. When
-		// false, the LLM clusterer is skipped — every finding has
-		// already been routed to a per-node cluster.
-		return len(state.UnmatchedFindings) > 0
-	case "has_finding_clusters":
-		// DJ-098: gates the revise fanout. True when at least one
-		// FindingCluster (mechanical or LLM) is present. Skipped on
-		// runs where critics produced no findings.
-		return len(state.FindingClusters) > 0
-	}
-
-	// Fallback: keyword presence scan for custom/legacy conditionals.
-	lower := strings.ToLower(cond)
-	if strings.Contains(strings.ToLower(state.ProposedSpec), lower) {
-		return true
-	}
-	if strings.Contains(strings.ToLower(state.Revisions), lower) {
-		return true
-	}
-	for _, c := range state.Concerns {
-		if strings.Contains(strings.ToLower(c.Text), lower) {
-			return true
-		}
-	}
-	return false
-}
-
-// mergeResults applies round results back into the planning state using the
-// step's MergeAs field. Falls back to stepID-based matching for backward
-// compatibility with workflows that don't declare merge_as.
-func mergeResults(state *PlanningState, step WorkflowStep, results []RoundResult) {
-	mergeKey := step.MergeAs
-	if mergeKey == "" {
-		mergeKey = step.ID // fallback: use step ID
-	}
-
-	for _, r := range results {
-		if r.Err != nil || r.Output == "" {
-			continue
-		}
-		switch mergeKey {
-		case "outline":
-			// Phase 3: outliner emits an Outline JSON. Stashed for the
-			// downstream fanout (extractFanoutItems reads it) and for
-			// each elaborator's projection (sibling situational
-			// awareness). Last writer wins on multi-call merges, but
-			// outline is a single-agent step so this is benign.
-			state.Outline = r.Output
-		case "elaborated_features":
-			// Phase 3 fanout: each elaborator emits one
-			// RawFeatureProposal. Accumulate; assembly into RawProposal
-			// happens after both fanouts complete (see post-loop hook).
-			state.ElaboratedFeatures = append(state.ElaboratedFeatures, r.Output)
-		case "elaborated_strategies":
-			state.ElaboratedStrategies = append(state.ElaboratedStrategies, r.Output)
-		case "raw_proposal":
-			// Phase 2: architect emits a RawSpecProposal; the
-			// reconcile step transforms it into canonical SpecProposal.
-			// Stash the raw on state so the reconciler's projection
-			// can see it; ProposedSpec is left for downstream agents
-			// that expect the canonical shape.
-			state.RawProposal = r.Output
-		case "reconciled_proposal":
-			// Reconcile output is a ReconciliationVerdict. Combine
-			// with the upstream RawProposal via ApplyReconciliation
-			// to produce the canonical SpecProposal. Errors here
-			// (malformed verdict, source out of bounds) are recorded
-			// as a Concern so revise can surface them; the workflow
-			// itself doesn't fail.
-			canonical, applied, err := mergeReconcile(state.RawProposal, r.Output, state.Existing)
-			if err != nil {
-				state.Concerns = append(state.Concerns, Concern{
-					AgentID:  r.AgentID,
-					Severity: "high",
-					Text:     fmt.Sprintf("reconcile: %s", err.Error()),
-				})
-				continue
-			}
-			state.ProposedSpec = canonical
-			state.ConflictActions = appendConflictActions(state.ConflictActions, applied)
-		case "proposed_spec", "propose":
-			state.ProposedSpec = r.Output
-		case "concerns", "challenge":
-			state.Concerns = append(state.Concerns, Concern{
-				AgentID:  r.AgentID,
-				Severity: "medium",
-				Text:     r.Output,
-			})
-		case "critic_issues", "critique":
-			// Each critic emits CriticIssues JSON. Parse and flatten:
-			// one Concern per issue string, attributed to the critic
-			// that raised it, with Kind derived from the agent ID so
-			// the revise projection can group findings by lens.
-			kind := critiqueKindFor(r.AgentID)
-			var ci CriticIssues
-			if err := json.Unmarshal([]byte(r.Output), &ci); err != nil {
-				// Fallback: store the raw output as one concern so we
-				// don't lose the critic's contribution entirely.
-				state.Concerns = append(state.Concerns, Concern{
-					AgentID:  r.AgentID,
-					Severity: "medium",
-					Kind:     kind,
-					Text:     r.Output,
-				})
-				continue
-			}
-			for _, issue := range ci.Issues {
-				state.Concerns = append(state.Concerns, Concern{
-					AgentID:  r.AgentID,
-					Severity: "medium",
-					Kind:     kind,
-					Text:     issue,
-				})
-			}
-		case "research":
-			state.ResearchResults = append(state.ResearchResults, Finding{
-				Query:  "investigation",
-				Result: r.Output,
-			})
-		case "revisions", "revise":
-			state.Revisions = r.Output
-		case "finding_clusters":
-			// DJ-098: spec_finding_clusterer emits LLMFindingClusters
-			// (topic + findings + kind per cluster). Promote into
-			// FindingCluster entries with AgentID set from kind, and
-			// append to whatever the mechanical pre-pass already
-			// produced.
-			state.FindingClusters = append(state.FindingClusters, PromoteLLMClusters(r.Output)...)
-		case "revised_nodes":
-			// DJ-098: per-cluster elaborator outputs accumulate into a
-			// single slice. Each entry is a RawFeatureProposal or
-			// RawStrategyProposal; the assembler sniffs id prefix and
-			// decides revise (id matches existing) vs add (fresh id).
-			state.RevisedNodes = append(state.RevisedNodes, r.Output)
-		case "record":
-			state.Record = r.Output
-		case "scout_brief", "survey":
-			state.ScoutBrief = r.Output
-		}
-	}
-
-	// Phase 5: mechanical integrity critic. Runs once per critique step
-	// (after all LLM critics merge), reads the post-reconcile ProposedSpec,
-	// and appends any dangling-ref findings as Concerns with Kind="integrity".
-	// Cheap (Go function, no LLM), and load-bearing only on regressions —
-	// Phase 2's reconciler should produce a clean proposal in the common
-	// case. When it doesn't, the integrity critic catches it in-workflow
-	// so revise can address it, instead of falling all the way through to
-	// the post-workflow integrity loop.
-	if mergeKey == "critic_issues" || mergeKey == "critique" {
-		appendIntegrityFindings(state)
-		// DJ-098 mechanical clusterer: groups concerns by id-mention
-		// against the current proposal. Findings naming an existing
-		// node id form per-node clusters; the rest land in
-		// UnmatchedFindings for the LLM clusterer step. Runs after
-		// every critique merge so the cluster set reflects all
-		// critics' contributions and the integrity critic's
-		// dangling-ref findings.
-		runMechanicalCluster(state)
-	}
-
-	// Phase 3 assembly: when either fanout merge completes, attempt
-	// to assemble a full RawSpecProposal from whatever has accumulated
-	// (the other fanout may have already finished or be empty). Order-
-	// independent — both branches converge on the same RawProposal as
-	// soon as the data is available. Reconcile reads state.RawProposal
-	// for both its prompt and the ApplyReconciliation merge.
-	//
-	// OriginalRawProposal mirrors RawProposal at this point so the
-	// downstream revise fanout has a stable pre-revise snapshot to
-	// look up prior node content from. RawProposal itself gets
-	// rewritten by the revised-assembly path below once revise
-	// activity completes.
-	if mergeKey == "elaborated_features" || mergeKey == "elaborated_strategies" {
-		if assembled, ok := assembleRawProposal(state); ok {
-			state.RawProposal = assembled
-			state.OriginalRawProposal = assembled
-		}
-	}
-
-	// Revise assembly: when revised_nodes accumulates, rebuild
-	// RawProposal from the original + the per-cluster outputs.
-	// Idempotent and order-independent — repeated calls converge on
-	// the same merged proposal as new entries arrive.
-	// Reconcile_revise reads state.RawProposal unchanged.
-	if mergeKey == "revised_nodes" {
-		if merged, ok := assembleRevisedRawProposal(state); ok {
-			state.RawProposal = merged
-		}
-	}
 }
 
 // runMechanicalCluster (DJ-098) partitions state.Concerns into
@@ -658,7 +368,6 @@ func assembleRawProposal(state *PlanningState) (string, bool) {
 	for _, raw := range state.ElaboratedFeatures {
 		var f RawFeatureProposal
 		if err := json.Unmarshal([]byte(raw), &f); err != nil {
-			slog.Warn("assemble raw proposal: skipping malformed feature elaborator output", "error", err)
 			continue
 		}
 		out.Features = append(out.Features, f)
@@ -666,14 +375,12 @@ func assembleRawProposal(state *PlanningState) (string, bool) {
 	for _, raw := range state.ElaboratedStrategies {
 		var s RawStrategyProposal
 		if err := json.Unmarshal([]byte(raw), &s); err != nil {
-			slog.Warn("assemble raw proposal: skipping malformed strategy elaborator output", "error", err)
 			continue
 		}
 		out.Strategies = append(out.Strategies, s)
 	}
 	data, err := json.Marshal(out)
 	if err != nil {
-		slog.Warn("assemble raw proposal: marshal failed", "error", err)
 		return "", false
 	}
 	return string(data), true
@@ -708,10 +415,6 @@ func appendIntegrityFindings(state *PlanningState) {
 	}
 	var p SpecProposal
 	if err := json.Unmarshal([]byte(state.ProposedSpec), &p); err != nil {
-		// Malformed canonical proposal — surface as an integrity finding
-		// so revise can re-emit. This shouldn't happen post-Phase-2
-		// because ApplyReconciliation produces structured output, but the
-		// guard catches regressions.
 		state.Concerns = append(state.Concerns, Concern{
 			AgentID:  "integrity_critic",
 			Severity: "high",
@@ -754,39 +457,19 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 		ds := executor.Step{
 			ID:        ws.ID,
 			DependsOn: ws.DependsOn,
-			// Two distinct concerns share the Parallel flag, both
-			// honored from the workflow YAML:
-			//
-			//   - Step-level: independent steps with their dependencies
-			//     met run concurrently. Phase 3 elaborate_features and
-			//     elaborate_strategies both depend on outline; setting
-			//     parallel: true on both lets them interleave (subject
-			//     to per-model concurrency caps in models.yaml) instead
-			//     of features-then-strategies in series.
-			//   - Agent-level (inside ExecuteRound): when the step lists
-			//     multiple agents, parallel: true fans them out as
-			//     goroutines (the four critics, etc.).
-			//
-			// ExecuteRound handles per-step concurrency safely because
-			// each invocation gets a snapshot taken at step entry and
-			// the merge runs serially after parallel steps complete.
-			Parallel: ws.Parallel,
+			Parallel:  ws.Parallel,
 		}
-		if ws.Conditional != "" {
+		if ws.Conditional != nil {
 			cond := ws.Conditional // capture for closure
 			ds.Conditional = func(s any) bool {
-				return shouldRunConditional(cond, s.(*PlanningState))
+				return cond(s.(*PlanningState))
 			}
 		}
 		dagSteps[i] = ds
 	}
 
-	// Accumulate results across convergence iterations.
 	var allResults []RoundResult
 
-	// Bridge DAG events to WorkflowEvents. The cleanup func is deferred so
-	// every return path joins the goroutine — earlier hand-written cleanup
-	// only ran on the success path and leaked on convergence/readiness errors.
 	dagEvents, stopBridge := e.startEventBridge()
 	defer stopBridge()
 
@@ -807,9 +490,13 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 				return executor.StepResult{Output: results}, err
 			},
 			Merge: func(s *PlanningState, r executor.StepResult) {
-				if results, ok := r.Output.([]RoundResult); ok {
-					ws := stepLookup[r.StepID]
-					mergeResults(s, ws, results)
+				results, ok := r.Output.([]RoundResult)
+				if !ok {
+					return
+				}
+				ws := stepLookup[r.StepID]
+				if ws.Merge != nil {
+					ws.Merge(s, results)
 				}
 			},
 			Snapshot: func(s *PlanningState) PlanningState { return *s },
@@ -822,7 +509,6 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 			return allResults, err
 		}
 
-		// Flatten dag results into RoundResults.
 		for _, dr := range dagResults {
 			if results, ok := dr.Output.([]RoundResult); ok {
 				allResults = append(allResults, results...)
@@ -843,10 +529,10 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 
 		if e.Events != nil {
 			e.Events <- WorkflowEvent{
-				StepID:  "convergence",
-				AgentID: "convergence",
-				Status:  "completed",
-				Message: verdict.Reasoning,
+				StepID:    "convergence",
+				AgentID:   "convergence",
+				Status:    "completed",
+				Message:   verdict.Reasoning,
 				Timestamp: time.Now(),
 			}
 		}

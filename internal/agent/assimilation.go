@@ -202,7 +202,6 @@ func isIgnored(filePath string, patterns []gitignorePattern) bool {
 // Analyze runs the full assimilation pipeline using the assimilation council workflow.
 func Analyze(ctx context.Context, exec AgentExecutor, fsys specio.FS, req AssimilationRequest) (*AssimilationResult, error) {
 	const agentsDir = ".borg/agents"
-	const workflowPath = ".borg/workflows/assimilation.yaml"
 
 	// Load agent definitions.
 	agentList, err := LoadAgentDefs(fsys, agentsDir)
@@ -213,12 +212,6 @@ func Analyze(ctx context.Context, exec AgentExecutor, fsys specio.FS, req Assimi
 	agentDefs := make(map[string]AgentDef, len(agentList))
 	for _, a := range agentList {
 		agentDefs[a.ID] = a
-	}
-
-	// Load workflow.
-	wf, err := LoadWorkflow(fsys, workflowPath)
-	if err != nil {
-		return nil, fmt.Errorf("loading assimilation workflow: %w", err)
 	}
 
 	// Build the initial prompt with inventory context and, when present,
@@ -259,12 +252,15 @@ func Analyze(ctx context.Context, exec AgentExecutor, fsys specio.FS, req Assimi
 	wfExec := &WorkflowExecutor{
 		Executor:  exec,
 		AgentDefs: agentDefs,
-		Workflow:  wf,
+		Workflow:  AssimilationWorkflow,
 	}
 
 	// Bridge workflow events to the caller's sink. Same shape as the
 	// spec-generation council — see GenerateSpec for the rationale on
-	// buffer sizing and the deferred close-then-join.
+	// buffer sizing. Sink lifecycle is owned by the cmd-layer caller;
+	// Analyze drains the bridge channel but leaves the sink open so
+	// post-Analyze direct calls (the remediator pass) can still
+	// render through it.
 	sink := req.Sink
 	if sink == nil {
 		sink = SilentSink{}
@@ -281,7 +277,6 @@ func Analyze(ctx context.Context, exec AgentExecutor, fsys specio.FS, req Assimi
 	defer func() {
 		close(events)
 		<-bridgeDone
-		sink.Close()
 	}()
 
 	results, err := wfExec.Run(ctx, prompt)

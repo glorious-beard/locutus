@@ -142,9 +142,11 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 	if err != nil {
 		return err
 	}
+	llm, sink, closeSink := withProgressSink(cli, llm)
+	defer closeSink()
 
 	opts := RefineOptions{Brief: c.Brief, Diff: c.Diff}
-	result, err := dispatchRefineWithOptions(ctx, llm, fsys, c.ID, kind, opts, pickSink(cli))
+	result, err := dispatchRefineWithOptions(ctx, llm, fsys, c.ID, kind, opts, sink)
 	if err != nil {
 		// Integrity violations are user-actionable: surface the
 		// dangling refs explicitly so they can re-run, switch model,

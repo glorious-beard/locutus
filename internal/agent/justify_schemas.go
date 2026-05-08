@@ -40,8 +40,36 @@ type AddressedConcern struct {
 // challenger concern investigated) so strict-mode JSON schemas have
 // a struct root. Mirrors the council's Finding shape used in
 // PlanningState.ResearchResults.
+//
+// ToolOutcomes is populated post-call from the AgentOutput's
+// per-tool-invocation summary; it is NOT part of the schema the
+// model is asked to produce. Any entry with Status="error"
+// represents a query the model tried to ground via web search but
+// for which the tool returned no usable content. Findings whose
+// claims correspond to those queries are unsupported by retrieval
+// and should be treated as ungrounded by downstream consumers
+// (the advocate's prompt cites them explicitly).
 type ResearchBrief struct {
-	Findings []Finding `json:"findings"`
+	Findings     []Finding  `json:"findings"`
+	ToolOutcomes []ToolCall `json:"-"`
+}
+
+// FailedQueries returns the subset of ToolOutcomes whose Status is
+// "error" — the queries that produced no retrieved evidence. Used by
+// buildAdvocateUserMessage to flag ungrounded findings to the
+// advocate, and by RunResearch's slog warning so the operator sees
+// which questions had no grounding.
+func (r *ResearchBrief) FailedQueries() []ToolCall {
+	if r == nil || len(r.ToolOutcomes) == 0 {
+		return nil
+	}
+	var out []ToolCall
+	for _, tc := range r.ToolOutcomes {
+		if tc.Status == "error" {
+			out = append(out, tc)
+		}
+	}
+	return out
 }
 
 // AdversarialDefense extends JustificationBrief with the per-concern
