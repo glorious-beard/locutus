@@ -50,16 +50,24 @@ func (d SpecDiff) Counts() (added, modified, abandoned, stable int) {
 }
 
 // ComputeSpecDiff diffs two ExistingSpec snapshots — typically the
-// pre-run state (loaded at refine start) and the post-run state
-// (reloaded after persistence). Categorizes each ID into Added /
-// Modified / Abandoned / Stable so an operator can see exactly
-// what a refine pass changed without resorting to git diff.
+// pre-run state (loaded at refine start) and the council's intended
+// output (built from the proposal via AssimilationResultToExistingSpec).
+// Categorizes each ID into Added / Modified / Abandoned / Stable so
+// an operator can see exactly what a refine pass changed without
+// resorting to git diff.
 //
 // "Modified" is determined by content comparison (title +
 // kind-specific load-bearing field — Description for features,
 // Rationale for decisions, etc.); generated timestamps and status
 // fields are intentionally NOT part of the comparison so a
 // re-persist that touches only those fields registers as Stable.
+//
+// Note on the "after" snapshot: persistAssimilationResult does NOT
+// delete files for IDs the council didn't produce, so loading the
+// post-persist disk state would never surface Abandoned IDs (they
+// remain on disk and register as Stable). The caller must construct
+// the "after" view from the council's proposal — the council's
+// intended output set — so abandons are detectable.
 func ComputeSpecDiff(before, after *ExistingSpec) SpecDiff {
 	if before == nil {
 		before = &ExistingSpec{}
@@ -244,6 +252,24 @@ func indexApproaches(items []spec.Approach) map[string]spec.Approach {
 		out[item.ID] = item
 	}
 	return out
+}
+
+// AssimilationResultToExistingSpec adapts the council's intended-
+// output shape into the ExistingSpec shape ComputeSpecDiff expects.
+// Used to compute the "after" view from the proposal (rather than
+// from the post-persist disk state, which never deletes and would
+// silently treat abandoned IDs as Stable).
+func AssimilationResultToExistingSpec(result *AssimilationResult) *ExistingSpec {
+	if result == nil {
+		return &ExistingSpec{}
+	}
+	return &ExistingSpec{
+		Features:   result.Features,
+		Decisions:  result.Decisions,
+		Strategies: result.Strategies,
+		Approaches: result.Approaches,
+		Entities:   result.Entities,
+	}
 }
 
 func sortChanges(changes []SpecChange) {

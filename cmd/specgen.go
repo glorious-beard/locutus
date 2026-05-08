@@ -81,11 +81,15 @@ func runSpecGeneration(ctx context.Context, llm agent.AgentExecutor, fsys specio
 		slog.Warn("cascade rewrite after reconcile produced errors", "error", err)
 	}
 
-	// Compute the operator-visible delta. Reload after persistence
-	// (cheap — small JSON files) rather than translating the proposal
-	// shape into ExistingSpec, so the diff reflects what's actually
-	// on disk including any partial-save state.
-	after := loadExistingSpec(fsys)
+	// Compute the operator-visible delta. The "after" view is the
+	// council's *intended* output (the proposal), NOT the post-persist
+	// disk state. persistAssimilationResult never deletes; loading the
+	// disk state would treat IDs the council abandoned as still-present
+	// (because they're still on disk from prior runs), silently
+	// hiding the Abandoned category. Diffing against the proposal
+	// surfaces the abandons so the operator can see them — and so
+	// the planned cleanup pass has a list to act on.
+	after := agent.AssimilationResultToExistingSpec(result)
 	diff := agent.ComputeSpecDiff(req.Existing, after)
 
 	return &SpecGenerationResult{
