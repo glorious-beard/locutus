@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/cascade"
@@ -29,9 +30,16 @@ type GenerationSummary struct {
 // surface to the operator as a delta report. The shape avoids
 // reloading the post-persist spec twice (once for the diff, once
 // for any caller that needs the full snapshot).
+//
+// ArchivePath is the relative path under the project root where
+// abandoned-ID files were moved (.borg/spec/.archived/<timestamp>/).
+// Empty when the run had no abandons or archiving failed across
+// the board.
 type SpecGenerationResult struct {
-	Summary *GenerationSummary
-	Diff    agent.SpecDiff
+	Summary     *GenerationSummary
+	Diff        agent.SpecDiff
+	ArchivePath string
+	Archived    []string
 }
 
 // runSpecGeneration is the shared entry point for both `refine goals` and
@@ -92,13 +100,28 @@ func runSpecGeneration(ctx context.Context, llm agent.AgentExecutor, fsys specio
 	after := agent.AssimilationResultToExistingSpec(result)
 	diff := agent.ComputeSpecDiff(req.Existing, after)
 
+	// Archive any abandoned IDs (present in the prior run, not
+	// produced this run) out of the active spec graph and into
+	// .borg/spec/.archived/<timestamp>/. Active graph stays clean;
+	// archived data is preserved for forensics or recovery. The
+	// timestamp is generated here so the archive root is unique
+	// per refine, not per call.
+	var archivePath string
+	var archivedIDs []string
+	if len(diff.Abandoned) > 0 {
+		archivePath = path.Join(".borg/spec/.archived", time.Now().UTC().Format("20060102-150405"))
+		archivedIDs = archiveAbandonedNodes(fsys, diff.Abandoned, archivePath)
+	}
+
 	return &SpecGenerationResult{
 		Summary: &GenerationSummary{
 			Features:   len(proposal.Features),
 			Decisions:  len(proposal.Decisions),
 			Strategies: len(proposal.Strategies),
 		},
-		Diff: diff,
+		Diff:        diff,
+		ArchivePath: archivePath,
+		Archived:    archivedIDs,
 	}, nil
 }
 

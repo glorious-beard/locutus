@@ -77,6 +77,10 @@ type RefineResult struct {
 	// stable per node. Only populated for the `refine goals`
 	// path where a council run produces or mutates spec nodes.
 	SpecDiff *agent.SpecDiff `json:"spec_diff,omitempty"`
+	// ArchivePath names the directory under .borg/spec/.archived/
+	// where abandoned-ID files were moved on this run. Empty when
+	// nothing was abandoned.
+	ArchivePath string `json:"archive_path,omitempty"`
 	// Diff is the unified-diff text computed against the prior
 	// stored version. Populated when --diff is set and the refine
 	// produced an actual change. Empty otherwise.
@@ -365,10 +369,11 @@ func RunRefineGoals(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS
 	}
 
 	return &RefineResult{
-		NodeID:    spec.RootID,
-		NodeKind:  spec.KindGoals,
-		Generated: gen.Summary,
-		SpecDiff:  &gen.Diff,
+		NodeID:      spec.RootID,
+		NodeKind:    spec.KindGoals,
+		Generated:   gen.Summary,
+		SpecDiff:    &gen.Diff,
+		ArchivePath: gen.ArchivePath,
 	}, nil
 }
 
@@ -810,7 +815,7 @@ func printRefineSummary(r *RefineResult) {
 			}
 		}
 		if r.SpecDiff != nil {
-			printSpecDiffSummary(r.SpecDiff)
+			printSpecDiffSummary(r.SpecDiff, r.ArchivePath)
 		}
 		return
 	}
@@ -843,7 +848,10 @@ func printRefineSummary(r *RefineResult) {
 // operator audit specific IDs that were added, modified, or
 // abandoned. Stable nodes are summarized as a count only —
 // listing 50+ unchanged IDs every run would bury the signal.
-func printSpecDiffSummary(d *agent.SpecDiff) {
+//
+// archivePath, when non-empty, names the directory under
+// .borg/spec/.archived/ where abandoned-ID files were moved.
+func printSpecDiffSummary(d *agent.SpecDiff, archivePath string) {
 	if d == nil {
 		return
 	}
@@ -866,7 +874,11 @@ func printSpecDiffSummary(d *agent.SpecDiff) {
 		}
 	}
 	if abandoned > 0 {
-		fmt.Println("  Abandoned (still on disk; the next run can archive):")
+		if archivePath != "" {
+			fmt.Printf("  Abandoned (archived to %s/):\n", archivePath)
+		} else {
+			fmt.Println("  Abandoned (still on disk; archive failed):")
+		}
 		for _, c := range d.Abandoned {
 			fmt.Printf("    - %s  %s\n", c.ID, c.Title)
 		}
