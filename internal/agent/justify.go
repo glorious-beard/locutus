@@ -356,31 +356,17 @@ func RunJustifyAgainst(ctx context.Context, exec AgentExecutor, in JustifyInputs
 	challengeUser := buildChallengerUserMessage(in)
 	challengeInput := AgentInput{Messages: []Message{{Role: "user", Content: challengeUser}}}
 
-	var challenge ChallengeBrief
-	if err := RunInto(WithRole(ctx, "challenge"), exec, challengeDef, challengeInput, &challenge); err != nil {
-		return nil, nil, nil, fmt.Errorf("justify: challenger dispatch: %w", err)
-	}
-	if len(challenge.Concerns) == 0 {
-		return &challenge, nil, nil, fmt.Errorf("justify: challenger returned no concerns for %q", in.NodeID)
-	}
-	if reason, degenerate := degenerateChallengerBrief(&challenge); degenerate {
-		// Backstop for the schema-skeleton failure mode observed when
-		// Sonnet 4.6's native structured output occasionally short-
-		// circuits to minimum-viable JSON despite the thinking trace
-		// showing the model understood the task. Fail loudly with the
-		// offending content rather than feed garbage to the researcher
-		// and advocate downstream — those agents would either burn
-		// tokens producing nothing useful (researcher) or paper the
-		// gap with training-data confabulation (advocate).
-		return &challenge, nil, nil, fmt.Errorf("justify: challenger emitted degenerate brief for %q (%s); re-run, or report this if it persists", in.NodeID, reason)
+	challenge, challengeErr := dispatchChallengerWithRetry(ctx, exec, challengeDef, challengeInput, in.NodeID)
+	if challengeErr != nil {
+		return challenge, nil, nil, challengeErr
 	}
 
 	researchIn := in
-	researchIn.ChallengerOut = &challenge
+	researchIn.ChallengerOut = challenge
 
 	research, err := RunResearch(ctx, exec, researchIn)
 	if err != nil {
-		return &challenge, nil, nil, err
+		return challenge, nil, nil, err
 	}
 
 	advocateIn := researchIn
@@ -396,15 +382,15 @@ func RunJustifyAgainst(ctx context.Context, exec AgentExecutor, in JustifyInputs
 
 	var defense AdversarialDefense
 	if err := RunInto(WithRole(ctx, "justification"), exec, advocateDef, advocateInput, &defense); err != nil {
-		return &challenge, research, nil, fmt.Errorf("justify: advocate dispatch: %w", err)
+		return challenge, research, nil, fmt.Errorf("justify: advocate dispatch: %w", err)
 	}
 	if defense.Defense == "" {
-		return &challenge, research, &defense, fmt.Errorf("justify: advocate returned empty defense for %q", in.NodeID)
+		return challenge, research, &defense, fmt.Errorf("justify: advocate returned empty defense for %q", in.NodeID)
 	}
 	if !validVerdict(defense.Verdict) {
-		return &challenge, research, &defense, fmt.Errorf("justify: advocate returned invalid verdict %q (want held_up|partially_held_up|broke_down)", defense.Verdict)
+		return challenge, research, &defense, fmt.Errorf("justify: advocate returned invalid verdict %q (want held_up|partially_held_up|broke_down)", defense.Verdict)
 	}
-	return &challenge, research, &defense, nil
+	return challenge, research, &defense, nil
 }
 
 func buildAdvocateUserMessage(in JustifyInputs) string {
@@ -494,6 +480,72 @@ func joinSections(parts []string) string {
 		out += p
 	}
 	return out
+}
+
+// challengerMaxAttempts caps how many times we'll dispatch the
+// spec_challenger before giving up. The Anthropic-side schema-skeleton
+// failure mode (DJ-108 native structured output + adaptive thinking)
+// is intermittent — observed at ~50–67% per call against winplan in
+// May 2026 — so a single retry typically clears it. Two attempts
+// total covers the common case without burning user tokens on a
+// runaway retry loop when the model is having a genuinely bad
+// inference run.
+//
+// Increase only with evidence: a 3rd attempt against the same model
+// state has rapidly diminishing returns and starts looking like
+// stubbornness.
+const challengerMaxAttempts = 2
+
+// dispatchChallengerWithRetry runs the spec_challenger and applies
+// the degenerate-output validator. On a degenerate result it logs
+// the offending content at WARN and retries up to challengerMaxAttempts
+// total dispatches. On a real LLM error (rate limit, timeout) the
+// underlying RunInto path already retries via the executor's standard
+// retry; this layer is specifically for the "model returned valid
+// JSON but it's a schema skeleton" failure mode that a transport
+// retry can't catch.
+//
+// Returns the last challenge produced (so the cmd layer can show the
+// user what the model emitted on terminal failure) and a nil error
+// on success, or the offending challenge plus a degenerate-output
+// error after the attempt cap is reached.
+func dispatchChallengerWithRetry(ctx context.Context, exec AgentExecutor, def AgentDef, input AgentInput, nodeID string) (*ChallengeBrief, error) {
+	var last ChallengeBrief
+	for attempt := 1; attempt <= challengerMaxAttempts; attempt++ {
+		var challenge ChallengeBrief
+		if err := RunInto(WithRole(ctx, "challenge"), exec, def, input, &challenge); err != nil {
+			return nil, fmt.Errorf("justify: challenger dispatch: %w", err)
+		}
+		last = challenge
+		if len(challenge.Concerns) == 0 {
+			// Empty concerns is a valid "challenger found nothing
+			// substantive to surface" outcome — not a transient
+			// schema-skeleton failure. Fail immediately rather
+			// than retrying since a retry would only churn the
+			// model on a prompt the model already evaluated as
+			// not-yielding-concerns.
+			return &challenge, fmt.Errorf("justify: challenger returned no concerns for %q", nodeID)
+		}
+		if reason, degenerate := degenerateChallengerBrief(&challenge); degenerate {
+			if attempt < challengerMaxAttempts {
+				slog.Warn("justify: challenger emitted degenerate brief; retrying",
+					"node_id", nodeID,
+					"attempt", attempt,
+					"max_attempts", challengerMaxAttempts,
+					"reason", reason,
+					"output", challenge)
+				continue
+			}
+			// Final attempt produced a degenerate result. Give up
+			// loudly with the offending content so the user can
+			// see what happened and decide whether to re-run.
+			return &challenge, fmt.Errorf("justify: challenger emitted degenerate brief for %q after %d attempts (%s); re-run, or report this if it persists", nodeID, challengerMaxAttempts, reason)
+		}
+		return &challenge, nil
+	}
+	// Unreachable in practice — the loop returns on every iteration —
+	// but Go's flow analysis requires a terminal return.
+	return &last, fmt.Errorf("justify: challenger retry loop exited without a result for %q", nodeID)
 }
 
 // challengerPlaceholderTokens lists the literal strings observed (or
