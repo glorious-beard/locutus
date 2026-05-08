@@ -377,6 +377,66 @@ func TestApplyReconciliationEmptyCanonicalDegrades(t *testing.T) {
 		"source falls through to keep-separate")
 }
 
+// TestIsEmptyInlineDecision_DropsPlaceholderTitle covers the
+// `dec-placeholder` shape observed in winplan: title is literally
+// the word "placeholder" (or a known synonym), passes the
+// emptiness check, but is meaningless to a coding agent. The
+// elaborator prompt forbids this per DJ-105 mandate "NO
+// PLACEHOLDER DECISIONS"; the apply-time check is the structural
+// backstop.
+func TestIsEmptyInlineDecision_DropsPlaceholderTitle(t *testing.T) {
+	cases := []string{"placeholder", "Placeholder", "PLACEHOLDER", "tbd", "TBD", "todo", "TODO", "untitled", "n/a", "N/A", "none", "fixme"}
+	for _, title := range cases {
+		t.Run(title, func(t *testing.T) {
+			d := InlineDecisionProposal{Title: title}
+			assert.True(t, isEmptyInlineDecision(d), "%q must be treated as empty", title)
+		})
+	}
+}
+
+// TestIsEmptyInlineDecision_DropsStructuralJSONNoise covers the
+// `dec-deploy-all-services-...-no` shape observed in winplan: the
+// model wandered out of the title field and emitted JSON-syntax
+// fragments (`'],'alternatives` etc.) as part of the title
+// string. The 256-char cap doesn't catch this because the title
+// is short enough; the noise is content-shape, not length.
+func TestIsEmptyInlineDecision_DropsStructuralJSONNoise(t *testing.T) {
+	cases := []string{
+		"Deploy all services and data in GCP us-central1, no multi-region replication in v1.','alternatives",
+		`Some legitimate prefix",}, "rationale": "...`,
+		"prefix'],",
+		`prefix"]`+`,`,
+		"prefix','",
+		`prefix","`,
+	}
+	for _, title := range cases {
+		t.Run(title[:min(len(title), 40)], func(t *testing.T) {
+			d := InlineDecisionProposal{Title: title}
+			assert.True(t, isEmptyInlineDecision(d),
+				"title containing structural JSON noise must be treated as empty: %q", title)
+		})
+	}
+}
+
+// TestIsEmptyInlineDecision_AcceptsLegitimateTitles ensures the
+// new detection logic doesn't false-positive on real titles that
+// happen to contain apostrophes, commas, or other punctuation.
+func TestIsEmptyInlineDecision_AcceptsLegitimateTitles(t *testing.T) {
+	cases := []string{
+		"Use PostgreSQL 16 with PostGIS for geospatial workloads",
+		"Don't bypass RLS in admin paths",
+		"Adopt OAuth2, OIDC for cross-tenant federation",
+		"Materialize voter universes; query with parameterized SQL",
+		"Apply Postgres RLS policy on all GOTV universe and persuasion tables",
+	}
+	for _, title := range cases {
+		t.Run(title[:min(len(title), 40)], func(t *testing.T) {
+			d := InlineDecisionProposal{Title: title}
+			assert.False(t, isEmptyInlineDecision(d), "legitimate title flagged as empty: %q", title)
+		})
+	}
+}
+
 func TestIsEmptyInlineDecision_DropsPathologicalTitle(t *testing.T) {
 	// Same pathology that triggered the slug-cap fix: a model
 	// spirals into the title field producing thousands of chars

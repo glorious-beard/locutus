@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -438,14 +439,45 @@ func mintDecisionID(title string, used map[string]struct{}) string {
 // 256 chars is a generous cap; legitimate titles are well under it.
 const maxInlineDecisionTitleChars = 256
 
+// titleDenylist matches titles that are syntactically non-empty but
+// semantically meaningless to a coding agent or auditor. The
+// elaborator prompt forbids these per DJ-105's "NO PLACEHOLDER
+// DECISIONS" mandate; the apply-time check is the structural
+// backstop for cases where the model emits one anyway. Comparison
+// is case-insensitive and trims whitespace.
+var titleDenylist = map[string]struct{}{
+	"placeholder": {},
+	"tbd":         {},
+	"todo":        {},
+	"untitled":    {},
+	"n/a":         {},
+	"none":        {},
+	"fixme":       {},
+}
+
+// titleStructuralNoise matches a quote followed by one or more JSON
+// structural tokens (close-bracket, close-brace, comma, semicolon)
+// followed by another quote OR another structural token. The pattern
+// catches the family of artifacts a model produces when it loses
+// track of which field it's emitting into and bleeds raw JSON syntax
+// into the title string — observed in winplan as a title ending with
+// `'],'alternatives` (close-array, comma, key-quote) and the
+// kissing-cousin shapes (`",},`, `","`, etc.). Real prose titles
+// never legitimately contain these consecutive-structural-token
+// sequences, so the regex is a high-precision signal of model drift.
+var titleStructuralNoise = regexp.MustCompile(`['"]\s*[,;\]\}]\s*['",;\]\}]`)
+
 // isEmptyInlineDecision reports whether the inline decision is a
 // placeholder with no usable content. The architect's contract requires
 // title + rationale + at least one alternative + at least one citation;
-// empty objects (`{}`), title-only stubs, and pathologically-long
-// titles (a model spiraling into the title field) are dropped at apply
-// time rather than persisted as noise. Title is the load-bearing
-// field — the slug ID derives from it, and a decision with no title
-// (or a degenerate title) is meaningless to a coding agent or auditor.
+// empty objects (`{}`), title-only stubs, pathologically-long titles
+// (a model spiraling into the title field), placeholder-class titles
+// (literal "placeholder", "TBD", etc.), and titles containing
+// structural JSON noise (the model wandering out of the title field)
+// are all dropped at apply time rather than persisted as noise. Title
+// is the load-bearing field — the slug ID derives from it, and a
+// decision with no title (or a degenerate title) is meaningless to a
+// coding agent or auditor.
 func isEmptyInlineDecision(d InlineDecisionProposal) bool {
 	title := strings.TrimSpace(d.Title)
 	if title == "" {
@@ -456,6 +488,19 @@ func isEmptyInlineDecision(d InlineDecisionProposal) bool {
 			"title_chars", len(title),
 			"title_excerpt", title[:64]+"...",
 			"reason", "model output appears to have spiraled into the title field; treating as empty")
+		return true
+	}
+	if _, deny := titleDenylist[strings.ToLower(title)]; deny {
+		slog.Warn("dropping decision with placeholder-class title",
+			"title", title,
+			"reason", "title is a known meaningless placeholder; the model produced a stub the elaborator prompt explicitly forbids")
+		return true
+	}
+	if match := titleStructuralNoise.FindString(title); match != "" {
+		slog.Warn("dropping decision with structural JSON noise in title",
+			"title", title,
+			"match", match,
+			"reason", "model output appears to have bled JSON syntax into the title field; treating as empty")
 		return true
 	}
 	return false
