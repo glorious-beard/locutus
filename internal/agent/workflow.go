@@ -16,7 +16,7 @@ import (
 
 // WorkflowStep defines a single step in a workflow. Steps carry the
 // data fields the DAG executor consumes (ID, Agents, Parallel, DependsOn)
-// plus four optional closures that describe what the step does:
+// plus optional closures that describe what the step does:
 //
 //   - Conditional: gates execution. If non-nil and returns false, the
 //     step is skipped (no agent calls, no merge). nil means unconditional.
@@ -25,9 +25,22 @@ import (
 //     can render the per-element prompt. nil means the step runs the
 //     configured agents once each.
 //   - Project: builds the LLM messages for each agent call. Falls back
-//     to a verb-supplied default when nil.
+//     to a verb-supplied default when nil. Ignored when RunItem is set.
 //   - Merge: applies round results back into the verb's state. nil is
 //     equivalent to a no-op merge.
+//   - RunItem: when non-nil, REPLACES the executor's default per-slot
+//     agent-dispatch (build messages → RunWithRetry → return content).
+//     The executor calls RunItem instead, threading through the same
+//     ctx + snapshot + per-slot fanout context. Lets a single fanout
+//     slot drive a multi-call sub-flow via the verb's own helpers
+//     (e.g. justify's per_decision step running challenger → research
+//     → advocate per fanout item). The returned content is stored on
+//     RoundResult.Output exactly as a normal dispatch's content would
+//     be; an error sets RoundResult.Err. Project and the AgentDef
+//     lookup are skipped when RunItem fires — the closure owns
+//     dispatch end-to-end. Step.Agents must still name exactly one
+//     agent (used as the AgentID label on RoundResult so merge
+//     handlers and the events sink see a consistent identity).
 //
 // The S type parameter is the verb-specific mutable state the closures
 // see and mutate. Council workflows use WorkflowStep[PlanningState]; new
@@ -45,6 +58,7 @@ type WorkflowStep[S any] struct {
 	Fanout      func(*S) ([]string, error)
 	Project     func(StateSnapshot[S]) []Message
 	Merge       func(*S, []RoundResult)
+	RunItem     func(ctx context.Context, snap StateSnapshot[S]) (string, error)
 }
 
 // Workflow defines a verb's DAG of steps. The S type parameter is the
@@ -129,6 +143,37 @@ func (e *WorkflowExecutor[S]) emitEvent(stepID, agentID, status, message string)
 // and updates the same spinner to "running" on the started event, so
 // the operator can tell waiting items from in-flight ones.
 func (e *WorkflowExecutor[S]) executeAgent(ctx context.Context, step WorkflowStep[S], stepID, agentID string, snap StateSnapshot[S]) RoundResult {
+	// RunItem path: the step owns dispatch end-to-end. Skip AgentDefs
+	// lookup, Project rendering, and RunWithRetry — the closure does
+	// its own LLM calls (typically via the AgentDispatcher carried on
+	// the verb's state). Lifecycle events still fire so the operator
+	// sees the step queued/started/completed; the closure's own
+	// per-call YAML traces give the leaf detail.
+	if step.RunItem != nil {
+		e.emitEvent(stepID, agentID, "queued", "")
+		ctx = WithAgentID(ctx, agentID)
+		ctx = WithSuppressLLMNotify(ctx)
+		if tag := stepIDFanoutTag(stepID); tag != "" {
+			ctx = WithCallTag(ctx, tag)
+		}
+		ctx = WithAcquiredCallback(ctx, func() {
+			e.emitEvent(stepID, agentID, "started", "")
+		})
+		// RunItem owns its sub-call dispatch, but the workflow sink
+		// expects a queued → started → completed lifecycle for every
+		// step slot. Emit "started" inline (mirror of the
+		// AcquiredCallback the LLM wrapper fires for normal calls)
+		// so the sink advances consistently.
+		e.emitEvent(stepID, agentID, "started", "")
+		out, err := step.RunItem(ctx, snap)
+		if err != nil {
+			e.emitEvent(stepID, agentID, "error", err.Error())
+			return RoundResult{StepID: stepID, AgentID: agentID, Output: out, Err: err}
+		}
+		e.emitEvent(stepID, agentID, "completed", "")
+		return RoundResult{StepID: stepID, AgentID: agentID, Output: out}
+	}
+
 	def, ok := e.AgentDefs[agentID]
 	if !ok {
 		return RoundResult{StepID: stepID, AgentID: agentID, Err: fmt.Errorf("agent %q not found", agentID)}

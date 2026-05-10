@@ -46,35 +46,6 @@ type JustifyInputs struct {
 	Researcher AgentDef
 }
 
-// RunJustify dispatches the spec_advocate agent against the rendered
-// node + GOALS and returns its structured defense. No challenger
-// involvement; the caller should leave Challenge and ChallengerOut
-// empty on JustifyInputs.
-func RunJustify(ctx context.Context, dispatcher AgentDispatcher, in JustifyInputs) (*JustificationBrief, error) {
-	if in.NodeMarkdown == "" {
-		return nil, fmt.Errorf("justify: empty node content for %q", in.NodeID)
-	}
-
-	user := buildAdvocateUserMessage(in)
-	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
-
-	resp, err := dispatcher.Dispatch(ctx, in.Advocate, input, DispatchOptions{
-		Role:         "justification",
-		OutputSchema: "JustificationBrief",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("justify: advocate dispatch: %w", err)
-	}
-	var out JustificationBrief
-	if perr := unmarshalAgentOutput(resp.Content, &out); perr != nil {
-		return nil, fmt.Errorf("justify: advocate response: %w", perr)
-	}
-	if out.Defense == "" {
-		return nil, fmt.Errorf("justify: advocate returned empty defense for %q", in.NodeID)
-	}
-	return &out, nil
-}
-
 // RunResearch dispatches the grounded researcher against the
 // challenger's concerns. The caller must populate in.ChallengerOut
 // (the researcher needs concerns to investigate); an empty challenge

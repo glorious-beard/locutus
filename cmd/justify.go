@@ -90,6 +90,13 @@ func (c *JustifyCmd) Run(ctx context.Context, cli *CLI) error {
 // RunJustifyCommand is the shared implementation backing the CLI and
 // MCP handlers. challenge is empty for the solo defense path; non-
 // empty triggers the adversarial dialogue.
+//
+// The Phase-5 workflowization wraps the existing dispatcher-driven
+// helpers in three workflows (Solo / AdversarialFallback /
+// AdversarialFanout) selected by parent kind + decision presence at
+// dispatch time. The cmd layer remains the workflow-selection
+// boundary; the workflow itself owns phase orchestration, fanout, and
+// observability.
 func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, id, challenge string) (*JustifyResult, error) {
 	loaded, err := spec.LoadSpec(fsys)
 	if err != nil {
@@ -106,6 +113,34 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 	if err != nil {
 		return nil, fmt.Errorf("load spec_advocate: %w", err)
 	}
+
+	dispatcher := agent.NewDispatcher(llm)
+	result := &JustifyResult{ID: id, Challenge: challenge}
+
+	// Solo path: no challenge supplied, advocate-only workflow.
+	if challenge == "" {
+		state := agent.JustifyState{
+			NodeID:       id,
+			NodeMarkdown: nodeMD,
+			GoalsBody:    goalsBody,
+			AdvocateDef:  advocate,
+			Dispatcher:   dispatcher,
+		}
+		exec := &agent.WorkflowExecutor[agent.JustifyState]{
+			Executor:  llm,
+			AgentDefs: map[string]agent.AgentDef{"spec_advocate": advocate},
+			Workflow:  agent.JustifySoloWorkflow,
+		}
+		if _, err := exec.Run(ctx, &state); err != nil {
+			return nil, err
+		}
+		result.Brief = state.Brief
+		result.Markdown = renderJustifyMarkdown(result)
+		return result, nil
+	}
+
+	// Adversarial paths: load challenger + researcher; pick fanout
+	// vs. single-target by parent kind + decision presence.
 	challenger, err := scaffold.LoadAgent(fsys, "spec_challenger")
 	if err != nil {
 		return nil, fmt.Errorf("load spec_challenger: %w", err)
@@ -115,65 +150,57 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 		return nil, fmt.Errorf("load justify_researcher: %w", err)
 	}
 
-	in := agent.JustifyInputs{
-		NodeID:       id,
-		NodeMarkdown: nodeMD,
-		GoalsBody:    goalsBody,
-		Challenge:    challenge,
-		Advocate:     advocate,
-		Challenger:   challenger,
-		Researcher:   researcher,
-	}
-
-	result := &JustifyResult{ID: id, Challenge: challenge}
-
-	if challenge == "" {
-		brief, err := agent.RunJustify(ctx, agent.NewDispatcher(llm), in)
-		if err != nil {
-			return nil, err
-		}
-		result.Brief = brief
-		result.Markdown = renderJustifyMarkdown(result)
-		return result, nil
-	}
-
-	// Adversarial path: route by node kind. Decisions go through
-	// the existing single-target flow; strategies / features /
-	// bugs / approaches fan out to their referenced decisions.
+	// Decisions go through the single-target flow directly;
+	// strategies / features / bugs / approaches go through fanout
+	// when they reference decisions, falling back to single-target
+	// when they don't (first-class commitments like "Adopt TDD").
 	kind := nodeKindOf(id)
-	if kind == spec.KindDecision {
-		ch, research, def, err := agent.RunJustifyAgainst(ctx, agent.NewDispatcher(llm), in)
-		if err != nil {
-			return nil, err
+	useFanout := kind != spec.KindDecision
+	var decisionIDs []string
+	if useFanout {
+		ids, derr := parentDecisionIDs(loaded, kind, id)
+		if derr != nil {
+			return nil, derr
 		}
-		result.Challenger = ch
-		result.Research = research
-		result.Adversarial = def
-		result.Markdown = renderJustifyMarkdown(result)
-		return result, nil
+		decisionIDs = ids
+		if len(decisionIDs) == 0 {
+			useFanout = false
+		}
 	}
 
-	// Detect first-class-commitment parents (no referenced
-	// decisions) and fall back to the single-target adversarial
-	// flow against the parent itself. Strategies / features that
-	// ARE the commitment ("Adopt TDD," "Follow 12-factor app")
-	// don't decompose into decisions, and the challenger should
-	// engage the parent's body prose directly. The recent
-	// prompt-broadening (evidence sources include the node's own
-	// rationale) plus per-retry provider rotation make the
-	// single-target flow against prose-only parents tractable.
-	decisionIDs, err := parentDecisionIDs(loaded, kind, in.NodeID)
-	if err != nil {
-		return nil, err
-	}
-	if len(decisionIDs) == 0 {
-		ch, research, def, err := agent.RunJustifyAgainst(ctx, agent.NewDispatcher(llm), in)
-		if err != nil {
-			return nil, err
+	if !useFanout {
+		state := agent.JustifyState{
+			NodeID:        id,
+			NodeMarkdown:  nodeMD,
+			GoalsBody:     goalsBody,
+			Challenge:     challenge,
+			AdvocateDef:   advocate,
+			ChallengerDef: challenger,
+			ResearcherDef: researcher,
+			Dispatcher:    dispatcher,
 		}
-		result.Challenger = ch
-		result.Research = research
-		result.Adversarial = def
+		exec := &agent.WorkflowExecutor[agent.JustifyState]{
+			Executor: llm,
+			AgentDefs: map[string]agent.AgentDef{
+				"spec_advocate":      advocate,
+				"spec_challenger":    challenger,
+				"justify_researcher": researcher,
+			},
+			Workflow: agent.JustifyAdversarialFallbackWorkflow,
+		}
+		_, runErr := exec.Run(ctx, &state)
+		// Adversarial fallback always populates partial outputs even
+		// on per-step failure (challenger / research / advocate each
+		// stash whatever they produced before the error). Mirror the
+		// legacy RunJustifyAgainst behavior of returning the partial
+		// brief alongside the error so the cmd layer can render it.
+		result.Challenger = state.ChallengerOut
+		result.Research = state.ResearcherOut
+		result.Adversarial = state.AdversarialDefense
+		if runErr != nil {
+			result.Markdown = renderJustifyMarkdown(result)
+			return result, runErr
+		}
 		result.Markdown = renderJustifyMarkdown(result)
 		return result, nil
 	}
@@ -187,27 +214,157 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 		return nil, fmt.Errorf("load justify_synthesizer: %w", err)
 	}
 
-	fanIn, err := buildFanOutInputs(loaded, stages, in, kind, nodeMD, splitter, synthesizer)
+	fanState, err := buildFanoutState(loaded, stages, id, nodeMD, goalsBody, challenge, kind,
+		advocate, challenger, researcher, splitter, synthesizer, dispatcher)
 	if err != nil {
 		return nil, err
 	}
-	fanResult, err := agent.RunJustifyFanOut(ctx, agent.NewDispatcher(llm), fanIn)
-	if err != nil {
-		// Fan-out errors carry the partial result; surface it so
-		// callers can render what landed before the failure.
-		result.FanOut = fanResult
-		result.Markdown = renderJustifyMarkdown(result)
-		return result, err
+	exec := &agent.WorkflowExecutor[agent.JustifyState]{
+		Executor: llm,
+		AgentDefs: map[string]agent.AgentDef{
+			"spec_advocate":       advocate,
+			"spec_challenger":     challenger,
+			"justify_researcher":  researcher,
+			"justify_splitter":    splitter,
+			"justify_synthesizer": synthesizer,
+		},
+		Workflow: agent.JustifyAdversarialFanoutWorkflow,
 	}
-	result.FanOut = fanResult
+	_, runErr := exec.Run(ctx, &fanState)
+	fanOut := assembleFanOutResult(&fanState)
+	result.FanOut = fanOut
 	result.Markdown = renderJustifyMarkdown(result)
+	if runErr != nil {
+		return result, runErr
+	}
 	return result, nil
+}
+
+// buildFanoutState assembles the JustifyState for the adversarial
+// fanout workflow. Resolves the parent body prose, the list of
+// referenced decisions, and pre-renders explain markdown for each
+// decision so the per_decision step's RunItem closures have
+// NodeMarkdown ready.
+//
+// For bugs, decisions come from the parent feature (bugs inherit).
+// For approaches, decisions come from Approach.Decisions[] (the
+// audit trail of what was consulted at synthesis time).
+func buildFanoutState(loaded *spec.Loaded, stages spec.StageMap, id, nodeMD, goalsBody, challenge string, kind spec.NodeKind, advocate, challenger, researcher, splitter, synthesizer agent.AgentDef, dispatcher agent.AgentDispatcher) (agent.JustifyState, error) {
+	var parentBody string
+	var decisionIDs []string
+
+	switch kind {
+	case spec.KindStrategy:
+		n := loaded.StrategyNodeByID(id)
+		if n == nil {
+			return agent.JustifyState{}, fmt.Errorf("justify fan-out: strategy %q not found", id)
+		}
+		parentBody = n.Body
+		decisionIDs = n.Spec.Decisions
+	case spec.KindFeature:
+		n := loaded.FeatureNodeByID(id)
+		if n == nil {
+			return agent.JustifyState{}, fmt.Errorf("justify fan-out: feature %q not found", id)
+		}
+		parentBody = n.Spec.Description
+		if parentBody == "" {
+			parentBody = n.Body
+		}
+		decisionIDs = n.Spec.Decisions
+	case spec.KindBug:
+		n := loaded.BugNodeByID(id)
+		if n == nil {
+			return agent.JustifyState{}, fmt.Errorf("justify fan-out: bug %q not found", id)
+		}
+		parentBody = n.Spec.Description
+		if parentBody == "" {
+			parentBody = n.Body
+		}
+		// Bugs inherit decisions from their parent feature.
+		if pf := loaded.FeatureNodeByID(n.Spec.FeatureID); pf != nil {
+			decisionIDs = pf.Spec.Decisions
+		}
+	case spec.KindApproach:
+		n := loaded.ApproachNodeByID(id)
+		if n == nil {
+			return agent.JustifyState{}, fmt.Errorf("justify fan-out: approach %q not found", id)
+		}
+		parentBody = n.Spec.Body
+		if parentBody == "" {
+			parentBody = n.Body
+		}
+		decisionIDs = n.Spec.Decisions
+	default:
+		return agent.JustifyState{}, fmt.Errorf("justify fan-out: kind %q does not support fan-out (challenge a specific decision id instead)", kind)
+	}
+
+	if len(decisionIDs) == 0 {
+		return agent.JustifyState{}, fmt.Errorf("justify fan-out: %s %q references no decisions; nothing to fan out to", kind, id)
+	}
+
+	refs := make([]agent.SplitterDecisionRef, 0, len(decisionIDs))
+	perDecisionMD := make(map[string]string, len(decisionIDs))
+	for _, did := range decisionIDs {
+		dn := loaded.DecisionNodeByID(did)
+		if dn == nil {
+			// Skip dangling references; the splitter would fail
+			// to classify against an absent decision and we'd
+			// rather degrade to the resolvable subset than abort.
+			continue
+		}
+		refs = append(refs, agent.SplitterDecisionRef{
+			ID:        dn.Spec.ID,
+			Title:     dn.Spec.Title,
+			Rationale: truncateForSplitter(dn.Spec.Rationale, 400),
+		})
+		md, err := render.ExplainNode(loaded, stages, dn.Spec.ID)
+		if err != nil {
+			return agent.JustifyState{}, fmt.Errorf("render explain for %s: %w", dn.Spec.ID, err)
+		}
+		perDecisionMD[dn.Spec.ID] = md
+	}
+	if len(refs) == 0 {
+		return agent.JustifyState{}, fmt.Errorf("justify fan-out: %s %q references decisions but none resolve in the loaded graph", kind, id)
+	}
+
+	return agent.JustifyState{
+		NodeID:              id,
+		NodeMarkdown:        nodeMD,
+		GoalsBody:           goalsBody,
+		Challenge:           challenge,
+		AdvocateDef:         advocate,
+		ChallengerDef:       challenger,
+		ResearcherDef:       researcher,
+		SplitterDef:         splitter,
+		SynthesizerDef:      synthesizer,
+		ParentBody:          parentBody,
+		ParentNodeMD:        nodeMD,
+		PerDecisionMarkdown: perDecisionMD,
+		DecisionRefs:        refs,
+		Dispatcher:          dispatcher,
+	}, nil
+}
+
+// assembleFanOutResult flattens the workflow's per-step state into
+// the FanOutResult shape the cmd-layer renderer expects.
+func assembleFanOutResult(s *agent.JustifyState) *agent.FanOutResult {
+	if s == nil {
+		return nil
+	}
+	if s.Split == nil && len(s.PerDecisionResults) == 0 && s.Synthesis == nil {
+		return nil
+	}
+	return &agent.FanOutResult{
+		Split:              s.Split,
+		PerDecisionResults: s.PerDecisionResults,
+		Synthesis:          s.Synthesis,
+	}
 }
 
 // parentDecisionIDs returns the decision IDs a fan-out justify
 // would target for the given parent. Used both to detect the
 // fall-back-to-single-target case (when len == 0) and as the seed
-// for the richer resolution buildFanOutInputs performs.
+// for the richer resolution buildFanoutState performs.
 //
 // Bugs inherit decisions from their parent feature; approaches
 // use their audit-trail Decisions[]; strategies and features use
@@ -245,104 +402,6 @@ func parentDecisionIDs(loaded *spec.Loaded, kind spec.NodeKind, id string) ([]st
 		return n.Spec.Decisions, nil
 	}
 	return nil, fmt.Errorf("justify: kind %q does not support fan-out", kind)
-}
-
-// buildFanOutInputs assembles agent.FanOutInputs from the loaded
-// graph for the kinds that fan out (strategy / feature / bug /
-// approach). Resolves the parent body prose, the list of referenced
-// decisions, and pre-renders explain markdown for each decision so
-// the per-decision RunJustifyAgainst calls have NodeMarkdown ready.
-//
-// For bugs, decisions come from the parent feature (bugs inherit).
-// For approaches, decisions come from Approach.Decisions[] (the
-// audit trail of what was consulted at synthesis time).
-func buildFanOutInputs(loaded *spec.Loaded, stages spec.StageMap, in agent.JustifyInputs, kind spec.NodeKind, nodeMD string, splitter, synthesizer agent.AgentDef) (agent.FanOutInputs, error) {
-	var parentBody string
-	var decisionIDs []string
-
-	switch kind {
-	case spec.KindStrategy:
-		n := loaded.StrategyNodeByID(in.NodeID)
-		if n == nil {
-			return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: strategy %q not found", in.NodeID)
-		}
-		parentBody = n.Body
-		decisionIDs = n.Spec.Decisions
-	case spec.KindFeature:
-		n := loaded.FeatureNodeByID(in.NodeID)
-		if n == nil {
-			return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: feature %q not found", in.NodeID)
-		}
-		parentBody = n.Spec.Description
-		if parentBody == "" {
-			parentBody = n.Body
-		}
-		decisionIDs = n.Spec.Decisions
-	case spec.KindBug:
-		n := loaded.BugNodeByID(in.NodeID)
-		if n == nil {
-			return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: bug %q not found", in.NodeID)
-		}
-		parentBody = n.Spec.Description
-		if parentBody == "" {
-			parentBody = n.Body
-		}
-		// Bugs inherit decisions from their parent feature.
-		if pf := loaded.FeatureNodeByID(n.Spec.FeatureID); pf != nil {
-			decisionIDs = pf.Spec.Decisions
-		}
-	case spec.KindApproach:
-		n := loaded.ApproachNodeByID(in.NodeID)
-		if n == nil {
-			return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: approach %q not found", in.NodeID)
-		}
-		parentBody = n.Spec.Body
-		if parentBody == "" {
-			parentBody = n.Body
-		}
-		decisionIDs = n.Spec.Decisions
-	default:
-		return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: kind %q does not support fan-out (challenge a specific decision id instead)", kind)
-	}
-
-	if len(decisionIDs) == 0 {
-		return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: %s %q references no decisions; nothing to fan out to", kind, in.NodeID)
-	}
-
-	refs := make([]agent.SplitterDecisionRef, 0, len(decisionIDs))
-	perDecisionMD := make(map[string]string, len(decisionIDs))
-	for _, did := range decisionIDs {
-		dn := loaded.DecisionNodeByID(did)
-		if dn == nil {
-			// Skip dangling references; the splitter would fail
-			// to classify against an absent decision and we'd
-			// rather degrade to the resolvable subset than abort.
-			continue
-		}
-		refs = append(refs, agent.SplitterDecisionRef{
-			ID:        dn.Spec.ID,
-			Title:     dn.Spec.Title,
-			Rationale: truncateForSplitter(dn.Spec.Rationale, 400),
-		})
-		md, err := render.ExplainNode(loaded, stages, dn.Spec.ID)
-		if err != nil {
-			return agent.FanOutInputs{}, fmt.Errorf("render explain for %s: %w", dn.Spec.ID, err)
-		}
-		perDecisionMD[dn.Spec.ID] = md
-	}
-	if len(refs) == 0 {
-		return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: %s %q references decisions but none resolve in the loaded graph", kind, in.NodeID)
-	}
-
-	return agent.FanOutInputs{
-		JustifyInputs:       in,
-		ParentNodeMD:        nodeMD,
-		ParentBody:          parentBody,
-		PerDecisionMarkdown: perDecisionMD,
-		DecisionRefs:        refs,
-		Splitter:            splitter,
-		Synthesizer:         synthesizer,
-	}, nil
 }
 
 // truncateForSplitter shortens long rationale text for the
@@ -397,4 +456,3 @@ func justifyCommandLabel(id, challenge string) string {
 	}
 	return "justify " + id + " --against"
 }
-
