@@ -16,6 +16,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.30.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
+
+	"github.com/chetan/locutus/internal/agent/adapters"
 )
 
 // providerSpanExecutor wraps any AgentExecutor and emits a
@@ -270,6 +272,137 @@ func TestTraceShapeWorkflowExecutor(t *testing.T) {
 	assert.Equal(t, "anthropic", provider.Attributes["gen_ai.system"])
 	assert.Equal(t, "test-model", provider.Attributes["gen_ai.request.model"])
 	assert.Equal(t, "chat", provider.Attributes["gen_ai.operation.name"])
+}
+
+// TestTraceShapeReActDispatch verifies the ReAct branch's documented
+// span hierarchy lands in the OTLP-JSON file:
+//
+//	agent.dispatch (shape=react)
+//	  └── react.iteration #1
+//	        ├── llm.attempt → provider.generate
+//	        └── tool.invoke (per tool_call)
+//	  └── react.iteration #2 (terminal, no tool_calls)
+//	        └── llm.attempt → provider.generate
+//
+// The two-iteration mock ensures both an iteration-with-tool and the
+// terminal iteration are exercised in one pass.
+func TestTraceShapeReActDispatch(t *testing.T) {
+	tempDir := t.TempDir()
+	tracePath, cleanup := installTracerProvider(t, tempDir)
+	defer cleanup()
+
+	registry := NewToolRegistry()
+	registry.Register(adapters.ToolDef{
+		Name:        "echo",
+		Description: "echoes input",
+		InputSchema: map[string]any{"type": "string"},
+		Handler: func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+			return json.Marshal(map[string]string{"echoed": string(input)})
+		},
+	})
+
+	mock := NewMockExecutor(
+		// Iteration 1: model emits tool_call.
+		MockResponse{Response: &AgentOutput{
+			Content:   "let me check",
+			ToolCalls: []ToolCall{{Name: "echo", Query: "ping", Status: "ok"}},
+		}},
+		// Iteration 2: model emits final answer.
+		MockResponse{Response: &AgentOutput{Content: "done"}},
+	)
+	wrapped := &providerSpanExecutor{inner: mock, provider: "anthropic"}
+
+	def := AgentDef{
+		ID:            "react_test",
+		MaxIterations: 5,
+		Models:        []ModelPreference{{Provider: "anthropic", Tier: "balanced"}},
+	}
+	in := AgentInput{Messages: []Message{{Role: "user", Content: "kick off"}}}
+
+	_, err := NewDispatcherWithTools(wrapped, registry).Dispatch(context.Background(), def, in, DispatchOptions{Role: "react_role"})
+	require.NoError(t, err)
+
+	cleanup() // flush spans
+
+	spans := readSpans(t, tracePath)
+	require.NotEmpty(t, spans)
+
+	var dispatch traceSpan
+	var iterations []traceSpan
+	var attempts []traceSpan
+	var providers []traceSpan
+	var toolInvokes []traceSpan
+	for _, s := range spans {
+		switch s.Name {
+		case "agent.dispatch":
+			dispatch = s
+		case "react.iteration":
+			iterations = append(iterations, s)
+		case "llm.attempt":
+			attempts = append(attempts, s)
+		case "provider.generate":
+			providers = append(providers, s)
+		case "tool.invoke":
+			toolInvokes = append(toolInvokes, s)
+		}
+	}
+
+	require.NotEmpty(t, dispatch.SpanID, "missing agent.dispatch span")
+	require.Len(t, iterations, 2, "two react.iteration spans (one per loop iteration)")
+	require.Len(t, attempts, 2, "one llm.attempt per iteration")
+	require.Len(t, providers, 2, "one provider.generate per iteration")
+	require.Len(t, toolInvokes, 1, "one tool.invoke for the iteration that emitted echo")
+
+	// agent.dispatch is the root for the ReAct sub-tree.
+	assert.Empty(t, dispatch.ParentSpanID, "agent.dispatch should be root in this test")
+	assert.Equal(t, "react", dispatch.Attributes["locutus.dispatch.shape"])
+	assert.Equal(t, "react_test", dispatch.Attributes["locutus.agent.id"])
+	assert.Equal(t, "react_role", dispatch.Attributes["locutus.dispatch.role"])
+
+	// Both react.iteration spans descend from agent.dispatch.
+	for _, it := range iterations {
+		assert.Equal(t, dispatch.SpanID, it.ParentSpanID,
+			"react.iteration should descend from agent.dispatch")
+		assert.Equal(t, "react_test", it.Attributes["locutus.agent.id"])
+	}
+
+	// Each llm.attempt descends from a react.iteration.
+	iterIDs := map[string]bool{}
+	for _, it := range iterations {
+		iterIDs[it.SpanID] = true
+	}
+	for _, a := range attempts {
+		assert.True(t, iterIDs[a.ParentSpanID],
+			"llm.attempt parent should be a react.iteration")
+		assert.Equal(t, "react", a.Attributes["locutus.dispatch.shape"])
+	}
+
+	// Each provider.generate descends from an llm.attempt.
+	attemptIDs := map[string]bool{}
+	for _, a := range attempts {
+		attemptIDs[a.SpanID] = true
+	}
+	for _, p := range providers {
+		assert.True(t, attemptIDs[p.ParentSpanID],
+			"provider.generate parent should be an llm.attempt")
+	}
+
+	// tool.invoke descends from a react.iteration (the one that emitted it).
+	for _, ti := range toolInvokes {
+		assert.True(t, iterIDs[ti.ParentSpanID],
+			"tool.invoke parent should be a react.iteration")
+		assert.Equal(t, "echo", ti.Attributes["locutus.tool.name"])
+	}
+
+	// Terminal iteration carries the final-answer marker.
+	var terminal traceSpan
+	for _, it := range iterations {
+		if it.Attributes["locutus.react.terminated_by"] == "final_answer" {
+			terminal = it
+			break
+		}
+	}
+	assert.NotEmpty(t, terminal.SpanID, "one iteration should be marked terminated_by=final_answer")
 }
 
 // TestSpanIDFromContextNoOp confirms the no-op tracer produces an

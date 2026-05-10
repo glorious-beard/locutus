@@ -268,6 +268,22 @@ func (d *Dispatcher) dispatchReAct(ctx context.Context, def AgentDef, input Agen
 		retry = *opts.Retry
 	}
 
+	// agent.dispatch span: mirrors the structured-one-shot path so the
+	// trace shape stays uniform across dispatch shapes. dispatch.shape
+	// distinguishes ReAct from structured for downstream filtering.
+	dispatchAttrs := []attribute.KeyValue{
+		attribute.String("locutus.agent.id", def.ID),
+		attribute.String("locutus.dispatch.shape", "react"),
+		attribute.Int("locutus.react.max_iterations", maxIters),
+	}
+	if opts.Role != "" {
+		dispatchAttrs = append(dispatchAttrs, attribute.String("locutus.dispatch.role", opts.Role))
+	}
+	dispatchCtx, dispatchSpan := Tracer().Start(ctx, "agent.dispatch",
+		oteltrace.WithAttributes(dispatchAttrs...))
+	defer dispatchSpan.End()
+	ctx = dispatchCtx
+
 	var lastOut *AgentOutput
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		attemptDef := def
@@ -327,8 +343,33 @@ func (d *Dispatcher) runReActAttempt(
 	accumulated := &AgentOutput{}
 
 	for iter := 1; iter <= maxIters; iter++ {
-		out, err := RunWithRetry(ctx, d.Executor, def, AgentInput{Messages: convo}, retry)
+		// react.iteration span: one per inner-loop step. Plan's
+		// observability hierarchy nests llm.attempt + tool.invoke
+		// children under each iteration so a trace reader can
+		// see "model called X then tool returned Y" as one cohesive
+		// unit rather than as adjacent leaf spans.
+		iterCtx, iterSpan := Tracer().Start(ctx, "react.iteration",
+			oteltrace.WithAttributes(
+				attribute.String("locutus.agent.id", def.ID),
+				attribute.Int("locutus.react.iteration", iter),
+			))
+
+		// llm.attempt span: matches the structured-one-shot path's
+		// per-attempt span so trace consumers can aggregate token
+		// counts uniformly. ReAct's outer rotation is rare (only
+		// fires on validator-marked degenerate output); the
+		// per-iteration model call is the load-bearing event.
+		attemptCtx, attemptSpan := Tracer().Start(iterCtx, "llm.attempt",
+			oteltrace.WithAttributes(
+				attribute.Int("locutus.attempt", iter),
+				attribute.String("locutus.agent.id", def.ID),
+				attribute.String("locutus.attempt.provider", primaryProvider(def.Models)),
+				attribute.String("locutus.dispatch.shape", "react"),
+			))
+		out, err := RunWithRetry(attemptCtx, d.Executor, def, AgentInput{Messages: convo}, retry)
+		attemptSpan.End()
 		if err != nil {
+			iterSpan.End()
 			return out, err
 		}
 
@@ -344,6 +385,8 @@ func (d *Dispatcher) runReActAttempt(
 			if accumulated.Model == "" {
 				accumulated.Model = out.Model
 			}
+			iterSpan.SetAttributes(attribute.String("locutus.react.terminated_by", "final_answer"))
+			iterSpan.End()
 			return accumulated, nil
 		}
 
@@ -361,12 +404,20 @@ func (d *Dispatcher) runReActAttempt(
 		// against; this keeps the Locutus-side and provider-side
 		// tool execution paths byte-identical.
 		for _, call := range out.ToolCalls {
-			result, toolErr := d.invokeTool(ctx, def, call)
+			toolCtx, toolSpan := Tracer().Start(iterCtx, "tool.invoke",
+				oteltrace.WithAttributes(
+					attribute.String("locutus.agent.id", def.ID),
+					attribute.String("locutus.tool.name", call.Name),
+				))
+			result, toolErr := d.invokeTool(toolCtx, def, call)
+			toolSpan.End()
 			if toolErr != nil {
+				iterSpan.End()
 				return accumulated, fmt.Errorf("dispatcher: ReAct agent %q tool %q: %w", def.ID, call.Name, toolErr)
 			}
 			convo = append(convo, Message{Role: reactRoleUser, Content: result})
 		}
+		iterSpan.End()
 	}
 
 	return accumulated, fmt.Errorf("dispatcher: ReAct loop exceeded MaxIterations=%d for agent %q", maxIters, def.ID)
