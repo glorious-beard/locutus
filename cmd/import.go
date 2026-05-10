@@ -106,11 +106,22 @@ func (c *ImportCmd) Run(ctx context.Context, cli *CLI) error {
 // sourcePath is optional: when present, it's used as a deterministic
 // fallback for id/title when --skip-triage is set or the LLM is
 // unavailable. noPlan suppresses the post-admission planning pass.
+//
+// Phase 9 (workflow-unification): when skipTriage=false, the LLM intake
+// call and the conditional planning pass run inside ImportWorkflow. The
+// cmd-layer drives the workflow in two phases — intake first (so cmd
+// can resolve metadata and persist before the planning pass reads the
+// existing-spec snapshot), then plan after persistence. The skipTriage
+// path still bypasses the workflow entirely (no LLM = nothing for the
+// workflow to dispatch).
 func RunImport(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, data []byte, sourcePath, kind string, skipTriage, noPlan, dryRun bool, sink agent.EventSink) (*ImportResult, error) {
 	result := &ImportResult{DryRun: dryRun, SkippedTriage: skipTriage, SkippedPlan: noPlan}
 
-	// 1. Resolve metadata: frontmatter > LLM intake > filename fallback.
-	meta, intake, err := resolveImportMetadata(ctx, llm, fsys, data, sourcePath, kind, skipTriage)
+	// 1. Resolve metadata. When skipTriage=false the intake LLM call
+	// runs through ImportWorkflow's intake step (its merge handler
+	// invokes IntakeDocument); when true, deterministic frontmatter +
+	// filename fallbacks cover everything.
+	meta, intake, importState, err := resolveImportMetadataWorkflow(ctx, llm, fsys, data, sourcePath, kind, skipTriage)
 	if err != nil {
 		return nil, err
 	}
@@ -171,8 +182,16 @@ func RunImport(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, dat
 		// 3. Planning pass: decompose the admitted feature into decisions,
 		// strategies, and approaches. Skipped on --skip-triage (no LLM
 		// available) and --no-plan (caller wants admission-only).
-		if !skipTriage && !noPlan {
-			gen, err := runFeatureGeneration(ctx, llm, fsys, meta, sink)
+		//
+		// When skipTriage=false the planning pass runs through the same
+		// ImportWorkflow we already drove for intake — the second Run
+		// call skips intake (its conditional fires only when
+		// IntakeResult is unset) and fires the plan step's PlanRunner
+		// closure built here. When skipTriage=true the workflow was
+		// never engaged; the planning pass would also be skipped per
+		// the existing rule (skipTriage implies no LLM).
+		if !skipTriage && !noPlan && importState != nil {
+			gen, err := runFeatureGenerationViaWorkflow(ctx, llm, fsys, meta, sink, importState)
 			if err != nil {
 				return result, fmt.Errorf("planning pass: %w", err)
 			}
@@ -180,6 +199,114 @@ func RunImport(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, dat
 		}
 	}
 	return result, nil
+}
+
+// resolveImportMetadataWorkflow is the workflow-driven analogue of
+// resolveImportMetadata used when skipTriage=false. It builds an
+// ImportState, runs ImportWorkflow's intake step, and then composes
+// the resolved metadata from frontmatter overrides + the LLM's
+// IntakeResult. Returns the populated state pointer so RunImport can
+// reuse it for the second (plan-only) workflow Run after persistence.
+//
+// When skipTriage=true the function delegates to the legacy
+// resolveImportMetadata (deterministic frontmatter + filename
+// fallbacks; no LLM, no workflow). The returned ImportState is nil
+// in that case — callers know not to drive the plan step.
+func resolveImportMetadataWorkflow(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, data []byte, sourcePath, kind string, skipTriage bool) (*importMetadata, *agent.IntakeResult, *agent.ImportState, error) {
+	if skipTriage {
+		meta, intake, err := resolveImportMetadata(ctx, llm, fsys, data, sourcePath, kind, true)
+		return meta, intake, nil, err
+	}
+
+	if llm == nil {
+		return nil, nil, nil, fmt.Errorf("intake required (skipTriage=false) but no LLM provided")
+	}
+
+	var fm importFrontmatter
+	body, err := frontmatter.Parse(data, &fm)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	goalsBody, _ := readGoals(fsys)
+
+	state := &agent.ImportState{
+		Data:       data,
+		SourcePath: sourcePath,
+		Kind:       kind,
+		GoalsBody:  goalsBody,
+		// Skip the plan step on this Run — cmd needs to interleave
+		// persistence between intake and plan, so the plan step fires
+		// on a second Run after writeFeature has landed.
+		SkipPlan: true,
+		LLM:      llm,
+	}
+	if err := agent.RunImportWorkflow(ctx, state); err != nil {
+		return nil, nil, nil, err
+	}
+
+	intake := state.IntakeResult
+	meta := &importMetadata{
+		kind:        kind,
+		id:          fm.ID,
+		title:       fm.Title,
+		body:        body,
+		bugSeverity: fm.Severity,
+		bugFeature:  fm.FeatureID,
+	}
+	if intake != nil {
+		if meta.id == "" {
+			meta.id = intake.ID
+		}
+		if meta.title == "" {
+			meta.title = intake.Title
+		}
+	}
+
+	// Deterministic fallbacks for anything still missing (matches the
+	// legacy resolveImportMetadata behaviour).
+	if meta.id == "" {
+		if sourcePath == "" {
+			return nil, intake, state, fmt.Errorf("missing id: provide it via frontmatter, supply a source path, or remove --skip-triage so the LLM can derive one")
+		}
+		meta.id = derivedID(sourcePath, idPrefixForKind(kind))
+	}
+	if meta.title == "" {
+		meta.title = firstHeading(body)
+	}
+	if meta.title == "" && sourcePath != "" {
+		meta.title = humanizeBaseName(sourcePath)
+	}
+
+	return meta, intake, state, nil
+}
+
+// runFeatureGenerationViaWorkflow drives ImportWorkflow's plan step
+// by setting PlanRunner on the existing state and re-running the
+// workflow. The intake step's conditional skips because IntakeResult
+// is already populated; only the plan step fires, invoking the
+// closure that wraps the existing runFeatureGeneration logic.
+//
+// Returns nil GenerationSummary (and nil error) when the planning
+// pass is skipped because GOALS.md is absent (mirrors
+// runFeatureGeneration's existing rule).
+func runFeatureGenerationViaWorkflow(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, meta *importMetadata, sink agent.EventSink, state *agent.ImportState) (*GenerationSummary, error) {
+	state.SkipPlan = false
+	state.PlanResult = nil
+	state.PlanRunner = func(*agent.ImportState) (any, error) {
+		return runFeatureGeneration(ctx, llm, fsys, meta, sink)
+	}
+	if err := agent.RunImportWorkflow(ctx, state); err != nil {
+		return nil, err
+	}
+	if state.PlanResult == nil {
+		return nil, nil
+	}
+	gen, ok := state.PlanResult.(*GenerationSummary)
+	if !ok {
+		return nil, fmt.Errorf("planning pass: unexpected PlanResult type %T", state.PlanResult)
+	}
+	return gen, nil
 }
 
 // runFeatureGeneration runs the spec-generation LLM call against the

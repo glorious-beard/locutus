@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
@@ -254,4 +255,104 @@ Body.
 	require.True(t, result.Accepted)
 	assert.Equal(t, "feat-direct", result.FeatureID)
 	assert.Nil(t, result.Verdict, "no LLM should have been called with skip_triage=true")
+}
+
+// TestRunImportWorkflowAcceptsViaIntake exercises the workflow-driven
+// path (Phase 9): skipTriage=false fires the workflow's intake step,
+// which drives the LLM call and stashes IntakeResult. The cmd-layer
+// reads the verdict, persists the feature, and reports admission.
+//
+// noPlan=true keeps the planning pass off so the test doesn't need to
+// script the full spec-generation council.
+func TestRunImportWorkflowAcceptsViaIntake(t *testing.T) {
+	fs := specio.NewMemFS()
+	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
+
+	input := []byte(`# Realtime Dashboard
+
+A live view of project health.
+`)
+
+	intakeJSON := `{"id":"feat-realtime-dashboard","title":"Realtime dashboard","accepted":true,"reason":"aligns with goals"}`
+	mock := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: intakeJSON, Model: "test-model"},
+	})
+
+	result, err := RunImport(context.Background(), mock, fs, input, "docs/dashboard.md", "feature", false, true, false, nil)
+	require.NoError(t, err)
+	require.True(t, result.Accepted)
+	require.NotNil(t, result.Verdict, "workflow intake should populate Verdict")
+	assert.Equal(t, "feat-realtime-dashboard", result.Verdict.ID)
+	assert.True(t, result.Verdict.Accepted)
+	assert.Equal(t, "feat-realtime-dashboard", result.FeatureID)
+
+	// Feature landed via the post-workflow persistence path.
+	_, err = fs.ReadFile(".borg/spec/features/feat-realtime-dashboard.json")
+	assert.NoError(t, err, "workflow path should persist the feature after admission")
+
+	// Exactly one LLM call (intake); no planning pass with noPlan=true.
+	assert.Equal(t, 1, mock.CallCount(), "noPlan=true should keep planning off")
+}
+
+// TestRunImportWorkflowRejectsViaIntake confirms an LLM rejection
+// short-circuits before persistence — same behaviour the legacy
+// resolveImportMetadata path produces.
+func TestRunImportWorkflowRejectsViaIntake(t *testing.T) {
+	fs := specio.NewMemFS()
+	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
+
+	input := []byte(`# Mobile App
+
+Build a native iOS/Android app.
+`)
+
+	intakeJSON := `{"id":"feat-mobile-app","title":"Mobile app","accepted":false,"reason":"out of scope: CLI only"}`
+	mock := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: intakeJSON, Model: "test-model"},
+	})
+
+	result, err := RunImport(context.Background(), mock, fs, input, "docs/mobile.md", "feature", false, true, false, nil)
+	require.NoError(t, err)
+	assert.False(t, result.Accepted, "intake rejection should propagate to result.Accepted")
+	require.NotNil(t, result.Verdict)
+	assert.False(t, result.Verdict.Accepted)
+	assert.Equal(t, "out of scope: CLI only", result.Verdict.Reason)
+
+	// No file should have been written.
+	_, err = fs.ReadFile(".borg/spec/features/feat-mobile-app.json")
+	assert.Error(t, err, "rejected admission should not persist a feature")
+}
+
+// TestRunImportWorkflowDryRunNoSideEffects verifies the workflow-
+// driven path honours --dry-run: the intake LLM call still fires (so
+// the operator sees the verdict in the preview) but no on-disk side
+// effects occur.
+func TestRunImportWorkflowDryRunNoSideEffects(t *testing.T) {
+	fs := specio.NewMemFS()
+	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
+
+	input := []byte(`# Drypreview
+
+A preview of the dry-run path.
+`)
+
+	intakeJSON := `{"id":"feat-drypreview","title":"Drypreview","accepted":true}`
+	mock := agent.NewMockExecutor(agent.MockResponse{
+		Response: &agent.AgentOutput{Content: intakeJSON, Model: "test-model"},
+	})
+
+	result, err := RunImport(context.Background(), mock, fs, input, "docs/drypreview.md", "feature", false, true, true, nil)
+	require.NoError(t, err)
+	require.True(t, result.Accepted)
+	assert.True(t, result.DryRun)
+	assert.Equal(t, "feat-drypreview", result.FeatureID)
+
+	// Dry-run preserves the original on-disk state.
+	_, err = fs.ReadFile(".borg/spec/features/feat-drypreview.json")
+	assert.Error(t, err, "dry-run should not persist a feature even after admission")
+	_, err = fs.ReadFile(".borg/spec/features/feat-drypreview.md")
+	assert.Error(t, err, "dry-run should not persist the .md sidecar either")
+
+	// Exactly one LLM call (intake) — planning is off (noPlan=true).
+	assert.Equal(t, 1, mock.CallCount())
 }
