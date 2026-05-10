@@ -485,16 +485,86 @@ Captures:
 
 References: DJ-099 (direct-SDK adapters — the substrate the dispatcher sits on top of), DJ-112 (workflows in Go, not YAML — the substrate this plan extends), the workflow-schema-and-resume plan (Phase B benefits become uniform once verbs are unified).
 
-## Open questions to settle before implementation
+## Resolved questions
 
-1. **Generics vs interface for the executor (Option A vs B).** The plan recommends A; final call before implementation.
-2. **Should single-LLM-call verbs be one-step workflows, or does that cross into ceremony?** `justify` (solo) and `import` (intake without plan) are both single-call. Workflowizing them gains a phase-tag in traces but adds boilerplate. Probably workflowize for uniformity, but worth the explicit call.
-3. **State naming convention.** `JustifyState`, `RefineState`, `SupersedeState`, etc. — confirm before everyone's IDE auto-complete normalises a different convention.
-4. **Where do verb-specific workflow definitions live?** The council's lives in `internal/agent/workflows.go`. Per-verb workflows could co-locate (one big file) or split per verb (`internal/agent/workflows/justify.go`, etc.). Probably the latter once we have 5+ workflows; not critical day one.
-5. **Tool registry scope and lifecycle.** When the dispatcher gains the ReAct branch, the tool registry needs to declare which tools each agent can call. Open: are tools registered globally at start-up (one big registry that agents reference by name), or scoped per agent (each agent declares its own tool slice with handlers inline)? Globally-registered tools are easier to share; scoped tools are easier to reason about per agent. Probably global with per-agent allow-listing in `AgentDef.Tools`, but worth deciding before tool implementations start landing.
-6. **Per-call tool-call observability shape.** Today's `recordedCall` ([internal/agent/session.go](internal/agent/session.go) lines 218–240) captures provider-side tool_calls in `ToolCalls []recordedToolCall`. The ReAct branch will produce a sequence of tool_calls per agent invocation, plus reasoning between them. Either extend `recordedCall.Rounds` (which already carries multi-round tool-use captures) or add a parallel `ReActSteps` slice. The Rounds field has the right shape — confirm before implementation.
-7. **Backward compatibility on AgentDef.** Adding `Tools []ToolDef` and `MaxIterations int` fields. Frontmatter parsing in `scaffold.parseAgentDef` reads YAML into `AgentDef`; new fields with `omitempty` and zero-value defaults should be source-compatible. But callers constructing `AgentDef` literals in Go (justify's `RunJustify`, `RunResearch`, etc. before they shrink to dispatcher wrappers) need to either use the new fields or rely on zero values. Verify no caller breaks.
-8. **OTel file exporter format.** The OTel SDK ships `stdouttrace`, which emits "OTel SDK JSON" — similar to but not byte-identical to canonical OTLP-JSON. For replay through unmodified OTLP-aware tooling (Jaeger / Tempo / `otel-cli`), confirm whether `stdouttrace` output is replayable as-is, or whether to write a thin custom span processor that emits canonical OTLP-JSON. The file artifact has to survive the SDK choice.
-9. **Trace ID derivation vs independence.** Generate a W3C trace ID independently and surface `locutus.session.id` as a root-span attribute (clean OTel, lossless), or derive trace ID deterministically from session ID (trivial cross-reference, but session ID is shorter than 128 bits so the mapping loses entropy)? Probably the former with both IDs surfaced in the manifest, but worth the explicit call before the manifest schema bakes.
-10. **OTel SDK no-op fallback in tests.** When the SDK isn't initialised (most unit tests), `otel.Tracer(...)` returns a no-op tracer and instrumentation calls are free / produce no spans. Verify no existing test fixture changes are needed because the no-op tracer doesn't add attributes or write files. The verb-level trace-shape tests (Tests class 4) are the only ones that initialise a real TracerProvider, scoped to a temp directory.
-11. **Trace volatility on long-running sessions.** A `locutus adopt` invocation can run for many minutes across many fanouts. The file exporter writes spans on completion (`OnEnd`); a SIGKILL mid-session leaves any not-yet-completed spans unwritten. Existing per-call YAMLs survive a SIGKILL (Begin flushes the input before the call starts). Confirm whether OTel needs a `BatchSpanProcessor` with periodic flush vs `SimpleSpanProcessor` to match the YAMLs' SIGKILL-survivability — or accept that OTel data is best-effort and the YAMLs remain authoritative for crash analysis.
+Settled before implementation began. Recorded here so subagents executing
+later phases inherit the same conventions.
+
+### Phase 1 (state generalisation)
+
+- **Generics vs interface for the executor.** Option A (generics) — landed
+  in commit `eaaaf62`. `WorkflowStep[S]`, `Workflow[S]`,
+  `WorkflowExecutor[S]`, `StateSnapshot[S]`. Council uses
+  `WorkflowExecutor[PlanningState]`.
+
+### Phase 3 (OTel instrumentation)
+
+- **OTel file exporter format.** Custom OTLP-JSON span processor
+  (~30 LOC). The user-facing promise is "replay through Jaeger / Tempo /
+  `otel-cli`," and that requires canonical OTLP-JSON. `stdouttrace` is a
+  debugging exporter, not a wire-format one — diverging shapes would
+  break the replay story.
+- **Trace ID derivation.** Generate a W3C trace ID independently. Surface
+  both `trace_id` and `session_id` in `session.yaml`. Session ID
+  (~22 chars) doesn't have 128 bits of entropy, so deriving from it
+  would either lose entropy or pad — neither is clean.
+- **Span processor.** `SimpleSpanProcessor` (synchronous flush on
+  `OnEnd`). Matches per-call YAMLs' SIGKILL-survivability for completed
+  spans. Open spans on a SIGKILL are lost; the YAMLs stay authoritative
+  for crash analysis (each `recordedCall.Begin` flushes input before the
+  adapter runs, so completed calls survive).
+- **No-op tracer in tests.** Confirmed per plan. `otel.Tracer(...)`
+  returns a no-op when the SDK isn't initialised; existing test fixtures
+  need no changes. Only the verb-level trace-shape tests (Tests class 4)
+  initialise a real TracerProvider scoped to a temp dir.
+
+### Phase 4 (ReAct branch)
+
+- **Tool registry scope.** Drop the per-agent allowlist entirely until
+  Locutus supports externally-defined tools. Today every tool is an
+  internal Locutus-defined read-only spec lookup; `AgentDef.Tools` is
+  documentation that loosely matches reality, not an enforcement
+  surface. Counter-stance: expose every registered tool to every agent;
+  the model picks what to call. When external tools (with side
+  effects) eventually land, design a richer capability model then —
+  the per-name allowlist isn't expressive enough for that case anyway.
+  Implementation: remove `AgentDef.Tools`, drop the `tools:` block
+  from `spec_reconciler.md`, change `buildAdapterRequest` to expose
+  every entry in the global `ToolRegistry`.
+- **Tool-call observability shape.** Extend `recordedCall.Rounds`. Each
+  ReAct iteration becomes one `GenerateRound`. Tool invocations during
+  ReAct go in the round that emitted them — same shape as the
+  provider-side multi-round captures already use. Avoids a parallel
+  `ReActSteps` field that duplicates the structure.
+- **AgentDef changes.** Add `MaxIterations int \`yaml:"max_iterations,omitempty"\``
+  (zero default = single call). No back-compat shims; the user runs
+  `locutus update --offline --reset` before every operation, so
+  AgentDef shape can evolve freely until Locutus reaches self-hosting.
+  ReAct trigger: `MaxIterations > 1` is the sole signal — Tools field
+  doesn't exist any more (see prior bullet).
+
+### Phase 5+ (verb migrations)
+
+- **Workflowize single-call verbs.** Yes. `justify` (solo) and `import`
+  (intake without plan) become one-step workflows. Cost: ~10 LOC per
+  verb. Gain: every verb gets a `workflow.phase` span uniformly, the
+  codebase shape is consistent, and a single-call verb that later
+  grows phases migrates trivially.
+- **State naming.** `<Verb>State` — `JustifyState`, `RefineState`,
+  `SupersedeState`, `ImportState`, `AdoptState`. Mirrors existing
+  `PlanningState`. All in `internal/agent`; no package-level
+  disambiguation needed.
+- **Where workflow definitions live.** Per-verb files in
+  `internal/agent/workflow_<verb>.go`. To keep the convention
+  uniform, the existing council workflows split into
+  `workflow_planning.go`, `workflow_assimilation.go`,
+  `workflow_spec_generation.go` (replacing the consolidated
+  `workflows.go`). Cross-workflow shared closures
+    (`projectDefault`, `mergeNoop`, `firstNonEmpty`,
+    `marshalFanoutItems`) move to `workflow_helpers.go`. Each
+    `workflow_<verb>.go` carries the state struct (when
+    verb-specific), the `Workflow` declaration, and verb-specific
+    fanout / conditional / merge closures. Sub-packaging
+    (`internal/agent/workflows/...`) was rejected — it would create
+    import cycles with shared agent types and isn't worth the
+    structure for ~8 files.
