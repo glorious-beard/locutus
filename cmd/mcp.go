@@ -63,11 +63,13 @@ type assimilateInput struct {
 }
 
 type refineInput struct {
-	ID       string `json:"id"`
-	DryRun   bool   `json:"dry_run,omitempty"`
-	Brief    string `json:"brief,omitempty"`
-	Diff     bool   `json:"diff,omitempty"`
-	Rollback bool   `json:"rollback,omitempty"`
+	ID             string `json:"id"`
+	DryRun         bool   `json:"dry_run,omitempty"`
+	Brief          string `json:"brief,omitempty"`
+	Supersede      string `json:"supersede,omitempty"`
+	JustifySession string `json:"justify_session,omitempty"`
+	Diff           bool   `json:"diff,omitempty"`
+	Rollback       bool   `json:"rollback,omitempty"`
 }
 
 type adoptInput struct {
@@ -91,6 +93,12 @@ type justifyInput struct {
 	ID      string `json:"id"`
 	Against string `json:"against,omitempty"`
 	Format  string `json:"format,omitempty"`
+}
+
+type listInput struct {
+	Query  string `json:"query"`
+	Kind   string `json:"kind,omitempty"`
+	Format string `json:"format,omitempty"`
 }
 
 // NewMCPServerWithDir creates a configured MCP server with all Locutus tools
@@ -229,20 +237,23 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 	// drive the council (currently Goals).
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "refine",
-		Description: "Council-driven deliberation on any spec node (decision, feature, strategy, bug, approach, or goals). With brief, threads a focused refinement intent into the rewriter prompt. With diff, returns a unified diff against the prior version. With rollback, restores the most recent refine event's prior bytes.",
+		Description: "Council-driven deliberation on any spec node (decision, feature, strategy, bug, approach, or goals). With brief, threads a focused refinement intent into the rewriter prompt. With supersede, replaces a decision/feature/strategy wholesale and cascades id rewrites + invalidates affected approaches (mutually exclusive with brief; rejected for bugs). With diff, returns a unified diff against the prior version. With rollback, restores the most recent refine event's prior bytes.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input refineInput) (*mcp.CallToolResult, any, error) {
 		if input.ID == "" {
 			return errorResult("id is required"), nil, nil
 		}
 		if input.Rollback {
-			if input.Brief != "" || input.Diff || input.DryRun {
-				return errorResult("rollback is mutually exclusive with brief, diff, dry_run"), nil, nil
+			if input.Brief != "" || input.Supersede != "" || input.Diff || input.DryRun {
+				return errorResult("rollback is mutually exclusive with brief, supersede, diff, dry_run"), nil, nil
 			}
 			result, err := RunRollback(fsys, input.ID)
 			if err != nil {
 				return errorResult(err.Error()), nil, nil
 			}
 			return textResult(formatRefineResultForMCP(result)), nil, nil
+		}
+		if input.Supersede != "" && input.Brief != "" {
+			return errorResult("supersede and brief are mutually exclusive"), nil, nil
 		}
 		kind, err := resolveNodeKind(fsys, input.ID)
 		if err != nil {
@@ -264,6 +275,13 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		sink := newMCPSink(ctx, req)
 		defer sink.Close()
 		llm = &agent.NotifyingExecutor{Inner: llm, Sink: sink}
+		if input.Supersede != "" {
+			result, err := RunRefineSupersede(ctx, llm, fsys, input.ID, kind, input.Supersede, input.JustifySession)
+			if err != nil {
+				return errorResult(err.Error()), nil, nil
+			}
+			return textResult(formatRefineResultForMCP(result)), nil, nil
+		}
 		opts := RefineOptions{Brief: input.Brief, Diff: input.Diff}
 		result, err := dispatchRefineWithOptions(ctx, llm, fsys, input.ID, kind, opts, sink)
 		if err != nil {
@@ -324,6 +342,39 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 			j, err := json.MarshalIndent(result, "", "  ")
 			if err != nil {
 				return errorResult(fmt.Sprintf("explain json: %v", err)), nil, nil
+			}
+			return textResult(string(j)), nil, nil
+		case "markdown":
+			return textResult(result.Markdown), nil, nil
+		default:
+			return errorResult(fmt.Sprintf("unknown format %q (want markdown or json)", format)), nil, nil
+		}
+	})
+
+	// --- list ---
+	// Read-only, no LLM. Surfaces ids matching a free-text query so a
+	// connected agent can hand the result to `explain` or `justify`
+	// without first dumping the whole spec graph.
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "list",
+		Description: "Find spec node ids matching a free-text query. No LLM. Optional `kind` filter narrows to one of decision, feature, strategy, approach, bug.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input listInput) (*mcp.CallToolResult, any, error) {
+		if input.Query == "" {
+			return errorResult("query is required"), nil, nil
+		}
+		result, err := RunList(fsys, input.Query, input.Kind)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		format := input.Format
+		if format == "" {
+			format = "markdown"
+		}
+		switch format {
+		case "json":
+			j, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				return errorResult(fmt.Sprintf("list json: %v", err)), nil, nil
 			}
 			return textResult(string(j)), nil, nil
 		case "markdown":

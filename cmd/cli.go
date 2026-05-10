@@ -28,6 +28,7 @@ type CLI struct {
 	History    HistoryCmd    `cmd:"" help:"Query the past-tense record of spec changes."`
 	Explain    ExplainCmd    `cmd:"" help:"Render a spec node's rationale, alternatives, and back-references (no LLM)."`
 	Justify    JustifyCmd    `cmd:"" help:"Have the spec advocate write a defense for a node, optionally vs a challenge."`
+	List       ListCmd       `cmd:"" help:"Find spec node ids matching a free-text query (no LLM)."`
 
 	Mcp McpCmd `cmd:"" help:"Start the MCP server."`
 

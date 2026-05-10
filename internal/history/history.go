@@ -71,6 +71,34 @@ type Event struct {
 	NewValue     string    `json:"new_value,omitempty"`
 	Rationale    string    `json:"rationale,omitempty"`
 	Alternatives []string  `json:"alternatives,omitempty"`
+
+	// Supersede carries the cascade payload for EventKindNodeSuperseded
+	// events. Empty for other event kinds. The structured form lets
+	// downstream readers (locutus history, narrative regenerator) walk
+	// the cascade scope without re-parsing the spec graph at the time
+	// of the event.
+	Supersede *SupersedeRecord `json:"supersede,omitempty"`
+}
+
+// EventKindNodeSuperseded marks a refine --supersede event. Carries
+// a Supersede record with the cascade scope. TargetID is the
+// superseded id; NewValue is the replacement id (same as TargetID
+// when in_place=true).
+const EventKindNodeSuperseded = "node_superseded"
+
+// SupersedeRecord is the structured payload for node_superseded
+// events. Buckets list ids that were rewritten or invalidated; only
+// buckets that apply to the node kind are populated.
+type SupersedeRecord struct {
+	NodeKind                       string   `json:"node_kind"`
+	InPlace                        bool     `json:"in_place,omitempty"`
+	Motivation                     string   `json:"motivation,omitempty"`
+	JustifySession                 string   `json:"justify_session,omitempty"`
+	FeaturesDecisionsRewritten     []string `json:"features_decisions_rewritten,omitempty"`
+	StrategiesDecisionsRewritten   []string `json:"strategies_decisions_rewritten,omitempty"`
+	DecisionsInfluencedByRewritten []string `json:"decisions_influenced_by_rewritten,omitempty"`
+	BugsFeatureIDRewritten         []string `json:"bugs_feature_id_rewritten,omitempty"`
+	ApproachesInvalidated          []string `json:"approaches_invalidated,omitempty"`
 }
 
 // Historian records and queries structured change events.

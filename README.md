@@ -137,6 +137,7 @@ locutus import "describe the first thing you want built"
 | `history` | Query the past-tense record. `--narrative` regenerates an LLM-authored summary. |
 | `explain <id>` | Render a node's rationale, alternatives, and back-references. No LLM. |
 | `justify <id>` | Spec advocate writes a defense. `--against "..."` runs the challenger first. |
+| `list <query>` | Find node ids matching a free-text query. `--kind <decision\|feature\|strategy\|approach\|bug>` narrows the search. No LLM. |
 
 Every mutating verb supports `--dry-run`. Every CLI verb has MCP parity — see below.
 

@@ -31,11 +31,12 @@ import (
 //   is itself marked drifted so the next `adopt` replans it.
 // - Goals: human-authored; refine returns an explicit error.
 type RefineCmd struct {
-	ID       string `arg:"" help:"Spec node ID to refine (Goal, Feature, Strategy, Decision, Approach, or Bug)."`
-	DryRun   bool   `help:"Preview cascade blast radius; do not write spec changes."`
-	Brief    string `help:"Focused refinement intent passed to the rewriter as a 'why this refine' preamble." optional:""`
-	Diff     bool   `help:"After refine, print a unified diff (rendered Markdown) between the prior version and the new one."`
-	Rollback bool   `help:"Undo the most recent refine: restore the prior JSON from the last spec_refined event."`
+	ID        string `arg:"" help:"Spec node ID to refine (Goal, Feature, Strategy, Decision, Approach, or Bug)."`
+	DryRun    bool   `help:"Preview cascade blast radius; do not write spec changes."`
+	Brief     string `help:"Focused refinement intent passed to the rewriter as a 'why this refine' preamble." optional:""`
+	Supersede string `help:"Replace the target Decision/Feature/Strategy with a new node, cascading id rewrites and invalidating affected approaches. The argument is the motivation (often the breaking-point summary from a prior justify run). Mutually exclusive with --brief; rejected for bugs." optional:""`
+	Diff      bool   `help:"After refine, print a unified diff (rendered Markdown) between the prior version and the new one."`
+	Rollback  bool   `help:"Undo the most recent refine: restore the prior JSON from the last spec_refined event."`
 }
 
 // RefineOptions carries the per-call refinement knobs through to the
@@ -56,9 +57,12 @@ type RefineOptions struct {
 // the cmd layer accepts. Surfaces on Run for both CLI and MCP.
 func (c *RefineCmd) validate() error {
 	if c.Rollback {
-		if c.Brief != "" || c.Diff || c.DryRun {
-			return fmt.Errorf("--rollback is mutually exclusive with --brief, --diff, --dry-run")
+		if c.Brief != "" || c.Supersede != "" || c.Diff || c.DryRun {
+			return fmt.Errorf("--rollback is mutually exclusive with --brief, --supersede, --diff, --dry-run")
 		}
+	}
+	if c.Supersede != "" && c.Brief != "" {
+		return fmt.Errorf("--supersede and --brief are mutually exclusive — pick one mode")
 	}
 	return nil
 }
@@ -87,6 +91,10 @@ type RefineResult struct {
 	Diff string `json:"diff,omitempty"`
 	// Rollback summary populated when --rollback fires.
 	Rollback *RollbackSummary `json:"rollback,omitempty"`
+	// Supersede summary populated when --supersede fires. Carries
+	// the cascade scope (id rewrites + invalidated approaches) and
+	// the originating history event id.
+	Supersede *SupersedeSummary `json:"supersede,omitempty"`
 }
 
 // RollbackSummary describes the outcome of `refine --rollback`. Empty
@@ -144,6 +152,20 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 	}
 	llm, sink, closeSink := withProgressSink(cli, llm)
 	defer closeSink()
+
+	if c.Supersede != "" {
+		result, err := RunRefineSupersede(ctx, llm, fsys, c.ID, kind, c.Supersede, "")
+		if err != nil {
+			return err
+		}
+		if cli.JSON {
+			return json.NewEncoder(os.Stdout).Encode(result)
+		}
+		printRefineSummary(result)
+		_ = rec.Close()
+		fmt.Printf("Session: %s/ (per-call YAML under calls/)\n", rec.Path())
+		return nil
+	}
 
 	opts := RefineOptions{Brief: c.Brief, Diff: c.Diff}
 	result, err := dispatchRefineWithOptions(ctx, llm, fsys, c.ID, kind, opts, sink)
@@ -804,6 +826,10 @@ func printRefineSummary(r *RefineResult) {
 	}
 	if r.Cascade != nil {
 		printCascadeSummary(r.NodeID, r.Cascade)
+		return
+	}
+	if r.Supersede != nil {
+		printSupersedeSummary(r.Supersede)
 		return
 	}
 	if r.Generated != nil {
