@@ -291,24 +291,24 @@ func joinSections(parts []string) string {
 }
 
 // challengerMaxAttempts caps how many times we'll dispatch the
-// spec_challenger before giving up. The Anthropic-side schema-skeleton
-// failure mode (DJ-108 native structured output + adaptive thinking)
-// is intermittent. Empirical evidence from a 4-run sample on
-// strat-frontend in winplan (2026-05-10) showed 3/4 calls producing
-// degenerate briefs even at attempt 2 — closer to ~75% per-call
-// failure on that specific prompt vs the ~50–67% earlier observation.
-// Three attempts (one initial + two retries) gives 1 - (0.75)^3 ≈
-// 58% success vs the prior 1 - (0.75)^2 = 44% on the same input.
+// spec_challenger before giving up. The DJ-108 schema-skeleton
+// failure mode is provider-specific — empirical evidence from
+// strat-frontend in winplan (2026-05-10) showed 3/3 attempts going
+// to Anthropic and producing literal "dummy" tokens. Bumping
+// retries didn't help because the executor's pick-policy holds
+// picks[0] across non-transport failures.
 //
-// The companion prompt clarification (broadening the allowed
-// evidence sources to include the node's own rationale and naming
-// the validator's length floor in-prompt) attacks the root cause;
-// this retry bump is belt-and-suspenders.
+// dispatchChallengerWithRetry rotates the agent's Models slice on
+// each retry so the three attempts hit three different providers
+// (anthropic → googleai → openai by default). With independent
+// providers, the joint-failure probability is the product of each
+// provider's per-call failure rate, not a single provider's rate
+// cubed — the rotation is the real fix; the retry budget just sets
+// the breadth of that spread.
 //
-// Increase further only with evidence: a 4th attempt against the
-// same prompt has rapidly diminishing returns and starts looking
-// like stubbornness — re-run by the user is cheaper than burning
-// tokens on the same shape.
+// Three was picked to cover the standard Models slice
+// [anthropic, googleai, openai] exactly once. Increase only if a
+// real fourth provider lands in DefaultModels.
 const challengerMaxAttempts = 3
 
 // dispatchChallengerWithRetry runs the spec_challenger and applies
@@ -327,8 +327,22 @@ const challengerMaxAttempts = 3
 func dispatchChallengerWithRetry(ctx context.Context, exec AgentExecutor, def AgentDef, input AgentInput, nodeID string) (*ChallengeBrief, error) {
 	var last ChallengeBrief
 	for attempt := 1; attempt <= challengerMaxAttempts; attempt++ {
+		// Rotate the agent's model preferences on retry so each
+		// attempt hits a different provider. The DJ-108 schema-
+		// skeleton failure mode is provider-specific: the executor
+		// only advances through Models on retryable transport
+		// failures (rate limit, timeout), but a successful response
+		// containing "dummy" placeholder content reads as success
+		// to the executor. Without rotation, every retry hits the
+		// same picks[0] provider that just produced the skeleton.
+		// Empirical evidence: 3/3 attempts against winplan's
+		// strat-frontend (2026-05-10) all returned dummy tokens
+		// because all 3 attempts went to Anthropic.
+		attemptDef := def
+		attemptDef.Models = rotateModels(def.Models, attempt-1)
+
 		var challenge ChallengeBrief
-		if err := RunInto(WithRole(ctx, "challenge"), exec, def, input, &challenge); err != nil {
+		if err := RunInto(WithRole(ctx, "challenge"), exec, attemptDef, input, &challenge); err != nil {
 			return nil, fmt.Errorf("justify: challenger dispatch: %w", err)
 		}
 		last = challenge
@@ -347,6 +361,8 @@ func dispatchChallengerWithRetry(ctx context.Context, exec AgentExecutor, def Ag
 					"node_id", nodeID,
 					"attempt", attempt,
 					"max_attempts", challengerMaxAttempts,
+					"provider_attempted", primaryProvider(attemptDef.Models),
+					"next_provider", primaryProvider(rotateModels(def.Models, attempt)),
 					"reason", reason,
 					"output", challenge)
 				continue
@@ -361,6 +377,40 @@ func dispatchChallengerWithRetry(ctx context.Context, exec AgentExecutor, def Ag
 	// Unreachable in practice — the loop returns on every iteration —
 	// but Go's flow analysis requires a terminal return.
 	return &last, fmt.Errorf("justify: challenger retry loop exited without a result for %q", nodeID)
+}
+
+// primaryProvider returns the provider name of the first preference
+// in prefs, or "default" when prefs is empty (the executor falls
+// back to DefaultModels). Surfaced in the retry WARN log so an
+// operator reading session traces can see which provider hit the
+// degenerate output and which provider the next attempt will try.
+func primaryProvider(prefs []ModelPreference) string {
+	if len(prefs) == 0 {
+		return "default"
+	}
+	return prefs[0].Provider
+}
+
+// rotateModels returns a copy of prefs rotated left by n positions
+// (n is taken modulo len(prefs) for safety). With prefs =
+// [anthropic, googleai, openai] and n=1 the result is [googleai,
+// openai, anthropic]; n=2 → [openai, anthropic, googleai]. Returns
+// the input unchanged when prefs has 0 or 1 entries (nothing to
+// rotate). Used by dispatchChallengerWithRetry to land each retry
+// on a different provider when the schema-skeleton failure mode
+// fires — see comment at the call site.
+func rotateModels(prefs []ModelPreference, n int) []ModelPreference {
+	if len(prefs) <= 1 {
+		return prefs
+	}
+	shift := ((n % len(prefs)) + len(prefs)) % len(prefs)
+	if shift == 0 {
+		return prefs
+	}
+	rotated := make([]ModelPreference, 0, len(prefs))
+	rotated = append(rotated, prefs[shift:]...)
+	rotated = append(rotated, prefs[:shift]...)
+	return rotated
 }
 
 // challengerPlaceholderTokens lists the literal strings observed (or
