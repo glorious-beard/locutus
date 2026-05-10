@@ -11,14 +11,23 @@ import (
 
 // AgentDef is one agent definition loaded from a .md file. The
 // frontmatter declares routing intent (Models priority list),
-// structured-output schema, tools, and the per-call timeout; the
-// markdown body becomes SystemPrompt.
+// structured-output schema, dispatch shape (MaxIterations), and the
+// per-call timeout; the markdown body becomes SystemPrompt.
 //
 // Per-agent provider knobs (temperature, max_tokens, thinking
 // budget) intentionally do NOT live on AgentDef. The executor
 // applies tier-baked operational defaults from models.yaml so
 // per-deployment tuning happens in one place rather than scattered
 // across 25 agent files.
+//
+// There is no per-agent tool allowlist. Every tool registered in
+// the Executor's ToolRegistry is exposed to every agent (resolved
+// in buildAdapterRequest). The per-name allowlist was removed in
+// the workflow-unification plan's Phase 4 because today's tools
+// are all internal Locutus-defined read-only spec lookups, so the
+// allowlist was documentation that loosely matched reality, not an
+// enforcement surface. When external tools (with side effects)
+// eventually land, a richer capability model will replace it.
 type AgentDef struct {
 	ID   string `yaml:"id"`
 	Role string `yaml:"role"`
@@ -41,12 +50,16 @@ type AgentDef struct {
 	// Citations field (top-level and per-round) and propagate into
 	// the session trace.
 	Grounding bool `yaml:"grounding,omitempty"`
-	// Tools names tools this agent may invoke. Each must be
-	// registered in the Executor's ToolRegistry; resolution
-	// happens at dispatch time. Tools and grounding are mutually
-	// exclusive on Gemini — the adapter logs a Warn and falls back
-	// to schema-doc-only output enforcement when both are set.
-	Tools []string `yaml:"tools,omitempty"`
+	// MaxIterations selects the dispatch shape. Zero (or one)
+	// keeps the default single-call shape: one Generate, parse
+	// output, return. Greater than one opts the agent into the
+	// Locutus-side ReAct loop in AgentDispatcher.dispatchReAct —
+	// each iteration calls the adapter, executes any tool_calls
+	// the model emitted via the global ToolRegistry, appends the
+	// results to the conversation, and loops until the model
+	// emits a non-tool response or the cap is exceeded. Provider-
+	// side grounding is independent of this field.
+	MaxIterations int `yaml:"max_iterations,omitempty"`
 	// Timeout caps per-call wall-clock duration as a Go duration
 	// string ("5m", "30s"). Empty falls back to LOCUTUS_LLM_TIMEOUT
 	// (default 15m). Tighten on fanout-bounded agents (per-node

@@ -369,6 +369,15 @@ func outputFromResponse(resp *adapters.Response, model string) *AgentOutput {
 // pick into the provider-neutral adapters.Request. Resolves the
 // strict-mode schema and tool definitions; the adapter consumes them
 // in its provider-native shape.
+//
+// Every tool registered in the global ToolRegistry is exposed to
+// every agent. The per-agent allowlist (AgentDef.Tools) was removed
+// in workflow-unification Phase 4 because today's tools are all
+// internal Locutus-defined read-only spec lookups; the allowlist
+// was documentation that loosely matched reality, not enforcement.
+// When external tools (with side effects) eventually land, a
+// richer capability model will replace this all-or-nothing
+// exposure.
 func buildAdapterRequest(def AgentDef, input AgentInput, pick *ResolvedModel, registry *ToolRegistry) (adapters.Request, error) {
 	req := adapters.Request{
 		Model:           pick.Model,
@@ -391,14 +400,15 @@ func buildAdapterRequest(def AgentDef, input AgentInput, pick *ResolvedModel, re
 		}
 		req.OutputSchema = schema
 	}
-	if len(def.Tools) > 0 {
-		for _, name := range def.Tools {
-			tool, ok := registry.Resolve(name)
-			if !ok {
-				return req, fmt.Errorf("tool %q not registered", name)
-			}
-			req.Tools = append(req.Tools, tool)
+	for _, name := range registry.Names() {
+		tool, ok := registry.Resolve(name)
+		if !ok {
+			// Concurrent deregistration is not a supported
+			// production path; surface as an internal error
+			// rather than silently dropping the tool.
+			return req, fmt.Errorf("tool %q registered then disappeared", name)
 		}
+		req.Tools = append(req.Tools, tool)
 	}
 	return req, nil
 }

@@ -6,9 +6,6 @@ models:
   - {provider: openai, tier: strong}
   - {provider: googleai, tier: strong}
 output_schema: ReconciliationVerdict
-tools:
-  - spec_list_manifest
-  - spec_get
 ---
 # Identity
 
