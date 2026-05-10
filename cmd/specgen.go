@@ -217,7 +217,7 @@ func rewriteFeatureOnDisk(ctx context.Context, llm agent.AgentExecutor, fsys spe
 	if err != nil {
 		return fmt.Errorf("load: %w", err)
 	}
-	res, err := cascade.InvokeRewriter(ctx, llm, fsys, "feature", f.ID, f.Title, persisted.Description, applicable, nil)
+	res, err := cascade.InvokeRewriter(ctx, agent.NewDispatcher(llm), fsys, "feature", f.ID, f.Title, persisted.Description, applicable, nil)
 	if err != nil {
 		return fmt.Errorf("rewriter: %w", err)
 	}
@@ -239,7 +239,7 @@ func rewriteStrategyOnDisk(ctx context.Context, llm agent.AgentExecutor, fsys sp
 	if err != nil {
 		return fmt.Errorf("load: %w", err)
 	}
-	res, err := cascade.InvokeRewriter(ctx, llm, fsys, "strategy", s.ID, s.Title, body, applicable, nil)
+	res, err := cascade.InvokeRewriter(ctx, agent.NewDispatcher(llm), fsys, "strategy", s.ID, s.Title, body, applicable, nil)
 	if err != nil {
 		return fmt.Errorf("rewriter: %w", err)
 	}

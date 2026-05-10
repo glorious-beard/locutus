@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/chetan/locutus/internal/spec"
@@ -96,14 +95,14 @@ const splitterMaxAttempts = 3
 // The caller drives fan-out by walking DecisionShards and dispatching
 // the per-decision flow only for shards with non-empty Shard text.
 //
-// Retries up to splitterMaxAttempts times with provider rotation
-// when the output is unparseable or fails the shard-count /
-// id-correspondence validator.
+// The dispatcher applies provider rotation + validator-driven retry
+// (splitterMaxAttempts) when the output is unparseable or fails the
+// shard-count / id-correspondence check.
 //
-// def is the loaded scaffold AgentDef; OutputSchema is overridden to
-// "ChallengeSplit" inside this function so the cmd layer doesn't have
-// to remember the binding.
-func InvokeSplitter(ctx context.Context, llm AgentExecutor, def AgentDef, in SplitterInput) (*ChallengeSplit, error) {
+// def is the loaded scaffold AgentDef; the dispatcher overrides
+// OutputSchema to "ChallengeSplit" so the cmd layer doesn't have to
+// remember the binding.
+func InvokeSplitter(ctx context.Context, dispatcher AgentDispatcher, def AgentDef, in SplitterInput) (*ChallengeSplit, error) {
 	if strings.TrimSpace(in.Challenge) == "" {
 		return nil, fmt.Errorf("invoke splitter: challenge is empty")
 	}
@@ -111,48 +110,39 @@ func InvokeSplitter(ctx context.Context, llm AgentExecutor, def AgentDef, in Spl
 		return nil, fmt.Errorf("invoke splitter: no decisions to classify against")
 	}
 
-	def.OutputSchema = "ChallengeSplit"
 	user := buildSplitterPrompt(in)
 	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
 
-	var lastSplit *ChallengeSplit
-	for attempt := 1; attempt <= splitterMaxAttempts; attempt++ {
-		attemptDef := def
-		attemptDef.Models = rotateModels(def.Models, attempt-1)
+	out, dispatchErr := dispatcher.Dispatch(ctx, def, input, DispatchOptions{
+		Role:         "split",
+		OutputSchema: "ChallengeSplit",
+		MaxAttempts:  splitterMaxAttempts,
+		Validator: func(out *AgentOutput) (string, bool) {
+			var split ChallengeSplit
+			if jerr := json.Unmarshal([]byte(out.Content), &split); jerr != nil {
+				return fmt.Sprintf("parse output: %s", jerr), true
+			}
+			if verr := validateSplit(&split, in.Decisions); verr != nil {
+				return verr.Error(), true
+			}
+			return "", false
+		},
+	})
 
-		output, err := llm.Run(WithRole(ctx, "split"), attemptDef, input)
-		if err != nil {
-			return nil, fmt.Errorf("invoke splitter: %w", err)
+	var split *ChallengeSplit
+	if out != nil {
+		var parsed ChallengeSplit
+		if jerr := json.Unmarshal([]byte(out.Content), &parsed); jerr == nil {
+			split = &parsed
 		}
-		var split ChallengeSplit
-		if jerr := json.Unmarshal([]byte(output.Content), &split); jerr != nil {
-			if attempt < splitterMaxAttempts {
-				slog.Warn("invoke splitter: unparseable output; retrying",
-					"attempt", attempt,
-					"max_attempts", splitterMaxAttempts,
-					"provider_attempted", primaryProvider(attemptDef.Models),
-					"next_provider", primaryProvider(rotateModels(def.Models, attempt)),
-					"error", jerr)
-				continue
-			}
-			return nil, fmt.Errorf("invoke splitter: parse output: %w", jerr)
-		}
-		lastSplit = &split
-		if verr := validateSplit(&split, in.Decisions); verr != nil {
-			if attempt < splitterMaxAttempts {
-				slog.Warn("invoke splitter: degenerate output; retrying",
-					"attempt", attempt,
-					"max_attempts", splitterMaxAttempts,
-					"provider_attempted", primaryProvider(attemptDef.Models),
-					"next_provider", primaryProvider(rotateModels(def.Models, attempt)),
-					"error", verr)
-				continue
-			}
-			return &split, fmt.Errorf("invoke splitter: degenerate output after %d attempts: %w", splitterMaxAttempts, verr)
-		}
-		return &split, nil
 	}
-	return lastSplit, fmt.Errorf("invoke splitter: retry loop exited without a result")
+	if dispatchErr != nil {
+		return split, fmt.Errorf("invoke splitter: %w", dispatchErr)
+	}
+	if split == nil {
+		return nil, fmt.Errorf("invoke splitter: parse output: dispatcher returned no usable content")
+	}
+	return split, nil
 }
 
 // validateSplit enforces the contract: one shard per input decision

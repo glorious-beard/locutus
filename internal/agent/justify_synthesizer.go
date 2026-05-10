@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/chetan/locutus/internal/spec"
@@ -110,56 +109,48 @@ type PerDecisionResult struct {
 const synthesizerMaxAttempts = 3
 
 // InvokeSynthesizer runs the justify_synthesizer agent. Returns the
-// aggregate strategy-level verdict. Retries up to synthesizerMaxAttempts
-// times with provider rotation when the output is degenerate
-// (invalid verdict, empty defense, runaway field content).
-func InvokeSynthesizer(ctx context.Context, llm AgentExecutor, def AgentDef, in SynthesisInput) (*SynthesisVerdict, error) {
+// aggregate strategy-level verdict. The dispatcher applies provider
+// rotation + validator-driven retry (synthesizerMaxAttempts) when the
+// output is degenerate (invalid verdict, empty defense, runaway field
+// content).
+func InvokeSynthesizer(ctx context.Context, dispatcher AgentDispatcher, def AgentDef, in SynthesisInput) (*SynthesisVerdict, error) {
 	if len(in.PerDecisionResults) == 0 && strings.TrimSpace(in.ParentProseShard) == "" {
 		return nil, fmt.Errorf("invoke synthesizer: nothing to synthesize (no per-decision results and no prose shard)")
 	}
 
-	def.OutputSchema = "SynthesisVerdict"
 	user := buildSynthesizerPrompt(in)
 	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
 
-	var lastVerdict *SynthesisVerdict
-	for attempt := 1; attempt <= synthesizerMaxAttempts; attempt++ {
-		attemptDef := def
-		attemptDef.Models = rotateModels(def.Models, attempt-1)
+	out, dispatchErr := dispatcher.Dispatch(ctx, def, input, DispatchOptions{
+		Role:         "synthesis",
+		OutputSchema: "SynthesisVerdict",
+		MaxAttempts:  synthesizerMaxAttempts,
+		Validator: func(out *AgentOutput) (string, bool) {
+			var verdict SynthesisVerdict
+			if jerr := json.Unmarshal([]byte(out.Content), &verdict); jerr != nil {
+				return fmt.Sprintf("parse output: %s", jerr), true
+			}
+			if reason, degenerate := degenerateSynthesisVerdict(&verdict); degenerate {
+				return reason, true
+			}
+			return "", false
+		},
+	})
 
-		output, err := llm.Run(WithRole(ctx, "synthesis"), attemptDef, input)
-		if err != nil {
-			return nil, fmt.Errorf("invoke synthesizer: %w", err)
+	var verdict *SynthesisVerdict
+	if out != nil {
+		var parsed SynthesisVerdict
+		if jerr := json.Unmarshal([]byte(out.Content), &parsed); jerr == nil {
+			verdict = &parsed
 		}
-		var verdict SynthesisVerdict
-		if jerr := json.Unmarshal([]byte(output.Content), &verdict); jerr != nil {
-			if attempt < synthesizerMaxAttempts {
-				slog.Warn("invoke synthesizer: unparseable output; retrying",
-					"attempt", attempt,
-					"max_attempts", synthesizerMaxAttempts,
-					"provider_attempted", primaryProvider(attemptDef.Models),
-					"next_provider", primaryProvider(rotateModels(def.Models, attempt)),
-					"error", jerr)
-				continue
-			}
-			return nil, fmt.Errorf("invoke synthesizer: parse output: %w", jerr)
-		}
-		lastVerdict = &verdict
-		if reason, degenerate := degenerateSynthesisVerdict(&verdict); degenerate {
-			if attempt < synthesizerMaxAttempts {
-				slog.Warn("invoke synthesizer: degenerate output; retrying",
-					"attempt", attempt,
-					"max_attempts", synthesizerMaxAttempts,
-					"provider_attempted", primaryProvider(attemptDef.Models),
-					"next_provider", primaryProvider(rotateModels(def.Models, attempt)),
-					"reason", reason)
-				continue
-			}
-			return &verdict, fmt.Errorf("invoke synthesizer: degenerate output after %d attempts (%s); re-run, or report this if it persists", synthesizerMaxAttempts, reason)
-		}
-		return &verdict, nil
 	}
-	return lastVerdict, fmt.Errorf("invoke synthesizer: retry loop exited without a result")
+	if dispatchErr != nil {
+		return verdict, fmt.Errorf("invoke synthesizer: %w", dispatchErr)
+	}
+	if verdict == nil {
+		return nil, fmt.Errorf("invoke synthesizer: parse output: dispatcher returned no usable content")
+	}
+	return verdict, nil
 }
 
 // degenerateSynthesisVerdict catches the chain-of-thought-into-

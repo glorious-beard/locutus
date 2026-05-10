@@ -415,7 +415,7 @@ func RunRefine(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, dec
 	}
 
 	store := state.NewFileStateStore(fsys, state.DefaultStateDir)
-	cascadeResult, err := cascade.Cascade(ctx, llm, fsys, g, store, decisionID)
+	cascadeResult, err := cascade.Cascade(ctx, agent.NewDispatcher(llm), fsys, g, store, decisionID)
 	if err != nil {
 		return &RefineResult{NodeID: decisionID, NodeKind: spec.KindDecision, Cascade: cascadeResult}, err
 	}
@@ -439,7 +439,7 @@ func RunRefineFeature(ctx context.Context, llm agent.AgentExecutor, fsys specio.
 
 	priorBytes, _ := fsys.ReadFile(".borg/spec/features/" + featureID + ".json")
 	applicable := applicableDecisionsFor(g, f.Decisions)
-	changed, rationale, err := cascade.RewriteFeature(ctx, llm, fsys, *f, applicable, nil)
+	changed, rationale, err := cascade.RewriteFeature(ctx, agent.NewDispatcher(llm), fsys, *f, applicable, nil)
 	if err != nil {
 		return nil, fmt.Errorf("refine feature: %w", err)
 	}
@@ -479,7 +479,7 @@ func RunRefineStrategy(ctx context.Context, llm agent.AgentExecutor, fsys specio
 
 	priorBytes, _ := fsys.ReadFile(".borg/spec/strategies/" + strategyID + ".json")
 	applicable := applicableDecisionsFor(g, s.Decisions)
-	changed, rationale, err := cascade.RewriteStrategy(ctx, llm, fsys, *s, applicable, nil)
+	changed, rationale, err := cascade.RewriteStrategy(ctx, agent.NewDispatcher(llm), fsys, *s, applicable, nil)
 	if err != nil {
 		return nil, fmt.Errorf("refine strategy: %w", err)
 	}
@@ -522,7 +522,7 @@ func RunRefineBug(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, 
 		applicable = applicableDecisionsFor(g, parent.Decisions)
 	}
 	priorBytes, _ := fsys.ReadFile(".borg/spec/bugs/" + bugID + ".json")
-	changed, rationale, err := cascade.RewriteBug(ctx, llm, fsys, *b, applicable, nil)
+	changed, rationale, err := cascade.RewriteBug(ctx, agent.NewDispatcher(llm), fsys, *b, applicable, nil)
 	if err != nil {
 		return nil, fmt.Errorf("refine bug: %w", err)
 	}

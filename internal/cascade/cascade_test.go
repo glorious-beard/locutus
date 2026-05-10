@@ -108,7 +108,7 @@ func TestCascadeRewritesBothParentsAndDriftsApproaches(t *testing.T) {
 		scriptedRewrite("We run the backend in Go with the language decision refreshed.", true, "Clarify that Go is still the chosen language"),
 	)
 
-	result, err := cascade.Cascade(context.Background(), llm, fs, g, store, "dec-lang")
+	result, err := cascade.Cascade(context.Background(), agent.NewDispatcher(llm), fs, g, store, "dec-lang")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -144,7 +144,7 @@ func TestCascadeSkipsWhenRewriterReportsNoChange(t *testing.T) {
 		scriptedRewrite("We run the backend in Go.", false, "Already accurate"),
 	)
 
-	result, err := cascade.Cascade(context.Background(), llm, fs, g, store, "dec-lang")
+	result, err := cascade.Cascade(context.Background(), agent.NewDispatcher(llm), fs, g, store, "dec-lang")
 	require.NoError(t, err)
 
 	assert.Empty(t, result.UpdatedFeatures)
@@ -164,7 +164,7 @@ func TestCascadeUnknownDecisionErrors(t *testing.T) {
 	fs, g, store := setupCascadeFixture(t)
 	llm := agent.NewMockExecutor()
 
-	_, err := cascade.Cascade(context.Background(), llm, fs, g, store, "nope")
+	_, err := cascade.Cascade(context.Background(), agent.NewDispatcher(llm), fs, g, store, "nope")
 	assert.Error(t, err)
 }
 
@@ -179,7 +179,7 @@ func TestCascadeRecordsHistoryEvents(t *testing.T) {
 		scriptedRewrite("revised strat", true, "clarified Go choice"),
 	)
 
-	result, err := cascade.Cascade(context.Background(), llm, fs, g, store, "dec-lang")
+	result, err := cascade.Cascade(context.Background(), agent.NewDispatcher(llm), fs, g, store, "dec-lang")
 	require.NoError(t, err)
 	require.Len(t, result.Events, 2)
 
@@ -212,7 +212,7 @@ func TestCascadeMarksDriftEvenWithoutPriorState(t *testing.T) {
 		scriptedRewrite("revised strat", true, "confirm Go"),
 	)
 
-	result, err := cascade.Cascade(context.Background(), llm, fs, g, emptyStore, "dec-lang")
+	result, err := cascade.Cascade(context.Background(), agent.NewDispatcher(llm), fs, g, emptyStore, "dec-lang")
 	require.NoError(t, err)
 	// Parents still got rewritten; approaches without state entries are
 	// simply not in the DriftedApproaches set (they're already unplanned).

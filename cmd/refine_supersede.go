@@ -86,7 +86,7 @@ func runSupersedeDecision(ctx context.Context, llm agent.AgentExecutor, fsys spe
 	if err != nil {
 		return nil, fmt.Errorf("supersede: load agent: %w", err)
 	}
-	result, err := agent.InvokeSupersedeDecision(ctx, llm, def, agent.SupersedeContext{
+	result, err := agent.InvokeSupersedeDecision(ctx, agent.NewDispatcher(llm), def, agent.SupersedeContext{
 		OldNode:        &old.Spec,
 		Motivation:     motivation,
 		JustifySession: justifySession,
@@ -121,7 +121,7 @@ func runSupersedeFeature(ctx context.Context, llm agent.AgentExecutor, fsys spec
 	if err != nil {
 		return nil, fmt.Errorf("supersede: load agent: %w", err)
 	}
-	result, err := agent.InvokeSupersedeFeature(ctx, llm, def, agent.SupersedeContext{
+	result, err := agent.InvokeSupersedeFeature(ctx, agent.NewDispatcher(llm), def, agent.SupersedeContext{
 		OldNode:        &old.Spec,
 		Motivation:     motivation,
 		JustifySession: justifySession,
@@ -156,7 +156,7 @@ func runSupersedeStrategy(ctx context.Context, llm agent.AgentExecutor, fsys spe
 	if err != nil {
 		return nil, fmt.Errorf("supersede: load agent: %w", err)
 	}
-	result, err := agent.InvokeSupersedeStrategy(ctx, llm, def, agent.SupersedeContext{
+	result, err := agent.InvokeSupersedeStrategy(ctx, agent.NewDispatcher(llm), def, agent.SupersedeContext{
 		OldNode:        &old.Spec,
 		Motivation:     motivation,
 		JustifySession: justifySession,
@@ -222,7 +222,7 @@ func runProseCascade(ctx context.Context, llm agent.AgentExecutor, fsys specio.F
 			continue
 		}
 		applicable := resolveDecisions(loaded, f.Spec.Decisions)
-		if _, _, err := cascade.RewriteFeature(ctx, llm, fsys, f.Spec, applicable, applicable); err != nil {
+		if _, _, err := cascade.RewriteFeature(ctx, agent.NewDispatcher(llm), fsys, f.Spec, applicable, applicable); err != nil {
 			slog.Warn("supersede: prose cascade for feature failed",
 				"feature", fid, "error", err)
 		}
@@ -233,7 +233,7 @@ func runProseCascade(ctx context.Context, llm agent.AgentExecutor, fsys specio.F
 			continue
 		}
 		applicable := resolveDecisions(loaded, s.Spec.Decisions)
-		if _, _, err := cascade.RewriteStrategy(ctx, llm, fsys, s.Spec, applicable, applicable); err != nil {
+		if _, _, err := cascade.RewriteStrategy(ctx, agent.NewDispatcher(llm), fsys, s.Spec, applicable, applicable); err != nil {
 			slog.Warn("supersede: prose cascade for strategy failed",
 				"strategy", sid, "error", err)
 		}
@@ -248,7 +248,7 @@ func runProseCascade(ctx context.Context, llm agent.AgentExecutor, fsys specio.F
 		if pf := loaded.FeatureNodeByID(b.Spec.FeatureID); pf != nil {
 			applicable = resolveDecisions(loaded, pf.Spec.Decisions)
 		}
-		if _, _, err := cascade.RewriteBug(ctx, llm, fsys, b.Spec, applicable, applicable); err != nil {
+		if _, _, err := cascade.RewriteBug(ctx, agent.NewDispatcher(llm), fsys, b.Spec, applicable, applicable); err != nil {
 			slog.Warn("supersede: prose cascade for bug failed",
 				"bug", bid, "error", err)
 		}

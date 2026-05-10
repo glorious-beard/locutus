@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -49,19 +50,24 @@ type JustifyInputs struct {
 // node + GOALS and returns its structured defense. No challenger
 // involvement; the caller should leave Challenge and ChallengerOut
 // empty on JustifyInputs.
-func RunJustify(ctx context.Context, exec AgentExecutor, in JustifyInputs) (*JustificationBrief, error) {
+func RunJustify(ctx context.Context, dispatcher AgentDispatcher, in JustifyInputs) (*JustificationBrief, error) {
 	if in.NodeMarkdown == "" {
 		return nil, fmt.Errorf("justify: empty node content for %q", in.NodeID)
 	}
 
-	def := in.Advocate
-	def.OutputSchema = "JustificationBrief"
 	user := buildAdvocateUserMessage(in)
 	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
 
-	var out JustificationBrief
-	if err := RunInto(WithRole(ctx, "justification"), exec, def, input, &out); err != nil {
+	resp, err := dispatcher.Dispatch(ctx, in.Advocate, input, DispatchOptions{
+		Role:         "justification",
+		OutputSchema: "JustificationBrief",
+	})
+	if err != nil {
 		return nil, fmt.Errorf("justify: advocate dispatch: %w", err)
+	}
+	var out JustificationBrief
+	if perr := unmarshalAgentOutput(resp.Content, &out); perr != nil {
+		return nil, fmt.Errorf("justify: advocate response: %w", perr)
 	}
 	if out.Defense == "" {
 		return nil, fmt.Errorf("justify: advocate returned empty defense for %q", in.NodeID)
@@ -87,7 +93,7 @@ func RunJustify(ctx context.Context, exec AgentExecutor, in JustifyInputs) (*Jus
 // in researcherSystemPrompt to mark such findings as ungrounded
 // rather than confabulate; the post-call check is a backstop against
 // confabulation when the model ignores that directive.
-func RunResearch(ctx context.Context, exec AgentExecutor, in JustifyInputs) (*ResearchBrief, error) {
+func RunResearch(ctx context.Context, dispatcher AgentDispatcher, in JustifyInputs) (*ResearchBrief, error) {
 	if in.NodeMarkdown == "" {
 		return nil, fmt.Errorf("justify: empty node content for %q", in.NodeID)
 	}
@@ -99,12 +105,14 @@ func RunResearch(ctx context.Context, exec AgentExecutor, in JustifyInputs) (*Re
 	}
 
 	def := in.Researcher
-	def.OutputSchema = "ResearchBrief"
 	def.Grounding = true
 	user := buildResearcherUserMessage(in)
 	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
 
-	resp, err := exec.Run(WithRole(ctx, "research"), def, input)
+	resp, err := dispatcher.Dispatch(ctx, def, input, DispatchOptions{
+		Role:         "research",
+		OutputSchema: "ResearchBrief",
+	})
 	if err != nil {
 		return nil, fmt.Errorf("justify: researcher dispatch: %w", err)
 	}
@@ -154,7 +162,7 @@ func RunResearch(ctx context.Context, exec AgentExecutor, in JustifyInputs) (*Re
 //
 // The challenge string MUST be non-empty; an empty one is a
 // programming error caught by the cmd layer.
-func RunJustifyAgainst(ctx context.Context, exec AgentExecutor, in JustifyInputs) (*ChallengeBrief, *ResearchBrief, *AdversarialDefense, error) {
+func RunJustifyAgainst(ctx context.Context, dispatcher AgentDispatcher, in JustifyInputs) (*ChallengeBrief, *ResearchBrief, *AdversarialDefense, error) {
 	if in.Challenge == "" {
 		return nil, nil, nil, fmt.Errorf("justify: empty challenge")
 	}
@@ -162,12 +170,10 @@ func RunJustifyAgainst(ctx context.Context, exec AgentExecutor, in JustifyInputs
 		return nil, nil, nil, fmt.Errorf("justify: empty node content for %q", in.NodeID)
 	}
 
-	challengeDef := in.Challenger
-	challengeDef.OutputSchema = "ChallengeBrief"
 	challengeUser := buildChallengerUserMessage(in)
 	challengeInput := AgentInput{Messages: []Message{{Role: "user", Content: challengeUser}}}
 
-	challenge, challengeErr := dispatchChallengerWithRetry(ctx, exec, challengeDef, challengeInput, in.NodeID)
+	challenge, challengeErr := dispatchChallengerWithRetry(ctx, dispatcher, in.Challenger, challengeInput, in.NodeID)
 	if challengeErr != nil {
 		return challenge, nil, nil, challengeErr
 	}
@@ -175,7 +181,7 @@ func RunJustifyAgainst(ctx context.Context, exec AgentExecutor, in JustifyInputs
 	researchIn := in
 	researchIn.ChallengerOut = challenge
 
-	research, err := RunResearch(ctx, exec, researchIn)
+	research, err := RunResearch(ctx, dispatcher, researchIn)
 	if err != nil {
 		return challenge, nil, nil, err
 	}
@@ -183,14 +189,19 @@ func RunJustifyAgainst(ctx context.Context, exec AgentExecutor, in JustifyInputs
 	advocateIn := researchIn
 	advocateIn.ResearcherOut = research
 
-	advocateDef := in.Advocate
-	advocateDef.OutputSchema = "AdversarialDefense"
 	advocateUser := buildAdvocateUserMessage(advocateIn)
 	advocateInput := AgentInput{Messages: []Message{{Role: "user", Content: advocateUser}}}
 
-	var defense AdversarialDefense
-	if err := RunInto(WithRole(ctx, "justification"), exec, advocateDef, advocateInput, &defense); err != nil {
+	resp, err := dispatcher.Dispatch(ctx, in.Advocate, advocateInput, DispatchOptions{
+		Role:         "justification",
+		OutputSchema: "AdversarialDefense",
+	})
+	if err != nil {
 		return challenge, research, nil, fmt.Errorf("justify: advocate dispatch: %w", err)
+	}
+	var defense AdversarialDefense
+	if perr := unmarshalAgentOutput(resp.Content, &defense); perr != nil {
+		return challenge, research, nil, fmt.Errorf("justify: advocate response: %w", perr)
 	}
 	if defense.Defense == "" {
 		return challenge, research, &defense, fmt.Errorf("justify: advocate returned empty defense for %q", in.NodeID)
@@ -311,72 +322,70 @@ func joinSections(parts []string) string {
 // real fourth provider lands in DefaultModels.
 const challengerMaxAttempts = 3
 
-// dispatchChallengerWithRetry runs the spec_challenger and applies
-// the degenerate-output validator. On a degenerate result it logs
-// the offending content at WARN and retries up to challengerMaxAttempts
-// total dispatches. On a real LLM error (rate limit, timeout) the
-// underlying RunInto path already retries via the executor's standard
-// retry; this layer is specifically for the "model returned valid
-// JSON but it's a schema skeleton" failure mode that a transport
-// retry can't catch.
+// dispatchChallengerWithRetry runs the spec_challenger via the
+// dispatcher with the degenerate-output validator wired into the
+// dispatch options. On a degenerate result the dispatcher rotates
+// providers and retries up to challengerMaxAttempts. The DJ-108
+// schema-skeleton failure mode is provider-specific (one provider
+// returns "dummy" tokens despite a valid schema); the executor's
+// internal retry only advances on transport errors, so the
+// dispatcher's validator-driven loop is the layer that recovers it.
 //
 // Returns the last challenge produced (so the cmd layer can show the
 // user what the model emitted on terminal failure) and a nil error
 // on success, or the offending challenge plus a degenerate-output
 // error after the attempt cap is reached.
-func dispatchChallengerWithRetry(ctx context.Context, exec AgentExecutor, def AgentDef, input AgentInput, nodeID string) (*ChallengeBrief, error) {
-	var last ChallengeBrief
-	for attempt := 1; attempt <= challengerMaxAttempts; attempt++ {
-		// Rotate the agent's model preferences on retry so each
-		// attempt hits a different provider. The DJ-108 schema-
-		// skeleton failure mode is provider-specific: the executor
-		// only advances through Models on retryable transport
-		// failures (rate limit, timeout), but a successful response
-		// containing "dummy" placeholder content reads as success
-		// to the executor. Without rotation, every retry hits the
-		// same picks[0] provider that just produced the skeleton.
-		// Empirical evidence: 3/3 attempts against winplan's
-		// strat-frontend (2026-05-10) all returned dummy tokens
-		// because all 3 attempts went to Anthropic.
-		attemptDef := def
-		attemptDef.Models = rotateModels(def.Models, attempt-1)
-
-		var challenge ChallengeBrief
-		if err := RunInto(WithRole(ctx, "challenge"), exec, attemptDef, input, &challenge); err != nil {
-			return nil, fmt.Errorf("justify: challenger dispatch: %w", err)
-		}
-		last = challenge
-		if len(challenge.Concerns) == 0 {
-			// Empty concerns is a valid "challenger found nothing
-			// substantive to surface" outcome — not a transient
-			// schema-skeleton failure. Fail immediately rather
-			// than retrying since a retry would only churn the
-			// model on a prompt the model already evaluated as
-			// not-yielding-concerns.
-			return &challenge, fmt.Errorf("justify: challenger returned no concerns for %q", nodeID)
-		}
-		if reason, degenerate := degenerateChallengerBrief(&challenge); degenerate {
-			if attempt < challengerMaxAttempts {
-				slog.Warn("justify: challenger emitted degenerate brief; retrying",
-					"node_id", nodeID,
-					"attempt", attempt,
-					"max_attempts", challengerMaxAttempts,
-					"provider_attempted", primaryProvider(attemptDef.Models),
-					"next_provider", primaryProvider(rotateModels(def.Models, attempt)),
-					"reason", reason,
-					"output", challenge)
-				continue
+func dispatchChallengerWithRetry(ctx context.Context, dispatcher AgentDispatcher, def AgentDef, input AgentInput, nodeID string) (*ChallengeBrief, error) {
+	out, dispatchErr := dispatcher.Dispatch(ctx, def, input, DispatchOptions{
+		Role:         "challenge",
+		OutputSchema: "ChallengeBrief",
+		MaxAttempts:  challengerMaxAttempts,
+		Validator: func(out *AgentOutput) (string, bool) {
+			var challenge ChallengeBrief
+			if jerr := json.Unmarshal([]byte(out.Content), &challenge); jerr != nil {
+				return fmt.Sprintf("parse output: %s", jerr), true
 			}
-			// Final attempt produced a degenerate result. Give up
-			// loudly with the offending content so the user can
-			// see what happened and decide whether to re-run.
-			return &challenge, fmt.Errorf("justify: challenger emitted degenerate brief for %q after %d attempts (%s); re-run, or report this if it persists", nodeID, challengerMaxAttempts, reason)
+			if len(challenge.Concerns) == 0 {
+				// Empty concerns is a valid "challenger found nothing
+				// substantive to surface" outcome — not a degenerate
+				// case. Don't retry; the post-loop check returns the
+				// expected error to the caller.
+				return "", false
+			}
+			if reason, degenerate := degenerateChallengerBrief(&challenge); degenerate {
+				return reason, true
+			}
+			return "", false
+		},
+	})
+
+	var challenge *ChallengeBrief
+	if out != nil {
+		var parsed ChallengeBrief
+		if jerr := json.Unmarshal([]byte(out.Content), &parsed); jerr == nil {
+			challenge = &parsed
 		}
-		return &challenge, nil
 	}
-	// Unreachable in practice — the loop returns on every iteration —
-	// but Go's flow analysis requires a terminal return.
-	return &last, fmt.Errorf("justify: challenger retry loop exited without a result for %q", nodeID)
+	if dispatchErr != nil {
+		// Wrap dispatcher's error with the legacy phrasing the cmd
+		// layer renders to the user. The dispatcher's degenerate-
+		// retry-exhausted error already names the agent and reason;
+		// surface a node-id-tagged variant so the user sees which
+		// node failed.
+		if challenge != nil && len(challenge.Concerns) > 0 {
+			if reason, degenerate := degenerateChallengerBrief(challenge); degenerate {
+				return challenge, fmt.Errorf("justify: challenger emitted degenerate brief for %q after %d attempts (%s); re-run, or report this if it persists", nodeID, challengerMaxAttempts, reason)
+			}
+		}
+		return challenge, fmt.Errorf("justify: challenger dispatch: %w", dispatchErr)
+	}
+	if challenge == nil {
+		return nil, fmt.Errorf("justify: challenger dispatch returned no usable content for %q", nodeID)
+	}
+	if len(challenge.Concerns) == 0 {
+		return challenge, fmt.Errorf("justify: challenger returned no concerns for %q", nodeID)
+	}
+	return challenge, nil
 }
 
 // primaryProvider returns the provider name of the first preference

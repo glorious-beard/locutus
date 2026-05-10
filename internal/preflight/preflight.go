@@ -155,7 +155,7 @@ func Preflight(
 					// Cascade the new Decision so any parent Feature /
 					// Strategy that references it is refreshed, and
 					// dependent Approaches are marked drifted.
-					cascadeResult, err := cascade.Cascade(ctx, llm, fsys, graph, store, decision.ID)
+					cascadeResult, err := cascade.Cascade(ctx, agent.NewDispatcher(llm), fsys, graph, store, decision.ID)
 					if err != nil {
 						return report, fmt.Errorf("cascade new decision %s: %w", decision.ID, err)
 					}

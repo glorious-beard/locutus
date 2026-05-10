@@ -87,14 +87,15 @@ type SupersedeContext struct {
 // against ctx, returning the parsed result. The caller is responsible
 // for validating that result.RevisedDecision.ID is the expected new
 // slug and applying via cascade.ApplySupersedeDecision.
-func InvokeSupersedeDecision(ctx context.Context, llm AgentExecutor, def AgentDef, sctx SupersedeContext) (*RewriteDecisionResult, error) {
+func InvokeSupersedeDecision(ctx context.Context, dispatcher AgentDispatcher, def AgentDef, sctx SupersedeContext) (*RewriteDecisionResult, error) {
 	old, ok := sctx.OldNode.(*spec.Decision)
 	if !ok || old == nil {
 		return nil, fmt.Errorf("invoke supersede decision: old node must be *spec.Decision, got %T", sctx.OldNode)
 	}
 
 	user := buildSupersedeDecisionPrompt(*old, sctx.Motivation, sctx.JustifySession)
-	out, err := llm.Run(ctx, def, AgentInput{Messages: []Message{{Role: "user", Content: user}}})
+	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
+	out, err := dispatcher.Dispatch(ctx, def, input, DispatchOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("invoke supersede decision: %w", err)
 	}
@@ -109,14 +110,15 @@ func InvokeSupersedeDecision(ctx context.Context, llm AgentExecutor, def AgentDe
 }
 
 // InvokeSupersedeFeature runs the refiner-supersede-feature agent.
-func InvokeSupersedeFeature(ctx context.Context, llm AgentExecutor, def AgentDef, sctx SupersedeContext) (*RewriteFeatureResult, error) {
+func InvokeSupersedeFeature(ctx context.Context, dispatcher AgentDispatcher, def AgentDef, sctx SupersedeContext) (*RewriteFeatureResult, error) {
 	old, ok := sctx.OldNode.(*spec.Feature)
 	if !ok || old == nil {
 		return nil, fmt.Errorf("invoke supersede feature: old node must be *spec.Feature, got %T", sctx.OldNode)
 	}
 
 	user := buildSupersedeFeaturePrompt(*old, sctx.Motivation, sctx.JustifySession)
-	out, err := llm.Run(ctx, def, AgentInput{Messages: []Message{{Role: "user", Content: user}}})
+	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
+	out, err := dispatcher.Dispatch(ctx, def, input, DispatchOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("invoke supersede feature: %w", err)
 	}
@@ -131,14 +133,15 @@ func InvokeSupersedeFeature(ctx context.Context, llm AgentExecutor, def AgentDef
 }
 
 // InvokeSupersedeStrategy runs the refiner-supersede-strategy agent.
-func InvokeSupersedeStrategy(ctx context.Context, llm AgentExecutor, def AgentDef, sctx SupersedeContext) (*RewriteStrategyResult, error) {
+func InvokeSupersedeStrategy(ctx context.Context, dispatcher AgentDispatcher, def AgentDef, sctx SupersedeContext) (*RewriteStrategyResult, error) {
 	old, ok := sctx.OldNode.(*spec.Strategy)
 	if !ok || old == nil {
 		return nil, fmt.Errorf("invoke supersede strategy: old node must be *spec.Strategy, got %T", sctx.OldNode)
 	}
 
 	user := buildSupersedeStrategyPrompt(*old, sctx.Motivation, sctx.JustifySession)
-	out, err := llm.Run(ctx, def, AgentInput{Messages: []Message{{Role: "user", Content: user}}})
+	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
+	out, err := dispatcher.Dispatch(ctx, def, input, DispatchOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("invoke supersede strategy: %w", err)
 	}

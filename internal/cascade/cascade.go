@@ -103,7 +103,7 @@ func init() {
 // Partial progress is preserved in `Result` even when the error is non-nil.
 func Cascade(
 	ctx context.Context,
-	llm agent.AgentExecutor,
+	dispatcher agent.AgentDispatcher,
 	fsys specio.FS,
 	graph *spec.SpecGraph,
 	store *state.FileStateStore,
@@ -121,7 +121,7 @@ func Cascade(
 
 	for _, f := range features {
 		applicable := applicableDecisions(graph, f.Decisions)
-		changed, rationale, err := RewriteFeature(ctx, llm, fsys, f, applicable, []spec.Decision{*dec})
+		changed, rationale, err := RewriteFeature(ctx, dispatcher, fsys, f, applicable, []spec.Decision{*dec})
 		if err != nil {
 			return result, fmt.Errorf("cascade rewrite feature %s: %w", f.ID, err)
 		}
@@ -142,7 +142,7 @@ func Cascade(
 
 	for _, s := range strategies {
 		applicable := applicableDecisions(graph, s.Decisions)
-		changed, rationale, err := RewriteStrategy(ctx, llm, fsys, s, applicable, []spec.Decision{*dec})
+		changed, rationale, err := RewriteStrategy(ctx, dispatcher, fsys, s, applicable, []spec.Decision{*dec})
 		if err != nil {
 			return result, fmt.Errorf("cascade rewrite strategy %s: %w", s.ID, err)
 		}
@@ -213,12 +213,12 @@ func applicableDecisions(g *spec.SpecGraph, ids []string) []spec.Decision {
 // `refine` can reuse the same mechanism for non-Decision-driven rewrites.
 func RewriteFeature(
 	ctx context.Context,
-	llm agent.AgentExecutor,
+	dispatcher agent.AgentDispatcher,
 	fsys specio.FS,
 	f spec.Feature,
 	applicable, changed []spec.Decision,
 ) (bool, string, error) {
-	result, err := invokeRewriter(ctx, llm, fsys, "feature", f.ID, f.Title, f.Description, applicable, changed)
+	result, err := invokeRewriter(ctx, dispatcher, fsys, "feature", f.ID, f.Title, f.Description, applicable, changed)
 	if err != nil {
 		return false, "", err
 	}
@@ -239,13 +239,13 @@ func RewriteFeature(
 // and the body.
 func RewriteStrategy(
 	ctx context.Context,
-	llm agent.AgentExecutor,
+	dispatcher agent.AgentDispatcher,
 	fsys specio.FS,
 	s spec.Strategy,
 	applicable, changed []spec.Decision,
 ) (bool, string, error) {
 	currentBody, _ := fsys.ReadFile(".borg/spec/strategies/" + s.ID + ".md")
-	result, err := invokeRewriter(ctx, llm, fsys, "strategy", s.ID, s.Title, string(currentBody), applicable, changed)
+	result, err := invokeRewriter(ctx, dispatcher, fsys, "strategy", s.ID, s.Title, string(currentBody), applicable, changed)
 	if err != nil {
 		return false, "", err
 	}
@@ -264,12 +264,12 @@ func RewriteStrategy(
 // FixPlan are incident-diagnosis fields and are left untouched.
 func RewriteBug(
 	ctx context.Context,
-	llm agent.AgentExecutor,
+	dispatcher agent.AgentDispatcher,
 	fsys specio.FS,
 	b spec.Bug,
 	applicable, changed []spec.Decision,
 ) (bool, string, error) {
-	result, err := invokeRewriter(ctx, llm, fsys, "bug", b.ID, b.Title, b.Description, applicable, changed)
+	result, err := invokeRewriter(ctx, dispatcher, fsys, "bug", b.ID, b.Title, b.Description, applicable, changed)
 	if err != nil {
 		return false, "", err
 	}
@@ -295,12 +295,12 @@ func RewriteBug(
 // scaffold copy when the project file is absent.
 func InvokeRewriter(
 	ctx context.Context,
-	llm agent.AgentExecutor,
+	dispatcher agent.AgentDispatcher,
 	fsys specio.FS,
 	parentKind, parentID, parentTitle, currentBody string,
 	applicable, changed []spec.Decision,
 ) (*RewriteResult, error) {
-	return invokeRewriter(ctx, llm, fsys, parentKind, parentID, parentTitle, currentBody, applicable, changed)
+	return invokeRewriter(ctx, dispatcher, fsys, parentKind, parentID, parentTitle, currentBody, applicable, changed)
 }
 
 // invokeRewriter assembles the rewriter prompt and runs the LLM call.
@@ -311,7 +311,7 @@ func InvokeRewriter(
 // running on uninitialized FSes.
 func invokeRewriter(
 	ctx context.Context,
-	llm agent.AgentExecutor,
+	dispatcher agent.AgentDispatcher,
 	fsys specio.FS,
 	parentKind, parentID, parentTitle, currentBody string,
 	applicable, changed []spec.Decision,
@@ -359,9 +359,13 @@ func invokeRewriter(
 		return nil, fmt.Errorf("%s: %w", agentID, err)
 	}
 	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt.String()}}}
-	var out RewriteResult
-	if err := agent.RunInto(agent.WithRole(ctx, agentID), llm, def, input, &out); err != nil {
+	resp, err := dispatcher.Dispatch(ctx, def, input, agent.DispatchOptions{Role: agentID})
+	if err != nil {
 		return nil, fmt.Errorf("%s: %w", agentID, err)
+	}
+	var out RewriteResult
+	if perr := agent.UnmarshalAgentOutput(resp.Content, &out); perr != nil {
+		return nil, fmt.Errorf("%s: parse output: %w", agentID, perr)
 	}
 	return &out, nil
 }

@@ -79,7 +79,7 @@ func TestDispatchChallenger_RotatesProviderOnRetry(t *testing.T) {
 		},
 	}
 
-	_, err := dispatchChallengerWithRetry(context.Background(), mock, def, AgentInput{}, "node-x")
+	_, err := dispatchChallengerWithRetry(context.Background(), NewDispatcher(mock), def, AgentInput{}, "node-x")
 	require.Error(t, err, "all 3 attempts return dummy → terminal failure")
 
 	calls := mock.Calls()

@@ -61,9 +61,10 @@ type RegenerateApproachContext struct {
 // returns the parsed result. The caller is responsible for writing
 // the result to disk (clearing InvalidatedByEventID) and refreshing
 // CreatedAt/UpdatedAt.
-func InvokeApproachRegenerator(ctx context.Context, llm AgentExecutor, def AgentDef, rctx RegenerateApproachContext) (*RegenerateApproachResult, error) {
+func InvokeApproachRegenerator(ctx context.Context, dispatcher AgentDispatcher, def AgentDef, rctx RegenerateApproachContext) (*RegenerateApproachResult, error) {
 	user := buildRegenerateApproachPrompt(rctx)
-	out, err := llm.Run(ctx, def, AgentInput{Messages: []Message{{Role: "user", Content: user}}})
+	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
+	out, err := dispatcher.Dispatch(ctx, def, input, DispatchOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("invoke approach regenerator: %w", err)
 	}

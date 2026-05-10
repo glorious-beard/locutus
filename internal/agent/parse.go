@@ -29,6 +29,14 @@ func RunIntoWithRetry(ctx context.Context, exec AgentExecutor, def AgentDef, inp
 	return unmarshalAgentOutput(resp.Content, out)
 }
 
+// UnmarshalAgentOutput is the exported entry point for cross-package
+// callers (cascade, etc.) that hold an AgentOutput.Content string
+// they need to JSON-decode with the same fence-stripping fallbacks
+// that the package-internal parsers use.
+func UnmarshalAgentOutput(content string, out any) error {
+	return unmarshalAgentOutput(content, out)
+}
+
 // unmarshalAgentOutput decodes content as JSON into out. When the
 // model wrapped its output in a markdown code fence (```json … ```)
 // or in surrounding prose despite a "no fences" prompt directive,

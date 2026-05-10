@@ -38,7 +38,7 @@ func TestRunResearch_StampsToolOutcomesOnBrief(t *testing.T) {
 		},
 	}
 
-	got, err := RunResearch(context.Background(), mock, in)
+	got, err := RunResearch(context.Background(), NewDispatcher(mock), in)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 
@@ -69,7 +69,7 @@ func TestRunResearch_NoToolCalls(t *testing.T) {
 		},
 	}
 
-	got, err := RunResearch(context.Background(), mock, in)
+	got, err := RunResearch(context.Background(), NewDispatcher(mock), in)
 	require.NoError(t, err)
 	assert.Empty(t, got.ToolOutcomes)
 	assert.Empty(t, got.FailedQueries())

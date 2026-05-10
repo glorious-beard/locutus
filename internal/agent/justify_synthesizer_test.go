@@ -94,7 +94,7 @@ func TestInvokeSynthesizer_RetriesAndRotates(t *testing.T) {
 		},
 	}
 
-	verdict, err := InvokeSynthesizer(context.Background(), mock, def, in)
+	verdict, err := InvokeSynthesizer(context.Background(), NewDispatcher(mock), def, in)
 	require.NoError(t, err, "third attempt must succeed after two degenerate retries")
 	require.NotNil(t, verdict)
 	assert.Equal(t, "broke_down", verdict.Verdict)
@@ -137,7 +137,7 @@ func TestInvokeSynthesizer_ExhaustsRetriesOnPersistentDegeneracy(t *testing.T) {
 		},
 	}
 
-	_, err := InvokeSynthesizer(context.Background(), mock, def, in)
+	_, err := InvokeSynthesizer(context.Background(), NewDispatcher(mock), def, in)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "degenerate output after 3 attempts")
 	assert.Equal(t, 3, mock.CallCount())

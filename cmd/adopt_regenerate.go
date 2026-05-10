@@ -70,7 +70,7 @@ func regenerateInvalidatedApproaches(ctx context.Context, llm agent.AgentExecuto
 			continue
 		}
 
-		result, err := agent.InvokeApproachRegenerator(ctx, llm, def, rctx)
+		result, err := agent.InvokeApproachRegenerator(ctx, agent.NewDispatcher(llm), def, rctx)
 		if err != nil {
 			return regenerated, fmt.Errorf("regenerate %s: %w", app.ID, err)
 		}

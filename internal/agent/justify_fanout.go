@@ -74,7 +74,7 @@ type FanOutInputs struct {
 // error and aborts. Half-failed fan-out runs aren't synthesized —
 // surface the error so the user can re-run or scope to specific
 // decisions via --decisions. (Future: partial-result mode.)
-func RunJustifyFanOut(ctx context.Context, exec AgentExecutor, in FanOutInputs) (*FanOutResult, error) {
+func RunJustifyFanOut(ctx context.Context, dispatcher AgentDispatcher, in FanOutInputs) (*FanOutResult, error) {
 	if strings.TrimSpace(in.Challenge) == "" {
 		return nil, fmt.Errorf("justify fan-out: empty challenge")
 	}
@@ -91,7 +91,7 @@ func RunJustifyFanOut(ctx context.Context, exec AgentExecutor, in FanOutInputs) 
 		Decisions:   in.DecisionRefs,
 		Challenge:   in.Challenge,
 	}
-	split, err := InvokeSplitter(ctx, exec, in.Splitter, splitterIn)
+	split, err := InvokeSplitter(ctx, dispatcher, in.Splitter, splitterIn)
 	if err != nil {
 		return nil, fmt.Errorf("justify fan-out: split: %w", err)
 	}
@@ -132,7 +132,7 @@ func RunJustifyFanOut(ctx context.Context, exec AgentExecutor, in FanOutInputs) 
 			Challenger:   in.Challenger,
 			Researcher:   in.Researcher,
 		}
-		challenger, research, defense, perErr := RunJustifyAgainst(ctx, exec, perIn)
+		challenger, research, defense, perErr := RunJustifyAgainst(ctx, dispatcher, perIn)
 		if perErr != nil {
 			return &FanOutResult{Split: split, PerDecisionResults: results},
 				fmt.Errorf("justify fan-out: decision %s: %w", ref.ID, perErr)
@@ -159,7 +159,7 @@ func RunJustifyFanOut(ctx context.Context, exec AgentExecutor, in FanOutInputs) 
 		PerDecisionResults: toSynthInputs(results),
 		ParentProseShard:   split.ParentProseShard,
 	}
-	synth, err := InvokeSynthesizer(ctx, exec, in.Synthesizer, synthIn)
+	synth, err := InvokeSynthesizer(ctx, dispatcher, in.Synthesizer, synthIn)
 	if err != nil {
 		return &FanOutResult{Split: split, PerDecisionResults: results}, fmt.Errorf("justify fan-out: synthesize: %w", err)
 	}

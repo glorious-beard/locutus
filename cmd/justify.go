@@ -128,7 +128,7 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 	result := &JustifyResult{ID: id, Challenge: challenge}
 
 	if challenge == "" {
-		brief, err := agent.RunJustify(ctx, llm, in)
+		brief, err := agent.RunJustify(ctx, agent.NewDispatcher(llm), in)
 		if err != nil {
 			return nil, err
 		}
@@ -142,7 +142,7 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 	// bugs / approaches fan out to their referenced decisions.
 	kind := nodeKindOf(id)
 	if kind == spec.KindDecision {
-		ch, research, def, err := agent.RunJustifyAgainst(ctx, llm, in)
+		ch, research, def, err := agent.RunJustifyAgainst(ctx, agent.NewDispatcher(llm), in)
 		if err != nil {
 			return nil, err
 		}
@@ -167,7 +167,7 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 		return nil, err
 	}
 	if len(decisionIDs) == 0 {
-		ch, research, def, err := agent.RunJustifyAgainst(ctx, llm, in)
+		ch, research, def, err := agent.RunJustifyAgainst(ctx, agent.NewDispatcher(llm), in)
 		if err != nil {
 			return nil, err
 		}
@@ -191,7 +191,7 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 	if err != nil {
 		return nil, err
 	}
-	fanResult, err := agent.RunJustifyFanOut(ctx, llm, fanIn)
+	fanResult, err := agent.RunJustifyFanOut(ctx, agent.NewDispatcher(llm), fanIn)
 	if err != nil {
 		// Fan-out errors carry the partial result; surface it so
 		// callers can render what landed before the failure.

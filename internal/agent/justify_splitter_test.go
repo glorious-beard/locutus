@@ -55,7 +55,7 @@ func TestInvokeSplitter_RetriesAndRotatesOnValidationFailure(t *testing.T) {
 		},
 	}
 
-	split, err := InvokeSplitter(context.Background(), mock, def, in)
+	split, err := InvokeSplitter(context.Background(), NewDispatcher(mock), def, in)
 	require.NoError(t, err, "third attempt's clean output must succeed")
 	require.NotNil(t, split)
 	assert.Equal(t, "shard for a", split.DecisionShards[0].Shard)
@@ -92,7 +92,7 @@ func TestInvokeSplitter_ExhaustsRetriesOnPersistentDegeneracy(t *testing.T) {
 		Decisions: []SplitterDecisionRef{{ID: "dec-a", Title: "A"}},
 	}
 
-	_, err := InvokeSplitter(context.Background(), mock, def, in)
+	_, err := InvokeSplitter(context.Background(), NewDispatcher(mock), def, in)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "degenerate output after 3 attempts")
 	assert.Equal(t, 3, mock.CallCount())

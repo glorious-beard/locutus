@@ -137,7 +137,7 @@ func TestRunJustifyAgainst_FailsLoudOnDegenerateChallenger(t *testing.T) {
 		Challenge:    "why",
 	}
 
-	challenge, research, defense, err := RunJustifyAgainst(context.Background(), mock, in)
+	challenge, research, defense, err := RunJustifyAgainst(context.Background(), NewDispatcher(mock), in)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "degenerate")
 	assert.Contains(t, err.Error(), "feat-x")
@@ -199,7 +199,7 @@ func TestRunJustifyAgainst_RetriesAfterDegenerateChallenger(t *testing.T) {
 		Challenge:    "what about lock-in",
 	}
 
-	challenge, researchOut, defenseOut, err := RunJustifyAgainst(context.Background(), mock, in)
+	challenge, researchOut, defenseOut, err := RunJustifyAgainst(context.Background(), NewDispatcher(mock), in)
 	require.NoError(t, err, "the second challenger attempt produced a real brief; orchestrator must accept and continue")
 
 	require.NotNil(t, challenge)
