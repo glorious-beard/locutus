@@ -8,6 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"github.com/chetan/locutus/internal/executor"
 )
 
@@ -170,6 +173,16 @@ func (e *WorkflowExecutor[S]) executeAgent(ctx context.Context, step WorkflowSte
 
 // ExecuteRound runs a single workflow step against the current state. For
 // parallel multi-agent steps, agents run concurrently with the same snapshot.
+//
+// Opens a `workflow.phase` span tagged with the step ID and (when
+// resolvable) the agent that runs it. The span ends when ExecuteRound
+// returns, so every agent.dispatch / llm.attempt / provider.generate
+// child sits beneath it in the trace. Steps short-circuited by their
+// Conditional or empty-agent guard exit before opening the span — no
+// trace entry for "this step decided not to fire" since fanout
+// filtering already handles the same shape (an empty fanout produces
+// no provider.generate spans, and that's the right "didn't fire"
+// signal for downstream tools).
 func (e *WorkflowExecutor[S]) ExecuteRound(ctx context.Context, step WorkflowStep[S], state *S) ([]RoundResult, error) {
 	if step.Conditional != nil && !step.Conditional(state) {
 		return nil, nil
@@ -179,6 +192,22 @@ func (e *WorkflowExecutor[S]) ExecuteRound(ctx context.Context, step WorkflowSte
 	if len(agents) == 0 {
 		return nil, nil
 	}
+
+	phaseAttrs := []attribute.KeyValue{
+		attribute.String("locutus.workflow.phase", step.ID),
+	}
+	// Single-agent step: stamp locutus.agent.id on the phase span so
+	// trace filters can group by agent without descending. Fanout and
+	// multi-agent steps emit per-call agent.dispatch children that
+	// carry the per-call agent id; tagging the parent with one
+	// "primary" id would be misleading there.
+	if step.Fanout == nil && len(agents) == 1 {
+		phaseAttrs = append(phaseAttrs, attribute.String("locutus.agent.id", agents[0]))
+	}
+	phaseCtx, phaseSpan := Tracer().Start(ctx, "workflow.phase",
+		oteltrace.WithAttributes(phaseAttrs...))
+	defer phaseSpan.End()
+	ctx = phaseCtx
 
 	snap := e.snapshot(state)
 

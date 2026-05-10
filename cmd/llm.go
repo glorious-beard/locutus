@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/chetan/locutus/internal/agent"
@@ -62,7 +64,59 @@ func recordingLLM(fsys specio.FS, root, command string) (agent.AgentExecutor, *a
 	if err != nil {
 		return nil, nil, err
 	}
+	initTracerForSession(rec, root)
 	return agent.NewLoggingExecutorWithHeartbeat(inner, rec, heartbeatEnabledForMode()), rec, nil
+}
+
+// tracerShutdownOnce gates a single OTel TracerProvider per process.
+// recordingLLM may be called multiple times in one CLI invocation
+// (each subcommand path constructs its own recorder); only the first
+// initializes the SDK. The shutdown registered with atexit / defer
+// at the cmd layer is captured here so re-init calls can no-op
+// safely.
+var (
+	tracerInitOnce  sync.Once
+	tracerShutdown  func()
+	tracerInitError error
+)
+
+// initTracerForSession wires the OTel TracerProvider once per process,
+// pointing at the first session's directory for the OTLP-JSON file
+// artifact. Subsequent recordingLLM calls in the same process inherit
+// the same provider — every session's spans land in the first
+// session's trace.jsonl. That's a known limitation of doing
+// process-wide TracerProvider setup from a per-call helper; in
+// practice each `locutus <verb>` invocation is one process and one
+// session, so the limitation is theoretical for CLI use. MCP servers
+// run multiple sessions per process and would benefit from
+// per-session providers — that's a follow-up if MCP traces become a
+// priority.
+//
+// Failures here log and proceed: the file exporter's failure mode is
+// "no trace file written"; the rest of the recording path
+// (per-call YAMLs, session manifest) remains the always-on artifact.
+func initTracerForSession(rec *agent.SessionRecorder, root string) {
+	tracerInitOnce.Do(func() {
+		absSessionDir := filepath.Join(root, rec.Path())
+		shutdown, err := agent.InitTracer(absSessionDir)
+		if err != nil {
+			tracerInitError = err
+			slog.Warn("otel: tracer init failed; per-call YAMLs remain the trace surface",
+				"session_dir", absSessionDir, "error", err)
+			return
+		}
+		tracerShutdown = shutdown
+	})
+}
+
+// ShutdownTracer flushes the OTel TracerProvider if one was
+// initialized. Safe to call from main / CLI exit handlers; no-op when
+// the SDK was never initialized (read-only verbs that bypass
+// recordingLLM never construct a provider).
+func ShutdownTracer() {
+	if tracerShutdown != nil {
+		tracerShutdown()
+	}
 }
 
 // executorOnce caches the process-wide Executor. Constructing the

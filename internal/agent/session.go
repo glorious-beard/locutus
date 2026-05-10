@@ -170,8 +170,17 @@ type SessionRecorder struct {
 // Intentionally small and stable: it's written once at construction
 // and updated only on clean Close. The directory listing of calls/
 // IS the calls list; no count or per-call summary is persisted here.
+//
+// TraceID is the W3C-format hex trace id (32 chars) shared by every
+// OTel span emitted during this session. Surfaced alongside SessionID
+// so a reader holding either id can find the other (the OTLP-JSON
+// trace artifact at <dir>/trace.jsonl is keyed by TraceID; per-call
+// YAMLs and this manifest are keyed by SessionID). Empty when the
+// OTel SDK isn't initialized — existing fixtures that never call
+// InitTracer stay byte-identical to today's manifest output.
 type sessionManifest struct {
 	SessionID   string `yaml:"session_id"`
+	TraceID     string `json:"trace_id,omitempty" yaml:"trace_id,omitempty"`
 	StartedAt   string `yaml:"started_at"`
 	CompletedAt string `yaml:"completed_at,omitempty"`
 	Command     string `yaml:"command"`
@@ -195,6 +204,16 @@ type recordedCall struct {
 	AgentID        string            `yaml:"agent_id,omitempty"`
 	Role           string            `yaml:"role,omitempty"`
 	Status         string            `yaml:"status,omitempty"`
+	// SpanID is the hex span id of the matching `provider.generate`
+	// OTel span. Cross-references this YAML to the OTLP-JSON trace at
+	// <session>/trace.jsonl: a reader holding the span id can find the
+	// per-call detail here, and a reader holding this YAML can find
+	// the span (and its workflow.phase / agent.dispatch ancestors)
+	// there. Empty when the OTel SDK isn't initialized — the no-op
+	// tracer returns an invalid span context, SpanIDFromContext
+	// returns "", and omitempty keeps the rendered YAML
+	// byte-identical to today's fixtures.
+	SpanID         string            `json:"span_id,omitempty" yaml:"span_id,omitempty"`
 	StartedAt      string            `yaml:"started_at"`
 	CompletedAt    string            `yaml:"completed_at,omitempty"`
 	DurationMS     int64             `yaml:"duration_ms,omitempty"`
@@ -349,6 +368,26 @@ func NewSessionRecorder(fsys specio.FS, command, projectRoot string) (*SessionRe
 
 // SessionID returns the session ID (also the directory basename).
 func (r *SessionRecorder) SessionID() string { return r.manifest.SessionID }
+
+// SetTraceID stamps the W3C trace id (32 hex chars) on the manifest
+// and reflushes session.yaml. Called by the CLI after InitTracer
+// returns and a root span is opened so the manifest cross-references
+// the OTLP-JSON trace artifact.
+//
+// The id is picked up by reading the active span context from a
+// caller-supplied ctx — the cmd layer constructs the recorder, opens
+// its verb-level span, then calls SetTraceID with the span's ctx.
+// Best-effort: a flush failure logs and proceeds (the per-call YAMLs
+// are still on disk; only the manifest pointer is missing).
+func (r *SessionRecorder) SetTraceID(traceID string) {
+	r.mu.Lock()
+	r.manifest.TraceID = traceID
+	r.mu.Unlock()
+	if err := r.writeManifest(); err != nil {
+		slog.Warn("session recorder: trace id flush failed",
+			"session", r.manifest.SessionID, "error", err)
+	}
+}
 
 // Path returns the FS-relative path of the session directory. Tools
 // that want to enumerate calls should look under <Path()>/calls/.
@@ -663,6 +702,14 @@ func NewLoggingExecutorWithHeartbeat(inner AgentExecutor, recorder *SessionRecor
 // logs "still running" every heartbeatInterval so an operator
 // watching stderr knows the call hasn't deadlocked even when the
 // underlying non-streaming Run produces no output of its own.
+//
+// After delegating to the inner executor we read the active OTel
+// span id from ctx and stamp it on the recorded call. The
+// provider.generate span (opened by each adapter's Run) is the
+// active span at this point, so the id we capture matches the leaf
+// span in the OTLP-JSON trace artifact. When the SDK isn't
+// initialized SpanIDFromContext returns "" and the omitempty tag
+// keeps the YAML output unchanged for existing fixtures.
 func (l *LoggingExecutor) Run(ctx context.Context, def AgentDef, input AgentInput) (*AgentOutput, error) {
 	started := time.Now()
 	role := RoleFromContext(ctx)
@@ -679,6 +726,9 @@ func (l *LoggingExecutor) Run(ctx context.Context, def AgentDef, input AgentInpu
 	defer stop()
 
 	out, err := l.inner.Run(ctx, def, input)
+	if handle != nil {
+		handle.call.SpanID = SpanIDFromContext(ctx)
+	}
 	handle.Finish(out, err)
 	return out, err
 }

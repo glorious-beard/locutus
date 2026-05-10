@@ -14,6 +14,9 @@ import (
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/shared"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // OpenAIResponsesAdapter implements adapters.Adapter against the
@@ -52,7 +55,27 @@ func (a *OpenAIResponsesAdapter) Provider() string { return "openai" }
 //  5. Loop on function_call output items, dispatching custom tools
 //     and feeding back function_call_output items, until the model
 //     emits a non-function-call message.
+//
+// Wraps the dispatch in a `provider.generate` span carrying the OTel
+// `gen_ai.*` semantic-convention attributes. CacheReadInputTokens is
+// populated by the dispatch loop from
+// usage.input_tokens_details.cached_tokens; emitted only when
+// non-zero (no separate creation charge on Responses, so creation
+// stays zero).
 func (a *OpenAIResponsesAdapter) Run(ctx context.Context, req Request) (*Response, error) {
+	ctx, span := otel.Tracer(adapterTracerName).Start(ctx, "provider.generate",
+		oteltrace.WithAttributes(
+			attribute.String("gen_ai.system", "openai"),
+			attribute.String("gen_ai.request.model", req.Model),
+			attribute.String("gen_ai.operation.name", "chat"),
+		))
+	defer span.End()
+	resp, err := a.runInner(ctx, req)
+	annotateGenAISpan(span, resp)
+	return resp, err
+}
+
+func (a *OpenAIResponsesAdapter) runInner(ctx context.Context, req Request) (*Response, error) {
 	items := buildOpenAIInputItems(req.Messages)
 
 	params := responses.ResponseNewParams{

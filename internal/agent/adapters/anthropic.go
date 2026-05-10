@@ -12,6 +12,9 @@ import (
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // defaultAnthropicMaxTokens is substituted when a request omits
@@ -81,9 +84,26 @@ func (a *AnthropicAdapter) Provider() string { return "anthropic" }
 //     structured response.
 //  4. Aggregate per-round telemetry into Response.Rounds when more
 //     than one round fired.
+//
+// Wraps the dispatch in a `provider.generate` span carrying the OTel
+// `gen_ai.*` semantic-convention attributes a downstream tool reading
+// the OTLP-JSON trace expects (system, request model, usage, response
+// id, operation name). The span ends when Run returns; per-round
+// captures inside the multi-round tool-use loop don't open child
+// spans (one provider.generate per logical Run is the cleaner shape;
+// per-round detail is already in Response.Rounds and the per-call YAML).
 func (a *AnthropicAdapter) Run(ctx context.Context, req Request) (*Response, error) {
+	ctx, span := otel.Tracer(adapterTracerName).Start(ctx, "provider.generate",
+		oteltrace.WithAttributes(
+			attribute.String("gen_ai.system", "anthropic"),
+			attribute.String("gen_ai.request.model", req.Model),
+			attribute.String("gen_ai.operation.name", "chat"),
+		))
+	defer span.End()
 	params := buildAnthropicMessageNewParams(req)
-	return a.dispatch(ctx, params, req)
+	resp, err := a.dispatch(ctx, params, req)
+	annotateGenAISpan(span, resp)
+	return resp, err
 }
 
 // buildAnthropicMessageNewParams projects a neutral Request into the

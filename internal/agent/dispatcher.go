@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+
+	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // AgentDispatcher is the unified entry point for every LLM operation in
@@ -91,6 +94,13 @@ func NewDispatcher(exec AgentExecutor) *Dispatcher {
 // Returns the last AgentOutput plus an error when MaxAttempts is
 // exhausted; the output is the offending response so callers can
 // surface it for diagnosis.
+//
+// Wraps the loop in `agent.dispatch` and per-attempt `llm.attempt`
+// spans so the OTLP-JSON trace artifact reflects the substrate's
+// retry/rotation shape. Phase 4 (ReAct branch) plugs in above this
+// function via an early return — its instrumentation matches the
+// shape used here so the trace remains uniform across dispatch
+// shapes.
 func (d *Dispatcher) Dispatch(ctx context.Context, def AgentDef, input AgentInput, opts DispatchOptions) (*AgentOutput, error) {
 	if opts.Role != "" {
 		ctx = WithRole(ctx, opts.Role)
@@ -107,24 +117,54 @@ func (d *Dispatcher) Dispatch(ctx context.Context, def AgentDef, input AgentInpu
 		retry = *opts.Retry
 	}
 
+	// agent.dispatch span: one per Dispatch call. Carries the agent
+	// id and (optionally) the role tag so a trace reader can group
+	// every llm.attempt + provider.generate descendant under the
+	// agent that drove them. Span ends when this function returns,
+	// regardless of success / failure / panic-induced unwind.
+	dispatchAttrs := []attribute.KeyValue{attribute.String("locutus.agent.id", def.ID)}
+	if opts.Role != "" {
+		dispatchAttrs = append(dispatchAttrs, attribute.String("locutus.dispatch.role", opts.Role))
+	}
+	dispatchCtx, dispatchSpan := Tracer().Start(ctx, "agent.dispatch",
+		oteltrace.WithAttributes(dispatchAttrs...))
+	defer dispatchSpan.End()
+	ctx = dispatchCtx
+
 	var lastOut *AgentOutput
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		attemptDef := def
 		attemptDef.Models = rotateModels(def.Models, attempt-1)
 
-		out, err := RunWithRetry(ctx, d.Executor, attemptDef, input, retry)
+		// llm.attempt span: one per try. Even when MaxAttempts==1
+		// (the common case) this gives the trace a stable child
+		// layer between agent.dispatch and provider.generate so the
+		// shape doesn't change when degenerate retries kick in.
+		attemptCtx, attemptSpan := Tracer().Start(ctx, "llm.attempt",
+			oteltrace.WithAttributes(
+				attribute.Int("locutus.attempt", attempt),
+				attribute.String("locutus.agent.id", def.ID),
+				attribute.String("locutus.attempt.provider", primaryProvider(attemptDef.Models)),
+			))
+
+		out, err := RunWithRetry(attemptCtx, d.Executor, attemptDef, input, retry)
 		if err != nil {
+			attemptSpan.End()
 			return out, err
 		}
 		lastOut = out
 
 		if opts.Validator == nil {
+			attemptSpan.End()
 			return out, nil
 		}
 		reason, degenerate := opts.Validator(out)
 		if !degenerate {
+			attemptSpan.End()
 			return out, nil
 		}
+		attemptSpan.SetAttributes(attribute.String("locutus.degenerate.reason", reason))
+		attemptSpan.End()
 		if attempt < maxAttempts {
 			slog.Warn("dispatcher: degenerate output; retrying with provider rotation",
 				"agent", def.ID,

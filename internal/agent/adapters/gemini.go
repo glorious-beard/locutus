@@ -8,6 +8,9 @@ import (
 	"os"
 	"strings"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"google.golang.org/genai"
 )
 
@@ -62,7 +65,26 @@ func (g *GeminiAdapter) Provider() string { return "googleai" }
 // custom tools, and grounding combine freely — Gemini 3 supports
 // the full matrix in a single call. The function-call loop handles
 // multi-round tool use; non-tool responses return immediately.
+//
+// Wraps the dispatch in a `provider.generate` span carrying the OTel
+// `gen_ai.*` semantic-convention attributes. Token counts come from
+// usage metadata once GenerateContent returns; cache counters stay
+// zero (Gemini doesn't surface cache metering today, and emitting
+// zero would just clutter the trace).
 func (g *GeminiAdapter) Run(ctx context.Context, req Request) (*Response, error) {
+	ctx, span := otel.Tracer(adapterTracerName).Start(ctx, "provider.generate",
+		oteltrace.WithAttributes(
+			attribute.String("gen_ai.system", "googleai"),
+			attribute.String("gen_ai.request.model", req.Model),
+			attribute.String("gen_ai.operation.name", "chat"),
+		))
+	defer span.End()
+	resp, err := g.runInner(ctx, req)
+	annotateGenAISpan(span, resp)
+	return resp, err
+}
+
+func (g *GeminiAdapter) runInner(ctx context.Context, req Request) (*Response, error) {
 	cfg := &genai.GenerateContentConfig{}
 	if req.SystemPrompt != "" {
 		cfg.SystemInstruction = genai.NewContentFromText(req.SystemPrompt, genai.RoleUser)

@@ -1,0 +1,358 @@
+package agent
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.30.0"
+	oteltrace "go.opentelemetry.io/otel/trace"
+)
+
+// providerSpanExecutor wraps any AgentExecutor and emits a
+// `provider.generate` span around each Run, matching what production
+// adapters do. Lets workflow / dispatcher trace-shape tests exercise
+// the full four-layer hierarchy without needing a real adapter.
+type providerSpanExecutor struct {
+	inner    AgentExecutor
+	provider string
+}
+
+func (p *providerSpanExecutor) Run(ctx context.Context, def AgentDef, input AgentInput) (*AgentOutput, error) {
+	ctx, span := otel.Tracer("github.com/chetan/locutus/internal/agent/adapters").Start(ctx, "provider.generate",
+		oteltrace.WithAttributes(
+			attribute.String("gen_ai.system", p.provider),
+			attribute.String("gen_ai.request.model", "test-model"),
+			attribute.String("gen_ai.operation.name", "chat"),
+		))
+	defer span.End()
+	return p.inner.Run(ctx, def, input)
+}
+
+// dispatcherBridgeExecutor satisfies AgentExecutor by routing every
+// Run through a Dispatcher. Lets a WorkflowExecutor open its
+// workflow.phase span and have the dispatched call descend through
+// agent.dispatch / llm.attempt / provider.generate. Mirrors the
+// shape per-verb workflow migrations land in Phase 5+ — today's
+// executeAgent path skips the dispatcher, so the bridge is the
+// minimal intervention to exercise the documented hierarchy.
+type dispatcherBridgeExecutor struct {
+	dispatcher *Dispatcher
+	role       string
+}
+
+func (b *dispatcherBridgeExecutor) Run(ctx context.Context, def AgentDef, input AgentInput) (*AgentOutput, error) {
+	return b.dispatcher.Dispatch(ctx, def, input, DispatchOptions{Role: b.role})
+}
+
+// installTracerProvider builds a TracerProvider that writes OTLP-JSON
+// to <tempDir>/trace.jsonl using the same custom file exporter
+// production code uses, then sets it as the package-wide global. The
+// returned cleanup restores the prior global so concurrent tests in
+// the same package don't see leaked state.
+func installTracerProvider(t *testing.T, tempDir string) (string, func()) {
+	t.Helper()
+	prev := otel.GetTracerProvider()
+
+	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
+		"",
+		semconv.ServiceName("locutus-test"),
+	))
+	require.NoError(t, err)
+
+	tracePath := filepath.Join(tempDir, TraceFileName)
+	exp, err := newOTLPJSONFileExporter(tracePath)
+	require.NoError(t, err)
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithResource(res),
+		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)),
+	)
+	otel.SetTracerProvider(tp)
+
+	cleanup := func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prev)
+	}
+	return tracePath, cleanup
+}
+
+// readSpans loads the OTLP-JSON file and returns one decoded span
+// envelope per line. The custom exporter writes each span as a
+// complete ResourceSpans wrapper; we walk into the nested arrays to
+// pull the leaf span object plus the scope name (so tests can assert
+// on it without re-implementing the path).
+type traceSpan struct {
+	Name         string
+	TraceID      string
+	SpanID       string
+	ParentSpanID string
+	Scope        string
+	Attributes   map[string]string
+}
+
+func readSpans(t *testing.T, tracePath string) []traceSpan {
+	t.Helper()
+	f, err := os.Open(tracePath)
+	require.NoError(t, err)
+	defer f.Close()
+
+	var out []traceSpan
+	scanner := bufio.NewScanner(f)
+	// 1 MiB ceiling per line — span payloads are tiny; this ceiling
+	// only matters if a future test's attribute payload grows huge.
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		raw := scanner.Bytes()
+		var env map[string]any
+		require.NoError(t, json.Unmarshal(raw, &env))
+		rs, ok := env["resourceSpans"].([]any)
+		require.True(t, ok, "missing resourceSpans key")
+		for _, rsi := range rs {
+			rsm := rsi.(map[string]any)
+			ss, ok := rsm["scopeSpans"].([]any)
+			require.True(t, ok, "missing scopeSpans")
+			for _, ssi := range ss {
+				ssm := ssi.(map[string]any)
+				scope := ""
+				if sc, ok := ssm["scope"].(map[string]any); ok {
+					if n, ok := sc["name"].(string); ok {
+						scope = n
+					}
+				}
+				spans, ok := ssm["spans"].([]any)
+				require.True(t, ok, "missing spans")
+				for _, spi := range spans {
+					sm := spi.(map[string]any)
+					ts := traceSpan{
+						Name:       getString(sm, "name"),
+						TraceID:    getString(sm, "traceId"),
+						SpanID:     getString(sm, "spanId"),
+						Scope:      scope,
+						Attributes: map[string]string{},
+					}
+					if pid, ok := sm["parentSpanId"].(string); ok {
+						ts.ParentSpanID = pid
+					}
+					if attrs, ok := sm["attributes"].([]any); ok {
+						for _, ai := range attrs {
+							am := ai.(map[string]any)
+							key, _ := am["key"].(string)
+							if v, ok := am["value"].(map[string]any); ok {
+								if sv, ok := v["stringValue"].(string); ok {
+									ts.Attributes[key] = sv
+								} else if iv, ok := v["intValue"].(string); ok {
+									ts.Attributes[key] = iv
+								}
+							}
+						}
+					}
+					out = append(out, ts)
+				}
+			}
+		}
+	}
+	require.NoError(t, scanner.Err())
+	return out
+}
+
+func getString(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
+}
+
+// TestTraceShapeWorkflowExecutor verifies the substrate's full span
+// hierarchy lands in the OTLP-JSON file in the documented shape:
+//
+//	workflow.phase → agent.dispatch → llm.attempt → provider.generate
+//
+// The four spans correspond to the four substrate layers:
+// WorkflowExecutor.ExecuteRound opens workflow.phase; Dispatcher.
+// Dispatch opens agent.dispatch + per-attempt llm.attempt; the
+// adapter (simulated here by providerSpanExecutor) opens
+// provider.generate.
+//
+// To exercise all four layers in one test, the workflow's executor
+// runs the dispatcher (via a small bridge executor) so a workflow
+// step's executeAgent path threads through Dispatch instead of
+// straight RunWithRetry. The bridge mirrors what the per-verb
+// workflow migrations (Phase 5+) will use; today's executeAgent
+// code path skips the dispatcher, so this test wires the dispatcher
+// in explicitly.
+//
+// Asserts on structure, not timing — the test is deterministic
+// regardless of how fast the in-memory mock returns.
+func TestTraceShapeWorkflowExecutor(t *testing.T) {
+	tempDir := t.TempDir()
+	tracePath, cleanup := installTracerProvider(t, tempDir)
+	defer cleanup()
+
+	mock := NewMockExecutor(mockResp("planner output"))
+	wrapped := &providerSpanExecutor{inner: mock, provider: "anthropic"}
+	dispatcher := NewDispatcher(wrapped)
+
+	defs := map[string]AgentDef{
+		"planner": {ID: "planner", SystemPrompt: "You are the planner."},
+	}
+
+	// Bridge executor: when ExecuteRound's executeAgent calls Run on
+	// us, route through the dispatcher so we get the full
+	// agent.dispatch + llm.attempt + provider.generate sub-tree.
+	bridge := &dispatcherBridgeExecutor{dispatcher: dispatcher, role: "propose"}
+
+	wf := &Workflow[PlanningState]{
+		Rounds: []WorkflowStep[PlanningState]{{
+			ID:     "propose",
+			Agents: []string{"planner"},
+		}},
+		MaxRounds: 1,
+	}
+
+	exec := &WorkflowExecutor[PlanningState]{
+		Executor:  bridge,
+		AgentDefs: defs,
+		Workflow:  wf,
+	}
+
+	_, err := exec.Run(context.Background(), &PlanningState{Prompt: "Design X."})
+	require.NoError(t, err)
+
+	cleanup() // flush spans before reading the file
+
+	spans := readSpans(t, tracePath)
+	require.NotEmpty(t, spans, "trace.jsonl should contain at least four spans")
+
+	byName := map[string]traceSpan{}
+	for _, s := range spans {
+		byName[s.Name] = s
+	}
+
+	phase, ok := byName["workflow.phase"]
+	require.True(t, ok, "missing workflow.phase span")
+	dispatch, ok := byName["agent.dispatch"]
+	require.True(t, ok, "missing agent.dispatch span")
+	attempt, ok := byName["llm.attempt"]
+	require.True(t, ok, "missing llm.attempt span")
+	provider, ok := byName["provider.generate"]
+	require.True(t, ok, "missing provider.generate span")
+
+	// Hierarchy: provider's parent is attempt, attempt's parent is
+	// dispatch, dispatch's parent is phase, phase's parent is empty
+	// (the root of the test trace).
+	assert.Equal(t, attempt.SpanID, provider.ParentSpanID,
+		"provider.generate should descend from llm.attempt")
+	assert.Equal(t, dispatch.SpanID, attempt.ParentSpanID,
+		"llm.attempt should descend from agent.dispatch")
+	assert.Equal(t, phase.SpanID, dispatch.ParentSpanID,
+		"agent.dispatch should descend from workflow.phase")
+	assert.Empty(t, phase.ParentSpanID, "workflow.phase should be the root")
+
+	// Trace id is the same across all four spans.
+	assert.Equal(t, phase.TraceID, dispatch.TraceID)
+	assert.Equal(t, dispatch.TraceID, attempt.TraceID)
+	assert.Equal(t, attempt.TraceID, provider.TraceID)
+
+	// Key attributes the documented span model promises.
+	assert.Equal(t, "propose", phase.Attributes["locutus.workflow.phase"])
+	assert.Equal(t, "planner", phase.Attributes["locutus.agent.id"])
+	assert.Equal(t, "planner", dispatch.Attributes["locutus.agent.id"])
+	assert.Equal(t, "propose", dispatch.Attributes["locutus.dispatch.role"])
+	assert.Equal(t, "1", attempt.Attributes["locutus.attempt"])
+	assert.Equal(t, "anthropic", provider.Attributes["gen_ai.system"])
+	assert.Equal(t, "test-model", provider.Attributes["gen_ai.request.model"])
+	assert.Equal(t, "chat", provider.Attributes["gen_ai.operation.name"])
+}
+
+// TestSpanIDFromContextNoOp confirms the no-op tracer produces an
+// empty span id, so existing test fixtures that never call
+// InitTracer keep emitting byte-identical recordedCall YAML. This is
+// the contract the omitempty tag on recordedCall.SpanID relies on —
+// a regression here would force every fixture file to grow a
+// `span_id: ""` line on the next test run.
+func TestSpanIDFromContextNoOp(t *testing.T) {
+	// Don't install a TracerProvider — fall through to the global
+	// no-op. Span context is invalid; HasSpanID() returns false.
+	id := SpanIDFromContext(context.Background())
+	assert.Empty(t, id, "no-op tracer should yield empty span id")
+
+	tid := TraceIDFromContext(context.Background())
+	assert.Empty(t, tid, "no-op tracer should yield empty trace id")
+}
+
+// TestOTLPJSONFileExporterCanonical verifies the file exporter writes
+// canonical OTLP-JSON: each line is a parseable ResourceSpans
+// envelope with hex-encoded ids and the documented field shapes. A
+// downstream tool that ingests OTLP-JSON (Jaeger, otel-cli) needs
+// these invariants to replay the trace.
+func TestOTLPJSONFileExporterCanonical(t *testing.T) {
+	tempDir := t.TempDir()
+	tracePath, cleanup := installTracerProvider(t, tempDir)
+	defer cleanup()
+
+	tracer := otel.Tracer("test-canonical")
+	_, span := tracer.Start(context.Background(), "test.span",
+		oteltrace.WithAttributes(
+			attribute.String("test.string", "value"),
+			attribute.Int("test.int", 42),
+			attribute.Bool("test.bool", true),
+		))
+	span.End()
+	cleanup()
+
+	data, err := os.ReadFile(tracePath)
+	require.NoError(t, err)
+	require.NotEmpty(t, data)
+
+	// One span = one line.
+	var env map[string]any
+	require.NoError(t, json.Unmarshal(data[:len(data)-1], &env))
+
+	rs := env["resourceSpans"].([]any)
+	require.Len(t, rs, 1)
+	rs0 := rs[0].(map[string]any)
+
+	// Resource carries service.name from the InitTracer setup.
+	resource := rs0["resource"].(map[string]any)
+	resAttrs := resource["attributes"].([]any)
+	require.NotEmpty(t, resAttrs)
+
+	scopeSpans := rs0["scopeSpans"].([]any)
+	require.Len(t, scopeSpans, 1)
+	ss0 := scopeSpans[0].(map[string]any)
+	scope := ss0["scope"].(map[string]any)
+	assert.Equal(t, "test-canonical", scope["name"])
+
+	spans := ss0["spans"].([]any)
+	require.Len(t, spans, 1)
+	sp := spans[0].(map[string]any)
+	assert.Equal(t, "test.span", sp["name"])
+	traceID := sp["traceId"].(string)
+	spanID := sp["spanId"].(string)
+	assert.Len(t, traceID, 32, "trace id should be 16 bytes hex (32 chars)")
+	assert.Len(t, spanID, 16, "span id should be 8 bytes hex (16 chars)")
+	assert.Regexp(t, "^[0-9a-f]+$", traceID)
+	assert.Regexp(t, "^[0-9a-f]+$", spanID)
+
+	// Attribute encoding: each entry has key + typed value.
+	attrs := sp["attributes"].([]any)
+	require.Len(t, attrs, 3)
+	got := map[string]any{}
+	for _, ai := range attrs {
+		am := ai.(map[string]any)
+		k := am["key"].(string)
+		v := am["value"].(map[string]any)
+		got[k] = v
+	}
+	assert.Equal(t, "value", got["test.string"].(map[string]any)["stringValue"])
+	assert.Equal(t, "42", got["test.int"].(map[string]any)["intValue"])
+	assert.Equal(t, true, got["test.bool"].(map[string]any)["boolValue"])
+}
