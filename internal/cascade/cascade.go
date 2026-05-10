@@ -164,18 +164,28 @@ func Cascade(
 	return result, nil
 }
 
-// findParents returns the Features and Strategies that list decisionID in
-// their `Decisions` slice. Iterates the graph's node maps rather than
-// maintaining a reverse index — cascade is a rare operation; the cost is
-// bounded by graph size, not by cascade frequency.
-func findParents(g *spec.SpecGraph, decisionID string) ([]spec.Feature, []spec.Strategy) {
+// FindParents returns the Features, Strategies, and Bugs whose prose
+// the rewriter should consider when decisionID changes. Features and
+// Strategies are surfaced when they list decisionID in their
+// `Decisions` slice. Bugs are surfaced when their parent Feature
+// references the Decision (Bugs inherit their parent Feature's
+// Decisions per cmd.RunRefineBug).
+//
+// Iterates the graph's node maps rather than maintaining a reverse
+// index — cascade is a rare operation; the cost is bounded by graph
+// size, not by cascade frequency. Exported so the workflow-driven
+// refine cascade (Phase 7) can resolve the parent set up-front in
+// RunRefine before constructing RefineState.
+func FindParents(g *spec.SpecGraph, decisionID string) ([]spec.Feature, []spec.Strategy, []spec.Bug) {
 	var features []spec.Feature
 	var strategies []spec.Strategy
+	matchedFeatureIDs := map[string]bool{}
 	for id, node := range g.Nodes() {
 		switch node.Kind {
 		case spec.KindFeature:
 			if f := g.Feature(id); f != nil && contains(f.Decisions, decisionID) {
 				features = append(features, *f)
+				matchedFeatureIDs[f.ID] = true
 			}
 		case spec.KindStrategy:
 			if s := g.Strategy(id); s != nil && contains(s.Decisions, decisionID) {
@@ -183,6 +193,28 @@ func findParents(g *spec.SpecGraph, decisionID string) ([]spec.Feature, []spec.S
 			}
 		}
 	}
+	var bugs []spec.Bug
+	for id, node := range g.Nodes() {
+		if node.Kind != spec.KindBug {
+			continue
+		}
+		b := g.Bug(id)
+		if b == nil {
+			continue
+		}
+		if matchedFeatureIDs[b.FeatureID] {
+			bugs = append(bugs, *b)
+		}
+	}
+	return features, strategies, bugs
+}
+
+// findParents is the legacy two-return form used by Cascade. Kept so
+// the existing top-level Cascade entry point preserves its exact
+// behavior (Features + Strategies; no Bugs) for the preflight caller
+// per Phase 7's "preflight stays on Cascade" decision.
+func findParents(g *spec.SpecGraph, decisionID string) ([]spec.Feature, []spec.Strategy) {
+	features, strategies, _ := FindParents(g, decisionID)
 	return features, strategies
 }
 

@@ -300,3 +300,71 @@ func TestDispatchRefineUnknownKindFailsGracefully(t *testing.T) {
 	_, err := dispatchRefine(context.Background(), nil, nil, "weird", spec.NodeKind("unsupported"), nil)
 	require.Error(t, err)
 }
+
+// TestRunRefineDecisionDrivesCascadeWorkflow verifies that the
+// decision-target RunRefine path goes through the workflow-driven
+// cascade (Phase 7) and produces the legacy cascade.Result shape.
+// Equivalence test for the workflow migration: the on-disk Feature
+// body, store entry transitions, and RefineResult.Cascade fields
+// match what cascade.Cascade would have produced for the same fixture.
+//
+// The setupRefineFS fixture also seeds bug-login (FeatureID=feat-auth).
+// The workflow's enhancement over the legacy cascade.Cascade includes
+// Bugs whose parent Feature references the changed Decision, so this
+// test scripts a third response for the bug rewrite.
+func TestRunRefineDecisionDrivesCascadeWorkflow(t *testing.T) {
+	fs := setupRefineFS(t)
+
+	// Three responses: Feature, Strategy, Bug — emitted in that order
+	// by fanoutRefineParents. Sequential fanout in the workflow keeps
+	// the assignment stable across runs.
+	mock := agent.NewMockExecutor(
+		agent.MockResponse{Response: &agent.AgentOutput{
+			Content: `{"revised_body":"Auth feature, now uses Go.","changed":true,"rationale":"surface go decision"}`,
+		}},
+		agent.MockResponse{Response: &agent.AgentOutput{
+			Content: `{"revised_body":"Use Go end-to-end, with strict typing.","changed":true,"rationale":"clarify go choice"}`,
+		}},
+		agent.MockResponse{Response: &agent.AgentOutput{
+			Content: `{"revised_body":"Login times out under Go-side timeouts.","changed":true,"rationale":"reflect go decision"}`,
+		}},
+	)
+
+	result, err := RunRefine(context.Background(), mock, fs, "dec-lang")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, spec.KindDecision, result.NodeKind)
+	assert.Equal(t, "dec-lang", result.NodeID)
+	require.NotNil(t, result.Cascade, "decision target must surface a cascade.Result")
+	assert.ElementsMatch(t, []string{"feat-auth"}, result.Cascade.UpdatedFeatures)
+	assert.ElementsMatch(t, []string{"strat-go"}, result.Cascade.UpdatedStrategies)
+	assert.Contains(t, result.Cascade.DriftedApproaches, "app-auth")
+	assert.Empty(t, result.Cascade.Skipped)
+	assert.Len(t, result.Cascade.Events, 3,
+		"one history event per Feature + Strategy + Bug rewritten")
+
+	// Feature on disk should reflect the new body.
+	feat, body, err := specio.LoadPair[spec.Feature](fs, ".borg/spec/features/feat-auth")
+	require.NoError(t, err)
+	assert.Contains(t, feat.Description, "uses Go")
+	assert.Contains(t, body, "uses Go")
+
+	// Approach state for app-auth should be flipped to drifted with
+	// SpecHash zeroed (DJ-072 invariant).
+	store := state.NewFileStateStore(fs, ".borg/state")
+	got, err := store.Load("app-auth")
+	require.NoError(t, err)
+	assert.Equal(t, state.StatusDrifted, got.Status)
+	assert.Empty(t, got.SpecHash)
+}
+
+// TestRunRefineDecisionUnknownIDFails covers the "decision not found"
+// path — the workflow construction should reject unknown IDs the
+// same way the legacy cascade.Cascade did.
+func TestRunRefineDecisionUnknownIDFails(t *testing.T) {
+	fs := setupRefineFS(t)
+	mock := agent.NewMockExecutor()
+	_, err := RunRefine(context.Background(), mock, fs, "dec-nope")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dec-nope")
+}

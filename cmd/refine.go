@@ -401,30 +401,113 @@ func RunRefineGoals(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS
 	}, nil
 }
 
-// RunRefine is the Decision-path refinement: fires the DJ-069 cascade.
-// The Decision must already be saved in its desired form (either edited
-// by the user or produced by a prior council-driven step). Cascade walks
-// the graph to find parent Features/Strategies that reference the
-// Decision, rewrites their present-tense prose, marks child Approaches
-// drifted, and records history events.
+// RunRefine is the Decision-path refinement: fires the DJ-069 cascade
+// via the workflow-driven path (Phase 7 of workflow unification). The
+// Decision must already be saved in its desired form (either edited
+// by the user or produced by a prior council-driven step).
+//
+// The workflow walks the graph to find parent Features, Strategies,
+// and Bugs that reference the Decision (Bugs inherit through their
+// parent Feature), runs a fanout dispatch of the rewriter or refiner
+// agent against each parent, and the merge handler persists each
+// rewrite, marks child Approaches drifted, and records a history
+// event. cascade.Cascade is preserved for preflight's caller (which
+// still uses the direct-call path); the two implementations share the
+// rewriter prompt and persistence semantics so on-disk output stays
+// equivalent for the same fixture.
 func RunRefine(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, decisionID string) (*RefineResult, error) {
 	g := buildGraphForRefine(fsys)
 
-	if g.Decision(decisionID) == nil {
+	dec := g.Decision(decisionID)
+	if dec == nil {
 		return nil, fmt.Errorf("refine: decision %q not found", decisionID)
 	}
 
 	store := state.NewFileStateStore(fsys, state.DefaultStateDir)
-	cascadeResult, err := cascade.Cascade(ctx, agent.NewDispatcher(llm), fsys, g, store, decisionID)
+	features, strategies, bugs := cascade.FindParents(g, decisionID)
+	brief := cascade.BriefFromContext(ctx)
+
+	state := agent.RefineState{
+		DecisionID: decisionID,
+		Decision:   dec,
+		Graph:      g,
+		FSys:       fsys,
+		Store:      store,
+		Brief:      brief,
+		Features:   features,
+		Strategies: strategies,
+		Bugs:       bugs,
+	}
+
+	defs, err := loadRefineAgentDefs(fsys)
 	if err != nil {
-		return &RefineResult{NodeID: decisionID, NodeKind: spec.KindDecision, Cascade: cascadeResult}, err
+		return nil, fmt.Errorf("refine: %w", err)
+	}
+
+	executor := &agent.WorkflowExecutor[agent.RefineState]{
+		Executor:  llm,
+		AgentDefs: defs,
+		Workflow:  agent.RefineCascadeWorkflow,
+	}
+
+	if _, err := executor.Run(ctx, &state); err != nil {
+		return &RefineResult{
+			NodeID:   decisionID,
+			NodeKind: spec.KindDecision,
+			Cascade:  refineCascadeResultFromState(&state),
+		}, err
 	}
 
 	return &RefineResult{
 		NodeID:   decisionID,
 		NodeKind: spec.KindDecision,
-		Cascade:  cascadeResult,
+		Cascade:  refineCascadeResultFromState(&state),
 	}, nil
+}
+
+// refineCascadeResultFromState projects the workflow's mutable state
+// into the cascade.Result shape RefineResult.Cascade expects. Mirrors
+// the legacy cascade.Cascade return value so callers (mcp handler,
+// printRefineSummary) see no behavioural change.
+//
+// UpdatedBugs is folded into UpdatedFeatures' visibility surface
+// (printRefineSummary doesn't iterate bugs separately today). When a
+// bug rewrite happens, its ID still lands in s.UpdatedBugs on the
+// state and the underlying bug-rewritten history event is persisted —
+// the visible RefineResult.Cascade just doesn't expose a "bugs"
+// bucket because the existing cascade.Result type predates the
+// Bug-in-cascade enhancement and the printer would need a wider
+// change to surface it. The next display-layer pass can lift that.
+func refineCascadeResultFromState(s *agent.RefineState) *cascade.Result {
+	if s == nil {
+		return nil
+	}
+	return &cascade.Result{
+		UpdatedFeatures:   s.UpdatedFeatures,
+		UpdatedStrategies: s.UpdatedStrategies,
+		DriftedApproaches: s.DriftedApproaches,
+		Skipped:           s.Skipped,
+		Events:            s.Events,
+	}
+}
+
+// loadRefineAgentDefs loads both the rewriter and refiner AgentDefs
+// from the project's .borg/agents/ directory, with the embedded
+// scaffold as fallback. Loading both means the executor's AgentDefs
+// map carries whichever agent the per-item dispatch picks via the
+// fanout item's agent_id field — even though only one is selected
+// per workflow run (rewriter for cascade mode, refiner when --brief
+// is set).
+func loadRefineAgentDefs(fsys specio.FS) (map[string]agent.AgentDef, error) {
+	defs := make(map[string]agent.AgentDef, 2)
+	for _, id := range []string{"rewriter", "refiner"} {
+		def, err := scaffold.LoadAgent(fsys, id)
+		if err != nil {
+			return nil, fmt.Errorf("load agent %s: %w", id, err)
+		}
+		defs[id] = def
+	}
+	return defs, nil
 }
 
 // RunRefineFeature rewrites Feature.Description to reflect its currently
