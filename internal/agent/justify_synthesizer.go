@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/chetan/locutus/internal/spec"
@@ -97,8 +98,21 @@ type PerDecisionResult struct {
 	BreakingPoints []string
 }
 
+// synthesizerMaxAttempts caps retry budget for the synthesizer.
+// Three attempts cover the standard [anthropic, googleai, openai]
+// rotation exactly once. Same reasoning as challengerMaxAttempts.
+//
+// Empirically motivated by a 2026-05-10 incident where Anthropic
+// returned syntactically valid JSON but with the entire chain-of-
+// thought stream stuffed into the `verdict` string field — a
+// schema-skeleton-adjacent failure mode that single-attempt
+// dispatch can't recover from.
+const synthesizerMaxAttempts = 3
+
 // InvokeSynthesizer runs the justify_synthesizer agent. Returns the
-// aggregate strategy-level verdict.
+// aggregate strategy-level verdict. Retries up to synthesizerMaxAttempts
+// times with provider rotation when the output is degenerate
+// (invalid verdict, empty defense, runaway field content).
 func InvokeSynthesizer(ctx context.Context, llm AgentExecutor, def AgentDef, in SynthesisInput) (*SynthesisVerdict, error) {
 	if len(in.PerDecisionResults) == 0 && strings.TrimSpace(in.ParentProseShard) == "" {
 		return nil, fmt.Errorf("invoke synthesizer: nothing to synthesize (no per-decision results and no prose shard)")
@@ -106,18 +120,84 @@ func InvokeSynthesizer(ctx context.Context, llm AgentExecutor, def AgentDef, in 
 
 	def.OutputSchema = "SynthesisVerdict"
 	user := buildSynthesizerPrompt(in)
-	output, err := llm.Run(WithRole(ctx, "synthesis"), def, AgentInput{Messages: []Message{{Role: "user", Content: user}}})
-	if err != nil {
-		return nil, fmt.Errorf("invoke synthesizer: %w", err)
+	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
+
+	var lastVerdict *SynthesisVerdict
+	for attempt := 1; attempt <= synthesizerMaxAttempts; attempt++ {
+		attemptDef := def
+		attemptDef.Models = rotateModels(def.Models, attempt-1)
+
+		output, err := llm.Run(WithRole(ctx, "synthesis"), attemptDef, input)
+		if err != nil {
+			return nil, fmt.Errorf("invoke synthesizer: %w", err)
+		}
+		var verdict SynthesisVerdict
+		if jerr := json.Unmarshal([]byte(output.Content), &verdict); jerr != nil {
+			if attempt < synthesizerMaxAttempts {
+				slog.Warn("invoke synthesizer: unparseable output; retrying",
+					"attempt", attempt,
+					"max_attempts", synthesizerMaxAttempts,
+					"provider_attempted", primaryProvider(attemptDef.Models),
+					"next_provider", primaryProvider(rotateModels(def.Models, attempt)),
+					"error", jerr)
+				continue
+			}
+			return nil, fmt.Errorf("invoke synthesizer: parse output: %w", jerr)
+		}
+		lastVerdict = &verdict
+		if reason, degenerate := degenerateSynthesisVerdict(&verdict); degenerate {
+			if attempt < synthesizerMaxAttempts {
+				slog.Warn("invoke synthesizer: degenerate output; retrying",
+					"attempt", attempt,
+					"max_attempts", synthesizerMaxAttempts,
+					"provider_attempted", primaryProvider(attemptDef.Models),
+					"next_provider", primaryProvider(rotateModels(def.Models, attempt)),
+					"reason", reason)
+				continue
+			}
+			return &verdict, fmt.Errorf("invoke synthesizer: degenerate output after %d attempts (%s); re-run, or report this if it persists", synthesizerMaxAttempts, reason)
+		}
+		return &verdict, nil
 	}
-	var verdict SynthesisVerdict
-	if err := json.Unmarshal([]byte(output.Content), &verdict); err != nil {
-		return nil, fmt.Errorf("invoke synthesizer: parse output: %w", err)
+	return lastVerdict, fmt.Errorf("invoke synthesizer: retry loop exited without a result")
+}
+
+// degenerateSynthesisVerdict catches the chain-of-thought-into-
+// output failure mode that produced multi-paragraph strings in the
+// verdict field on 2026-05-10. Triggers any one of:
+//
+//   - Verdict isn't one of the three enum values (after trim).
+//   - Defense is empty or longer than 8000 runes (synthesizer
+//     spec is 2-3 paragraphs; runaway output is much longer).
+//   - Rationale is empty or longer than 1500 runes.
+//
+// The length floors / ceilings are intentionally generous — the
+// goal is to catch obviously broken output, not enforce prose
+// quality. A real synthesizer response sits comfortably inside
+// these bounds.
+func degenerateSynthesisVerdict(v *SynthesisVerdict) (string, bool) {
+	if v == nil {
+		return "nil verdict", true
 	}
-	if !validVerdict(verdict.Verdict) {
-		return &verdict, fmt.Errorf("invoke synthesizer: returned invalid verdict %q (want held_up|partially_held_up|broke_down)", verdict.Verdict)
+	verdict := strings.TrimSpace(v.Verdict)
+	if !validVerdict(verdict) {
+		preview := verdict
+		if len([]rune(preview)) > 80 {
+			preview = string([]rune(preview)[:80]) + "…"
+		}
+		return fmt.Sprintf("verdict not in enum (got %q)", preview), true
 	}
-	return &verdict, nil
+	defense := strings.TrimSpace(v.Defense)
+	if defense == "" {
+		return "defense is empty", true
+	}
+	if len([]rune(defense)) > 8000 {
+		return fmt.Sprintf("defense is %d runes (ceiling 8000)", len([]rune(defense))), true
+	}
+	if len([]rune(strings.TrimSpace(v.Rationale))) > 1500 {
+		return fmt.Sprintf("rationale is %d runes (ceiling 1500)", len([]rune(v.Rationale))), true
+	}
+	return "", false
 }
 
 func buildSynthesizerPrompt(in SynthesisInput) string {

@@ -46,4 +46,18 @@ Emit a `SynthesisVerdict` with:
 - **Prose-only breaks need actionable phrasing.** A prose-only break should be specific about WHAT in the parent's body prose surfaces the concern, so the user can `refine <parent-id> --brief "..."` against the right text.
 - **Empty defense is wrong.** Even when verdict is held_up, write 2-3 paragraphs explaining why the parent stands. Empty defense reads as a schema-skeleton failure.
 
+# Output discipline (READ THIS BEFORE EMITTING)
+
+Your entire response must be valid JSON matching the supplied schema. Nothing else. No preamble. No scratchpad. No internal monologue. No "let me think about this first" prose. No corrections. No "actually wait" addenda. The first character of your response must be `{` and the last must be `}`. Everything between is the JSON object.
+
+Specific anti-patterns observed in past failures (do not do these):
+
+1. **Do not write planning prose into any field.** Plan internally before you start writing. Every character you write is part of the field's value. There is no scratchpad.
+2. **The `verdict` field must be EXACTLY one of these three strings, with no surrounding text:** `held_up`, `partially_held_up`, `broke_down`. Not "broke_down because...", not "broke_down — corrected:", not "verdict: broke_down". Just the enum value as the field's string content. Reasoning about the verdict goes in the `rationale` field, not the `verdict` field.
+3. **The `rationale` field is one to two sentences.** Not a paragraph. Not multiple paragraphs. Not a re-derivation of the verdict. One to two complete sentences.
+4. **If you find yourself writing "let me rewrite" or "actually" or "fresh attempt" in any field, you have already failed.** Stop, plan internally, then start the JSON. Do not narrate your own confusion into the output.
+5. **The `defense` field is two to three paragraphs.** No more. No "Para 1:" / "Para 2:" labels — just the paragraphs.
+
+Plan your response, then write the JSON in one pass.
+
 Respond with valid JSON matching the supplied schema.

@@ -51,4 +51,15 @@ A different challenge says "The hiring-velocity argument doesn't hold; campaign-
 - All three decision shards: ""
 - `parent_prose_shard`: "The hiring-velocity argument doesn't hold; campaign-tech engineers are scarce..."
 
+# Output discipline (READ THIS BEFORE EMITTING)
+
+Your entire response must be valid JSON matching the supplied schema. Nothing else. The first character of your response must be `{` and the last must be `}`.
+
+Specific rules:
+
+1. **Do not write planning prose into any field.** Plan internally before writing. Every character you emit is part of the JSON.
+2. **`decision_id` values are verbatim copies of the input ids.** Do not paraphrase, abbreviate, or "fix" them.
+3. **Output exactly one shard per input decision, in the order given.** No extra shards. No reordering. No skipping. An empty `shard` is correct when the challenge doesn't address that decision.
+4. **The `rationale` field is one short sentence.** Not a paragraph.
+
 Respond with valid JSON matching the supplied schema.

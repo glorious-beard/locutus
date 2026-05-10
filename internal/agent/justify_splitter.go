@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/chetan/locutus/internal/spec"
@@ -84,10 +85,20 @@ type SplitterDecisionRef struct {
 	Rationale string
 }
 
+// splitterMaxAttempts caps retry budget for the splitter. Three
+// attempts cover the standard [anthropic, googleai, openai]
+// rotation exactly once. Same reasoning as the challenger and
+// synthesizer.
+const splitterMaxAttempts = 3
+
 // InvokeSplitter runs the justify_splitter agent. Returns a
 // ChallengeSplit with one shard per input decision in input order.
 // The caller drives fan-out by walking DecisionShards and dispatching
 // the per-decision flow only for shards with non-empty Shard text.
+//
+// Retries up to splitterMaxAttempts times with provider rotation
+// when the output is unparseable or fails the shard-count /
+// id-correspondence validator.
 //
 // def is the loaded scaffold AgentDef; OutputSchema is overridden to
 // "ChallengeSplit" inside this function so the cmd layer doesn't have
@@ -102,18 +113,46 @@ func InvokeSplitter(ctx context.Context, llm AgentExecutor, def AgentDef, in Spl
 
 	def.OutputSchema = "ChallengeSplit"
 	user := buildSplitterPrompt(in)
-	output, err := llm.Run(WithRole(ctx, "split"), def, AgentInput{Messages: []Message{{Role: "user", Content: user}}})
-	if err != nil {
-		return nil, fmt.Errorf("invoke splitter: %w", err)
+	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
+
+	var lastSplit *ChallengeSplit
+	for attempt := 1; attempt <= splitterMaxAttempts; attempt++ {
+		attemptDef := def
+		attemptDef.Models = rotateModels(def.Models, attempt-1)
+
+		output, err := llm.Run(WithRole(ctx, "split"), attemptDef, input)
+		if err != nil {
+			return nil, fmt.Errorf("invoke splitter: %w", err)
+		}
+		var split ChallengeSplit
+		if jerr := json.Unmarshal([]byte(output.Content), &split); jerr != nil {
+			if attempt < splitterMaxAttempts {
+				slog.Warn("invoke splitter: unparseable output; retrying",
+					"attempt", attempt,
+					"max_attempts", splitterMaxAttempts,
+					"provider_attempted", primaryProvider(attemptDef.Models),
+					"next_provider", primaryProvider(rotateModels(def.Models, attempt)),
+					"error", jerr)
+				continue
+			}
+			return nil, fmt.Errorf("invoke splitter: parse output: %w", jerr)
+		}
+		lastSplit = &split
+		if verr := validateSplit(&split, in.Decisions); verr != nil {
+			if attempt < splitterMaxAttempts {
+				slog.Warn("invoke splitter: degenerate output; retrying",
+					"attempt", attempt,
+					"max_attempts", splitterMaxAttempts,
+					"provider_attempted", primaryProvider(attemptDef.Models),
+					"next_provider", primaryProvider(rotateModels(def.Models, attempt)),
+					"error", verr)
+				continue
+			}
+			return &split, fmt.Errorf("invoke splitter: degenerate output after %d attempts: %w", splitterMaxAttempts, verr)
+		}
+		return &split, nil
 	}
-	var split ChallengeSplit
-	if err := json.Unmarshal([]byte(output.Content), &split); err != nil {
-		return nil, fmt.Errorf("invoke splitter: parse output: %w", err)
-	}
-	if err := validateSplit(&split, in.Decisions); err != nil {
-		return nil, err
-	}
-	return &split, nil
+	return lastSplit, fmt.Errorf("invoke splitter: retry loop exited without a result")
 }
 
 // validateSplit enforces the contract: one shard per input decision
