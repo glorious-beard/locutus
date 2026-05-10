@@ -23,9 +23,15 @@ type JustifyCmd struct {
 	Format  string `help:"Output format: markdown or json." enum:"markdown,json" default:"markdown"`
 }
 
-// JustifyResult is the JSON-shaped output. Exactly one of Brief or
-// Adversarial is populated. Research is populated only on the
-// adversarial path, alongside Challenger and Adversarial.
+// JustifyResult is the JSON-shaped output. Exactly one of Brief,
+// Adversarial, or FanOut is populated:
+//
+//   - Brief: solo-advocate path (no --against, any node kind).
+//   - Adversarial: adversarial path against a decision target.
+//   - FanOut: adversarial path against a strategy / feature / bug /
+//     approach — challenge fans out to the underlying decisions
+//     and a strategy-level synthesis aggregates the per-decision
+//     verdicts.
 type JustifyResult struct {
 	ID          string                    `json:"id"`
 	Challenge   string                    `json:"challenge,omitempty"`
@@ -33,6 +39,7 @@ type JustifyResult struct {
 	Challenger  *agent.ChallengeBrief     `json:"challenger,omitempty"`
 	Research    *agent.ResearchBrief      `json:"research,omitempty"`
 	Adversarial *agent.AdversarialDefense `json:"adversarial,omitempty"`
+	FanOut      *agent.FanOutResult       `json:"fan_out,omitempty"`
 	Markdown    string                    `json:"markdown"`
 	SessionPath string                    `json:"session_path,omitempty"`
 }
@@ -126,7 +133,15 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 			return nil, err
 		}
 		result.Brief = brief
-	} else {
+		result.Markdown = renderJustifyMarkdown(result)
+		return result, nil
+	}
+
+	// Adversarial path: route by node kind. Decisions go through
+	// the existing single-target flow; strategies / features /
+	// bugs / approaches fan out to their referenced decisions.
+	kind := nodeKindOf(id)
+	if kind == spec.KindDecision {
 		ch, research, def, err := agent.RunJustifyAgainst(ctx, llm, in)
 		if err != nil {
 			return nil, err
@@ -134,13 +149,171 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 		result.Challenger = ch
 		result.Research = research
 		result.Adversarial = def
+		result.Markdown = renderJustifyMarkdown(result)
+		return result, nil
 	}
 
+	splitter, err := scaffold.LoadAgent(fsys, "justify_splitter")
+	if err != nil {
+		return nil, fmt.Errorf("load justify_splitter: %w", err)
+	}
+	synthesizer, err := scaffold.LoadAgent(fsys, "justify_synthesizer")
+	if err != nil {
+		return nil, fmt.Errorf("load justify_synthesizer: %w", err)
+	}
+
+	fanIn, err := buildFanOutInputs(loaded, stages, in, kind, nodeMD, splitter, synthesizer)
+	if err != nil {
+		return nil, err
+	}
+	fanResult, err := agent.RunJustifyFanOut(ctx, llm, fanIn)
+	if err != nil {
+		// Fan-out errors carry the partial result; surface it so
+		// callers can render what landed before the failure.
+		result.FanOut = fanResult
+		result.Markdown = renderJustifyMarkdown(result)
+		return result, err
+	}
+	result.FanOut = fanResult
 	result.Markdown = renderJustifyMarkdown(result)
 	return result, nil
 }
 
+// buildFanOutInputs assembles agent.FanOutInputs from the loaded
+// graph for the kinds that fan out (strategy / feature / bug /
+// approach). Resolves the parent body prose, the list of referenced
+// decisions, and pre-renders explain markdown for each decision so
+// the per-decision RunJustifyAgainst calls have NodeMarkdown ready.
+//
+// For bugs, decisions come from the parent feature (bugs inherit).
+// For approaches, decisions come from Approach.Decisions[] (the
+// audit trail of what was consulted at synthesis time).
+func buildFanOutInputs(loaded *spec.Loaded, stages spec.StageMap, in agent.JustifyInputs, kind spec.NodeKind, nodeMD string, splitter, synthesizer agent.AgentDef) (agent.FanOutInputs, error) {
+	var parentBody string
+	var decisionIDs []string
+
+	switch kind {
+	case spec.KindStrategy:
+		n := loaded.StrategyNodeByID(in.NodeID)
+		if n == nil {
+			return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: strategy %q not found", in.NodeID)
+		}
+		parentBody = n.Body
+		decisionIDs = n.Spec.Decisions
+	case spec.KindFeature:
+		n := loaded.FeatureNodeByID(in.NodeID)
+		if n == nil {
+			return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: feature %q not found", in.NodeID)
+		}
+		parentBody = n.Spec.Description
+		if parentBody == "" {
+			parentBody = n.Body
+		}
+		decisionIDs = n.Spec.Decisions
+	case spec.KindBug:
+		n := loaded.BugNodeByID(in.NodeID)
+		if n == nil {
+			return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: bug %q not found", in.NodeID)
+		}
+		parentBody = n.Spec.Description
+		if parentBody == "" {
+			parentBody = n.Body
+		}
+		// Bugs inherit decisions from their parent feature.
+		if pf := loaded.FeatureNodeByID(n.Spec.FeatureID); pf != nil {
+			decisionIDs = pf.Spec.Decisions
+		}
+	case spec.KindApproach:
+		n := loaded.ApproachNodeByID(in.NodeID)
+		if n == nil {
+			return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: approach %q not found", in.NodeID)
+		}
+		parentBody = n.Spec.Body
+		if parentBody == "" {
+			parentBody = n.Body
+		}
+		decisionIDs = n.Spec.Decisions
+	default:
+		return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: kind %q does not support fan-out (challenge a specific decision id instead)", kind)
+	}
+
+	if len(decisionIDs) == 0 {
+		return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: %s %q references no decisions; nothing to fan out to", kind, in.NodeID)
+	}
+
+	refs := make([]agent.SplitterDecisionRef, 0, len(decisionIDs))
+	perDecisionMD := make(map[string]string, len(decisionIDs))
+	for _, did := range decisionIDs {
+		dn := loaded.DecisionNodeByID(did)
+		if dn == nil {
+			// Skip dangling references; the splitter would fail
+			// to classify against an absent decision and we'd
+			// rather degrade to the resolvable subset than abort.
+			continue
+		}
+		refs = append(refs, agent.SplitterDecisionRef{
+			ID:        dn.Spec.ID,
+			Title:     dn.Spec.Title,
+			Rationale: truncateForSplitter(dn.Spec.Rationale, 400),
+		})
+		md, err := render.ExplainNode(loaded, stages, dn.Spec.ID)
+		if err != nil {
+			return agent.FanOutInputs{}, fmt.Errorf("render explain for %s: %w", dn.Spec.ID, err)
+		}
+		perDecisionMD[dn.Spec.ID] = md
+	}
+	if len(refs) == 0 {
+		return agent.FanOutInputs{}, fmt.Errorf("justify fan-out: %s %q references decisions but none resolve in the loaded graph", kind, in.NodeID)
+	}
+
+	return agent.FanOutInputs{
+		JustifyInputs:       in,
+		ParentNodeMD:        nodeMD,
+		ParentBody:          parentBody,
+		PerDecisionMarkdown: perDecisionMD,
+		DecisionRefs:        refs,
+		Splitter:            splitter,
+		Synthesizer:         synthesizer,
+	}, nil
+}
+
+// truncateForSplitter shortens long rationale text for the
+// splitter prompt. The splitter is a classifier; sending the full
+// rationale (sometimes paragraph-long) wastes tokens. 400 runes
+// captures the headline reasoning without inflating the prompt.
+func truncateForSplitter(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
+}
+
+// nodeKindOf returns the spec NodeKind implied by the id prefix.
+// Returns empty NodeKind for unknown prefixes; callers expecting
+// a kind validate up-front. Mirrors nodeKindFromID in
+// internal/agent/justify_fanout.go but lives at the cmd layer
+// where we want spec.NodeKind values for switch matching.
+func nodeKindOf(id string) spec.NodeKind {
+	switch {
+	case len(id) >= 4 && id[:4] == "dec-":
+		return spec.KindDecision
+	case len(id) >= 5 && id[:5] == "feat-":
+		return spec.KindFeature
+	case len(id) >= 6 && id[:6] == "strat-":
+		return spec.KindStrategy
+	case len(id) >= 4 && id[:4] == "app-":
+		return spec.KindApproach
+	case len(id) >= 4 && id[:4] == "bug-":
+		return spec.KindBug
+	}
+	return ""
+}
+
 func renderJustifyMarkdown(r *JustifyResult) string {
+	if r.FanOut != nil {
+		return render.JustifyFanOutMarkdown(r.ID, r.Challenge, r.FanOut, r.SessionPath)
+	}
 	if r.Adversarial != nil {
 		return render.JustifyAgainstMarkdown(r.ID, r.Challenge, r.Challenger, r.Research, r.Adversarial, r.SessionPath)
 	}

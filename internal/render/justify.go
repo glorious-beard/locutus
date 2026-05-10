@@ -139,6 +139,122 @@ func breakingPointsAsBrief(points []string) string {
 	return "Address: " + strings.Join(points, "; ")
 }
 
+// JustifyFanOutMarkdown renders a fan-out justify result: a parent
+// node header, per-decision sub-sections (each with its own
+// challenger/research/advocate), and a strategy-level synthesis.
+// nodeID is the parent's id; result is the complete fan-out output.
+func JustifyFanOutMarkdown(nodeID, challenge string, result *agent.FanOutResult, sessionPath string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Justifying `%s` (fan-out)\n\n", nodeID)
+	if challenge != "" {
+		fmt.Fprintf(&b, "**Challenge:** %s\n\n", challenge)
+	}
+
+	if result == nil {
+		b.WriteString("*Fan-out produced no result.*\n")
+		return b.String()
+	}
+
+	if result.Split != nil && result.Split.Rationale != "" {
+		fmt.Fprintf(&b, "**Splitter rationale:** %s\n\n", result.Split.Rationale)
+	}
+
+	for i, r := range result.PerDecisionResults {
+		fmt.Fprintf(&b, "## %d. `%s` — %s\n\n", i+1, r.DecisionID, r.DecisionTitle)
+		if r.Challenge != "" {
+			fmt.Fprintf(&b, "**Challenge slice:** %s\n\n", r.Challenge)
+		}
+		if r.Adversarial != nil {
+			fmt.Fprintf(&b, "**Verdict:** %s\n\n", strings.ToUpper(strings.ReplaceAll(r.Adversarial.Verdict, "_", " ")))
+			if strings.TrimSpace(r.Adversarial.Defense) != "" {
+				b.WriteString(strings.TrimSpace(r.Adversarial.Defense))
+				b.WriteString("\n\n")
+			}
+			if len(r.Adversarial.BreakingPoints) > 0 {
+				b.WriteString("Breaking points:\n")
+				for _, bp := range r.Adversarial.BreakingPoints {
+					fmt.Fprintf(&b, "- %s\n", bp)
+				}
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	if result.Synthesis != nil {
+		s := result.Synthesis
+		b.WriteString("## Strategy-level synthesis\n\n")
+		if strings.TrimSpace(s.Defense) != "" {
+			b.WriteString(strings.TrimSpace(s.Defense))
+			b.WriteString("\n\n")
+		}
+		if strings.TrimSpace(s.ParentProseAddress) != "" {
+			b.WriteString("### Parent-prose address\n\n")
+			b.WriteString(strings.TrimSpace(s.ParentProseAddress))
+			b.WriteString("\n\n")
+		}
+
+		fmt.Fprintf(&b, "## Verdict: %s\n\n", strings.ToUpper(strings.ReplaceAll(s.Verdict, "_", " ")))
+
+		if len(s.BreakingPoints) > 0 {
+			b.WriteString("**Breaking points:**\n\n")
+			for _, bp := range s.BreakingPoints {
+				if bp.SourceDecision != "" {
+					fmt.Fprintf(&b, "- *(%s)* %s\n", bp.SourceDecision, bp.Description)
+				} else {
+					fmt.Fprintf(&b, "- *(parent prose)* %s\n", bp.Description)
+				}
+			}
+			b.WriteString("\n")
+
+			b.WriteString("## Suggested next steps\n\n")
+			b.WriteString("```\n")
+			for _, line := range fanOutNextSteps(nodeID, s.BreakingPoints) {
+				b.WriteString(line + "\n")
+			}
+			b.WriteString("```\n\n")
+		}
+	}
+
+	if sessionPath != "" {
+		fmt.Fprintf(&b, "---\n\n*Session: %s/*\n", sessionPath)
+	}
+
+	return b.String()
+}
+
+// fanOutNextSteps groups breaking points by source decision and
+// emits one `refine` command per source. Decision-sourced breaks
+// route to `refine <dec-id> --supersede "..."`. Prose-only breaks
+// route to `refine <parent-id> --brief "..."`. Multiple breaks for
+// the same decision are joined into a single command argument.
+func fanOutNextSteps(parentID string, points []agent.StrategyBreakingPoint) []string {
+	byDecision := map[string][]string{}
+	var proseOnly []string
+	var orderedDecisions []string
+
+	for _, bp := range points {
+		if bp.SourceDecision == "" {
+			proseOnly = append(proseOnly, bp.Description)
+			continue
+		}
+		if _, seen := byDecision[bp.SourceDecision]; !seen {
+			orderedDecisions = append(orderedDecisions, bp.SourceDecision)
+		}
+		byDecision[bp.SourceDecision] = append(byDecision[bp.SourceDecision], bp.Description)
+	}
+
+	var lines []string
+	for _, dec := range orderedDecisions {
+		brief := "Address: " + strings.Join(byDecision[dec], "; ")
+		lines = append(lines, fmt.Sprintf("locutus refine %s --supersede %q", dec, brief))
+	}
+	if len(proseOnly) > 0 {
+		brief := "Address: " + strings.Join(proseOnly, "; ")
+		lines = append(lines, fmt.Sprintf("locutus refine %s --brief %q", parentID, brief))
+	}
+	return lines
+}
+
 // suggestedNextStep returns the command string the operator should
 // run to act on the verdict. Routes by verdict + node kind:
 //
