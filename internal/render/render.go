@@ -38,6 +38,16 @@ func StatusSummary(data StatusData) string {
 		b.WriteString(fmt.Sprintf("Warning: %d orphan node(s) detected\n", data.OrphanCount))
 	}
 
+	// Pending reconcile section — invalidated approaches waiting
+	// for an `adopt` run to regenerate.
+	if len(data.InvalidatedApproaches) > 0 {
+		b.WriteString("\n## Pending reconcile\n\n")
+		b.WriteString(fmt.Sprintf("%d approach(es) invalidated by `refine --supersede`. Run `locutus adopt` to regenerate.\n\n", len(data.InvalidatedApproaches)))
+		for _, id := range data.InvalidatedApproaches {
+			b.WriteString(fmt.Sprintf("- `%s`\n", id))
+		}
+	}
+
 	return b.String()
 }
 

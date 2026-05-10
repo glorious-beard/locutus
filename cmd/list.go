@@ -35,12 +35,16 @@ type ListResult struct {
 }
 
 // ListHit is one matching spec node. Score is an opaque relevance
-// number — order, not magnitude, is the API.
+// number — order, not magnitude, is the API. Invalidated is true for
+// approaches that carry InvalidatedByEventID; the markdown renderer
+// surfaces this via an `[invalidated]` badge so operators can spot
+// pending-reconcile work without filtering.
 type ListHit struct {
-	ID    string `json:"id"`
-	Kind  string `json:"kind"`
-	Title string `json:"title"`
-	Score int    `json:"score"`
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Title       string `json:"title"`
+	Score       int    `json:"score"`
+	Invalidated bool   `json:"invalidated,omitempty"`
 }
 
 func (c *ListCmd) Run(cli *CLI) error {
@@ -154,7 +158,9 @@ func scanLoaded(loaded *spec.Loaded, tokens []string, kindFilter string) []ListH
 			if score > 0 {
 				hits = append(hits, ListHit{
 					ID: n.Spec.ID, Kind: string(spec.KindApproach),
-					Title: n.Spec.Title, Score: score,
+					Title:       n.Spec.Title,
+					Score:       score,
+					Invalidated: n.Spec.IsInvalidated(),
 				})
 			}
 		}
@@ -292,7 +298,11 @@ func renderListMarkdown(query, kind string, hits []ListHit) string {
 	}
 	b.WriteString(":\n\n")
 	for _, h := range hits {
-		fmt.Fprintf(&b, "- `%s` (%s) — %s\n", h.ID, h.Kind, h.Title)
+		if h.Invalidated {
+			fmt.Fprintf(&b, "- `%s` (%s) [invalidated] — %s\n", h.ID, h.Kind, h.Title)
+		} else {
+			fmt.Fprintf(&b, "- `%s` (%s) — %s\n", h.ID, h.Kind, h.Title)
+		}
 	}
 	return b.String()
 }

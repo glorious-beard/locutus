@@ -114,7 +114,7 @@ func JustifyAgainstMarkdown(nodeID, challenge string, ch *agent.ChallengeBrief, 
 
 		b.WriteString("## Suggested next step\n\n")
 		b.WriteString("```\n")
-		fmt.Fprintf(&b, "locutus refine %s --brief %q\n", nodeID, breakingPointsAsBrief(def.BreakingPoints))
+		fmt.Fprintf(&b, "%s\n", suggestedNextStep(nodeID, def.Verdict, def.BreakingPoints))
 		b.WriteString("```\n\n")
 	}
 
@@ -137,4 +137,39 @@ func formatStillStands(b bool) string {
 // suggested-next-step block of the adversarial dialogue.
 func breakingPointsAsBrief(points []string) string {
 	return "Address: " + strings.Join(points, "; ")
+}
+
+// suggestedNextStep returns the command string the operator should
+// run to act on the verdict. Routes by verdict + node kind:
+//
+//   - BROKE DOWN against a Decision/Feature/Strategy → --supersede,
+//     since the breaking points are sufficient to invalidate the
+//     node's identity (alternatives missing, scope wrong, framing
+//     stale). The supersede flow rewrites references and invalidates
+//     affected approaches.
+//   - BROKE DOWN against a Bug → --brief, since bugs use status
+//     transitions plus a fresh filing for wrong-root-cause cases;
+//     the supersede path doesn't accept bugs.
+//   - held / partially_held_up / anything else → --brief, the
+//     existing prose-cascade path.
+//
+// Bugs and approaches under BROKE DOWN still emit --brief so the
+// operator at least gets a reasonable default; a smarter routing
+// for bug-shaped verdicts is deferred.
+func suggestedNextStep(nodeID, verdict string, breakingPoints []string) string {
+	brief := breakingPointsAsBrief(breakingPoints)
+	if verdict == "broke_down" && supersedeAcceptsKind(nodeID) {
+		return fmt.Sprintf("locutus refine %s --supersede %q", nodeID, brief)
+	}
+	return fmt.Sprintf("locutus refine %s --brief %q", nodeID, brief)
+}
+
+// supersedeAcceptsKind reports whether the node id prefix matches a
+// kind that `refine --supersede` operates on. Decisions, features,
+// and strategies are in scope; bugs are explicitly excluded; other
+// prefixes (approaches, goals) are out by construction.
+func supersedeAcceptsKind(nodeID string) bool {
+	return strings.HasPrefix(nodeID, "dec-") ||
+		strings.HasPrefix(nodeID, "feat-") ||
+		strings.HasPrefix(nodeID, "strat-")
 }

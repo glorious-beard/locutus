@@ -178,7 +178,11 @@ func TestJustifyAdversarialBrokenDownSurfacesBreakingPoints(t *testing.T) {
 	assert.Contains(t, result.Markdown, "Verdict: BROKE DOWN")
 	assert.Contains(t, result.Markdown, "need sharded write path")
 	assert.Contains(t, result.Markdown, "## Suggested next step")
-	assert.Contains(t, result.Markdown, "locutus refine dec-shared --brief")
+	// BROKE DOWN against a decision routes to --supersede (the verb
+	// that can actually act on the verdict against a decision target).
+	// See internal/render/justify.go::suggestedNextStep — this was
+	// the bug fixed by the supersede plan.
+	assert.Contains(t, result.Markdown, "locutus refine dec-shared --supersede")
 }
 
 func TestJustifyInvalidVerdictRejected(t *testing.T) {

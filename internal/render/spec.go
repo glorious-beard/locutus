@@ -214,6 +214,9 @@ func RenderApproach(n spec.ApproachNode, l *spec.Loaded) string {
 	a := n.Spec
 
 	fmt.Fprintf(&b, "### `%s` — %s\n\n", a.ID, a.Title)
+	if a.IsInvalidated() {
+		fmt.Fprintf(&b, "> ⚠ Invalidated by event `%s`. Run `locutus adopt` to regenerate.\n\n", a.InvalidatedByEventID)
+	}
 	if a.ParentID != "" {
 		fmt.Fprintf(&b, "**Parent:** `%s`\n\n", a.ParentID)
 	}
