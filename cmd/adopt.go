@@ -98,6 +98,13 @@ type AdoptReport struct {
 	// but not during spec generation.
 	SynthesizedApproaches []string `json:"synthesized_approaches,omitempty"`
 
+	// RegeneratedApproaches lists Approach IDs that adopt rewrote
+	// because a prior `refine --supersede` invalidated them. The
+	// regenerator agent produced a fresh Body that addresses both
+	// the new spec and cleanup of prior artifacts; the existing
+	// ArtifactPaths / Decisions / Assertions were carried forward.
+	RegeneratedApproaches []string `json:"regenerated_approaches,omitempty"`
+
 	// Populated when dispatch actually ran.
 	PlanID             string                      `json:"plan_id,omitempty"`
 	DispatchedWorkstreams []WorkstreamOutcome      `json:"dispatched_workstreams,omitempty"`
@@ -252,6 +259,23 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 		// classification. On dry-run the writes were dropped; the
 		// reload returns the same pre-synthesis graph and the report
 		// surface still names the would-be Approach IDs.
+		if !cfg.DryRun {
+			graph, err = loadSpecGraph(cfg.FS)
+			if err != nil {
+				return report, err
+			}
+		}
+	}
+
+	// --- Phase 0b: Regenerate Approaches invalidated by a prior
+	// `refine --supersede` run. The cascade engine left these on disk
+	// with `InvalidatedByEventID` set so adopt has the blast radius;
+	// the regenerator agent rewrites the Body to address both the new
+	// spec (forward) and the cleanup of prior artifacts (backward).
+	if regenerated, regenErr := regenerateInvalidatedApproaches(ctx, cfg.LLM, synthFS); regenErr != nil {
+		return report, fmt.Errorf("regenerate invalidated approaches: %w", regenErr)
+	} else if len(regenerated) > 0 {
+		report.RegeneratedApproaches = regenerated
 		if !cfg.DryRun {
 			graph, err = loadSpecGraph(cfg.FS)
 			if err != nil {
