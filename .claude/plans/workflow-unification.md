@@ -160,6 +160,93 @@ func (e *WorkflowExecutor[S]) ExecuteRound(ctx, step, state *S) ([]RoundResult, 
 
 Existing call sites in `internal/agent/specgen.go`, `assimilation.go` etc. construct `WorkflowExecutor[*PlanningState]` and proceed unchanged otherwise.
 
+## Unified agent dispatcher — the second substrate layer
+
+The workflow executor handles per-verb orchestration (phases, fanout, conditional execution, state). It does NOT handle per-agent dispatch (tool registry, iteration cap, retry, provider rotation, structured-output parsing). Today each invocation function — `InvokeSplitter`, `InvokeSynthesizer`, `RunJustify`, `RunResearch`, `cascade.RewriteFeature`, etc. — does its own dispatch. That's the second mix-by-accident this plan should fix.
+
+**Proposal:** every LLM operation in Locutus goes through one `AgentDispatcher`. AgentDef gets two optional fields that decide the dispatch shape:
+
+```go
+type AgentDef struct {
+    // existing
+    ID            string
+    SystemPrompt  string
+    OutputSchema  string
+    Models        []ModelPreference
+    Grounding     bool
+
+    // dispatch shape
+    Tools         []ToolDef  // empty = no Locutus-side tools
+    MaxIterations int        // 0 or 1 = single-call; >1 = ReAct loop
+}
+
+type AgentDispatcher interface {
+    Dispatch(ctx context.Context, def AgentDef, input AgentInput) (*AgentOutput, error)
+}
+```
+
+The dispatcher branches on shape:
+
+**Structured one-shot** (default — most agents today). Trigger: `Tools == nil && Grounding == false`. Build messages → one Generate → parse output. No loop.
+
+**Provider-side grounding** (researcher, scout, cost_critic). Trigger: `Grounding == true`. Build messages → one Generate (the provider runs an internal tool loop with web_search) → parse output, surface `tool_calls` metadata. No Locutus-side loop; the provider's loop is opaque.
+
+**Locutus-side ReAct** (new — for advocate, challenger, regenerator candidates). Trigger: `len(Tools) > 0 && MaxIterations > 1`. Build messages → loop { Generate → if tool_calls present, execute via the Tools registry, append results, continue → else parse final output }. Bounded by `MaxIterations`.
+
+All three shapes share the substrate: provider rotation per attempt, retry policy, structured-output parsing, per-call YAML traces.
+
+### Why unify
+
+1. **One observability surface.** Per-call YAML records gain `iterations`, `tool_calls_executed`, `loop_terminated_by` fields (`omitempty` for shapes that don't use them). Operators reading session traces see one shape regardless of agent type. Today the challenger has its own retry log, the splitter and synthesizer just got theirs (commit `293624e`), the council researcher has provider-side tool_call surfacing — three places to look for "what happened during this LLM call."
+2. **Promotion is cheap.** When `justify_splitter` later needs to look up parent approaches before classifying, today that's "rewrite the call site, change the invocation function, add a custom dispatch path." Unified: add one entry to the agent's `Tools` slice; the prompt updates to mention the tool. Zero call-site changes.
+3. **Less special-casing.** Today's code has parallel tracks for "single LLM call with structured output" (most agents) and "single LLM call with provider grounding" (researcher). Adding ReAct would be a third. Unified: one dispatcher with three branches, each branch ~50 lines.
+4. **Aligns with the workflow layer.** Workflow executor handles per-verb concerns; dispatcher handles per-agent concerns; provider adapters handle per-provider concerns. Three layers, each with one job. Clean composition.
+
+### What it costs
+
+The downside surface is mostly hypothetical when the design has a fast path:
+
+- **Ceremony in AgentDef.** Adding `Tools` and `MaxIterations` fields. Both zero-valued for the common case (`MaxIterations: 0` defaults to single-call; `Tools: nil` means no Locutus-side tools). Splitter / advocate / refiner .md scaffolds stay as terse as today.
+- **Trace-shape noise.** New `iterations`, `tool_calls_executed` fields appear in YAML. Use `omitempty` so structured-one-shot traces look identical to today's.
+- **Mental shift on tool capability.** "All agents are tool-capable, they just don't list any" vs today's "tool-using agents are special." Frame as: agents declare needs; the dispatcher exposes only what's listed. The mental model stays "no tools listed = no tool capabilities."
+- **Three dispatch branches.** The dispatcher's three modes (structured, grounded, ReAct) share infrastructure but differ in core loop. Don't try to over-unify the loops themselves — three branches in one function is fine; one true loop handling all three would be a mess.
+
+### Layer separation
+
+```
+WorkflowExecutor[S]
+   ↓ (workflow knows: phases, fanout, conditional, state accumulation)
+   ↓
+AgentDispatcher
+   ↓ (dispatcher knows: tool registry, iteration cap, retry, rotation, structured output, observability)
+   ↓
+ProviderAdapter (anthropic.go / gemini.go / openai_responses.go from DJ-099)
+   ↓ (adapter knows: provider SDK call, strict-mode schema, cache_control, response normalisation)
+```
+
+Each layer has one concern. Adding ReAct doesn't disrupt workflows or providers. Adding workflow phases doesn't disrupt agents or providers. Adding a new provider doesn't disrupt agents or workflows. The substrate becomes Locutus's own version of what frameworks like Eino expose — built in-house, fits DJ-099's direct-SDK model, layered cleanly.
+
+### Tool registry shape
+
+For the ReAct case, the dispatcher needs a way to register Go-side tools and let the model invoke them by name:
+
+```go
+type ToolDef struct {
+    Name        string
+    Description string
+    InputSchema string  // JSON schema
+    Handler     func(ctx context.Context, input []byte) ([]byte, error)
+}
+```
+
+Agents declare which tools they need; the dispatcher exposes them to the provider as tool definitions, executes the handlers when the model emits tool_calls, threads results back as messages, and continues the loop. This is the pattern Eino's `flow/agent/react/react.go` uses; we adapt it without depending on Eino.
+
+Tool implementations live in Locutus packages (`internal/spec/tools.go`, etc.) and are registered with the dispatcher at start-up. A typical tool for a future agent might be `read_node(id)` returning the rendered explain output, or `query_decisions_by_topic(query)` returning matching decision IDs.
+
+### Migration impact on the per-verb shapes below
+
+The per-verb workflow sketches in the next section assume agents go through the dispatcher. A workflow phase that lists `agent: spec_advocate` means "dispatcher.Dispatch(ctx, advocate_def, input)" — not a hand-rolled invocation function. The existing `InvokeSplitter`, `InvokeSynthesizer`, `RunJustify`, etc. either delete (replaced by direct dispatcher calls from the workflow) or shrink to thin convenience wrappers around the dispatcher.
+
 ## Per-verb workflow shapes
 
 Each migrated verb's workflow is sketched below. The actual closures will live alongside the existing handlers in their respective package files (or move into `internal/agent/workflows.go` as the council workflows do).
@@ -244,14 +331,17 @@ Adopt's full reconcile loop is more complex than the others; this is the first-p
 
 ## Migration order
 
-1. **State generalisation.** Land Option A's executor changes. All existing council code keeps working under `WorkflowExecutor[*PlanningState]`. Tests prove the migration is mechanical.
-2. **Justify (prototype migration).** Pick `justify --against` because it's recent in working memory, has the cleanest workflow shape, and the existing tests provide good coverage. Migrating it validates Option A against a real non-council use case.
-3. **Refine cascade.** Smaller scope than supersede; good follow-up.
-4. **Refine --supersede.** Larger; benefits from refine's groundwork.
-5. **Import.**
-6. **Adopt phases.** Last because it's the most complex orchestration — better to have the simpler verbs migrated first to refine the patterns before tackling adopt.
+1. **State generalisation (Option A).** Land the executor's generic parameterisation. All existing council code keeps working under `WorkflowExecutor[*PlanningState]`. Tests prove the migration is mechanical.
+2. **Agent dispatcher substrate.** Land `AgentDispatcher` with the two existing dispatch shapes (structured one-shot, provider-side grounding) wired up. Existing `InvokeSplitter`, `InvokeSynthesizer`, `RunJustify`, `RunResearch`, `cascade.RewriteFeature`, etc. shrink to thin wrappers around the dispatcher. Verifies the substrate against existing agent uses before any verb migration.
+3. **ReAct branch on the dispatcher.** Add the third dispatch shape (Locutus-side tool-use loop) plus the tool registry. No agent uses it yet; the branch is dormant until step 5+. Tests via mock_llm scripting tool_calls / non-tool_calls outputs.
+4. **Justify (prototype verb migration).** Pick `justify --against` because it's recent in working memory, has the cleanest workflow shape, and existing tests provide good coverage. Workflow definition uses the dispatcher; per-decision steps still call structured-one-shot agents. Validates Option A against a real non-council use case.
+5. **First ReAct adoption.** Pick one agent that genuinely benefits — `approach-regenerator` is the strongest candidate (multi-step planning over prior artifacts). Move it to ReAct mode; verify quality lift vs. structured one-shot on real fixtures.
+6. **Refine cascade.** Smaller scope than supersede; good follow-up.
+7. **Refine --supersede.** Larger; benefits from refine's groundwork.
+8. **Import.**
+9. **Adopt phases.** Last because it's the most complex orchestration — better to have the simpler verbs migrated first to refine the patterns before tackling adopt.
 
-Each step in the migration ships independently and can be reviewed / merged separately. The goal isn't a big-bang flip; it's a steady walk.
+Each step ships independently and can be reviewed / merged separately. The goal isn't a big-bang flip; it's a steady walk. Steps 1–3 build the substrate without changing observable behaviour; steps 4+ migrate one verb / agent at a time.
 
 ## Tests
 
@@ -270,19 +360,22 @@ For each migrated verb, three classes of test:
 
 ## DJ entry
 
-A new DJ to settle the architecture:
+A new DJ to settle the architecture.
 
-**DJ-XXX: LLM-Touching Verbs Are Workflows; Read-Only Verbs Stay Direct**
+Title: **LLM-Touching Verbs Are Workflows; Agents Go Through One Dispatcher; Read-Only Verbs Stay Direct.**
 
 Captures:
 
-- The mix-by-accident state and the observability gap that motivated unification.
-- The scope split: LLM-touching verbs go through the workflow executor; read-only verbs stay direct.
+- The two mix-by-accident states this plan addresses: orchestration (workflows for council, hand-rolled for everything else) and dispatch (each invocation function does its own retry / rotation / structured-output handling).
+- The three-layer substrate: `WorkflowExecutor[S]` → `AgentDispatcher` → `ProviderAdapter`. Each layer has one concern.
 - The state-generalisation choice (Option A — generics) and why over the alternatives (interface, type-erased map).
-- The migration order and the principle that each verb's migration ships as its own commit / PR for reviewability.
-- Rejected alternatives: workflowize-everything (read-only verbs gain nothing), keep-the-mix (continues accumulating ceremony bottom-up), redesign-as-dataflow (too invasive a redesign for the marginal clarity gain).
+- The unified-agent-dispatcher choice and the three dispatch shapes it supports (structured one-shot, provider-side grounding, Locutus-side ReAct), with a fast-path branch so structured one-shot agents pay no ceremony tax.
+- The scope split: LLM-touching verbs go through the workflow executor; read-only verbs stay direct.
+- Why the substrate is built in-house rather than adopting Eino or another framework: the substrate is small (workflow executor + agent dispatcher + provider adapters ~ a few thousand LOC total), DJ-099's direct-SDK adapters stay load-bearing, and the lag risk of any external framework on cutting-edge provider features is real (Eino-ext lagged on Anthropic adaptive thinking; same shape would bite Locutus on every future provider feature). Eino's [`flow/agent/react/react.go`](https://github.com/cloudwego/eino/blob/main/flow/agent/react/react.go) is the reference implementation we adapt patterns from without taking the dependency.
+- The migration order and the principle that each step ships as its own commit / PR for reviewability.
+- Rejected alternatives: workflowize-everything (read-only verbs gain nothing), keep-the-mix (continues accumulating ceremony bottom-up), redesign-as-dataflow (too invasive for the marginal clarity gain), adopt Eino as a runtime dependency (re-introduces the same framework-coupling concerns DJ-099 set out to solve).
 
-References: DJ-112 (workflows in Go, not YAML — the substrate this plan extends), the workflow-schema-and-resume plan (Phase B benefits become uniform once verbs are unified).
+References: DJ-099 (direct-SDK adapters — the substrate the dispatcher sits on top of), DJ-112 (workflows in Go, not YAML — the substrate this plan extends), the workflow-schema-and-resume plan (Phase B benefits become uniform once verbs are unified).
 
 ## Open questions to settle before implementation
 
@@ -290,3 +383,6 @@ References: DJ-112 (workflows in Go, not YAML — the substrate this plan extend
 2. **Should single-LLM-call verbs be one-step workflows, or does that cross into ceremony?** `justify` (solo) and `import` (intake without plan) are both single-call. Workflowizing them gains a phase-tag in traces but adds boilerplate. Probably workflowize for uniformity, but worth the explicit call.
 3. **State naming convention.** `JustifyState`, `RefineState`, `SupersedeState`, etc. — confirm before everyone's IDE auto-complete normalises a different convention.
 4. **Where do verb-specific workflow definitions live?** The council's lives in `internal/agent/workflows.go`. Per-verb workflows could co-locate (one big file) or split per verb (`internal/agent/workflows/justify.go`, etc.). Probably the latter once we have 5+ workflows; not critical day one.
+5. **Tool registry scope and lifecycle.** When the dispatcher gains the ReAct branch, the tool registry needs to declare which tools each agent can call. Open: are tools registered globally at start-up (one big registry that agents reference by name), or scoped per agent (each agent declares its own tool slice with handlers inline)? Globally-registered tools are easier to share; scoped tools are easier to reason about per agent. Probably global with per-agent allow-listing in `AgentDef.Tools`, but worth deciding before tool implementations start landing.
+6. **Per-call tool-call observability shape.** Today's `recordedCall` ([internal/agent/session.go](internal/agent/session.go) lines 218–240) captures provider-side tool_calls in `ToolCalls []recordedToolCall`. The ReAct branch will produce a sequence of tool_calls per agent invocation, plus reasoning between them. Either extend `recordedCall.Rounds` (which already carries multi-round tool-use captures) or add a parallel `ReActSteps` slice. The Rounds field has the right shape — confirm before implementation.
+7. **Backward compatibility on AgentDef.** Adding `Tools []ToolDef` and `MaxIterations int` fields. Frontmatter parsing in `scaffold.parseAgentDef` reads YAML into `AgentDef`; new fields with `omitempty` and zero-value defaults should be source-compatible. But callers constructing `AgentDef` literals in Go (justify's `RunJustify`, `RunResearch`, etc. before they shrink to dispatcher wrappers) need to either use the new fields or rely on zero values. Verify no caller breaks.
