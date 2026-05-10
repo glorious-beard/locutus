@@ -1,112 +1,13 @@
 package agent
 
-// Council workflows are defined in code, not loaded from YAML at runtime.
-// The DAG topology, conditionals, fanout sources, merge rules, and prompt
-// projections all live as Go values on the WorkflowStep struct so a single
-// file describes everything a step does. Supersedes DJ-036's
-// embedded-then-editable workflow YAMLs (DJ-### records the reversal).
-//
-// Three workflows are exported:
-//
-//   - PlanningWorkflow        — drives `locutus plan` (planner council).
-//   - AssimilationWorkflow    — drives `locutus assimilate` (codebase scan).
-//   - SpecGenerationWorkflow  — drives `locutus refine goals` and the
-//                               post-admission planning pass of `locutus
-//                               import <doc>`.
-//
-// Agent definitions remain external (`.borg/agents/<id>.md`) per DJ-036 —
-// only workflows became author-only.
-
 import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
 )
 
-// PlanningWorkflow runs the greenfield planning council:
-// propose → challenge (parallel critic + stakeholder) → research (conditional)
-// → revise → record. Convergence loop bounded at 5 iterations.
-var PlanningWorkflow = &Workflow[PlanningState]{
-	Snapshot:       snapshotPlanningState,
-	DefaultProject: projectDefault,
-	Rounds: []WorkflowStep[PlanningState]{
-		{
-			ID:      "propose",
-			Agents:  []string{"planner"},
-			Project: projectPropose,
-			Merge:   mergeProposedSpec,
-		},
-		{
-			ID:        "challenge",
-			Agents:    []string{"critic", "stakeholder"},
-			Parallel:  true,
-			DependsOn: []string{"propose"},
-			Project:   projectChallenge,
-			Merge:     mergeChallengeConcerns,
-		},
-		{
-			ID:          "research",
-			Agents:      []string{"researcher"},
-			DependsOn:   []string{"challenge"},
-			Conditional: hasOpenQuestions,
-			Project:     projectResearch,
-			Merge:       mergeResearch,
-		},
-		{
-			ID:        "revise",
-			Agents:    []string{"planner"},
-			DependsOn: []string{"research"},
-			Project:   projectRevise,
-			Merge:     mergeRevisions,
-		},
-		{
-			ID:        "record",
-			Agents:    []string{"historian"},
-			DependsOn: []string{"revise"},
-			Project:   projectRecord,
-			Merge:     mergeRecord,
-		},
-	},
-	MaxRounds: 5,
-}
-
-// AssimilationWorkflow runs the codebase-inference council:
-// scan → analyze (parallel domain analyzers) → gaps.
-//
-// Remediation runs OUTSIDE the workflow per DJ-045: cmd/assimilate.go
-// invokes internal/remediate after Analyze returns, applying consolidation
-// and attachment rules that a blind merge cannot honor.
-var AssimilationWorkflow = &Workflow[PlanningState]{
-	Snapshot:       snapshotPlanningState,
-	DefaultProject: projectDefault,
-	Rounds: []WorkflowStep[PlanningState]{
-		{
-			ID:      "scan",
-			Agents:  []string{"scout"},
-			Project: projectDefault,
-			Merge:   mergeNoop,
-		},
-		{
-			ID:        "analyze",
-			Agents:    []string{"backend_analyzer", "frontend_analyzer", "infra_analyzer"},
-			Parallel:  true,
-			DependsOn: []string{"scan"},
-			Project:   projectDefault,
-			Merge:     mergeNoop,
-		},
-		{
-			ID:        "gaps",
-			Agents:    []string{"gap_analyst"},
-			DependsOn: []string{"analyze"},
-			Project:   projectDefault,
-			Merge:     mergeNoop,
-		},
-	},
-	MaxRounds: 1,
-}
-
-// SpecGenerationWorkflow drives `locutus refine goals` and `locutus import
-// <doc>`'s post-admission planning pass.
+// SpecGenerationWorkflow drives `locutus refine goals` and `locutus
+// import <doc>`'s post-admission planning pass.
 //
 // DJ-098 unified per-cluster revise. Critic findings route through:
 //
@@ -136,8 +37,9 @@ var AssimilationWorkflow = &Workflow[PlanningState]{
 // MaxRounds=1 because there is no convergence agent in this workflow.
 //
 // Per-model concurrency caps live in models.yaml's `concurrent_requests`
-// field. Even with Parallel=true on fanout steps, the actual concurrency
-// is bounded so fanout never floods a model past its configured slot count.
+// field. Even with Parallel=true on fanout steps, the actual
+// concurrency is bounded so fanout never floods a model past its
+// configured slot count.
 var SpecGenerationWorkflow = &Workflow[PlanningState]{
 	Snapshot:       snapshotPlanningState,
 	DefaultProject: projectDefault,
@@ -222,25 +124,17 @@ var SpecGenerationWorkflow = &Workflow[PlanningState]{
 	MaxRounds: 1,
 }
 
-// Conditionals --------------------------------------------------------------
-
-// hasOpenQuestions gates the planning council's research step. True when
-// the convergence monitor (or the prior-round logic) flagged unresolved
-// concerns that warrant investigation.
-func hasOpenQuestions(s *PlanningState) bool { return s.HasOpenConcerns() }
-
 // hasUnmatchedFindings (DJ-098) gates the LLM clusterer step. True when
 // the mechanical pre-pass left critic findings that name no existing
 // node id. False when every finding has already been routed to a
 // per-node cluster.
 func hasUnmatchedFindings(s *PlanningState) bool { return len(s.UnmatchedFindings) > 0 }
 
-// hasFindingClusters (DJ-098) gates the revise fanout and reconcile_revise.
-// True when at least one FindingCluster (mechanical or LLM) is present.
-// Skipped on runs where critics produced no findings.
+// hasFindingClusters (DJ-098) gates the revise fanout and
+// reconcile_revise. True when at least one FindingCluster (mechanical
+// or LLM) is present. Skipped on runs where critics produced no
+// findings.
 func hasFindingClusters(s *PlanningState) bool { return len(s.FindingClusters) > 0 }
-
-// Fanout sources ------------------------------------------------------------
 
 // fanoutOutlineFeatures returns one raw-JSON OutlineFeature per outlined
 // feature. Each entry drives a per-element spec_feature_elaborator call.
@@ -294,80 +188,6 @@ func fanoutFindingClusters(state *PlanningState) ([]string, error) {
 		items = append(items, c)
 	}
 	return marshalFanoutItems(items)
-}
-
-// Merge handlers ------------------------------------------------------------
-
-// firstNonEmpty returns the Output of the first successful result whose
-// content is non-empty. Used by single-output merge handlers.
-func firstNonEmpty(results []RoundResult) string {
-	for _, r := range results {
-		if r.Err == nil && r.Output != "" {
-			return r.Output
-		}
-	}
-	return ""
-}
-
-// mergeNoop applies no state mutation. Used by steps whose output is
-// consumed downstream of the workflow (e.g. the assimilation pipeline
-// parses RoundResults directly in parseAssimilationResults).
-func mergeNoop(*PlanningState, []RoundResult) {}
-
-// mergeProposedSpec stores the planner's proposal verbatim. Last writer
-// wins — the planning workflow's revise step rewrites Revisions, not
-// ProposedSpec.
-func mergeProposedSpec(s *PlanningState, results []RoundResult) {
-	if v := firstNonEmpty(results); v != "" {
-		s.ProposedSpec = v
-	}
-}
-
-// mergeChallengeConcerns flattens each challenge round result into one
-// Concern attributed to the agent that raised it. Severity defaults to
-// "medium" — the challenge step's agents (critic, stakeholder) emit free
-// text, not structured CriticIssues.
-func mergeChallengeConcerns(s *PlanningState, results []RoundResult) {
-	for _, r := range results {
-		if r.Err != nil || r.Output == "" {
-			continue
-		}
-		s.Concerns = append(s.Concerns, Concern{
-			AgentID:  r.AgentID,
-			Severity: "medium",
-			Text:     r.Output,
-		})
-	}
-}
-
-// mergeResearch appends researcher findings to ResearchResults. The
-// researcher emits free text per concern; the projection feeds it the
-// concern list, so we tag the finding's Query as "investigation" rather
-// than parsing structured output.
-func mergeResearch(s *PlanningState, results []RoundResult) {
-	for _, r := range results {
-		if r.Err != nil || r.Output == "" {
-			continue
-		}
-		s.ResearchResults = append(s.ResearchResults, Finding{
-			Query:  "investigation",
-			Result: r.Output,
-		})
-	}
-}
-
-// mergeRevisions stores the revised plan output verbatim.
-func mergeRevisions(s *PlanningState, results []RoundResult) {
-	if v := firstNonEmpty(results); v != "" {
-		s.Revisions = v
-	}
-}
-
-// mergeRecord stores the historian's session record.
-func mergeRecord(s *PlanningState, results []RoundResult) {
-	if v := firstNonEmpty(results); v != "" {
-		s.Record = v
-	}
 }
 
 // mergeScoutBrief stores the spec_scout's structured ScoutBrief output.
@@ -447,10 +267,10 @@ func mergeReconciledProposal(s *PlanningState, results []RoundResult) {
 }
 
 // mergeCriticIssues parses each critic's CriticIssues output into
-// per-issue Concerns tagged with the critic's lens (architecture, devops,
-// sre, cost) for grouping in the revise prompt. After the LLM critics
-// merge, runs the mechanical integrity critic and the mechanical cluster
-// pre-pass (DJ-098).
+// per-issue Concerns tagged with the critic's lens (architecture,
+// devops, sre, cost) for grouping in the revise prompt. After the LLM
+// critics merge, runs the mechanical integrity critic and the
+// mechanical cluster pre-pass (DJ-098).
 func mergeCriticIssues(s *PlanningState, results []RoundResult) {
 	for _, r := range results {
 		if r.Err != nil || r.Output == "" {
@@ -491,8 +311,9 @@ func mergeFindingClusters(s *PlanningState, results []RoundResult) {
 
 // mergeRevisedNodes (DJ-098) accumulates per-cluster elaborator outputs
 // and rebuilds RawProposal. Each entry is one RawFeatureProposal or
-// RawStrategyProposal; the assembler sniffs id prefix and decides revise
-// (id matches existing) vs add (fresh id) per entry. Idempotent.
+// RawStrategyProposal; the assembler sniffs id prefix and decides
+// revise (id matches existing) vs add (fresh id) per entry.
+// Idempotent.
 func mergeRevisedNodes(s *PlanningState, results []RoundResult) {
 	for _, r := range results {
 		if r.Err != nil || r.Output == "" {
