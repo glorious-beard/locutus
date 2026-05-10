@@ -153,6 +153,31 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 		return result, nil
 	}
 
+	// Detect first-class-commitment parents (no referenced
+	// decisions) and fall back to the single-target adversarial
+	// flow against the parent itself. Strategies / features that
+	// ARE the commitment ("Adopt TDD," "Follow 12-factor app")
+	// don't decompose into decisions, and the challenger should
+	// engage the parent's body prose directly. The recent
+	// prompt-broadening (evidence sources include the node's own
+	// rationale) plus per-retry provider rotation make the
+	// single-target flow against prose-only parents tractable.
+	decisionIDs, err := parentDecisionIDs(loaded, kind, in.NodeID)
+	if err != nil {
+		return nil, err
+	}
+	if len(decisionIDs) == 0 {
+		ch, research, def, err := agent.RunJustifyAgainst(ctx, llm, in)
+		if err != nil {
+			return nil, err
+		}
+		result.Challenger = ch
+		result.Research = research
+		result.Adversarial = def
+		result.Markdown = renderJustifyMarkdown(result)
+		return result, nil
+	}
+
 	splitter, err := scaffold.LoadAgent(fsys, "justify_splitter")
 	if err != nil {
 		return nil, fmt.Errorf("load justify_splitter: %w", err)
@@ -177,6 +202,49 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 	result.FanOut = fanResult
 	result.Markdown = renderJustifyMarkdown(result)
 	return result, nil
+}
+
+// parentDecisionIDs returns the decision IDs a fan-out justify
+// would target for the given parent. Used both to detect the
+// fall-back-to-single-target case (when len == 0) and as the seed
+// for the richer resolution buildFanOutInputs performs.
+//
+// Bugs inherit decisions from their parent feature; approaches
+// use their audit-trail Decisions[]; strategies and features use
+// their own. Empty result is a legitimate "first-class commitment"
+// parent (e.g. "Adopt TDD") that should fall back to single-target
+// adversarial dialogue rather than failing the whole command.
+func parentDecisionIDs(loaded *spec.Loaded, kind spec.NodeKind, id string) ([]string, error) {
+	switch kind {
+	case spec.KindStrategy:
+		n := loaded.StrategyNodeByID(id)
+		if n == nil {
+			return nil, fmt.Errorf("justify: strategy %q not found", id)
+		}
+		return n.Spec.Decisions, nil
+	case spec.KindFeature:
+		n := loaded.FeatureNodeByID(id)
+		if n == nil {
+			return nil, fmt.Errorf("justify: feature %q not found", id)
+		}
+		return n.Spec.Decisions, nil
+	case spec.KindBug:
+		n := loaded.BugNodeByID(id)
+		if n == nil {
+			return nil, fmt.Errorf("justify: bug %q not found", id)
+		}
+		if pf := loaded.FeatureNodeByID(n.Spec.FeatureID); pf != nil {
+			return pf.Spec.Decisions, nil
+		}
+		return nil, nil
+	case spec.KindApproach:
+		n := loaded.ApproachNodeByID(id)
+		if n == nil {
+			return nil, fmt.Errorf("justify: approach %q not found", id)
+		}
+		return n.Spec.Decisions, nil
+	}
+	return nil, fmt.Errorf("justify: kind %q does not support fan-out", kind)
 }
 
 // buildFanOutInputs assembles agent.FanOutInputs from the loaded

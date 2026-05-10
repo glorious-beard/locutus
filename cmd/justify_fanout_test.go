@@ -226,6 +226,73 @@ func TestRunJustifyCommand_FanOutSkipsIrrelevantShards(t *testing.T) {
 		"only the relevant decision triggers a per-decision flow")
 }
 
+// TestRunJustifyCommand_DecisionlessStrategyFallsBackToSingleFlow
+// — a strategy with zero referenced decisions is a legitimate
+// "first-class commitment" shape (think "Adopt TDD," "Follow
+// 12-factor app"). The orchestrator must fall back to the
+// single-target adversarial flow against the parent's prose
+// instead of failing on missing fan-out targets. Engages the
+// existing challenger → researcher → advocate against the parent
+// directly.
+func TestRunJustifyCommand_DecisionlessStrategyFallsBackToSingleFlow(t *testing.T) {
+	fs := fixtureFanOut(t)
+
+	// Replace strat-frontend with a decisionless first-class strategy.
+	require.NoError(t, specio.SavePair(fs, ".borg/spec/strategies/strat-tdd", spec.Strategy{
+		ID: "strat-tdd", Title: "Adopt TDD",
+		Kind: spec.StrategyKindQuality, Status: "proposed",
+		// Decisions intentionally empty — this strategy IS the
+		// commitment; nothing to decompose.
+	}, "All new code lands with tests written first; tests must fail meaningfully before the implementation makes them pass."))
+
+	challenge := agent.ChallengeBrief{Concerns: []agent.AdversarialConcern{{
+		Weakness:        "blanket TDD adds friction for prototypes and exploratory work",
+		Evidence:        "the strategy says 'all new code' without an exception clause; this is universal applicability without justification",
+		Counterproposal: "scope TDD to load-bearing modules and accept exploratory code under a separate looser convention",
+	}}}
+	research := agent.ResearchBrief{Findings: []agent.Finding{{
+		Query: "TDD effectiveness for prototype code",
+		Result: "TDD's primary benefit is regression prevention; pure-exploration code that gets discarded sees little of that benefit.",
+	}}}
+	defense := agent.AdversarialDefense{
+		JustificationBrief: agent.JustificationBrief{
+			Defense: "Universal TDD reads strict but the body prose's intent is to prevent untested code from accumulating; the scope concern is fair and a follow-up refine could carve out exploratory work explicitly.",
+		},
+		Verdict:        "partially_held_up",
+		BreakingPoints: []string{"the strategy needs an explicit exception clause for exploratory / prototype code"},
+	}
+
+	mock := agent.NewMockExecutor(
+		// Single-target flow: challenger + researcher + advocate.
+		// No splitter, no synthesizer, no per-decision flows.
+		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge)}},
+		agent.MockResponse{AgentID: "justify_researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research)}},
+		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense)}},
+	)
+
+	result, err := RunJustifyCommand(context.Background(), mock, fs, "strat-tdd",
+		"Blanket TDD adds friction for prototypes; should be selective.")
+	require.NoError(t, err)
+
+	// Single-flow output, NOT fan-out.
+	require.NotNil(t, result.Adversarial,
+		"decisionless strategy must use the single-flow adversarial path")
+	assert.Nil(t, result.FanOut,
+		"fan-out output must be nil when the parent has no decisions to fan out to")
+	assert.Equal(t, "partially_held_up", result.Adversarial.Verdict)
+
+	// Exactly 3 LLM calls — splitter + synthesizer never fire on
+	// the fallback path.
+	assert.Equal(t, 3, mock.CallCount(),
+		"fallback fires only the single-target trio: challenger + researcher + advocate")
+
+	// Markdown surfaces the regular adversarial output, not the
+	// fan-out wrapper.
+	assert.Contains(t, result.Markdown, "Verdict: PARTIALLY HELD UP")
+	assert.NotContains(t, result.Markdown, "(fan-out)",
+		"fallback output must use the single-target markdown, not the fan-out wrapper")
+}
+
 // TestRunJustifyCommand_DecisionTargetUsesSingleFlow — when the
 // target id is a decision, the existing single-target adversarial
 // flow runs, NOT fan-out. Asserts the dispatch routing didn't
