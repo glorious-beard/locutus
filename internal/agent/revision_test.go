@@ -298,14 +298,14 @@ func TestAssembleRevisedRawProposalEmptyOriginalReturnsNothing(t *testing.T) {
 func TestExecuteRoundReviseFanoutSkipsWithoutClusters(t *testing.T) {
 	state := &PlanningState{}
 	mock := NewMockExecutor()
-	ex := &WorkflowExecutor{
+	ex := &WorkflowExecutor[PlanningState]{
 		Executor: mock,
 		AgentDefs: map[string]AgentDef{
 			"spec_feature_elaborator":  {ID: "spec_feature_elaborator"},
 			"spec_strategy_elaborator": {ID: "spec_strategy_elaborator"},
 		},
 	}
-	step := WorkflowStep{
+	step := WorkflowStep[PlanningState]{
 		ID:     "revise",
 		Agents: []string{"spec_strategy_elaborator"},
 		Fanout: fanoutFindingClusters,

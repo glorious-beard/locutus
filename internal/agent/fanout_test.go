@@ -91,12 +91,12 @@ func TestExecuteRoundFanoutSpawnsOnePerItem(t *testing.T) {
 		MockResponse{Response: &AgentOutput{Content: `{"id":"feat-c","title":"C","decisions":[]}`, Model: "m"}},
 	)
 
-	ex := &WorkflowExecutor{
+	ex := &WorkflowExecutor[PlanningState]{
 		Executor: mock,
 		AgentDefs: defs,
-		Workflow:  &Workflow{},
+		Workflow:  &Workflow[PlanningState]{},
 	}
-	step := WorkflowStep{
+	step := WorkflowStep[PlanningState]{
 		ID:       "elaborate_features",
 		Agents:   []string{"spec_feature_elaborator"},
 		Parallel: true,
@@ -143,11 +143,11 @@ func TestExecuteRoundFanoutSpawnsOnePerItem(t *testing.T) {
 func TestExecuteRoundFanoutEmptyOutlineNoOps(t *testing.T) {
 	state := &PlanningState{Outline: `{"features":[],"strategies":[]}`}
 	mock := NewMockExecutor()
-	ex := &WorkflowExecutor{
+	ex := &WorkflowExecutor[PlanningState]{
 		Executor: mock,
 		AgentDefs: map[string]AgentDef{"spec_feature_elaborator": {ID: "spec_feature_elaborator"}},
 	}
-	step := WorkflowStep{
+	step := WorkflowStep[PlanningState]{
 		ID: "elaborate_features", Agents: []string{"spec_feature_elaborator"},
 		Fanout: fanoutOutlineFeatures,
 	}

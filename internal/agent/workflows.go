@@ -26,8 +26,10 @@ import (
 // PlanningWorkflow runs the greenfield planning council:
 // propose → challenge (parallel critic + stakeholder) → research (conditional)
 // → revise → record. Convergence loop bounded at 5 iterations.
-var PlanningWorkflow = &Workflow{
-	Rounds: []WorkflowStep{
+var PlanningWorkflow = &Workflow[PlanningState]{
+	Snapshot:       snapshotPlanningState,
+	DefaultProject: projectDefault,
+	Rounds: []WorkflowStep[PlanningState]{
 		{
 			ID:      "propose",
 			Agents:  []string{"planner"},
@@ -74,8 +76,10 @@ var PlanningWorkflow = &Workflow{
 // Remediation runs OUTSIDE the workflow per DJ-045: cmd/assimilate.go
 // invokes internal/remediate after Analyze returns, applying consolidation
 // and attachment rules that a blind merge cannot honor.
-var AssimilationWorkflow = &Workflow{
-	Rounds: []WorkflowStep{
+var AssimilationWorkflow = &Workflow[PlanningState]{
+	Snapshot:       snapshotPlanningState,
+	DefaultProject: projectDefault,
+	Rounds: []WorkflowStep[PlanningState]{
 		{
 			ID:      "scan",
 			Agents:  []string{"scout"},
@@ -134,8 +138,10 @@ var AssimilationWorkflow = &Workflow{
 // Per-model concurrency caps live in models.yaml's `concurrent_requests`
 // field. Even with Parallel=true on fanout steps, the actual concurrency
 // is bounded so fanout never floods a model past its configured slot count.
-var SpecGenerationWorkflow = &Workflow{
-	Rounds: []WorkflowStep{
+var SpecGenerationWorkflow = &Workflow[PlanningState]{
+	Snapshot:       snapshotPlanningState,
+	DefaultProject: projectDefault,
+	Rounds: []WorkflowStep[PlanningState]{
 		{
 			ID:      "survey",
 			Agents:  []string{"spec_scout"},

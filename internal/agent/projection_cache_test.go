@@ -15,10 +15,12 @@ import (
 // on the cacheable block so the council fanout's 15-25 calls all
 // share one cached prefix instead of paying for it on every dispatch.
 func TestProjectElaborateOne_SplitsCacheableFromVariable(t *testing.T) {
-	snap := StateSnapshot{
-		Prompt:     "GOALS body verbatim",
-		ScoutBrief: `{"domain_read":"a domain","technology_options":["A","B"],"implicit_assumptions":["scale: small"],"watch_outs":["w1"]}`,
-		Outline:    `{"features":[{"id":"feat-x","title":"X","summary":"sx"}],"strategies":[{"id":"strat-y","title":"Y","kind":"foundational","summary":"sy"}]}`,
+	snap := StateSnapshot[PlanningState]{
+		State: PlanningState{
+			Prompt:     "GOALS body verbatim",
+			ScoutBrief: `{"domain_read":"a domain","technology_options":["A","B"],"implicit_assumptions":["scale: small"],"watch_outs":["w1"]}`,
+			Outline:    `{"features":[{"id":"feat-x","title":"X","summary":"sx"}],"strategies":[{"id":"strat-y","title":"Y","kind":"foundational","summary":"sy"}]}`,
+		},
 		FanoutItem: `{"id":"feat-x","title":"X","summary":"sx"}`,
 	}
 

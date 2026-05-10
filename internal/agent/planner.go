@@ -36,7 +36,7 @@ func Plan(ctx context.Context, exec AgentExecutor, fsys specio.FS, req PlanReque
 	}
 
 	// 3. Create workflow executor.
-	executor := &WorkflowExecutor{
+	executor := &WorkflowExecutor[PlanningState]{
 		Executor:  exec,
 		AgentDefs: agentDefs,
 		Workflow:  PlanningWorkflow,
@@ -45,8 +45,9 @@ func Plan(ctx context.Context, exec AgentExecutor, fsys specio.FS, req PlanReque
 	// 5. Build a contextualized prompt that includes spec state.
 	prompt := buildPlanPrompt(req)
 
-	// 6. Run the workflow.
-	results, err := executor.Run(ctx, prompt)
+	// 6. Run the workflow with the council convergence wrapper.
+	state := &PlanningState{Prompt: prompt, Round: 1}
+	results, err := RunCouncil(ctx, executor, state)
 	if err != nil {
 		return nil, fmt.Errorf("workflow execution: %w", err)
 	}

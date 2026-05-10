@@ -148,7 +148,7 @@ func GenerateSpec(ctx context.Context, exec AgentExecutor, fsys specio.FS, req S
 // given workflow. Production callers go through GenerateSpec, which
 // wires SpecGenerationWorkflow. Tests use this entry point to inject a
 // simpler workflow that focuses the assertion surface.
-func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys specio.FS, req SpecGenRequest, wf *Workflow) (*SpecProposal, error) {
+func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys specio.FS, req SpecGenRequest, wf *Workflow[PlanningState]) (*SpecProposal, error) {
 	if strings.TrimSpace(req.GoalsBody) == "" {
 		return nil, fmt.Errorf("GenerateSpec: GoalsBody is required")
 	}
@@ -165,11 +165,10 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 		agentDefs[d.ID] = d
 	}
 
-	executor := &WorkflowExecutor{
+	executor := &WorkflowExecutor[PlanningState]{
 		Executor:  exec,
 		AgentDefs: agentDefs,
 		Workflow:  wf,
-		Existing:  req.Existing,
 	}
 
 	// Bridge workflow events to the caller's sink. Buffered generously
@@ -204,20 +203,18 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 
 	prompt := buildSpecGenPrompt(req)
 
-	if _, err := executor.Run(ctx, prompt); err != nil {
+	state := &PlanningState{Prompt: prompt, Round: 1, Existing: req.Existing}
+	if _, err := RunCouncil(ctx, executor, state); err != nil {
 		return nil, fmt.Errorf("spec-generation council: %w", err)
 	}
 
 	// Phase 2: the canonical SpecProposal is the post-reconcile output
-	// stored on PlanningState.ProposedSpec. Read it from the executor's
-	// final state rather than walking RoundResults — RoundResult.Output
+	// stored on PlanningState.ProposedSpec. Read it directly off the
+	// state pointer rather than walking RoundResults — RoundResult.Output
 	// holds the raw agent text (verdict JSON for reconcile, raw proposal
 	// JSON for propose/revise), neither of which is the canonical shape
 	// downstream callers expect.
-	if executor.LastState == nil {
-		return nil, fmt.Errorf("spec-generation council produced no final state")
-	}
-	proposalJSON := executor.LastState.ProposedSpec
+	proposalJSON := state.ProposedSpec
 	if proposalJSON == "" {
 		return nil, fmt.Errorf("spec-generation council produced no proposer output")
 	}
@@ -226,7 +223,7 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 	if err := json.Unmarshal([]byte(proposalJSON), &proposal); err != nil {
 		return nil, fmt.Errorf("parse spec proposal: %w (content=%q)", err, proposalJSON)
 	}
-	proposal.ConflictActions = executor.LastState.ConflictActions
+	proposal.ConflictActions = state.ConflictActions
 
 	// Integrity gate. If the proposal references node IDs it didn't
 	// emit, ask the architect to repair the proposal rather than

@@ -29,14 +29,14 @@ func mockResp(content string) MockResponse {
 func TestExecuteRoundSequential(t *testing.T) {
 	mock := NewMockExecutor(mockResp("planner proposal"))
 
-	exec := &WorkflowExecutor{
+	exec := &WorkflowExecutor[PlanningState]{
 		Executor:  mock,
 		AgentDefs: map[string]AgentDef{"planner": {ID: "planner", SystemPrompt: "You are the planner."}},
-		Workflow:  &Workflow{MaxRounds: 5},
+		Workflow:  &Workflow[PlanningState]{MaxRounds: 5},
 	}
 
 	state := &PlanningState{Prompt: "Design feature X."}
-	step := WorkflowStep{ID: "propose", Agents: []string{"planner"}}
+	step := WorkflowStep[PlanningState]{ID: "propose", Agents: []string{"planner"}}
 
 	results, err := exec.ExecuteRound(context.Background(), step, state)
 	assert.NoError(t, err)
@@ -53,20 +53,20 @@ func TestExecuteRoundParallel(t *testing.T) {
 		mockResp("stakeholder feedback"),
 	)
 
-	exec := &WorkflowExecutor{
+	exec := &WorkflowExecutor[PlanningState]{
 		Executor: mock,
 		AgentDefs: map[string]AgentDef{
 			"critic":      {ID: "critic", SystemPrompt: "You are the critic."},
 			"stakeholder": {ID: "stakeholder", SystemPrompt: "You are a stakeholder."},
 		},
-		Workflow: &Workflow{MaxRounds: 5},
+		Workflow: &Workflow[PlanningState]{MaxRounds: 5},
 	}
 
 	state := &PlanningState{
 		Prompt:       "Design feature X.",
 		ProposedSpec: "Here is my proposal...",
 	}
-	step := WorkflowStep{
+	step := WorkflowStep[PlanningState]{
 		ID:       "challenge",
 		Agents:   []string{"critic", "stakeholder"},
 		Parallel: true,
@@ -90,17 +90,17 @@ func TestExecuteRoundParallel(t *testing.T) {
 func TestExecuteRoundConditionalSkipped(t *testing.T) {
 	mock := NewMockExecutor(mockResp("should not be called"))
 
-	exec := &WorkflowExecutor{
+	exec := &WorkflowExecutor[PlanningState]{
 		Executor:  mock,
 		AgentDefs: map[string]AgentDef{"researcher": {ID: "researcher", SystemPrompt: "You are the researcher."}},
-		Workflow:  &Workflow{MaxRounds: 5},
+		Workflow:  &Workflow[PlanningState]{MaxRounds: 5},
 	}
 
 	state := &PlanningState{
 		Prompt:       "Design feature X.",
 		ProposedSpec: "The proposal is solid, no issues found.",
 	}
-	step := WorkflowStep{
+	step := WorkflowStep[PlanningState]{
 		ID:          "research",
 		Agents:      []string{"researcher"},
 		Conditional: hasOpenQuestions,
@@ -115,10 +115,10 @@ func TestExecuteRoundConditionalSkipped(t *testing.T) {
 func TestExecuteRoundConditionalFires(t *testing.T) {
 	mock := NewMockExecutor(mockResp("research findings"))
 
-	exec := &WorkflowExecutor{
+	exec := &WorkflowExecutor[PlanningState]{
 		Executor:  mock,
 		AgentDefs: map[string]AgentDef{"researcher": {ID: "researcher", SystemPrompt: "You are the researcher."}},
-		Workflow:  &Workflow{MaxRounds: 5},
+		Workflow:  &Workflow[PlanningState]{MaxRounds: 5},
 	}
 
 	state := &PlanningState{
@@ -126,7 +126,7 @@ func TestExecuteRoundConditionalFires(t *testing.T) {
 		ProposedSpec: "My proposal...",
 		OpenConcerns: []string{"scalability needs investigation"},
 	}
-	step := WorkflowStep{
+	step := WorkflowStep[PlanningState]{
 		ID:          "research",
 		Agents:      []string{"researcher"},
 		Conditional: hasOpenQuestions,
@@ -188,13 +188,13 @@ func TestWorkflowRunFullSequence(t *testing.T) {
 		mockResp("historian record"),
 	)
 
-	exec := &WorkflowExecutor{
+	exec := &WorkflowExecutor[PlanningState]{
 		Executor:  mock,
 		AgentDefs: newTestAgentDefs(),
 		Workflow:  PlanningWorkflow,
 	}
 
-	results, err := exec.Run(context.Background(), "Design a feature for X.")
+	results, err := RunCouncil(context.Background(), exec, &PlanningState{Prompt: "Design a feature for X.", Round: 1})
 	assert.NoError(t, err)
 	assert.Len(t, results, 5)
 
@@ -216,12 +216,12 @@ func TestWorkflowRunWithRetryableError(t *testing.T) {
 		mockResp("planner response after retry"),
 	)
 
-	wf := &Workflow{
-		Rounds:    []WorkflowStep{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}},
+	wf := &Workflow[PlanningState]{
+		Rounds:    []WorkflowStep[PlanningState]{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}},
 		MaxRounds: 5,
 	}
 
-	exec := &WorkflowExecutor{
+	exec := &WorkflowExecutor[PlanningState]{
 		Executor:  mock,
 		AgentDefs: map[string]AgentDef{"planner": {ID: "planner", SystemPrompt: "You are the planner."}},
 		Workflow:  wf,
@@ -230,7 +230,7 @@ func TestWorkflowRunWithRetryableError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	results, err := exec.Run(ctx, "Plan something.")
+	results, err := exec.Run(ctx, &PlanningState{Prompt: "Plan something.", Round: 1})
 	assert.NoError(t, err)
 	assert.Len(t, results, 1)
 	assert.Equal(t, "propose", results[0].StepID)
@@ -249,21 +249,21 @@ func TestWorkflowCleansUpBridgeOnConvergenceError(t *testing.T) {
 	)
 
 	events := make(chan WorkflowEvent, 100)
-	exec := &WorkflowExecutor{
+	exec := &WorkflowExecutor[PlanningState]{
 		Executor: mock,
 		AgentDefs: map[string]AgentDef{
 			"planner":     {ID: "planner", SystemPrompt: "plan."},
 			"convergence": {ID: "convergence", SystemPrompt: "judge."},
 		},
-		Workflow: &Workflow{
-			Rounds:    []WorkflowStep{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}},
+		Workflow: &Workflow[PlanningState]{
+			Rounds:    []WorkflowStep[PlanningState]{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}},
 			MaxRounds: 5,
 		},
 		Events: events,
 	}
 
 	before := runtime.NumGoroutine()
-	_, err := exec.Run(context.Background(), "Plan something.")
+	_, err := RunCouncil(context.Background(), exec, &PlanningState{Prompt: "Plan something.", Round: 1})
 	require.Error(t, err, "convergence model failure should error out")
 
 	assert.LessOrEqual(t, runtime.NumGoroutine(), before,
@@ -274,14 +274,14 @@ func TestWorkflowEvents(t *testing.T) {
 	mock := NewMockExecutor(mockResp("planner output"))
 
 	events := make(chan WorkflowEvent, 10)
-	exec := &WorkflowExecutor{
+	exec := &WorkflowExecutor[PlanningState]{
 		Executor:  mock,
 		AgentDefs: map[string]AgentDef{"planner": {ID: "planner", SystemPrompt: "You are the planner."}},
-		Workflow:  &Workflow{Rounds: []WorkflowStep{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}}, MaxRounds: 5},
+		Workflow:  &Workflow[PlanningState]{Rounds: []WorkflowStep[PlanningState]{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}}, MaxRounds: 5},
 		Events:    events,
 	}
 
-	_, err := exec.Run(context.Background(), "Design X.")
+	_, err := exec.Run(context.Background(), &PlanningState{Prompt: "Design X.", Round: 1})
 	assert.NoError(t, err)
 
 	close(events)
@@ -310,7 +310,7 @@ func TestSnapshotIsolation(t *testing.T) {
 		Concerns:     []Concern{{AgentID: "critic", Text: "concern 1"}},
 	}
 
-	snap := state.Snapshot()
+	snap := snapshotPlanningState(state)
 
 	state.ProposedSpec = "mutated"
 	state.Concerns = append(state.Concerns, Concern{AgentID: "stakeholder", Text: "concern 2"})
@@ -327,8 +327,8 @@ func TestConvergenceLoopConvergesFirstRound(t *testing.T) {
 		mockResp("APPROVED"),
 	)
 
-	wf := &Workflow{
-		Rounds:    []WorkflowStep{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}},
+	wf := &Workflow[PlanningState]{
+		Rounds:    []WorkflowStep[PlanningState]{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}},
 		MaxRounds: 5,
 	}
 
@@ -339,8 +339,8 @@ func TestConvergenceLoopConvergesFirstRound(t *testing.T) {
 		"stakeholder": {ID: "stakeholder", SystemPrompt: "You are a stakeholder."},
 	}
 
-	exec := &WorkflowExecutor{Executor: mock, AgentDefs: defs, Workflow: wf}
-	results, err := exec.Run(context.Background(), "Design X.")
+	exec := &WorkflowExecutor[PlanningState]{Executor: mock, AgentDefs: defs, Workflow: wf}
+	results, err := RunCouncil(context.Background(), exec, &PlanningState{Prompt: "Design X.", Round: 1})
 	assert.NoError(t, err)
 	assert.Len(t, results, 1)
 	assert.Equal(t, 4, mock.CallCount())
@@ -356,8 +356,8 @@ func TestConvergenceLoopRequiresMultipleIterations(t *testing.T) {
 		mockResp("APPROVED"),
 	)
 
-	wf := &Workflow{
-		Rounds:    []WorkflowStep{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}},
+	wf := &Workflow[PlanningState]{
+		Rounds:    []WorkflowStep[PlanningState]{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}},
 		MaxRounds: 5,
 	}
 
@@ -368,8 +368,8 @@ func TestConvergenceLoopRequiresMultipleIterations(t *testing.T) {
 		"stakeholder": {ID: "stakeholder", SystemPrompt: "You are a stakeholder."},
 	}
 
-	exec := &WorkflowExecutor{Executor: mock, AgentDefs: defs, Workflow: wf}
-	results, err := exec.Run(context.Background(), "Design X.")
+	exec := &WorkflowExecutor[PlanningState]{Executor: mock, AgentDefs: defs, Workflow: wf}
+	results, err := RunCouncil(context.Background(), exec, &PlanningState{Prompt: "Design X.", Round: 1})
 	assert.NoError(t, err)
 	assert.Len(t, results, 2)
 	assert.Equal(t, 6, mock.CallCount())
@@ -386,8 +386,8 @@ func TestConvergenceLoopReadinessBlocked(t *testing.T) {
 		mockResp("APPROVED"),
 	)
 
-	wf := &Workflow{
-		Rounds:    []WorkflowStep{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}},
+	wf := &Workflow[PlanningState]{
+		Rounds:    []WorkflowStep[PlanningState]{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}},
 		MaxRounds: 5,
 	}
 
@@ -398,8 +398,8 @@ func TestConvergenceLoopReadinessBlocked(t *testing.T) {
 		"stakeholder": {ID: "stakeholder", SystemPrompt: "You are a stakeholder."},
 	}
 
-	exec := &WorkflowExecutor{Executor: mock, AgentDefs: defs, Workflow: wf}
-	results, err := exec.Run(context.Background(), "Design X.")
+	exec := &WorkflowExecutor[PlanningState]{Executor: mock, AgentDefs: defs, Workflow: wf}
+	results, err := RunCouncil(context.Background(), exec, &PlanningState{Prompt: "Design X.", Round: 1})
 	assert.NoError(t, err)
 	assert.Len(t, results, 2)
 	assert.Equal(t, 7, mock.CallCount())
@@ -415,8 +415,8 @@ func TestConvergenceLoopForcedAfterMaxRounds(t *testing.T) {
 	}
 	mock := NewMockExecutor(responses...)
 
-	wf := &Workflow{
-		Rounds:    []WorkflowStep{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}},
+	wf := &Workflow[PlanningState]{
+		Rounds:    []WorkflowStep[PlanningState]{{ID: "propose", Agents: []string{"planner"}, Merge: mergeProposedSpec}},
 		MaxRounds: 5,
 	}
 
@@ -425,8 +425,8 @@ func TestConvergenceLoopForcedAfterMaxRounds(t *testing.T) {
 		"convergence": {ID: "convergence", SystemPrompt: "Assess convergence."},
 	}
 
-	exec := &WorkflowExecutor{Executor: mock, AgentDefs: defs, Workflow: wf}
-	results, err := exec.Run(context.Background(), "Design X.")
+	exec := &WorkflowExecutor[PlanningState]{Executor: mock, AgentDefs: defs, Workflow: wf}
+	results, err := RunCouncil(context.Background(), exec, &PlanningState{Prompt: "Design X.", Round: 1})
 	assert.NoError(t, err)
 	assert.LessOrEqual(t, len(results), 5)
 }

@@ -18,9 +18,7 @@ type ConvergenceVerdict struct {
 // council has reached agreement. It uses a fast/cheap model (configured in the
 // convergence agent def) and evaluates the full planning state.
 func CheckConvergence(ctx context.Context, exec AgentExecutor, monitorDef AgentDef, state *PlanningState) (*ConvergenceVerdict, error) {
-	snap := state.Snapshot()
-
-	prompt := buildConvergencePrompt(snap)
+	prompt := buildConvergencePrompt(state)
 	input := AgentInput{Messages: []Message{{Role: "user", Content: prompt}}}
 
 	resp, err := RunWithRetry(ctx, exec, monitorDef, input, executionRetryConfig())
@@ -32,36 +30,39 @@ func CheckConvergence(ctx context.Context, exec AgentExecutor, monitorDef AgentD
 }
 
 // buildConvergencePrompt constructs the prompt for the convergence monitor.
-func buildConvergencePrompt(snap StateSnapshot) string {
+// Reads directly from the live PlanningState — convergence runs sequentially
+// in the council loop, after the parallel DAG pass has fully merged, so no
+// snapshot is needed.
+func buildConvergencePrompt(state *PlanningState) string {
 	var b strings.Builder
 
 	// Data sections only — the convergence agent's system prompt (convergence.md)
 	// contains the evaluation criteria and response format instructions.
-	if snap.ProposedSpec != "" {
+	if state.ProposedSpec != "" {
 		b.WriteString("## Current Proposal\n")
-		b.WriteString(compactContext(snap.ProposedSpec, defaultMaxChars))
+		b.WriteString(compactContext(state.ProposedSpec, defaultMaxChars))
 		b.WriteString("\n\n")
 	}
 
-	if len(snap.Concerns) > 0 {
+	if len(state.Concerns) > 0 {
 		b.WriteString("## Concerns Raised\n")
-		for _, c := range snap.Concerns {
+		for _, c := range state.Concerns {
 			fmt.Fprintf(&b, "- [%s/%s] %s\n", c.AgentID, c.Severity, c.Text)
 		}
 		b.WriteString("\n")
 	}
 
-	if len(snap.ResearchResults) > 0 {
+	if len(state.ResearchResults) > 0 {
 		b.WriteString("## Research Findings\n")
-		for _, f := range snap.ResearchResults {
+		for _, f := range state.ResearchResults {
 			fmt.Fprintf(&b, "- Q: %s\n  A: %s\n", f.Query, f.Result)
 		}
 		b.WriteString("\n")
 	}
 
-	if snap.Revisions != "" {
+	if state.Revisions != "" {
 		b.WriteString("## Revised Proposal\n")
-		b.WriteString(compactContext(snap.Revisions, defaultMaxChars))
+		b.WriteString(compactContext(state.Revisions, defaultMaxChars))
 		b.WriteString("\n\n")
 	}
 
@@ -103,8 +104,6 @@ func parseConvergenceResponse(content string, round int) *ConvergenceVerdict {
 // CheckReadiness runs the readiness gate: critic and stakeholder each get a
 // final approval call. Returns true only if both approve.
 func CheckReadiness(ctx context.Context, exec AgentExecutor, agentDefs map[string]AgentDef, state *PlanningState) (bool, error) {
-	snap := state.Snapshot()
-
 	approvers := []string{"critic", "stakeholder"}
 	for _, id := range approvers {
 		def, ok := agentDefs[id]
@@ -114,7 +113,7 @@ func CheckReadiness(ctx context.Context, exec AgentExecutor, agentDefs map[strin
 
 		prompt := fmt.Sprintf(
 			"The council has converged on a proposal. Review and respond APPROVED or BLOCKED with reason.\n\nProposal:\n%s\n\nRevisions:\n%s",
-			snap.ProposedSpec, snap.Revisions,
+			state.ProposedSpec, state.Revisions,
 		)
 
 		input := AgentInput{Messages: []Message{{Role: "user", Content: prompt}}}

@@ -249,7 +249,7 @@ func Analyze(ctx context.Context, exec AgentExecutor, fsys specio.FS, req Assimi
 	prompt := promptBuilder.String()
 
 	// Execute the workflow.
-	wfExec := &WorkflowExecutor{
+	wfExec := &WorkflowExecutor[PlanningState]{
 		Executor:  exec,
 		AgentDefs: agentDefs,
 		Workflow:  AssimilationWorkflow,
@@ -279,7 +279,8 @@ func Analyze(ctx context.Context, exec AgentExecutor, fsys specio.FS, req Assimi
 		<-bridgeDone
 	}()
 
-	results, err := wfExec.Run(ctx, prompt)
+	state := &PlanningState{Prompt: prompt, Round: 1}
+	results, err := RunCouncil(ctx, wfExec, state)
 	if err != nil {
 		return nil, fmt.Errorf("assimilation workflow execution: %w", err)
 	}

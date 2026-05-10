@@ -53,8 +53,8 @@ func testMergeRawProposal(s *PlanningState, results []RoundResult) {
 //	survey → propose → reconcile → critique → revise → reconcile_revise.
 //
 // Production callers always go through SpecGenerationWorkflow.
-var testSpecGenWorkflow = &Workflow{
-	Rounds: []WorkflowStep{
+var testSpecGenWorkflow = &Workflow[PlanningState]{
+	Rounds: []WorkflowStep[PlanningState]{
 		{ID: "survey", Agents: []string{"spec_scout"}, Project: projectDefault, Merge: mergeScoutBrief},
 		{ID: "propose", Agents: []string{"spec_architect"}, DependsOn: []string{"survey"}, Project: projectPropose, Merge: testMergeRawProposal},
 		{ID: "reconcile", Agents: []string{"spec_reconciler"}, DependsOn: []string{"propose"}, Project: projectReconcile, Merge: mergeReconciledProposal},

@@ -18,13 +18,15 @@ func TestProjectClusterFindingsIncludesUnmatchedAndExisting(t *testing.T) {
 		Strategies: []RawStrategyProposal{{ID: "strat-frontend", Title: "Stack", Kind: "foundational"}},
 	}
 	raw, _ := json.Marshal(proposal)
-	snap := StateSnapshot{
-		Prompt:      "Build it.",
-		RawProposal: string(raw),
-		UnmatchedFindings: []string{
-			"missing IaC strategy",
-			"no cost ceiling defined",
-			"observability tooling not specified",
+	snap := StateSnapshot[PlanningState]{
+		State: PlanningState{
+			Prompt:      "Build it.",
+			RawProposal: string(raw),
+			UnmatchedFindings: []string{
+				"missing IaC strategy",
+				"no cost ceiling defined",
+				"observability tooling not specified",
+			},
 		},
 	}
 	msgs := projectClusterFindings(snap)
@@ -64,10 +66,12 @@ func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 			Findings: []string{"add PII encryption", "clarify scale"},
 		}
 		clusterRaw, _ := json.Marshal(cluster)
-		snap := StateSnapshot{
-			Prompt:              "Build it.",
-			OriginalRawProposal: string(raw),
-			FanoutItem:          string(clusterRaw),
+		snap := StateSnapshot[PlanningState]{
+			State: PlanningState{
+				Prompt:              "Build it.",
+				OriginalRawProposal: string(raw),
+			},
+			FanoutItem: string(clusterRaw),
 		}
 		msgs := projectFindingCluster(snap)
 		require.Len(t, msgs, 1)
@@ -91,10 +95,12 @@ func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 			Findings: []string{"name the IaC tool"},
 		}
 		clusterRaw, _ := json.Marshal(cluster)
-		snap := StateSnapshot{
-			Prompt:              "Build it.",
-			OriginalRawProposal: string(raw),
-			FanoutItem:          string(clusterRaw),
+		snap := StateSnapshot[PlanningState]{
+			State: PlanningState{
+				Prompt:              "Build it.",
+				OriginalRawProposal: string(raw),
+			},
+			FanoutItem: string(clusterRaw),
 		}
 		msgs := projectFindingCluster(snap)
 		body := msgs[0].Content
@@ -112,10 +118,12 @@ func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 			Findings: []string{"x"},
 		}
 		clusterRaw, _ := json.Marshal(cluster)
-		snap := StateSnapshot{
-			Prompt:              "Build it.",
-			OriginalRawProposal: string(raw),
-			FanoutItem:          string(clusterRaw),
+		snap := StateSnapshot[PlanningState]{
+			State: PlanningState{
+				Prompt:              "Build it.",
+				OriginalRawProposal: string(raw),
+			},
+			FanoutItem: string(clusterRaw),
 		}
 		msgs := projectFindingCluster(snap)
 		body := msgs[0].Content
@@ -141,10 +149,12 @@ func TestProjectFindingClusterRendersAddMode(t *testing.T) {
 			Findings: []string{"missing IaC strategy", "no CI/CD pipeline defined"},
 		}
 		clusterRaw, _ := json.Marshal(cluster)
-		snap := StateSnapshot{
-			Prompt:              "Build it.",
-			OriginalRawProposal: string(raw),
-			FanoutItem:          string(clusterRaw),
+		snap := StateSnapshot[PlanningState]{
+			State: PlanningState{
+				Prompt:              "Build it.",
+				OriginalRawProposal: string(raw),
+			},
+			FanoutItem: string(clusterRaw),
 		}
 		msgs := projectFindingCluster(snap)
 		require.Len(t, msgs, 1)
@@ -167,9 +177,11 @@ func TestProjectFindingClusterRendersAddMode(t *testing.T) {
 // so the executor doesn't need a central dispatch.
 func TestClusterStepProjectionsRenderTheirData(t *testing.T) {
 	t.Run("projectClusterFindings renders unmatched findings", func(t *testing.T) {
-		snap := StateSnapshot{
-			Prompt:            "Build it.",
-			UnmatchedFindings: []string{"some finding"},
+		snap := StateSnapshot[PlanningState]{
+			State: PlanningState{
+				Prompt:            "Build it.",
+				UnmatchedFindings: []string{"some finding"},
+			},
 		}
 		msgs := projectClusterFindings(snap)
 		require.Len(t, msgs, 1)
@@ -184,8 +196,8 @@ func TestClusterStepProjectionsRenderTheirData(t *testing.T) {
 			Findings: []string{"x"},
 		}
 		clusterRaw, _ := json.Marshal(cluster)
-		snap := StateSnapshot{
-			Prompt:     "Build it.",
+		snap := StateSnapshot[PlanningState]{
+			State:      PlanningState{Prompt: "Build it."},
 			FanoutItem: string(clusterRaw),
 		}
 		msgs := projectFindingCluster(snap)

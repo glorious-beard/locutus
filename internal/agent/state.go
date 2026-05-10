@@ -24,8 +24,9 @@ type Finding struct {
 
 // PlanningState is the typed blackboard for council workflow execution.
 // It is owned exclusively by the workflow orchestrator goroutine — parallel
-// agents receive read-only snapshots via StateSnapshot, and their results are
-// merged back by the orchestrator after all parallel agents complete.
+// agents receive read-only snapshots via StateSnapshot[PlanningState] (deep-
+// copied by snapshotPlanningState), and their results are merged back by the
+// orchestrator after all parallel agents complete.
 type PlanningState struct {
 	Round            int       `json:"round"`
 	Prompt           string    `json:"prompt"`
@@ -103,74 +104,50 @@ type PlanningState struct {
 	RevisedNodes        []string         `json:"revised_nodes,omitempty"`
 }
 
-// StateSnapshot is a read-only copy of PlanningState fields relevant to a
-// specific agent. Agents receive this instead of the full mutable state.
-type StateSnapshot struct {
-	Round           int
-	Prompt          string
-	ProposedSpec    string
-	Concerns        []Concern
-	ResearchResults []Finding
-	Revisions       string
-	OpenConcerns    []string
-	ScoutBrief      string
-	// RawProposal is the architect's pre-reconcile output, projected to
-	// the spec_reconciler agent so it can cluster inline decisions.
-	RawProposal string
-	// Existing is the spec snapshot the reconciler matches inline
-	// decisions against for ID reuse.
-	Existing *ExistingSpec
-	// Phase 3 fanout: Outline carries the slim feature/strategy
-	// outline so per-node elaborators see sibling shape; FanoutItem
-	// is the raw JSON of the specific outline element this elaborator
-	// call is responsible for (only set on fanout-spawned snapshots).
-	Outline    string
+// StateSnapshot wraps a verb's state value with fanout context. Projections
+// receive this generic wrapper so they can read both the verb-specific state
+// (snap.State.X) and the fanout dispatch context (snap.FanoutItem) without
+// the executor needing to know what shape S has.
+//
+// The State field is a value-copy of the verb's state taken before any
+// step in the wave runs. Verbs whose state contains slices or maps must
+// supply a Workflow.Snapshot closure that deep-copies them; otherwise
+// parallel agents would observe in-flight mutations from other goroutines.
+//
+// FanoutItem is empty on non-fanout calls. On fanout calls it carries the
+// raw JSON of the per-iteration item the executor dispatched the agent
+// against (e.g. the OutlineFeature being elaborated, the FindingCluster
+// being revised). The projection unmarshals it as needed.
+type StateSnapshot[S any] struct {
+	State      S
 	FanoutItem string
-	// OriginalRawProposal carries the pre-revise assembled raw
-	// proposal so the revise-fanout projections can look up the
-	// prior content of the node they're revising. The revise
-	// elaborator's prompt cites the prior RawFeatureProposal /
-	// RawStrategyProposal verbatim so the model has full context
-	// for the requested change.
-	OriginalRawProposal string
-	// UnmatchedFindings is the verbatim list of critic findings the
-	// mechanical pre-pass couldn't id-match. The cluster_findings
-	// step's projection renders this list as the LLM clusterer's input.
-	UnmatchedFindings []string
 }
 
-// Snapshot creates a read-only copy of the current state. Slice fields are
-// copied so the snapshot is safe for concurrent reads while the orchestrator
-// continues to mutate the original.
-func (s *PlanningState) Snapshot() StateSnapshot {
-	snap := StateSnapshot{
-		Round:               s.Round,
-		Prompt:              s.Prompt,
-		ProposedSpec:        s.ProposedSpec,
-		Revisions:           s.Revisions,
-		ScoutBrief:          s.ScoutBrief,
-		RawProposal:         s.RawProposal,
-		Existing:            s.Existing,
-		Outline:             s.Outline,
-		OriginalRawProposal: s.OriginalRawProposal,
-	}
+// snapshotPlanningState produces a deep-copy of PlanningState for the
+// council workflows. Slice fields are copied so parallel agents reading
+// the snapshot don't observe in-flight mutations from other goroutines.
+// Wired into Workflow.Snapshot for PlanningWorkflow / SpecGenerationWorkflow
+// / AssimilationWorkflow; verbs with simpler state can omit the closure
+// and accept the executor's default shallow copy.
+func snapshotPlanningState(s *PlanningState) PlanningState {
+	out := *s
 	if len(s.UnmatchedFindings) > 0 {
-		snap.UnmatchedFindings = make([]string, len(s.UnmatchedFindings))
-		copy(snap.UnmatchedFindings, s.UnmatchedFindings)
+		out.UnmatchedFindings = make([]string, len(s.UnmatchedFindings))
+		copy(out.UnmatchedFindings, s.UnmatchedFindings)
 	}
 	if len(s.Concerns) > 0 {
-		snap.Concerns = make([]Concern, len(s.Concerns))
-		copy(snap.Concerns, s.Concerns)
+		out.Concerns = make([]Concern, len(s.Concerns))
+		copy(out.Concerns, s.Concerns)
 	}
 	if len(s.ResearchResults) > 0 {
-		snap.ResearchResults = make([]Finding, len(s.ResearchResults))
-		copy(snap.ResearchResults, s.ResearchResults)
+		out.ResearchResults = make([]Finding, len(s.ResearchResults))
+		copy(out.ResearchResults, s.ResearchResults)
 	}
 	if len(s.OpenConcerns) > 0 {
-		snap.OpenConcerns = make([]string, len(s.OpenConcerns))
-		copy(snap.OpenConcerns, s.OpenConcerns)
+		out.OpenConcerns = make([]string, len(s.OpenConcerns))
+		copy(out.OpenConcerns, s.OpenConcerns)
 	}
-	return snap
+	return out
 }
 
 // HasOpenConcerns returns true if there are unresolved concerns.

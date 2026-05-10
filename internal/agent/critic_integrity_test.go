@@ -181,11 +181,13 @@ func TestIntegrityCriticFlagsFeatureWithNoDecisions(t *testing.T) {
 // than the canonical ProposedSpec (the reconciler's transform), so the
 // rejection language matches what the architect emitted.
 func TestProjectReviseShowsRawProposalToArchitect(t *testing.T) {
-	snap := StateSnapshot{
-		Prompt:       "build it",
-		RawProposal:  `{"features":[{"id":"feat-x","title":"X","decisions":[{"title":"Use D"}]}]}`,
-		ProposedSpec: `{"features":[{"id":"feat-x","title":"X","decisions":["dec-use-d"]}],"decisions":[{"id":"dec-use-d","title":"Use D"}]}`,
-		Concerns:     []Concern{{Kind: "architecture", Text: "x"}},
+	snap := StateSnapshot[PlanningState]{
+		State: PlanningState{
+			Prompt:       "build it",
+			RawProposal:  `{"features":[{"id":"feat-x","title":"X","decisions":[{"title":"Use D"}]}]}`,
+			ProposedSpec: `{"features":[{"id":"feat-x","title":"X","decisions":["dec-use-d"]}],"decisions":[{"id":"dec-use-d","title":"Use D"}]}`,
+			Concerns:     []Concern{{Kind: "architecture", Text: "x"}},
+		},
 	}
 	msgs := projectRevise(snap)
 

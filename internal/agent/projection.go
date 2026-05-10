@@ -28,10 +28,10 @@ import (
 // scout brief in human-readable form. Same scout-brief formatting
 // projectPropose uses, since the outliner has the same orientation
 // (read GOALS, react to scout, list features and strategies).
-func projectOutline(snap StateSnapshot) []Message {
-	prompt := snap.Prompt
-	if snap.ScoutBrief != "" {
-		if formatted := formatScoutBrief(snap.ScoutBrief); formatted != "" {
+func projectOutline(snap StateSnapshot[PlanningState]) []Message {
+	prompt := snap.State.Prompt
+	if snap.State.ScoutBrief != "" {
+		if formatted := formatScoutBrief(snap.State.ScoutBrief); formatted != "" {
 			prompt = prompt + "\n\n## Scout brief\n\n" + formatted
 		}
 	}
@@ -44,16 +44,16 @@ func projectOutline(snap StateSnapshot) []Message {
 // fanout dispatcher set snap.FanoutItem to the JSON of one
 // OutlineFeature; we surface it as a labeled section the elaborator
 // reads literally.
-func projectElaborateFeature(snap StateSnapshot) []Message {
+func projectElaborateFeature(snap StateSnapshot[PlanningState]) []Message {
 	return projectElaborateOne(snap, "feature")
 }
 
 // projectElaborateStrategy is the strategy counterpart.
-func projectElaborateStrategy(snap StateSnapshot) []Message {
+func projectElaborateStrategy(snap StateSnapshot[PlanningState]) []Message {
 	return projectElaborateOne(snap, "strategy")
 }
 
-func projectElaborateOne(snap StateSnapshot, kind string) []Message {
+func projectElaborateOne(snap StateSnapshot[PlanningState], kind string) []Message {
 	// DJ-106: split the user message into a cacheable static prefix
 	// (GOALS + scout brief + outline — identical across every
 	// elaborator call in this fanout) and a per-call variable
@@ -65,16 +65,16 @@ func projectElaborateOne(snap StateSnapshot, kind string) []Message {
 	// uses a separate cachedContent resource, OpenAI's Responses
 	// API caches identical prefixes server-side automatically.
 	var prefix strings.Builder
-	prefix.WriteString(snap.Prompt)
-	if snap.ScoutBrief != "" {
-		if formatted := formatScoutBrief(snap.ScoutBrief); formatted != "" {
+	prefix.WriteString(snap.State.Prompt)
+	if snap.State.ScoutBrief != "" {
+		if formatted := formatScoutBrief(snap.State.ScoutBrief); formatted != "" {
 			prefix.WriteString("\n\n## Scout brief\n\n")
 			prefix.WriteString(formatted)
 		}
 	}
-	if snap.Outline != "" {
+	if snap.State.Outline != "" {
 		prefix.WriteString("\n\n## Outline (sibling features and strategies for situational context)\n\n")
-		prefix.WriteString(formatOutlineForElaborator(snap.Outline))
+		prefix.WriteString(formatOutlineForElaborator(snap.State.Outline))
 	}
 
 	var suffix strings.Builder
@@ -155,10 +155,10 @@ func formatOutlineForElaborator(raw string) string {
 // finding belongs to, and what kind (feature/strategy) the cluster
 // is. No node-id matching, no revise-vs-add intent — the elaborator
 // downstream decides those locally per cluster.
-func projectClusterFindings(snap StateSnapshot) []Message {
+func projectClusterFindings(snap StateSnapshot[PlanningState]) []Message {
 	var b strings.Builder
 	b.WriteString("## Existing nodes in the proposal (for kind-classification context)\n\n")
-	features, strategies := proposalNodeIDs(snap.RawProposal)
+	features, strategies := proposalNodeIDs(snap.State.RawProposal)
 	if len(features) == 0 && len(strategies) == 0 {
 		b.WriteString("(none — the proposal is empty)\n\n")
 	} else {
@@ -179,10 +179,10 @@ func projectClusterFindings(snap StateSnapshot) []Message {
 	}
 
 	b.WriteString("## Findings to cluster (verbatim — every entry must end up in exactly one cluster)\n\n")
-	if len(snap.UnmatchedFindings) == 0 {
+	if len(snap.State.UnmatchedFindings) == 0 {
 		b.WriteString("(none)\n")
 	} else {
-		for _, f := range snap.UnmatchedFindings {
+		for _, f := range snap.State.UnmatchedFindings {
 			fmt.Fprintf(&b, "- %s\n", f)
 		}
 	}
@@ -205,11 +205,11 @@ func projectClusterFindings(snap StateSnapshot) []Message {
 // includes the prior node content; when empty, the elaborator picks
 // a fresh id and the projection includes the existing-nodes list as
 // an id-collision-avoidance reference.
-func projectFindingCluster(snap StateSnapshot) []Message {
+func projectFindingCluster(snap StateSnapshot[PlanningState]) []Message {
 	var b strings.Builder
-	b.WriteString(snap.Prompt)
-	if snap.ScoutBrief != "" {
-		if formatted := formatScoutBrief(snap.ScoutBrief); formatted != "" {
+	b.WriteString(snap.State.Prompt)
+	if snap.State.ScoutBrief != "" {
+		if formatted := formatScoutBrief(snap.State.ScoutBrief); formatted != "" {
 			b.WriteString("\n\n## Scout brief\n\n")
 			b.WriteString(formatted)
 		}
@@ -223,7 +223,7 @@ func projectFindingCluster(snap StateSnapshot) []Message {
 	// Always show the existing-nodes list. For revise mode this is
 	// situational awareness; for add mode it's the id-collision-
 	// avoidance reference.
-	features, strategies := proposalNodeIDs(snap.OriginalRawProposal)
+	features, strategies := proposalNodeIDs(snap.State.OriginalRawProposal)
 	b.WriteString("\n\n## Existing nodes\n\n")
 	if len(features) == 0 && len(strategies) == 0 {
 		b.WriteString("(none)\n")
@@ -252,7 +252,7 @@ func projectFindingCluster(snap StateSnapshot) []Message {
 		// Sniff prefix to decide which Raw*Proposal type to look up.
 		switch {
 		case strings.HasPrefix(cluster.NodeID, "feat-"):
-			if prior, ok := findRawFeature(snap.OriginalRawProposal, cluster.NodeID); ok {
+			if prior, ok := findRawFeature(snap.State.OriginalRawProposal, cluster.NodeID); ok {
 				data, err := json.MarshalIndent(prior, "", "  ")
 				if err == nil {
 					b.WriteString("```json\n")
@@ -263,7 +263,7 @@ func projectFindingCluster(snap StateSnapshot) []Message {
 				fmt.Fprintf(&b, "(prior feature %q not found in the original proposal)\n\n", cluster.NodeID)
 			}
 		case strings.HasPrefix(cluster.NodeID, "strat-"):
-			if prior, ok := findRawStrategy(snap.OriginalRawProposal, cluster.NodeID); ok {
+			if prior, ok := findRawStrategy(snap.State.OriginalRawProposal, cluster.NodeID); ok {
 				data, err := json.MarshalIndent(prior, "", "  ")
 				if err == nil {
 					b.WriteString("```json\n")
@@ -299,24 +299,24 @@ func projectFindingCluster(snap StateSnapshot) []Message {
 // the spec_list_manifest / spec_get tools (registered against the
 // Genkit runtime in cmd/llm.go). Inlining the snapshot was an
 // O(N)-prompt-size scaling problem that motivated DJ-094.
-func projectReconcile(snap StateSnapshot) []Message {
+func projectReconcile(snap StateSnapshot[PlanningState]) []Message {
 	var b strings.Builder
 	b.WriteString("## Raw proposal (inline decisions, no IDs)\n\n")
-	if snap.RawProposal != "" {
-		b.WriteString(snap.RawProposal)
+	if snap.State.RawProposal != "" {
+		b.WriteString(snap.State.RawProposal)
 	} else {
 		// Defensive: if the upstream propose merge didn't populate
 		// RawProposal, fall back to ProposedSpec so the reconciler
 		// gets *something* to work on. This shouldn't happen in
 		// production wiring; kept as a soft fallback for tests.
-		b.WriteString(snap.ProposedSpec)
+		b.WriteString(snap.State.ProposedSpec)
 	}
 	// Data-conditional flag (NOT a directive) — the reconciler's .md
 	// system prompt covers tool usage in general; this tells the
 	// agent the data state of *this* call ("an existing spec is
 	// present"). Greenfield runs omit the flag entirely so the agent
 	// doesn't burn turns on tool calls that would return empty.
-	if snap.Existing != nil && !snap.Existing.IsEmpty() {
+	if snap.State.Existing != nil && !snap.State.Existing.IsEmpty() {
 		b.WriteString("\n\n## Existing spec is present\n\nA persisted spec snapshot exists at `.borg/spec/`; the spec_list_manifest and spec_get tools will return non-empty results. (On greenfield runs this section is omitted.)")
 	}
 	// Directive ("Emit a ReconciliationVerdict... inline decisions
@@ -325,24 +325,24 @@ func projectReconcile(snap StateSnapshot) []Message {
 	return []Message{{Role: "user", Content: b.String()}}
 }
 
-func projectPropose(snap StateSnapshot) []Message {
-	prompt := snap.Prompt
+func projectPropose(snap StateSnapshot[PlanningState]) []Message {
+	prompt := snap.State.Prompt
 	// If a scout brief was produced upstream (spec-generation council),
 	// fold its formatted form into the proposer's user message so the
 	// proposer reads the senior-engineer survey alongside GOALS.md
 	// rather than working from the goals body alone.
-	if snap.ScoutBrief != "" {
-		if formatted := formatScoutBrief(snap.ScoutBrief); formatted != "" {
+	if snap.State.ScoutBrief != "" {
+		if formatted := formatScoutBrief(snap.State.ScoutBrief); formatted != "" {
 			prompt = prompt + "\n\n## Scout brief\n\n" + formatted
 		}
 	}
 	msgs := []Message{{Role: "user", Content: prompt}}
 
 	// On revision rounds, include open concerns to address.
-	if len(snap.OpenConcerns) > 0 {
+	if len(snap.State.OpenConcerns) > 0 {
 		msgs = append(msgs, Message{
 			Role:    "user",
-			Content: fmt.Sprintf("Address these open concerns:\n%s", strings.Join(snap.OpenConcerns, "\n")),
+			Content: fmt.Sprintf("Address these open concerns:\n%s", strings.Join(snap.State.OpenConcerns, "\n")),
 		})
 	}
 	return msgs
@@ -384,14 +384,14 @@ func formatScoutBrief(raw string) string {
 	return strings.TrimSpace(b.String())
 }
 
-func projectChallenge(snap StateSnapshot) []Message {
+func projectChallenge(snap StateSnapshot[PlanningState]) []Message {
 	msgs := []Message{
-		{Role: "user", Content: snap.Prompt},
+		{Role: "user", Content: snap.State.Prompt},
 	}
-	if snap.ProposedSpec != "" {
+	if snap.State.ProposedSpec != "" {
 		msgs = append(msgs, Message{
 			Role:    "assistant",
-			Content: compactContext(snap.ProposedSpec, defaultMaxChars),
+			Content: compactContext(snap.State.ProposedSpec, defaultMaxChars),
 		})
 		msgs = append(msgs, Message{
 			Role:    "user",
@@ -401,15 +401,15 @@ func projectChallenge(snap StateSnapshot) []Message {
 	return msgs
 }
 
-func projectResearch(snap StateSnapshot) []Message {
+func projectResearch(snap StateSnapshot[PlanningState]) []Message {
 	msgs := []Message{
-		{Role: "user", Content: snap.Prompt},
+		{Role: "user", Content: snap.State.Prompt},
 	}
 
 	// Researcher sees the concerns that need investigation.
-	if len(snap.Concerns) > 0 {
+	if len(snap.State.Concerns) > 0 {
 		var lines []string
-		for _, c := range snap.Concerns {
+		for _, c := range snap.State.Concerns {
 			lines = append(lines, fmt.Sprintf("- [%s] %s", c.Severity, c.Text))
 		}
 		msgs = append(msgs, Message{
@@ -420,9 +420,9 @@ func projectResearch(snap StateSnapshot) []Message {
 	return msgs
 }
 
-func projectRevise(snap StateSnapshot) []Message {
+func projectRevise(snap StateSnapshot[PlanningState]) []Message {
 	msgs := []Message{
-		{Role: "user", Content: snap.Prompt},
+		{Role: "user", Content: snap.State.Prompt},
 	}
 
 	// Show the architect its prior raw proposal (what it actually
@@ -430,9 +430,9 @@ func projectRevise(snap StateSnapshot) []Message {
 	// is unambiguous: "your prior proposal is rejected; here are the
 	// findings; emit a corrected one." Falls back to the canonical
 	// ProposedSpec for legacy paths where RawProposal isn't populated.
-	prior := snap.RawProposal
+	prior := snap.State.RawProposal
 	if prior == "" {
-		prior = snap.ProposedSpec
+		prior = snap.State.ProposedSpec
 	}
 	if prior != "" {
 		msgs = append(msgs, Message{
@@ -441,10 +441,10 @@ func projectRevise(snap StateSnapshot) []Message {
 		})
 	}
 
-	if len(snap.Concerns) > 0 || len(snap.ResearchResults) > 0 {
+	if len(snap.State.Concerns) > 0 || len(snap.State.ResearchResults) > 0 {
 		msgs = append(msgs, Message{
 			Role:    "user",
-			Content: buildRevisePrompt(snap.Concerns, snap.ResearchResults),
+			Content: buildRevisePrompt(snap.State.Concerns, snap.State.ResearchResults),
 		})
 	}
 	return msgs
@@ -504,20 +504,20 @@ func buildRevisePrompt(concerns []Concern, research []Finding) string {
 	return b.String()
 }
 
-func projectRecord(snap StateSnapshot) []Message {
+func projectRecord(snap StateSnapshot[PlanningState]) []Message {
 	msgs := []Message{
-		{Role: "user", Content: snap.Prompt},
+		{Role: "user", Content: snap.State.Prompt},
 	}
 	// Historian sees everything — the full journey.
-	if snap.ProposedSpec != "" {
+	if snap.State.ProposedSpec != "" {
 		msgs = append(msgs, Message{
 			Role: "user",
-			Content: fmt.Sprintf("Original proposal:\n%s", snap.ProposedSpec),
+			Content: fmt.Sprintf("Original proposal:\n%s", snap.State.ProposedSpec),
 		})
 	}
-	if len(snap.Concerns) > 0 {
+	if len(snap.State.Concerns) > 0 {
 		var lines []string
-		for _, c := range snap.Concerns {
+		for _, c := range snap.State.Concerns {
 			lines = append(lines, fmt.Sprintf("- [%s/%s] %s", c.AgentID, c.Severity, c.Text))
 		}
 		msgs = append(msgs, Message{
@@ -525,10 +525,10 @@ func projectRecord(snap StateSnapshot) []Message {
 			Content: fmt.Sprintf("Concerns:\n%s", strings.Join(lines, "\n")),
 		})
 	}
-	if snap.Revisions != "" {
+	if snap.State.Revisions != "" {
 		msgs = append(msgs, Message{
 			Role: "user",
-			Content: fmt.Sprintf("Revised proposal:\n%s", snap.Revisions),
+			Content: fmt.Sprintf("Revised proposal:\n%s", snap.State.Revisions),
 		})
 	}
 	msgs = append(msgs, Message{
@@ -538,10 +538,10 @@ func projectRecord(snap StateSnapshot) []Message {
 	return msgs
 }
 
-func projectDefault(snap StateSnapshot) []Message {
-	msgs := []Message{{Role: "user", Content: snap.Prompt}}
-	if snap.ProposedSpec != "" {
-		msgs = append(msgs, Message{Role: "assistant", Content: snap.ProposedSpec})
+func projectDefault(snap StateSnapshot[PlanningState]) []Message {
+	msgs := []Message{{Role: "user", Content: snap.State.Prompt}}
+	if snap.State.ProposedSpec != "" {
+		msgs = append(msgs, Message{Role: "assistant", Content: snap.State.ProposedSpec})
 	}
 	return msgs
 }

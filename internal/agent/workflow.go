@@ -11,10 +11,9 @@ import (
 	"github.com/chetan/locutus/internal/executor"
 )
 
-// WorkflowStep defines a single step in the council workflow. Steps carry
-// the data fields the DAG executor consumes (ID, Agents, Parallel,
-// DependsOn) plus four optional closures that describe what the step
-// does:
+// WorkflowStep defines a single step in a workflow. Steps carry the
+// data fields the DAG executor consumes (ID, Agents, Parallel, DependsOn)
+// plus four optional closures that describe what the step does:
 //
 //   - Conditional: gates execution. If non-nil and returns false, the
 //     step is skipped (no agent calls, no merge). nil means unconditional.
@@ -23,28 +22,47 @@ import (
 //     can render the per-element prompt. nil means the step runs the
 //     configured agents once each.
 //   - Project: builds the LLM messages for each agent call. Falls back
-//     to projectDefault when nil.
-//   - Merge: applies round results back into the planning state. nil is
-//     equivalent to mergeNoop.
+//     to a verb-supplied default when nil.
+//   - Merge: applies round results back into the verb's state. nil is
+//     equivalent to a no-op merge.
+//
+// The S type parameter is the verb-specific mutable state the closures
+// see and mutate. Council workflows use WorkflowStep[PlanningState]; new
+// verbs declare their own state types (JustifyState, RefineState, etc.).
 //
 // Per-model concurrency caps live in models.yaml (`concurrent_requests`).
 // Even with Parallel=true, fanout never floods a model past its
 // configured slot count.
-type WorkflowStep struct {
+type WorkflowStep[S any] struct {
 	ID          string
 	Agents      []string
 	Parallel    bool
 	DependsOn   []string
-	Conditional func(*PlanningState) bool
-	Fanout      func(*PlanningState) ([]string, error)
-	Project     func(StateSnapshot) []Message
-	Merge       func(*PlanningState, []RoundResult)
+	Conditional func(*S) bool
+	Fanout      func(*S) ([]string, error)
+	Project     func(StateSnapshot[S]) []Message
+	Merge       func(*S, []RoundResult)
 }
 
-// Workflow defines the full council workflow DAG.
-type Workflow struct {
-	Rounds    []WorkflowStep
+// Workflow defines a verb's DAG of steps. The S type parameter is the
+// verb-specific state container threaded through every step's closures.
+type Workflow[S any] struct {
+	Rounds    []WorkflowStep[S]
 	MaxRounds int
+
+	// Snapshot returns a value-copy of the state safe for concurrent
+	// reads by parallel agents. Verbs whose state contains slices or
+	// maps must provide a closure that copies them; otherwise parallel
+	// agents would observe in-flight mutations from other goroutines.
+	// When nil, the executor passes a shallow value copy via *state.
+	Snapshot func(*S) S
+
+	// DefaultProject is the projection used when a step omits its own
+	// Project closure. Council workflows wire this to projectDefault
+	// (prompt verbatim + prior ProposedSpec). Verbs whose state has no
+	// universally-projectable shape can leave it nil and require every
+	// step to declare Project explicitly.
+	DefaultProject func(StateSnapshot[S]) []Message
 }
 
 // RoundResult holds the output of executing one round.
@@ -55,24 +73,13 @@ type RoundResult struct {
 	Err     error
 }
 
-// WorkflowExecutor runs the council workflow using the generic DAG executor
-// with a typed PlanningState blackboard.
-type WorkflowExecutor struct {
+// WorkflowExecutor runs a workflow using the generic DAG executor with a
+// caller-supplied state value.
+type WorkflowExecutor[S any] struct {
 	Executor  AgentExecutor
 	AgentDefs map[string]AgentDef
-	Workflow  *Workflow
+	Workflow  *Workflow[S]
 	Events    chan WorkflowEvent // optional; nil disables progress reporting
-
-	// Existing, when non-nil, is threaded onto the workflow's PlanningState
-	// for the spec_reconciler agent to match inline-decision clusters
-	// against existing-spec decisions for ID reuse.
-	Existing *ExistingSpec
-
-	// LastState captures the workflow's final PlanningState. Populated by
-	// Run after the DAG completes so callers (e.g. GenerateSpec) can
-	// inspect the canonical ProposedSpec and the reconciler's conflict
-	// actions for post-workflow cascade rewrites.
-	LastState *PlanningState
 }
 
 // executionRetryConfig returns a retry config for workflow agent calls.
@@ -88,7 +95,7 @@ func executionRetryConfig() RetryConfig {
 // dropping council events would silently desynchronise any UI built on
 // top, and the channel is sized generously by the caller (see
 // GenerateSpec). Safe for concurrent use.
-func (e *WorkflowExecutor) emitEvent(stepID, agentID, status, message string) {
+func (e *WorkflowExecutor[S]) emitEvent(stepID, agentID, status, message string) {
 	if e.Events == nil {
 		return
 	}
@@ -118,7 +125,7 @@ func (e *WorkflowExecutor) emitEvent(stepID, agentID, status, message string) {
 // The cliSink renders "queued" with a distinct visual ("queued" prefix)
 // and updates the same spinner to "running" on the started event, so
 // the operator can tell waiting items from in-flight ones.
-func (e *WorkflowExecutor) executeAgent(ctx context.Context, step WorkflowStep, stepID, agentID string, snap StateSnapshot) RoundResult {
+func (e *WorkflowExecutor[S]) executeAgent(ctx context.Context, step WorkflowStep[S], stepID, agentID string, snap StateSnapshot[S]) RoundResult {
 	def, ok := e.AgentDefs[agentID]
 	if !ok {
 		return RoundResult{StepID: stepID, AgentID: agentID, Err: fmt.Errorf("agent %q not found", agentID)}
@@ -142,10 +149,13 @@ func (e *WorkflowExecutor) executeAgent(ctx context.Context, step WorkflowStep, 
 	})
 
 	project := step.Project
-	if project == nil {
-		project = projectDefault
+	if project == nil && e.Workflow != nil {
+		project = e.Workflow.DefaultProject
 	}
-	messages := project(snap)
+	var messages []Message
+	if project != nil {
+		messages = project(snap)
+	}
 	input := AgentInput{Messages: messages}
 
 	resp, err := RunWithRetry(ctx, e.Executor, def, input, executionRetryConfig())
@@ -160,7 +170,7 @@ func (e *WorkflowExecutor) executeAgent(ctx context.Context, step WorkflowStep, 
 
 // ExecuteRound runs a single workflow step against the current state. For
 // parallel multi-agent steps, agents run concurrently with the same snapshot.
-func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, state *PlanningState) ([]RoundResult, error) {
+func (e *WorkflowExecutor[S]) ExecuteRound(ctx context.Context, step WorkflowStep[S], state *S) ([]RoundResult, error) {
 	if step.Conditional != nil && !step.Conditional(state) {
 		return nil, nil
 	}
@@ -170,7 +180,7 @@ func (e *WorkflowExecutor) ExecuteRound(ctx context.Context, step WorkflowStep, 
 		return nil, nil
 	}
 
-	snap := state.Snapshot()
+	snap := e.snapshot(state)
 
 	// Fanout: spawn one agent invocation per element returned by the
 	// step's Fanout function. Each invocation gets its own snapshot with
@@ -433,25 +443,24 @@ func appendIntegrityFindings(state *PlanningState) {
 	}
 }
 
-// Run executes the full council workflow using the generic DAG executor.
-// The outer convergence loop and readiness gate are handled here; the inner
-// DAG execution (dependency ordering, parallelism) is delegated to executor.Executor.
-func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]RoundResult, error) {
-	state := &PlanningState{
-		Prompt:   initialPrompt,
-		Round:    1,
-		Existing: e.Existing,
+// snapshot returns a verb-supplied value-copy of state safe for concurrent
+// reads. When the workflow declares no Snapshot closure, the caller gets a
+// shallow value-copy via *state — fine for verbs whose state has no slices
+// or maps to deep-copy.
+func (e *WorkflowExecutor[S]) snapshot(state *S) StateSnapshot[S] {
+	if e.Workflow != nil && e.Workflow.Snapshot != nil {
+		return StateSnapshot[S]{State: e.Workflow.Snapshot(state)}
 	}
-	defer func() { e.LastState = state }()
+	return StateSnapshot[S]{State: *state}
+}
 
-	maxRounds := e.Workflow.MaxRounds
-	if maxRounds <= 0 {
-		maxRounds = 5
-	}
-
-	// Build executor.Steps from WorkflowSteps.
+// Run executes one DAG pass against the supplied state. The verb owns the
+// state pointer — Run mutates it via per-step Merge closures and returns
+// the round results. Multi-iteration concerns (convergence, readiness)
+// belong in verb-specific wrappers (see RunCouncil for the council case).
+func (e *WorkflowExecutor[S]) Run(ctx context.Context, state *S) ([]RoundResult, error) {
 	dagSteps := make([]executor.Step, len(e.Workflow.Rounds))
-	stepLookup := make(map[string]WorkflowStep, len(e.Workflow.Rounds))
+	stepLookup := make(map[string]WorkflowStep[S], len(e.Workflow.Rounds))
 	for i, ws := range e.Workflow.Rounds {
 		stepLookup[ws.ID] = ws
 		ds := executor.Step{
@@ -462,110 +471,57 @@ func (e *WorkflowExecutor) Run(ctx context.Context, initialPrompt string) ([]Rou
 		if ws.Conditional != nil {
 			cond := ws.Conditional // capture for closure
 			ds.Conditional = func(s any) bool {
-				return cond(s.(*PlanningState))
+				return cond(s.(*S))
 			}
 		}
 		dagSteps[i] = ds
 	}
 
-	var allResults []RoundResult
-
 	dagEvents, stopBridge := e.startEventBridge()
 	defer stopBridge()
 
-	for iteration := 0; iteration < maxRounds; iteration++ {
-		if e.Events != nil {
-			e.Events <- WorkflowEvent{
-				Status:    "started",
-				Message:   fmt.Sprintf("iteration %d/%d", iteration+1, maxRounds),
-				Timestamp: time.Now(),
+	cfg := executor.Config[S]{
+		Steps: dagSteps,
+		RunStep: func(ctx context.Context, step executor.Step, snap S) (executor.StepResult, error) {
+			ws := stepLookup[step.ID]
+			results, err := e.ExecuteRound(ctx, ws, &snap)
+			return executor.StepResult{Output: results}, err
+		},
+		Merge: func(s *S, r executor.StepResult) {
+			results, ok := r.Output.([]RoundResult)
+			if !ok {
+				return
 			}
-		}
-
-		cfg := executor.Config[PlanningState]{
-			Steps: dagSteps,
-			RunStep: func(ctx context.Context, step executor.Step, snap PlanningState) (executor.StepResult, error) {
-				ws := stepLookup[step.ID]
-				results, err := e.ExecuteRound(ctx, ws, &snap)
-				return executor.StepResult{Output: results}, err
-			},
-			Merge: func(s *PlanningState, r executor.StepResult) {
-				results, ok := r.Output.([]RoundResult)
-				if !ok {
-					return
-				}
-				ws := stepLookup[r.StepID]
-				if ws.Merge != nil {
-					ws.Merge(s, results)
-				}
-			},
-			Snapshot: func(s *PlanningState) PlanningState { return *s },
-			Events:   dagEvents,
-		}
-
-		executor := executor.NewExecutor(cfg)
-		dagResults, err := executor.Run(ctx, state)
-		if err != nil {
-			return allResults, err
-		}
-
-		for _, dr := range dagResults {
-			if results, ok := dr.Output.([]RoundResult); ok {
-				allResults = append(allResults, results...)
+			ws := stepLookup[r.StepID]
+			if ws.Merge != nil {
+				ws.Merge(s, results)
 			}
-		}
-		state.Round++
-
-		// Convergence check.
-		monitorDef, hasMonitor := e.AgentDefs["convergence"]
-		if !hasMonitor {
-			break
-		}
-
-		verdict, err := CheckConvergence(ctx, e.Executor, monitorDef, state)
-		if err != nil {
-			return allResults, fmt.Errorf("convergence check: %w", err)
-		}
-
-		if e.Events != nil {
-			e.Events <- WorkflowEvent{
-				StepID:    "convergence",
-				AgentID:   "convergence",
-				Status:    "completed",
-				Message:   verdict.Reasoning,
-				Timestamp: time.Now(),
+		},
+		Snapshot: func(s *S) S {
+			if e.Workflow.Snapshot != nil {
+				return e.Workflow.Snapshot(s)
 			}
-		}
-
-		if verdict.Converged {
-			ready, err := CheckReadiness(ctx, e.Executor, e.AgentDefs, state)
-			if err != nil {
-				return allResults, fmt.Errorf("readiness gate: %w", err)
-			}
-			if ready {
-				break
-			}
-			continue
-		}
-
-		state.OpenConcerns = verdict.OpenIssues
-
-		if iteration >= maxRounds-2 {
-			break
-		}
-
-		state.Concerns = nil
-		state.ResearchResults = nil
+			return *s
+		},
+		Events: dagEvents,
 	}
 
-	return allResults, nil
+	dagResults, err := executor.NewExecutor(cfg).Run(ctx, state)
+
+	var allResults []RoundResult
+	for _, dr := range dagResults {
+		if results, ok := dr.Output.([]RoundResult); ok {
+			allResults = append(allResults, results...)
+		}
+	}
+	return allResults, err
 }
 
 // startEventBridge spawns a goroutine that forwards executor events as
 // WorkflowEvents to e.Events. Returns the channel the executor should write
 // to and a cleanup func that closes the channel and waits for the goroutine
 // to drain. When e.Events is nil, both returns are no-ops.
-func (e *WorkflowExecutor) startEventBridge() (chan executor.Event, func()) {
+func (e *WorkflowExecutor[S]) startEventBridge() (chan executor.Event, func()) {
 	if e.Events == nil {
 		return nil, func() {}
 	}
