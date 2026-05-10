@@ -149,7 +149,13 @@ func printResetReport(r *scaffold.ResetReport) {
 		fmt.Print(" and models.yaml")
 	}
 	fmt.Println(".")
-	if len(r.AgentsReset) > 0 || r.ModelsReset {
-		fmt.Println("Note: any local edits to those files have been overwritten. User content (GOALS.md, .borg/spec/, .borg/history/, .borg/manifest.json, .locutus/) was not touched.")
+	if n := len(r.AgentsRemoved); n > 0 {
+		fmt.Printf("Removed %d orphan agent file(s) (no longer in the embedded scaffold):\n", n)
+		for _, p := range r.AgentsRemoved {
+			fmt.Printf("  - %s\n", p)
+		}
+	}
+	if len(r.AgentsReset) > 0 || r.ModelsReset || len(r.AgentsRemoved) > 0 {
+		fmt.Println("Note: local edits to refreshed files have been overwritten, and orphan agent files have been deleted. User content (GOALS.md, .borg/spec/, .borg/history/, .borg/manifest.json, .locutus/) was not touched.")
 	}
 }

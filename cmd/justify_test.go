@@ -94,7 +94,7 @@ func TestJustifyAdversarialDispatch(t *testing.T) {
 	// challenger fires first, then researcher, then advocate.
 	mock := agent.NewMockExecutor(
 		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge), Model: "test"}},
-		agent.MockResponse{AgentID: "researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
+		agent.MockResponse{AgentID: "justify_researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
 		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
 	)
 
@@ -122,7 +122,7 @@ func TestJustifyAdversarialDispatch(t *testing.T) {
 	calls := mock.Calls()
 	require.Len(t, calls, 3)
 	assert.Equal(t, "spec_challenger", calls[0].Def.ID)
-	assert.Equal(t, "researcher", calls[1].Def.ID)
+	assert.Equal(t, "justify_researcher", calls[1].Def.ID)
 	assert.Equal(t, "spec_advocate", calls[2].Def.ID)
 	assert.Equal(t, "ResearchBrief", calls[1].Def.OutputSchema)
 	assert.Equal(t, "AdversarialDefense", calls[2].Def.OutputSchema)
@@ -167,7 +167,7 @@ func TestJustifyAdversarialBrokenDownSurfacesBreakingPoints(t *testing.T) {
 	}
 	mock := agent.NewMockExecutor(
 		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge), Model: "test"}},
-		agent.MockResponse{AgentID: "researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
+		agent.MockResponse{AgentID: "justify_researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
 		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
 	)
 
@@ -199,7 +199,7 @@ func TestJustifyInvalidVerdictRejected(t *testing.T) {
 	}
 	mock := agent.NewMockExecutor(
 		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge), Model: "test"}},
-		agent.MockResponse{AgentID: "researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
+		agent.MockResponse{AgentID: "justify_researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
 		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
 	)
 

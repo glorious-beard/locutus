@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chetan/locutus/internal/agent"
@@ -114,18 +116,21 @@ func copyEmbedded(fsys specio.FS, embedded embed.FS, root, targetPrefix string) 
 	})
 }
 
-// ResetReport tells the caller what `update --reset` overwrote. Surfaced
-// so the CLI can print "refreshed N agents, models.yaml" or the like —
-// and so tests can assert exact behavior.
+// ResetReport tells the caller what `update --reset` overwrote and
+// removed. Surfaced so the CLI can print a per-action summary and so
+// tests can assert exact behavior.
 type ResetReport struct {
-	AgentsReset []string // FS-relative paths of agent files written
-	ModelsReset bool     // true if .borg/models.yaml was rewritten
+	AgentsReset   []string // FS-relative paths of agent files written
+	AgentsRemoved []string // FS-relative paths of agent files deleted (no longer in the embedded scaffold)
+	ModelsReset   bool     // true if .borg/models.yaml was rewritten
 }
 
-// Reset overwrites scaffolded artifacts on fsys with the versions baked
-// into the running binary. User-owned content is left untouched:
-// GOALS.md, .borg/spec/, .borg/history/, .borg/manifest.json, the
-// project's .locutus/ runtime state, and .gitignore.
+// Reset overwrites scaffolded artifacts on fsys with the versions
+// baked into the running binary, and removes agent files in
+// .borg/agents/ that are no longer in the embedded scaffold. User-
+// owned content is left untouched: GOALS.md, .borg/spec/,
+// .borg/history/, .borg/manifest.json, the project's .locutus/
+// runtime state, and .gitignore.
 //
 // Use this after upgrading the locutus binary to pick up new or
 // changed agent definitions the upstream build ships. It does NOT
@@ -133,13 +138,37 @@ type ResetReport struct {
 // desired binary running. Workflow topology is defined in code and
 // rebuilt with the binary; nothing on disk to refresh for that.
 //
-// Custom agent files the user added under .borg/agents/ that aren't in
-// the embedded set are not touched. Embedded agents that have been
-// removed in this build are also left alone — Reset overwrites; it
-// never deletes. A future "prune" mode could surface stale files, but
-// that's a separate decision than reset semantics.
+// Removal semantics: any .md file under .borg/agents/ whose
+// basename (without extension) doesn't match an embedded scaffold
+// agent id is removed. This includes (a) agents that used to be in
+// the scaffold and were dropped in a newer build, and (b) custom
+// agent files a user wrote that aren't part of the locutus
+// distribution. The latter is intentional — locutus only loads
+// agents by known id, so a custom file with no matching id wasn't
+// being used by anything anyway. If the user wants project-local
+// agent overrides, they should write them to the same id as an
+// embedded scaffold (which Reset will then overwrite from the
+// embedded copy — manage these in source control alongside the
+// project, not as files preserved across resets).
 func Reset(fsys specio.FS) (*ResetReport, error) {
 	report := &ResetReport{}
+
+	// Build the set of embedded agent ids so we can identify orphan
+	// files in the project copy below.
+	embeddedIDs := map[string]struct{}{}
+	if err := fs.WalkDir(agentsFS, "agents", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		base := filepath.Base(path)
+		if !strings.HasSuffix(base, ".md") {
+			return nil
+		}
+		embeddedIDs[strings.TrimSuffix(base, ".md")] = struct{}{}
+		return nil
+	}); err != nil {
+		return report, fmt.Errorf("walk embedded agents: %w", err)
+	}
 
 	// Overwrite each embedded agent file. fs.WalkDir gives us every file
 	// under the agents/ embed root; we rewrite the corresponding
@@ -165,6 +194,27 @@ func Reset(fsys specio.FS) (*ResetReport, error) {
 		return nil
 	}); err != nil {
 		return report, err
+	}
+
+	// Remove orphan agent .md files — files in the project's
+	// .borg/agents/ whose id is no longer in the embedded scaffold.
+	// ListDir returns FS-relative paths; we filter to .md and
+	// compare basename against embeddedIDs.
+	if entries, err := fsys.ListDir(".borg/agents"); err == nil {
+		for _, p := range entries {
+			base := filepath.Base(p)
+			if !strings.HasSuffix(base, ".md") {
+				continue
+			}
+			id := strings.TrimSuffix(base, ".md")
+			if _, ok := embeddedIDs[id]; ok {
+				continue
+			}
+			if err := fsys.Remove(p); err != nil {
+				return report, fmt.Errorf("remove orphan agent %s: %w", p, err)
+			}
+			report.AgentsRemoved = append(report.AgentsRemoved, p)
+		}
 	}
 
 	// Overwrite models.yaml.

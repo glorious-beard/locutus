@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -216,32 +215,7 @@ func TestRunJustifyAgainst_RetriesAfterDegenerateChallenger(t *testing.T) {
 		"two challenger attempts + researcher + advocate = four dispatches")
 }
 
-// TestAdvocateSystemPrompt_HasGroundingDiscipline — the system prompt
-// shipped to the advocate must contain the empty-research-case
-// guidance. Brittle by design: changes to the prompt should be
-// deliberate, not silent regressions to confabulation-friendly text.
-//
-// Whitespace-normalized substring matching tolerates the prompt's
-// line wraps; the actual model sees the wrapped text but understands
-// it as continuous prose.
-func TestAdvocateSystemPrompt_HasGroundingDiscipline(t *testing.T) {
-	flat := strings.Join(strings.Fields(advocateSystemPrompt), " ")
-
-	assert.Contains(t, flat, "GROUNDING DISCIPLINE WHEN RESEARCH IS ABSENT",
-		"the advocate must be told what to do when research findings are missing or empty")
-	assert.Contains(t, flat, "I don't have grounded evidence",
-		"the advocate must have an explicit alternative phrase to substitute for unsourced specifics")
-	for _, forbidden := range []string{"version numbers", "ecosystem maturity", "hiring-pool", "case studies"} {
-		assert.Contains(t, flat, forbidden,
-			"the empty-research disclaimer must enumerate %q as a forbidden assertion class so the model has a concrete rule to follow", forbidden)
-	}
-	// Sanity: the directive must precede the per-concern point-by-point
-	// instructions so the model reads the constraint before producing
-	// the structured response.
-	idxDiscipline := strings.Index(advocateSystemPrompt, "GROUNDING DISCIPLINE WHEN RESEARCH IS ABSENT")
-	idxPointByPoint := strings.Index(advocateSystemPrompt, "ALSO address each concern")
-	require.True(t, idxDiscipline > 0)
-	require.True(t, idxPointByPoint > 0)
-	assert.Less(t, idxDiscipline, idxPointByPoint,
-		"grounding discipline rule must appear before the structured-response instructions so it constrains the per-concern responses too")
-}
+// Test moved to internal/scaffold/agents_test.go after the prompt
+// extraction (advocate prompt now lives in
+// internal/scaffold/agents/spec_advocate.md). The grounding-discipline
+// invariant is enforced there against the embedded scaffold copy.

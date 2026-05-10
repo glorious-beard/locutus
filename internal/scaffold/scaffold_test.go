@@ -249,21 +249,48 @@ func TestResetLeavesUserContentAlone(t *testing.T) {
 	assert.Equal(t, manifestBefore, manifestAfter, ".borg/manifest.json must survive Reset untouched")
 }
 
-func TestResetCustomAgentNotInEmbedSurvives(t *testing.T) {
-	// If the user has added a custom agent file under .borg/agents/
-	// that isn't in the binary's embed, Reset should NOT delete it.
-	// Reset overwrites embedded names; it doesn't prune.
+func TestResetRemovesOrphanAgents(t *testing.T) {
+	// If the user has an agent .md under .borg/agents/ whose id
+	// isn't in the binary's embedded scaffold (either a renamed/
+	// removed scaffold agent from a prior version or a custom
+	// file), Reset removes it. Locutus only loads agents by known
+	// id, so orphan files weren't being used by anything anyway —
+	// removing them on reset keeps the project tree clean as the
+	// scaffold evolves.
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 	require.NoError(t, fsys.WriteFile(".borg/agents/my_custom_agent.md", []byte("custom"), 0o644))
 
-	_, err := scaffold.Reset(fsys)
+	report, err := scaffold.Reset(fsys)
 	require.NoError(t, err)
 
-	got, err := fsys.ReadFile(".borg/agents/my_custom_agent.md")
+	_, err = fsys.ReadFile(".borg/agents/my_custom_agent.md")
+	assert.Error(t, err, "orphan agent file must be removed by Reset")
+	assert.Contains(t, report.AgentsRemoved, ".borg/agents/my_custom_agent.md",
+		"removed-agents list must record what was deleted so the CLI printer can surface it")
+}
+
+func TestResetLeavesEmbeddedAgentsAfterRemoval(t *testing.T) {
+	// Companion to the orphan-removal test: confirm Reset doesn't
+	// remove agents that ARE in the embedded scaffold (i.e. an
+	// override file with a matching id is overwritten, not deleted).
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	// Write a project override with a real scaffold id; Reset
+	// should overwrite (not remove) it.
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec_advocate.md",
+		[]byte("# overridden by user; scaffold should overwrite"), 0o644))
+
+	report, err := scaffold.Reset(fsys)
 	require.NoError(t, err)
-	assert.Equal(t, "custom", string(got),
-		"a custom agent file the user added should not be deleted by Reset")
+
+	got, err := fsys.ReadFile(".borg/agents/spec_advocate.md")
+	require.NoError(t, err, "overridden scaffold agent must still exist after Reset")
+	assert.NotContains(t, string(got), "overridden by user",
+		"override content must be replaced with embedded scaffold")
+	assert.NotContains(t, report.AgentsRemoved, ".borg/agents/spec_advocate.md",
+		"a file whose id is in the embedded scaffold must not appear in AgentsRemoved")
 }
 
 func TestScaffoldIdempotent(t *testing.T) {

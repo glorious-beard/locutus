@@ -8,6 +8,7 @@ import (
 
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/render"
+	"github.com/chetan/locutus/internal/scaffold"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 )
@@ -94,11 +95,27 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 	}
 	goalsBody, _ := readGoals(fsys)
 
+	advocate, err := scaffold.LoadAgent(fsys, "spec_advocate")
+	if err != nil {
+		return nil, fmt.Errorf("load spec_advocate: %w", err)
+	}
+	challenger, err := scaffold.LoadAgent(fsys, "spec_challenger")
+	if err != nil {
+		return nil, fmt.Errorf("load spec_challenger: %w", err)
+	}
+	researcher, err := scaffold.LoadAgent(fsys, "justify_researcher")
+	if err != nil {
+		return nil, fmt.Errorf("load justify_researcher: %w", err)
+	}
+
 	in := agent.JustifyInputs{
 		NodeID:       id,
 		NodeMarkdown: nodeMD,
 		GoalsBody:    goalsBody,
 		Challenge:    challenge,
+		Advocate:     advocate,
+		Challenger:   challenger,
+		Researcher:   researcher,
 	}
 
 	result := &JustifyResult{ID: id, Challenge: challenge}
