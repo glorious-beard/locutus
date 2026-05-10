@@ -247,6 +247,111 @@ Tool implementations live in Locutus packages (`internal/spec/tools.go`, etc.) a
 
 The per-verb workflow sketches in the next section assume agents go through the dispatcher. A workflow phase that lists `agent: spec_advocate` means "dispatcher.Dispatch(ctx, advocate_def, input)" — not a hand-rolled invocation function. The existing `InvokeSplitter`, `InvokeSynthesizer`, `RunJustify`, etc. either delete (replaced by direct dispatcher calls from the workflow) or shrink to thin convenience wrappers around the dispatcher.
 
+## OpenTelemetry instrumentation
+
+Per-LLM-call YAMLs at `.locutus/sessions/<sid>/calls/<NNNN>-*.yaml` have repeatedly caught degenerate generation and malformed prompts during council and justify work. They're richer than the OTel `gen_ai.*` semantic conventions strictly require (full reasoning, raw_message blob, multi-round captures, citation arrays). **They stay** as the per-call leaf observability.
+
+What's missing is structure *above* the leaf — phase boundaries, fanout shape, retry/rotation, and (once ReAct lands) iteration loops. Today operators reconstruct the workflow shape mentally by reading sequential YAML files. OTel adds the structural layer the YAMLs already assume.
+
+### What OTel adds that session YAMLs don't
+
+| Concern                              | Today                                  | With OTel                       |
+|--------------------------------------|----------------------------------------|---------------------------------|
+| Workflow phase boundaries            | implicit in `agent_id` ordering        | `workflow.phase` span           |
+| Fanout structure                     | `call_tag` suffix on filenames         | parent/child span hierarchy     |
+| Retry + rotation                     | repeated YAMLs same `agent_id`         | one child span per attempt      |
+| ReAct iterations                     | not yet captured                       | one child span per iteration    |
+| Locutus-side tool execution          | not yet captured                       | per-tool `tool.invoke` span     |
+| Cross-call timeline / critical path  | manual reconstruction                  | trace visualisation             |
+| Token-spend aggregation per phase    | sum YAMLs by `agent_id` prefix         | aggregate over span attributes  |
+
+### Span hierarchy
+
+```
+locutus.verb (root)
+  attrs: locutus.verb=justify, locutus.node.id=dec-foo, locutus.session.id=<sid>
+  │
+  ├── workflow.phase: classify
+  │     └── agent.dispatch: justify_splitter
+  │           └── llm.attempt #1
+  │                 └── provider.generate           ← gen_ai.* leaf
+  │
+  ├── workflow.phase: per_decision (fanout)
+  │     ├── agent.dispatch: spec_challenger (dec-a)
+  │     │     ├── llm.attempt #1 (anthropic, degenerate)
+  │     │     ├── llm.attempt #2 (rotated → googleai)
+  │     │     └── llm.attempt #3 (rotated → openai, success)
+  │     ├── agent.dispatch: justify_researcher (dec-a)
+  │     │     └── llm.attempt #1 (grounded; provider tool_calls in span events)
+  │     └── agent.dispatch: spec_advocate (dec-a)
+  │
+  └── workflow.phase: synthesize
+        └── agent.dispatch: justify_synthesizer
+```
+
+ReAct adds one layer between `agent.dispatch` and `llm.attempt`:
+
+```
+agent.dispatch: approach_regenerator
+  ├── react.iteration #1
+  │     ├── llm.attempt → provider.generate
+  │     └── tool.invoke: read_node(strat-foo)
+  ├── react.iteration #2
+  │     ├── llm.attempt → provider.generate
+  │     └── tool.invoke: query_decisions_by_topic("auth")
+  └── react.iteration #3 (terminal)
+        └── llm.attempt → provider.generate
+```
+
+### Exporters
+
+**Default: file exporter to `.locutus/sessions/<sid>/trace.jsonl`** — OTLP-JSON, one span per line, written by the OTel SDK pointed at the existing session directory. Always-on. Sits alongside the per-call YAMLs so the trace is preserved next to the artifacts that produced it. Replayable: `cat trace.jsonl | otel-cli replay` (or equivalent) loads into Jaeger / Tempo / Grafana for visualisation. The user has called out the existing per-call YAMLs as "invaluable" for debugging degenerate generation; the file exporter extends that property to workflow-shaped data.
+
+**Optional: OTLP HTTP exporter** activated when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Both exporters compose via `MultiSpanProcessor` — operators running a local collector get live spans without losing the file artifact.
+
+### Cross-reference with session YAMLs
+
+The session manifest grows a `trace_id` field; the leaf `recordedCall` gains a `span_id` field referencing the matching `provider.generate` span. A reader holding either ID can find the other:
+
+```yaml
+# session.yaml
+session_id: 20260510-1430-12-a3f9c2
+trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+started_at: 2026-05-10T14:30:12Z
+```
+
+```yaml
+# calls/0017-spec_advocate-dec-a.yaml
+index: 17
+agent_id: spec_advocate
+span_id: 00f067aa0ba902b7
+model: claude-sonnet-4-6
+...
+```
+
+Both fields are `omitempty` so traces produced by code paths that don't initialise the SDK (most unit tests) stay byte-identical to today's fixtures.
+
+### Attribute conventions
+
+Provider-level spans carry the OTel `gen_ai.*` semantic conventions: `gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read_input_tokens`, `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.response.id`, `gen_ai.operation.name`. Locutus-specific attributes live under `locutus.*`: `locutus.verb`, `locutus.workflow.phase`, `locutus.agent.id`, `locutus.attempt`, `locutus.degenerate.reason`, `locutus.tool.name`. Splitting the namespace keeps the trace replayable through any OTel-aware tool while letting Locutus dashboards filter on `locutus.*`.
+
+### Where instrumentation lives
+
+In the substrate, not in per-verb handlers:
+
+- `WorkflowExecutor[S].ExecuteRound` → `workflow.phase` span
+- `AgentDispatcher.Dispatch` → `agent.dispatch` span, per-attempt `llm.attempt` children, and (in ReAct mode) `react.iteration` + `tool.invoke` spans
+- `ProviderAdapter.Generate` → `provider.generate` leaf with `gen_ai.*` attributes
+
+Verb handlers thread `ctx` through (already standard) and the spans materialise. No verb-level OTel awareness needed. Sampling is always-on — each `locutus <verb>` is one bounded trace; CLI volume doesn't justify head/tail sampling.
+
+### Cost
+
+- ~150 LOC SDK setup (TracerProvider construction, dual exporters, shutdown wiring).
+- ~100 LOC instrumentation calls across the three substrate layers.
+- Direct dependencies promoted from indirect (`go.opentelemetry.io/otel`) plus three SDK packages added (`sdk/trace`, `exporters/otlp/otlptrace/otlptracehttp`, `exporters/stdout/stdouttrace`).
+- File-write overhead is sub-millisecond per span; LLM call latency dominates.
+
 ## Per-verb workflow shapes
 
 Each migrated verb's workflow is sketched below. The actual closures will live alongside the existing handlers in their respective package files (or move into `internal/agent/workflows.go` as the council workflows do).
@@ -333,23 +438,25 @@ Adopt's full reconcile loop is more complex than the others; this is the first-p
 
 1. **State generalisation (Option A).** Land the executor's generic parameterisation. All existing council code keeps working under `WorkflowExecutor[*PlanningState]`. Tests prove the migration is mechanical.
 2. **Agent dispatcher substrate.** Land `AgentDispatcher` with the two existing dispatch shapes (structured one-shot, provider-side grounding) wired up. Existing `InvokeSplitter`, `InvokeSynthesizer`, `RunJustify`, `RunResearch`, `cascade.RewriteFeature`, etc. shrink to thin wrappers around the dispatcher. Verifies the substrate against existing agent uses before any verb migration.
-3. **ReAct branch on the dispatcher.** Add the third dispatch shape (Locutus-side tool-use loop) plus the tool registry. No agent uses it yet; the branch is dormant until step 5+. Tests via mock_llm scripting tool_calls / non-tool_calls outputs.
-4. **Justify (prototype verb migration).** Pick `justify --against` because it's recent in working memory, has the cleanest workflow shape, and existing tests provide good coverage. Workflow definition uses the dispatcher; per-decision steps still call structured-one-shot agents. Validates Option A against a real non-council use case.
-5. **First ReAct adoption.** Pick one agent that genuinely benefits — `approach-regenerator` is the strongest candidate (multi-step planning over prior artifacts). Move it to ReAct mode; verify quality lift vs. structured one-shot on real fixtures.
-6. **Refine cascade.** Smaller scope than supersede; good follow-up.
-7. **Refine --supersede.** Larger; benefits from refine's groundwork.
-8. **Import.**
-9. **Adopt phases.** Last because it's the most complex orchestration — better to have the simpler verbs migrated first to refine the patterns before tackling adopt.
+3. **OpenTelemetry instrumentation.** Wire the OTel SDK into the three substrate layers: workflow executor opens `workflow.phase` spans, dispatcher opens `agent.dispatch` and per-attempt `llm.attempt` spans, adapters open `provider.generate` spans with `gen_ai.*` attributes. File exporter writes OTLP-JSON to `.locutus/sessions/<sid>/trace.jsonl` alongside the per-call YAMLs. OTLP HTTP exporter activates on `OTEL_EXPORTER_OTLP_ENDPOINT`. ReAct branch (next phase) inherits the instrumentation; its iteration / tool-invoke spans drop in for free as part of the new dispatch shape.
+4. **ReAct branch on the dispatcher.** Add the third dispatch shape (Locutus-side tool-use loop) plus the tool registry. No agent uses it yet; the branch is dormant until step 6+. Tests via mock_llm scripting tool_calls / non-tool_calls outputs.
+5. **Justify (prototype verb migration).** Pick `justify --against` because it's recent in working memory, has the cleanest workflow shape, and existing tests provide good coverage. Workflow definition uses the dispatcher; per-decision steps still call structured-one-shot agents. Validates Option A against a real non-council use case.
+6. **First ReAct adoption.** Pick one agent that genuinely benefits — `approach-regenerator` is the strongest candidate (multi-step planning over prior artifacts). Move it to ReAct mode; verify quality lift vs. structured one-shot on real fixtures.
+7. **Refine cascade.** Smaller scope than supersede; good follow-up.
+8. **Refine --supersede.** Larger; benefits from refine's groundwork.
+9. **Import.**
+10. **Adopt phases.** Last because it's the most complex orchestration — better to have the simpler verbs migrated first to refine the patterns before tackling adopt.
 
-Each step ships independently and can be reviewed / merged separately. The goal isn't a big-bang flip; it's a steady walk. Steps 1–3 build the substrate without changing observable behaviour; steps 4+ migrate one verb / agent at a time.
+Each step ships independently and can be reviewed / merged separately. The goal isn't a big-bang flip; it's a steady walk. Steps 1–4 build the substrate without changing observable behaviour; steps 5+ migrate one verb / agent at a time.
 
 ## Tests
 
-For each migrated verb, three classes of test:
+For each migrated verb, four classes of test:
 
 1. **Equivalence** — the new workflow-driven implementation produces the same on-disk output as the old direct-call implementation against a fixed fixture and mocked LLM responses. Catches regressions in the cutover.
 2. **Workflow-specific** — phase ordering, conditional firing, fanout filtering. Tests that exercise the workflow primitives, not the verb logic.
 3. **Existing tests** — keep passing. The workflow conversion shouldn't change observable behaviour; tests at the cmd layer and integration tests should run unchanged or with minimal updates.
+4. **Trace shape** — for at least one fixture per verb, the OTel instrumentation produces the documented span hierarchy. Tests assert on span names + parent links + key attributes (`locutus.workflow.phase`, `locutus.agent.id`, `gen_ai.system`), not on timing. The file exporter writes to a temp directory so test fixtures can read back `trace.jsonl` and verify shape. Most unit tests run with the global no-op tracer (instrumentation is free) and don't need updates; only the verb-level integration tests opt into a real TracerProvider.
 
 ## Out of scope
 
@@ -370,6 +477,7 @@ Captures:
 - The three-layer substrate: `WorkflowExecutor[S]` → `AgentDispatcher` → `ProviderAdapter`. Each layer has one concern.
 - The state-generalisation choice (Option A — generics) and why over the alternatives (interface, type-erased map).
 - The unified-agent-dispatcher choice and the three dispatch shapes it supports (structured one-shot, provider-side grounding, Locutus-side ReAct), with a fast-path branch so structured one-shot agents pay no ceremony tax.
+- The observability split: per-LLM-call YAMLs at `.locutus/sessions/<sid>/calls/` stay as the leaf trace (richer than `gen_ai.*` semconv requires — full reasoning, raw_message, multi-round captures); OTel instrumentation in the substrate adds workflow / dispatcher / retry / ReAct structure above the leaf. File exporter writes OTLP-JSON to `.locutus/sessions/<sid>/trace.jsonl` (always-on); OTLP HTTP exporter activates on `OTEL_EXPORTER_OTLP_ENDPOINT`. Spans use `gen_ai.*` for provider-level attributes and `locutus.*` for verb / phase / attempt metadata.
 - The scope split: LLM-touching verbs go through the workflow executor; read-only verbs stay direct.
 - Why the substrate is built in-house rather than adopting Eino or another framework: the substrate is small (workflow executor + agent dispatcher + provider adapters ~ a few thousand LOC total), DJ-099's direct-SDK adapters stay load-bearing, and the lag risk of any external framework on cutting-edge provider features is real (Eino-ext lagged on Anthropic adaptive thinking; same shape would bite Locutus on every future provider feature). Eino's [`flow/agent/react/react.go`](https://github.com/cloudwego/eino/blob/main/flow/agent/react/react.go) is the reference implementation we adapt patterns from without taking the dependency.
 - The migration order and the principle that each step ships as its own commit / PR for reviewability.
@@ -386,3 +494,7 @@ References: DJ-099 (direct-SDK adapters — the substrate the dispatcher sits on
 5. **Tool registry scope and lifecycle.** When the dispatcher gains the ReAct branch, the tool registry needs to declare which tools each agent can call. Open: are tools registered globally at start-up (one big registry that agents reference by name), or scoped per agent (each agent declares its own tool slice with handlers inline)? Globally-registered tools are easier to share; scoped tools are easier to reason about per agent. Probably global with per-agent allow-listing in `AgentDef.Tools`, but worth deciding before tool implementations start landing.
 6. **Per-call tool-call observability shape.** Today's `recordedCall` ([internal/agent/session.go](internal/agent/session.go) lines 218–240) captures provider-side tool_calls in `ToolCalls []recordedToolCall`. The ReAct branch will produce a sequence of tool_calls per agent invocation, plus reasoning between them. Either extend `recordedCall.Rounds` (which already carries multi-round tool-use captures) or add a parallel `ReActSteps` slice. The Rounds field has the right shape — confirm before implementation.
 7. **Backward compatibility on AgentDef.** Adding `Tools []ToolDef` and `MaxIterations int` fields. Frontmatter parsing in `scaffold.parseAgentDef` reads YAML into `AgentDef`; new fields with `omitempty` and zero-value defaults should be source-compatible. But callers constructing `AgentDef` literals in Go (justify's `RunJustify`, `RunResearch`, etc. before they shrink to dispatcher wrappers) need to either use the new fields or rely on zero values. Verify no caller breaks.
+8. **OTel file exporter format.** The OTel SDK ships `stdouttrace`, which emits "OTel SDK JSON" — similar to but not byte-identical to canonical OTLP-JSON. For replay through unmodified OTLP-aware tooling (Jaeger / Tempo / `otel-cli`), confirm whether `stdouttrace` output is replayable as-is, or whether to write a thin custom span processor that emits canonical OTLP-JSON. The file artifact has to survive the SDK choice.
+9. **Trace ID derivation vs independence.** Generate a W3C trace ID independently and surface `locutus.session.id` as a root-span attribute (clean OTel, lossless), or derive trace ID deterministically from session ID (trivial cross-reference, but session ID is shorter than 128 bits so the mapping loses entropy)? Probably the former with both IDs surfaced in the manifest, but worth the explicit call before the manifest schema bakes.
+10. **OTel SDK no-op fallback in tests.** When the SDK isn't initialised (most unit tests), `otel.Tracer(...)` returns a no-op tracer and instrumentation calls are free / produce no spans. Verify no existing test fixture changes are needed because the no-op tracer doesn't add attributes or write files. The verb-level trace-shape tests (Tests class 4) are the only ones that initialise a real TracerProvider, scoped to a temp directory.
+11. **Trace volatility on long-running sessions.** A `locutus adopt` invocation can run for many minutes across many fanouts. The file exporter writes spans on completion (`OnEnd`); a SIGKILL mid-session leaves any not-yet-completed spans unwritten. Existing per-call YAMLs survive a SIGKILL (Begin flushes the input before the call starts). Confirm whether OTel needs a `BatchSpanProcessor` with periodic flush vs `SimpleSpanProcessor` to match the YAMLs' SIGKILL-survivability — or accept that OTel data is best-effort and the YAMLs remain authoritative for crash analysis.
