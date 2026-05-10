@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -107,6 +108,7 @@ func runSupersedeDecision(ctx context.Context, llm agent.AgentExecutor, fsys spe
 	if err != nil {
 		return nil, fmt.Errorf("supersede: apply: %w", err)
 	}
+	runProseCascade(ctx, llm, fsys, plan, motivation)
 	return supersedeRefineResult(plan, evt, result.Rationale, motivation), nil
 }
 
@@ -141,6 +143,7 @@ func runSupersedeFeature(ctx context.Context, llm agent.AgentExecutor, fsys spec
 	if err != nil {
 		return nil, fmt.Errorf("supersede: apply: %w", err)
 	}
+	runProseCascade(ctx, llm, fsys, plan, motivation)
 	return supersedeRefineResult(plan, evt, result.Rationale, motivation), nil
 }
 
@@ -175,7 +178,94 @@ func runSupersedeStrategy(ctx context.Context, llm agent.AgentExecutor, fsys spe
 	if err != nil {
 		return nil, fmt.Errorf("supersede: apply: %w", err)
 	}
+	runProseCascade(ctx, llm, fsys, plan, motivation)
 	return supersedeRefineResult(plan, evt, result.Rationale, motivation), nil
+}
+
+// runProseCascade refreshes downstream prose so it stops referencing
+// the superseded node by content. The mechanical cascade in
+// cascade.ApplySupersede{Decision,Feature,Strategy} only rewrites
+// id references — Feature.Description / Strategy body / Bug.Description
+// can still describe the old decision in human prose. The existing
+// refiner agent (the one driving --brief refines today) is invoked
+// per affected downstream node with the supersede motivation as the
+// brief.
+//
+// Soft-degrades on error: the structured supersede already landed
+// on disk atomically; a refiner failure leaves stale prose but
+// shouldn't roll back the structural state. The user can re-run
+// `refine <id> --brief "..."` per affected node to retry.
+//
+// In-place plans skip prose cascade — id references didn't change,
+// and the refiner has nothing to rewrite against.
+func runProseCascade(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, plan *cascade.SupersedePlan, motivation string) {
+	if plan.InPlace {
+		return
+	}
+	if motivation == "" {
+		return
+	}
+	ctx = cascade.WithBrief(ctx, motivation)
+
+	// Reload the spec graph after the mechanical cascade so the
+	// refiner sees the new id references in features / strategies /
+	// bugs and treats the new decision as authoritative.
+	loaded, err := spec.LoadSpec(fsys)
+	if err != nil {
+		slog.Warn("supersede: prose cascade reload failed", "error", err)
+		return
+	}
+
+	for _, fid := range plan.FeaturesToRewrite {
+		f := loaded.FeatureNodeByID(fid)
+		if f == nil {
+			continue
+		}
+		applicable := resolveDecisions(loaded, f.Spec.Decisions)
+		if _, _, err := cascade.RewriteFeature(ctx, llm, fsys, f.Spec, applicable, applicable); err != nil {
+			slog.Warn("supersede: prose cascade for feature failed",
+				"feature", fid, "error", err)
+		}
+	}
+	for _, sid := range plan.StrategiesToRewrite {
+		s := loaded.StrategyNodeByID(sid)
+		if s == nil {
+			continue
+		}
+		applicable := resolveDecisions(loaded, s.Spec.Decisions)
+		if _, _, err := cascade.RewriteStrategy(ctx, llm, fsys, s.Spec, applicable, applicable); err != nil {
+			slog.Warn("supersede: prose cascade for strategy failed",
+				"strategy", sid, "error", err)
+		}
+	}
+	for _, bid := range plan.BugsToRewrite {
+		b := loaded.BugNodeByID(bid)
+		if b == nil {
+			continue
+		}
+		// Bugs inherit decisions from their parent feature.
+		var applicable []spec.Decision
+		if pf := loaded.FeatureNodeByID(b.Spec.FeatureID); pf != nil {
+			applicable = resolveDecisions(loaded, pf.Spec.Decisions)
+		}
+		if _, _, err := cascade.RewriteBug(ctx, llm, fsys, b.Spec, applicable, applicable); err != nil {
+			slog.Warn("supersede: prose cascade for bug failed",
+				"bug", bid, "error", err)
+		}
+	}
+}
+
+// resolveDecisions resolves a slice of decision ids against loaded.
+// Skips ids whose decision is missing (e.g. mid-cascade race or a
+// hand-edit that broke a reference). Returned in input order.
+func resolveDecisions(loaded *spec.Loaded, ids []string) []spec.Decision {
+	out := make([]spec.Decision, 0, len(ids))
+	for _, id := range ids {
+		if d := loaded.DecisionNodeByID(id); d != nil {
+			out = append(out, d.Spec)
+		}
+	}
+	return out
 }
 
 // printSupersedeSummary renders the operator-facing summary for a
