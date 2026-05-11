@@ -32,8 +32,16 @@ import (
 // is missing from disk: logs a warning and skips. Tighter coupling
 // between approach state and on-disk event integrity would run
 // counter to the two-way-door DX the verb set is organised around.
-func regenerateInvalidatedApproaches(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS) ([]string, error) {
-	if llm == nil {
+//
+// Takes an AgentDispatcher rather than an AgentExecutor because
+// approach-regenerator runs in ReAct mode (max_iterations=3): the
+// dispatcher needs the tool registry attached so the model can call
+// spec_list_manifest / spec_get when the user message leaves a gap.
+// Production callers pass agent.NewDispatcher(executor), which
+// auto-attaches the executor's registry; tests that want to exercise
+// the ReAct path can build their own with NewDispatcherWithTools.
+func regenerateInvalidatedApproaches(ctx context.Context, dispatcher agent.AgentDispatcher, fsys specio.FS) ([]string, error) {
+	if dispatcher == nil {
 		return nil, nil
 	}
 	loaded, err := spec.LoadSpec(fsys)
@@ -70,7 +78,7 @@ func regenerateInvalidatedApproaches(ctx context.Context, llm agent.AgentExecuto
 			continue
 		}
 
-		result, err := agent.InvokeApproachRegenerator(ctx, agent.NewDispatcher(llm), def, rctx)
+		result, err := agent.InvokeApproachRegenerator(ctx, dispatcher, def, rctx)
 		if err != nil {
 			return regenerated, fmt.Errorf("regenerate %s: %w", app.ID, err)
 		}

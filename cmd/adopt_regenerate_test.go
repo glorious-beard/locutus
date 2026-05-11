@@ -92,7 +92,7 @@ func TestRegenerateInvalidatedApproaches_HappyPath(t *testing.T) {
 	mock := agent.NewMockExecutor(scriptRegenerateResponse(t,
 		"new approach body — forward: build with WorkOS; backward: delete lib/old-auth.ts and middleware/session.ts"))
 
-	regenerated, err := regenerateInvalidatedApproaches(context.Background(), mock, fs)
+	regenerated, err := regenerateInvalidatedApproaches(context.Background(), agent.NewDispatcher(mock), fs)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"app-foo"}, regenerated,
 		"regenerated list returns ids that were rewritten on disk")
@@ -127,7 +127,7 @@ func TestRegenerateInvalidatedApproaches_NoInvalidatedApproachesIsNoop(t *testin
 	require.NoError(t, specio.SaveMarkdown(fs, ".borg/spec/approaches/app-foo.md", app, body))
 
 	mock := agent.NewMockExecutor()
-	regenerated, err := regenerateInvalidatedApproaches(context.Background(), mock, fs)
+	regenerated, err := regenerateInvalidatedApproaches(context.Background(), agent.NewDispatcher(mock), fs)
 	require.NoError(t, err)
 	assert.Empty(t, regenerated)
 	assert.Equal(t, 0, mock.CallCount(),
@@ -138,7 +138,7 @@ func TestRegenerateInvalidatedApproaches_AgentReturnsEmptyBodyRejected(t *testin
 	fs := fixtureRegenerate(t, "evt-supersede-002")
 	mock := agent.NewMockExecutor(scriptRegenerateResponse(t, ""))
 
-	_, err := regenerateInvalidatedApproaches(context.Background(), mock, fs)
+	_, err := regenerateInvalidatedApproaches(context.Background(), agent.NewDispatcher(mock), fs)
 	require.Error(t, err, "empty body must be rejected as a degenerate output")
 
 	// The approach must still be invalidated (no partial write).
@@ -146,6 +146,59 @@ func TestRegenerateInvalidatedApproaches_AgentReturnsEmptyBodyRejected(t *testin
 	require.NoError(t, err2)
 	assert.True(t, app.IsInvalidated(),
 		"failed regeneration must leave the InvalidatedByEventID marker intact")
+}
+
+// TestRegenerateInvalidatedApproaches_ReActToolPath proves Phase 6's
+// dispatch wiring: when the embedded approach-regenerator scaffold
+// declares max_iterations>1, the model can emit tool_calls (e.g.
+// spec_list_manifest) that the dispatcher resolves against the
+// production registry, threads the results back, and the next
+// iteration's final answer is what lands on disk.
+//
+// Asserts:
+//   - dispatcher invoked the model twice (one per ReAct iteration)
+//   - the spec tool was invoked exactly once with the model-emitted args
+//   - the second iteration's final body is what persists on disk
+//   - the InvalidatedByEventID marker is cleared on success
+func TestRegenerateInvalidatedApproaches_ReActToolPath(t *testing.T) {
+	fs := fixtureRegenerate(t, "evt-supersede-react")
+	registry := agent.NewToolRegistry()
+	agent.RegisterSpecTools(registry, fs)
+
+	finalBody := "ReAct-pathed body — forward: WorkOS; backward: delete legacy auth"
+	finalPayload, err := json.Marshal(agent.RegenerateApproachResult{
+		RevisedBody: finalBody,
+		Rationale:   "regenerated after consulting spec_list_manifest",
+	})
+	require.NoError(t, err)
+
+	mock := agent.NewMockExecutor(
+		// Iteration 1: model calls spec_list_manifest before committing
+		// to a body, mirroring the prompt's tool-use guidance.
+		agent.MockResponse{Response: &agent.AgentOutput{
+			Content:   "Let me scan sibling approaches before drafting",
+			ToolCalls: []agent.ToolCall{{Name: agent.ToolNameSpecListManifest, Status: "ok"}},
+		}},
+		// Iteration 2: model produces the final structured answer.
+		agent.MockResponse{Response: &agent.AgentOutput{Content: string(finalPayload)}},
+	)
+
+	regenerated, err := regenerateInvalidatedApproaches(context.Background(), agent.NewDispatcherWithTools(mock, registry), fs)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"app-foo"}, regenerated,
+		"the approach must be regenerated via the ReAct path")
+
+	assert.Equal(t, 2, mock.CallCount(),
+		"two adapter calls — iteration 1 emits tool_call, iteration 2 returns final answer")
+
+	// On-disk body matches the second iteration's final content,
+	// not the first iteration's intermediate reasoning.
+	app, _, err := specio.LoadMarkdown[spec.Approach](fs, path.Join(".borg/spec/approaches", "app-foo.md"))
+	require.NoError(t, err)
+	assert.Contains(t, app.Body, "ReAct-pathed body",
+		"final answer (iteration 2) is what lands on disk")
+	assert.False(t, app.IsInvalidated(),
+		"InvalidatedByEventID is cleared on successful regeneration")
 }
 
 func TestRegenerateInvalidatedApproaches_MissingEventFileLogsAndSkips(t *testing.T) {
@@ -156,7 +209,7 @@ func TestRegenerateInvalidatedApproaches_MissingEventFileLogsAndSkips(t *testing
 	require.NoError(t, fs.Remove(".borg/history/evt-supersede-003.json"))
 
 	mock := agent.NewMockExecutor() // not called
-	regenerated, err := regenerateInvalidatedApproaches(context.Background(), mock, fs)
+	regenerated, err := regenerateInvalidatedApproaches(context.Background(), agent.NewDispatcher(mock), fs)
 	require.NoError(t, err, "missing event file is a soft degrade, not a hard failure")
 	assert.Empty(t, regenerated,
 		"approaches whose supersede event is missing must be skipped, not regenerated")

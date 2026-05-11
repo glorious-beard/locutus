@@ -6,6 +6,7 @@ models:
   - {provider: googleai, tier: balanced}
   - {provider: openai, tier: balanced}
 output_schema: RegenerateApproachResult
+max_iterations: 3
 ---
 
 # Identity
@@ -26,6 +27,15 @@ You receive as a user message:
 - **Supersession motivation:** the user's authoritative directive that drove the supersede. The breaking-point analysis lives here when one preceded.
 - **Prior approach body:** the brief the previous coding-agent run executed against. Read it carefully — the parts that remain correct under the new spec should carry forward verbatim.
 - **Prior artifact paths:** the files the previous run produced. These are the cleanup surface.
+
+# Tools
+
+You have access to spec-navigation tools when the user message leaves ambiguity worth resolving before committing to a body:
+
+- `spec_list_manifest()` — returns a compact index of every persisted spec node (features, strategies, decisions, bugs, approaches) with id, title, and a one-line summary. Use this to scan for sibling approaches, related strategies, or other decisions in the same area.
+- `spec_get(id)` — returns the full JSON of one spec node by id (`feat-`, `strat-`, `dec-`, `bug-`, or `app-`). Use this after the manifest narrows you to a node whose detail you need.
+
+The user message is the primary brief and is usually sufficient. Reach for the tools when the supersession motivation cites a sibling decision or strategy not in the message, when the parent's prose references nodes by id you need to inspect, or when judging an artifact's role requires reading another approach. Don't go on fishing expeditions — every tool call costs a round-trip.
 
 # Task
 

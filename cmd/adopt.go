@@ -272,7 +272,7 @@ func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, err
 	// with `InvalidatedByEventID` set so adopt has the blast radius;
 	// the regenerator agent rewrites the Body to address both the new
 	// spec (forward) and the cleanup of prior artifacts (backward).
-	if regenerated, regenErr := regenerateInvalidatedApproaches(ctx, cfg.LLM, synthFS); regenErr != nil {
+	if regenerated, regenErr := regenerateInvalidatedApproaches(ctx, agent.NewDispatcher(cfg.LLM), synthFS); regenErr != nil {
 		return report, fmt.Errorf("regenerate invalidated approaches: %w", regenErr)
 	} else if len(regenerated) > 0 {
 		report.RegeneratedApproaches = regenerated
