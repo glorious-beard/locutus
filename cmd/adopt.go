@@ -12,7 +12,6 @@ import (
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/check"
 	"github.com/chetan/locutus/internal/dispatch"
-	"github.com/chetan/locutus/internal/eval"
 	"github.com/chetan/locutus/internal/overlap"
 	"github.com/chetan/locutus/internal/preflight"
 	"github.com/chetan/locutus/internal/reconcile"
@@ -215,313 +214,32 @@ func RunAdopt(ctx context.Context, fsys specio.FS, scope string, dryRun bool) (*
 	return RunAdoptWithConfig(ctx, AdoptConfig{FS: fsys, Scope: scope, DryRun: dryRun})
 }
 
-// RunAdoptWithConfig is the full reconcile-loop entry point. See AdoptCmd
-// docs for the phased flow.
+// RunAdoptWithConfig is the full reconcile-loop entry point. The
+// pipeline runs through AdoptWorkflow (Phase 10 of workflow
+// unification, DJ-112). Its eight steps mirror the legacy phased
+// flow — synthesize_missing, regenerate_invalidated, resume_classify,
+// classify (incl. prereqs + writePlannedState), plan_candidates,
+// persist_plan, preflight, dispatch_and_verify. See AdoptCmd /
+// AdoptWorkflow docs for the phase semantics. RunAdoptWithConfig just
+// builds the state, runs the workflow, harvests a report — and
+// surfaces both the partial report and the error when the workflow
+// fails mid-pipeline, so the dispatch-error path stays compatible
+// with the legacy "summarise what came back before the failure"
+// contract the integration tests assert on.
 func RunAdoptWithConfig(ctx context.Context, cfg AdoptConfig) (*AdoptReport, error) {
 	if cfg.FS == nil {
 		return nil, fmt.Errorf("adopt: FS is required")
 	}
-
-	report := &AdoptReport{
-		Scope:  cfg.Scope,
-		DryRun: cfg.DryRun,
-	}
-
-	// Eval runner for assertions whose verdict requires an LLM call —
-	// today only `llm_review`. Constructed once per adopt run; passed
-	// into runAssertions for every Approach we verify.
-	evalRunner := eval.NewRunner(cfg.LLM)
-
-	// Load the spec graph + state store first so the resume classifier
-	// (Phase 1) can do drift detection. Both are reused throughout the
-	// rest of the flow.
 	graph, err := loadSpecGraph(cfg.FS)
 	if err != nil {
-		return report, err
+		return &AdoptReport{Scope: cfg.Scope, DryRun: cfg.DryRun}, err
 	}
-	store := state.NewFileStateStore(cfg.FS, state.DefaultStateDir)
-
-	// --- Phase 0: Synthesize approaches for parents that arrived
-	// without any. Approaches are an adopt-time concern (real code
-	// context exists here, not during refine), so the spec graph may
-	// reach adopt with bare features/strategies — synthesize one
-	// approach per parent on demand. Dry-run still calls the LLM but
-	// routes writes through the read-only wrapper (matching assimilate).
-	synthFS := cfg.FS
-	if cfg.DryRun {
-		synthFS = newReadOnlyFS(cfg.FS)
-	}
-	if synthesized, synthErr := synthesizeMissingApproaches(ctx, cfg.LLM, synthFS, graph, cfg.Scope); synthErr != nil {
-		return report, fmt.Errorf("synthesize approaches: %w", synthErr)
-	} else if len(synthesized) > 0 {
-		report.SynthesizedApproaches = synthesized
-		// Reload the graph so freshly written approaches show up in
-		// classification. On dry-run the writes were dropped; the
-		// reload returns the same pre-synthesis graph and the report
-		// surface still names the would-be Approach IDs.
-		if !cfg.DryRun {
-			graph, err = loadSpecGraph(cfg.FS)
-			if err != nil {
-				return report, err
-			}
-		}
-	}
-
-	// --- Phase 0b: Regenerate Approaches invalidated by a prior
-	// `refine --supersede` run. The cascade engine left these on disk
-	// with `InvalidatedByEventID` set so adopt has the blast radius;
-	// the regenerator agent rewrites the Body to address both the new
-	// spec (forward) and the cleanup of prior artifacts (backward).
-	if regenerated, regenErr := regenerateInvalidatedApproaches(ctx, agent.NewDispatcher(cfg.LLM), synthFS); regenErr != nil {
-		return report, fmt.Errorf("regenerate invalidated approaches: %w", regenErr)
-	} else if len(regenerated) > 0 {
-		report.RegeneratedApproaches = regenerated
-		if !cfg.DryRun {
-			graph, err = loadSpecGraph(cfg.FS)
-			if err != nil {
-				return report, err
-			}
-		}
-	}
-
-	// --- Phase 1: Resume protocol (DJ-073 + DJ-074) ---
-	// Default behavior is auto-resume when possible: a leftover plan
-	// with no covered-Approach drift becomes a resumeMap that
-	// re-dispatches only the not-yet-complete steps with the persisted
-	// agent session IDs. A plan whose covered Approaches are all live
-	// is archived. Drift triggers invalidate-and-replan.
-	// --discard-in-flight forces invalidate on every leftover plan.
-	resumePoints := map[string]*dispatch.ResumePoint{}
-	var planToResume *spec.MasterPlan
-	if !cfg.DryRun {
-		classified, err := classifyActivePlans(cfg.FS, cfg.DiscardInFlight, graph, store)
-		if err != nil {
-			return report, fmt.Errorf("resume: %w", err)
-		}
-		report.ResumedInvalidated = classified.Invalidated
-		report.Archived = append(report.Archived, classified.Archived...)
-		resumePoints = classified.ResumeMap
-		planToResume = classified.PlanToResume
-	}
-
-	// --- Resume short-circuit ---
-	// When a leftover plan classified as resumable, skip Phases 2-6
-	// (classification + planning + persistence + pre-flight). The plan
-	// is already on disk; the persisted state has the prior run's
-	// progress; pre-flight already happened. Jump to dispatch with the
-	// resumeMap and let Phase 8 verify the outcome.
-	if planToResume != nil {
-		report.PlanID = planToResume.ID
-		report.Resumed = append(report.Resumed, planToResume.ID)
-		return runAdoptDispatchAndVerify(ctx, cfg, report, graph, store, planToResume, resumePoints, evalRunner)
-	}
-
-	// --- Phase 2: Classification + scope + prereqs ---
-
-	classifications, err := reconcile.Classify(cfg.FS, graph, store)
+	st, err := buildAdoptState(cfg, graph)
 	if err != nil {
-		return report, fmt.Errorf("classify: %w", err)
+		return &AdoptReport{Scope: cfg.Scope, DryRun: cfg.DryRun}, err
 	}
-	if cfg.Scope != "" {
-		classifications = filterByScope(classifications, graph, cfg.Scope)
-	}
-	report.Classifications = classifications
-	report.Summary = summariseClassifications(classifications)
-
-	prereqs, perr := check.CheckPrereqs(cfg.FS)
-	if perr != nil {
-		return report, fmt.Errorf("prereqs: %w", perr)
-	}
-	report.PrereqResults = prereqs
-	report.PrereqsOK = !check.AnyFailed(prereqs)
-
-	if cfg.DryRun || !report.PrereqsOK {
-		return report, nil
-	}
-
-	// --- Phase 3: Persist transient planned state for every candidate ---
-	if err := writePlannedState(store, classifications); err != nil {
-		return report, err
-	}
-
-	candidates := reconcile.PlanCandidates(classifications)
-	if len(candidates) == 0 || cfg.Plan == nil || cfg.Dispatch == nil {
-		// No LLM configured or nothing to plan — stop after the state writes.
-		return report, nil
-	}
-
-	// --- Phase 4: Plan ---
-	plan, err := runPlannerForCandidates(ctx, cfg, graph, candidates)
-	if err != nil {
-		return report, fmt.Errorf("plan: %w", err)
-	}
-	if plan == nil || len(plan.Workstreams) == 0 {
-		return report, nil
-	}
-	report.PlanID = plan.ID
-
-	// --- Phase 5: Persist PlanRecord + ActiveWorkstreams ---
-	wsStore := workstream.NewFileStore(cfg.FS, workstreamsDir, plan.ID)
-	if err := wsStore.SavePlan(*plan); err != nil {
-		return report, fmt.Errorf("persist plan: %w", err)
-	}
-	approachesByWorkstream := approachesCoveredByWorkstreams(plan)
-	for _, ws := range plan.Workstreams {
-		rec := workstream.ActiveWorkstream{
-			WorkstreamID: ws.ID,
-			PlanID:       plan.ID,
-			ApproachIDs:  approachesByWorkstream[ws.ID],
-			Plan:         ws,
-		}
-		if err := wsStore.Save(rec); err != nil {
-			return report, fmt.Errorf("persist workstream %s: %w", ws.ID, err)
-		}
-		// Flip every covered Approach to in_progress + stamp the plan ID.
-		for _, aid := range rec.ApproachIDs {
-			entry, err := store.Load(aid)
-			if err != nil {
-				entry = state.ReconciliationState{ApproachID: aid}
-			}
-			entry.Status = state.StatusPreFlight
-			entry.WorkstreamID = ws.ID
-			entry.Message = "pre-flight"
-			entry.LastReconciled = time.Now()
-			if err := store.Save(entry); err != nil {
-				return report, fmt.Errorf("mark %s pre_flight: %w", aid, err)
-			}
-		}
-	}
-
-	// --- Phase 6: Pre-flight per workstream ---
-	approachesByID := indexApproaches(graph)
-	for _, ws := range plan.Workstreams {
-		pfReport, err := preflight.Preflight(ctx, cfg.LLM, cfg.FS, graph, store, ws, approachesByID, cfg.PreflightRounds)
-		if err != nil {
-			return report, fmt.Errorf("preflight %s: %w", ws.ID, err)
-		}
-		report.PreflightResolutions = append(report.PreflightResolutions, pfReport.Resolutions...)
-		for _, d := range pfReport.AssumedDecisions {
-			report.AssumedDecisions = append(report.AssumedDecisions, d.ID)
-		}
-		// Flip the record to reflect pre-flight completion.
-		rec, err := wsStore.Load(ws.ID)
-		if err == nil {
-			rec.PreFlightDone = true
-			_ = wsStore.Save(rec)
-		}
-	}
-	// Flip state entries from pre_flight → in_progress ahead of dispatch.
-	for _, ws := range plan.Workstreams {
-		for _, aid := range approachesByWorkstream[ws.ID] {
-			if entry, err := store.Load(aid); err == nil {
-				entry.Status = state.StatusInProgress
-				entry.Message = "dispatched"
-				_ = store.Save(entry)
-			}
-		}
-	}
-
-	return runAdoptDispatchAndVerify(ctx, cfg, report, graph, store, plan, resumePoints, evalRunner)
-}
-
-// runAdoptDispatchAndVerify covers Phases 7-9: dispatch the plan,
-// verify assertions per Approach, archive the plan when every
-// workstream reached a terminal state. Both the fresh-adopt and
-// resume paths funnel through here. Caller has already ensured the
-// plan record + per-Approach state entries are in place (either
-// freshly written in Phase 5 or persisted by a prior run we're now
-// resuming). The pre-flight pass (Phase 6) is also caller-owned —
-// resume skips it because the prior run already executed it.
-func runAdoptDispatchAndVerify(
-	ctx context.Context,
-	cfg AdoptConfig,
-	report *AdoptReport,
-	graph *spec.SpecGraph,
-	store *state.FileStateStore,
-	plan *spec.MasterPlan,
-	resumePoints map[string]*dispatch.ResumePoint,
-	evalRunner *eval.Runner,
-) (*AdoptReport, error) {
-	wsStore := workstream.NewFileStore(cfg.FS, workstreamsDir, plan.ID)
-	approachesByWorkstream := approachesCoveredByWorkstreams(plan)
-	approachesByID := indexApproaches(graph)
-
-	results, err := cfg.Dispatch(ctx, plan, cfg.RepoDir, resumePoints)
-	if err != nil {
-		// Dispatcher returns per-workstream errors via WorkstreamResult; a
-		// top-level error means the executor itself failed. Persist what
-		// we have and bail.
-		report.DispatchedWorkstreams = summariseDispatch(results, approachesByWorkstream)
-		return report, fmt.Errorf("dispatch: %w", err)
-	}
-
-	for _, wsResult := range results {
-		outcome := WorkstreamOutcome{
-			WorkstreamID: wsResult.WorkstreamID,
-			BranchName:   wsResult.BranchName,
-			Dispatched:   wsResult.Success,
-		}
-		if wsResult.Err != nil {
-			outcome.Error = wsResult.Err.Error()
-		}
-
-		// Record per-step progress on the workstream record (and roll
-		// AgentSessionID up for next-run resume per DJ-074).
-		recordStepProgress(wsStore, wsResult)
-
-		coveredIDs := approachesByWorkstream[wsResult.WorkstreamID]
-
-		if !wsResult.Success {
-			// Dispatch failed for this workstream — every covered Approach
-			// is failed; assertions are skipped.
-			for _, aid := range coveredIDs {
-				writeFailedState(store, aid, "dispatch failed: "+errString(wsResult.Err))
-				outcome.FailedApproaches = append(outcome.FailedApproaches, aid)
-			}
-			report.DispatchedWorkstreams = append(report.DispatchedWorkstreams, outcome)
-			continue
-		}
-
-		// Dispatch succeeded — run assertions for each covered Approach.
-		for _, aid := range coveredIDs {
-			approach := approachesByID[aid]
-			assertionResults := runAssertions(ctx, approach, cfg.RepoDir, evalRunner, cfg.FS)
-			newArtifactHashes := spec.ComputeArtifactHashes(cfg.FS.ReadFile, approach)
-
-			entry, err := store.Load(aid)
-			if err != nil {
-				entry = state.ReconciliationState{ApproachID: aid}
-			}
-			entry.Artifacts = newArtifactHashes
-			entry.SpecHash = spec.ComputeSpecHash(approach)
-			entry.AssertionResults = assertionResults
-			entry.LastReconciled = time.Now()
-			if allPassed(assertionResults) {
-				entry.Status = state.StatusLive
-				entry.Message = "assertions passed"
-				outcome.LiveApproaches = append(outcome.LiveApproaches, aid)
-			} else {
-				entry.Status = state.StatusFailed
-				entry.Message = "assertion failure"
-				outcome.FailedApproaches = append(outcome.FailedApproaches, aid)
-			}
-			if err := store.Save(entry); err != nil {
-				return report, fmt.Errorf("save state %s: %w", aid, err)
-			}
-		}
-
-		report.DispatchedWorkstreams = append(report.DispatchedWorkstreams, outcome)
-	}
-
-	// Archive on terminal transition.
-	if planIsTerminal(report.DispatchedWorkstreams) {
-		if err := wsStore.DeletePlan(); err != nil {
-			return report, fmt.Errorf("archive plan %s: %w", plan.ID, err)
-		}
-		report.Archived = append(report.Archived, plan.ID)
-	}
-
-	return report, nil
+	runErr := runAdoptWorkflow(ctx, st)
+	return harvestAdoptReport(st), runErr
 }
 
 // planClassification is the outcome of classifying leftover in-flight
