@@ -93,7 +93,7 @@ func InvokeSupersedeDecision(ctx context.Context, dispatcher AgentDispatcher, de
 		return nil, fmt.Errorf("invoke supersede decision: old node must be *spec.Decision, got %T", sctx.OldNode)
 	}
 
-	user := buildSupersedeDecisionPrompt(*old, sctx.Motivation, sctx.JustifySession)
+	user := BuildSupersedeDecisionPrompt(*old, sctx.Motivation, sctx.JustifySession)
 	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
 	out, err := dispatcher.Dispatch(ctx, def, input, DispatchOptions{})
 	if err != nil {
@@ -116,7 +116,7 @@ func InvokeSupersedeFeature(ctx context.Context, dispatcher AgentDispatcher, def
 		return nil, fmt.Errorf("invoke supersede feature: old node must be *spec.Feature, got %T", sctx.OldNode)
 	}
 
-	user := buildSupersedeFeaturePrompt(*old, sctx.Motivation, sctx.JustifySession)
+	user := BuildSupersedeFeaturePrompt(*old, sctx.Motivation, sctx.JustifySession)
 	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
 	out, err := dispatcher.Dispatch(ctx, def, input, DispatchOptions{})
 	if err != nil {
@@ -139,7 +139,7 @@ func InvokeSupersedeStrategy(ctx context.Context, dispatcher AgentDispatcher, de
 		return nil, fmt.Errorf("invoke supersede strategy: old node must be *spec.Strategy, got %T", sctx.OldNode)
 	}
 
-	user := buildSupersedeStrategyPrompt(*old, sctx.Motivation, sctx.JustifySession)
+	user := BuildSupersedeStrategyPrompt(*old, sctx.Motivation, sctx.JustifySession)
 	input := AgentInput{Messages: []Message{{Role: "user", Content: user}}}
 	out, err := dispatcher.Dispatch(ctx, def, input, DispatchOptions{})
 	if err != nil {
@@ -155,12 +155,17 @@ func InvokeSupersedeStrategy(ctx context.Context, dispatcher AgentDispatcher, de
 	return &result, nil
 }
 
-// buildSupersedeDecisionPrompt assembles the user-message body. The
+// BuildSupersedeDecisionPrompt assembles the user-message body. The
 // system prompt comes from the agent .md (output_schema injects the
 // JSON shape). The user message carries the structured payload —
 // existing decision JSON, motivation, optional justify session
 // pointer.
-func buildSupersedeDecisionPrompt(old spec.Decision, motivation, justifySession string) string {
+//
+// Exported so the supersede workflow in cmd/ can render the same
+// prompt the direct-call path uses (InvokeSupersedeDecision) without
+// re-running the LLM. Keeping one prompt source prevents wire-shape
+// drift between the workflow path and the legacy direct-call.
+func BuildSupersedeDecisionPrompt(old spec.Decision, motivation, justifySession string) string {
 	var b strings.Builder
 	b.WriteString("# Supersession context\n\n")
 	b.WriteString("**Existing decision (to be replaced):**\n\n```json\n")
@@ -184,7 +189,9 @@ func buildSupersedeDecisionPrompt(old spec.Decision, motivation, justifySession 
 	return b.String()
 }
 
-func buildSupersedeFeaturePrompt(old spec.Feature, motivation, justifySession string) string {
+// BuildSupersedeFeaturePrompt mirrors BuildSupersedeDecisionPrompt for
+// feature targets. Exported for the supersede workflow.
+func BuildSupersedeFeaturePrompt(old spec.Feature, motivation, justifySession string) string {
 	var b strings.Builder
 	b.WriteString("# Supersession context\n\n")
 	b.WriteString("**Existing feature (to be replaced):**\n\n```json\n")
@@ -208,7 +215,9 @@ func buildSupersedeFeaturePrompt(old spec.Feature, motivation, justifySession st
 	return b.String()
 }
 
-func buildSupersedeStrategyPrompt(old spec.Strategy, motivation, justifySession string) string {
+// BuildSupersedeStrategyPrompt mirrors BuildSupersedeDecisionPrompt
+// for strategy targets. Exported for the supersede workflow.
+func BuildSupersedeStrategyPrompt(old spec.Strategy, motivation, justifySession string) string {
 	var b strings.Builder
 	b.WriteString("# Supersession context\n\n")
 	b.WriteString("**Existing strategy (to be replaced):**\n\n```json\n")

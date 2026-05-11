@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -38,11 +37,11 @@ type SupersedeSummary struct {
 	AgentRationale string `json:"agent_rationale,omitempty"`
 }
 
-// RunRefineSupersede orchestrates `refine <id> --supersede "..."`.
-// Loads the spec graph, dispatches by node kind to the matching
-// LLM agent, computes the cascade plan against the agent's emitted
-// replacement, and applies the plan atomically. Bug targets are
-// rejected with a hint at the existing status-transition path.
+// RunRefineSupersede orchestrates `refine <id> --supersede "..."` via
+// the SupersedeWorkflow (Phase 8 of workflow unification). The
+// signature is preserved so cmd/refine.go and cmd/mcp.go keep
+// compiling; the implementation now builds a SupersedeState, runs the
+// two-phase workflow, and projects state into a RefineResult.
 //
 // justifySession is the optional .locutus/sessions/.../session.yaml
 // pointer for the breaking-point analysis that motivated the
@@ -64,208 +63,100 @@ func RunRefineSupersede(ctx context.Context, llm agent.AgentExecutor, fsys speci
 		return nil, fmt.Errorf("supersede: load spec: %w", err)
 	}
 
-	eventID := history.EventID(history.EventKindNodeSuperseded, id, time.Now().UTC())
+	state := SupersedeState{
+		OldID:          id,
+		Kind:           kind,
+		Motivation:     motivation,
+		JustifySession: justifySession,
+		EventID:        history.EventID(history.EventKindNodeSuperseded, id, time.Now().UTC()),
+		FSys:           fsys,
+		Loaded:         loaded,
+	}
+	if err := bindSupersedeOldNode(&state, loaded); err != nil {
+		return nil, err
+	}
 
+	defs, err := loadSupersedeAgentDefs(fsys, kind)
+	if err != nil {
+		return nil, fmt.Errorf("supersede: %w", err)
+	}
+
+	executor := &agent.WorkflowExecutor[SupersedeState]{
+		Executor:  llm,
+		AgentDefs: defs,
+		Workflow:  SupersedeWorkflow,
+	}
+	if _, err := executor.Run(ctx, &state); err != nil {
+		return nil, fmt.Errorf("supersede: workflow: %w", err)
+	}
+
+	if state.ReplacementError != nil {
+		return nil, fmt.Errorf("supersede: %w", state.ReplacementError)
+	}
+	if state.Plan == nil || state.Event == nil {
+		return nil, fmt.Errorf("supersede: agent emitted unusable replacement for %s %q (no cascade applied)", kind, id)
+	}
+	return supersedeRefineResult(state.Plan, state.Event, state.AgentRationale, motivation), nil
+}
+
+// bindSupersedeOldNode looks up the target node and stashes it on
+// state under the kind-appropriate pointer field. Returns an error
+// when the id doesn't resolve — pre-LLM validation, fail fast.
+func bindSupersedeOldNode(state *SupersedeState, loaded *spec.Loaded) error {
+	switch state.Kind {
+	case spec.KindDecision:
+		n := loaded.DecisionNodeByID(state.OldID)
+		if n == nil {
+			return fmt.Errorf("supersede: decision %q not found", state.OldID)
+		}
+		dec := n.Spec
+		state.OldDecision = &dec
+	case spec.KindFeature:
+		n := loaded.FeatureNodeByID(state.OldID)
+		if n == nil {
+			return fmt.Errorf("supersede: feature %q not found", state.OldID)
+		}
+		feat := n.Spec
+		state.OldFeature = &feat
+	case spec.KindStrategy:
+		n := loaded.StrategyNodeByID(state.OldID)
+		if n == nil {
+			return fmt.Errorf("supersede: strategy %q not found", state.OldID)
+		}
+		strat := n.Spec
+		state.OldStrategy = &strat
+	default:
+		return fmt.Errorf("supersede: unsupported kind %q", state.Kind)
+	}
+	return nil
+}
+
+// loadSupersedeAgentDefs loads the kind-specific refiner-supersede
+// agent (one of three) and the refiner agent (used by phase 2's prose
+// cascade). Two entries in the map covers every dispatch path the
+// workflow takes for the given kind.
+func loadSupersedeAgentDefs(fsys specio.FS, kind spec.NodeKind) (map[string]agent.AgentDef, error) {
+	supersedeID := ""
 	switch kind {
 	case spec.KindDecision:
-		return runSupersedeDecision(ctx, llm, fsys, loaded, id, motivation, justifySession, eventID)
+		supersedeID = "refiner-supersede-decision"
 	case spec.KindFeature:
-		return runSupersedeFeature(ctx, llm, fsys, loaded, id, motivation, justifySession, eventID)
+		supersedeID = "refiner-supersede-feature"
 	case spec.KindStrategy:
-		return runSupersedeStrategy(ctx, llm, fsys, loaded, id, motivation, justifySession, eventID)
-	}
-	return nil, fmt.Errorf("supersede: unsupported kind %q", kind)
-}
-
-func runSupersedeDecision(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, loaded *spec.Loaded, id, motivation, justifySession, eventID string) (*RefineResult, error) {
-	old := loaded.DecisionNodeByID(id)
-	if old == nil {
-		return nil, fmt.Errorf("supersede: decision %q not found", id)
-	}
-	def, err := scaffold.LoadAgent(fsys, "refiner-supersede-decision")
-	if err != nil {
-		return nil, fmt.Errorf("supersede: load agent: %w", err)
-	}
-	result, err := agent.InvokeSupersedeDecision(ctx, agent.NewDispatcher(llm), def, agent.SupersedeContext{
-		OldNode:        &old.Spec,
-		Motivation:     motivation,
-		JustifySession: justifySession,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("supersede: agent: %w", err)
-	}
-	newDec := result.RevisedDecision
-	if !strings.HasPrefix(newDec.ID, "dec-") {
-		return nil, fmt.Errorf("supersede: agent emitted id %q without dec- prefix", newDec.ID)
+		supersedeID = "refiner-supersede-strategy"
+	default:
+		return nil, fmt.Errorf("load agent defs: unsupported kind %q", kind)
 	}
 
-	plan, err := cascade.ComputeSupersedePlan(loaded, id, newDec.ID, eventID)
-	if err != nil {
-		return nil, fmt.Errorf("supersede: compute plan: %w", err)
-	}
-	historian := history.NewHistorian(fsys, ".borg/history")
-	evt, err := cascade.ApplySupersedeDecision(fsys, plan, newDec, motivation, justifySession, historian)
-	if err != nil {
-		return nil, fmt.Errorf("supersede: apply: %w", err)
-	}
-	runProseCascade(ctx, llm, fsys, plan, motivation)
-	return supersedeRefineResult(plan, evt, result.Rationale, motivation), nil
-}
-
-func runSupersedeFeature(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, loaded *spec.Loaded, id, motivation, justifySession, eventID string) (*RefineResult, error) {
-	old := loaded.FeatureNodeByID(id)
-	if old == nil {
-		return nil, fmt.Errorf("supersede: feature %q not found", id)
-	}
-	def, err := scaffold.LoadAgent(fsys, "refiner-supersede-feature")
-	if err != nil {
-		return nil, fmt.Errorf("supersede: load agent: %w", err)
-	}
-	result, err := agent.InvokeSupersedeFeature(ctx, agent.NewDispatcher(llm), def, agent.SupersedeContext{
-		OldNode:        &old.Spec,
-		Motivation:     motivation,
-		JustifySession: justifySession,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("supersede: agent: %w", err)
-	}
-	newFeat := result.RevisedFeature
-	if !strings.HasPrefix(newFeat.ID, "feat-") {
-		return nil, fmt.Errorf("supersede: agent emitted id %q without feat- prefix", newFeat.ID)
-	}
-
-	plan, err := cascade.ComputeSupersedePlan(loaded, id, newFeat.ID, eventID)
-	if err != nil {
-		return nil, fmt.Errorf("supersede: compute plan: %w", err)
-	}
-	historian := history.NewHistorian(fsys, ".borg/history")
-	evt, err := cascade.ApplySupersedeFeature(fsys, plan, newFeat, motivation, justifySession, historian)
-	if err != nil {
-		return nil, fmt.Errorf("supersede: apply: %w", err)
-	}
-	runProseCascade(ctx, llm, fsys, plan, motivation)
-	return supersedeRefineResult(plan, evt, result.Rationale, motivation), nil
-}
-
-func runSupersedeStrategy(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, loaded *spec.Loaded, id, motivation, justifySession, eventID string) (*RefineResult, error) {
-	old := loaded.StrategyNodeByID(id)
-	if old == nil {
-		return nil, fmt.Errorf("supersede: strategy %q not found", id)
-	}
-	def, err := scaffold.LoadAgent(fsys, "refiner-supersede-strategy")
-	if err != nil {
-		return nil, fmt.Errorf("supersede: load agent: %w", err)
-	}
-	result, err := agent.InvokeSupersedeStrategy(ctx, agent.NewDispatcher(llm), def, agent.SupersedeContext{
-		OldNode:        &old.Spec,
-		Motivation:     motivation,
-		JustifySession: justifySession,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("supersede: agent: %w", err)
-	}
-	newStrat := result.RevisedStrategy
-	if !strings.HasPrefix(newStrat.ID, "strat-") {
-		return nil, fmt.Errorf("supersede: agent emitted id %q without strat- prefix", newStrat.ID)
-	}
-
-	plan, err := cascade.ComputeSupersedePlan(loaded, id, newStrat.ID, eventID)
-	if err != nil {
-		return nil, fmt.Errorf("supersede: compute plan: %w", err)
-	}
-	historian := history.NewHistorian(fsys, ".borg/history")
-	evt, err := cascade.ApplySupersedeStrategy(fsys, plan, newStrat, motivation, justifySession, historian)
-	if err != nil {
-		return nil, fmt.Errorf("supersede: apply: %w", err)
-	}
-	runProseCascade(ctx, llm, fsys, plan, motivation)
-	return supersedeRefineResult(plan, evt, result.Rationale, motivation), nil
-}
-
-// runProseCascade refreshes downstream prose so it stops referencing
-// the superseded node by content. The mechanical cascade in
-// cascade.ApplySupersede{Decision,Feature,Strategy} only rewrites
-// id references — Feature.Description / Strategy body / Bug.Description
-// can still describe the old decision in human prose. The existing
-// refiner agent (the one driving --brief refines today) is invoked
-// per affected downstream node with the supersede motivation as the
-// brief.
-//
-// Soft-degrades on error: the structured supersede already landed
-// on disk atomically; a refiner failure leaves stale prose but
-// shouldn't roll back the structural state. The user can re-run
-// `refine <id> --brief "..."` per affected node to retry.
-//
-// In-place plans skip prose cascade — id references didn't change,
-// and the refiner has nothing to rewrite against.
-func runProseCascade(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, plan *cascade.SupersedePlan, motivation string) {
-	if plan.InPlace {
-		return
-	}
-	if motivation == "" {
-		return
-	}
-	ctx = cascade.WithBrief(ctx, motivation)
-
-	// Reload the spec graph after the mechanical cascade so the
-	// refiner sees the new id references in features / strategies /
-	// bugs and treats the new decision as authoritative.
-	loaded, err := spec.LoadSpec(fsys)
-	if err != nil {
-		slog.Warn("supersede: prose cascade reload failed", "error", err)
-		return
-	}
-
-	for _, fid := range plan.FeaturesToRewrite {
-		f := loaded.FeatureNodeByID(fid)
-		if f == nil {
-			continue
+	defs := make(map[string]agent.AgentDef, 2)
+	for _, id := range []string{supersedeID, "refiner"} {
+		def, err := scaffold.LoadAgent(fsys, id)
+		if err != nil {
+			return nil, fmt.Errorf("load agent %s: %w", id, err)
 		}
-		applicable := resolveDecisions(loaded, f.Spec.Decisions)
-		if _, _, err := cascade.RewriteFeature(ctx, agent.NewDispatcher(llm), fsys, f.Spec, applicable, applicable); err != nil {
-			slog.Warn("supersede: prose cascade for feature failed",
-				"feature", fid, "error", err)
-		}
+		defs[id] = def
 	}
-	for _, sid := range plan.StrategiesToRewrite {
-		s := loaded.StrategyNodeByID(sid)
-		if s == nil {
-			continue
-		}
-		applicable := resolveDecisions(loaded, s.Spec.Decisions)
-		if _, _, err := cascade.RewriteStrategy(ctx, agent.NewDispatcher(llm), fsys, s.Spec, applicable, applicable); err != nil {
-			slog.Warn("supersede: prose cascade for strategy failed",
-				"strategy", sid, "error", err)
-		}
-	}
-	for _, bid := range plan.BugsToRewrite {
-		b := loaded.BugNodeByID(bid)
-		if b == nil {
-			continue
-		}
-		// Bugs inherit decisions from their parent feature.
-		var applicable []spec.Decision
-		if pf := loaded.FeatureNodeByID(b.Spec.FeatureID); pf != nil {
-			applicable = resolveDecisions(loaded, pf.Spec.Decisions)
-		}
-		if _, _, err := cascade.RewriteBug(ctx, agent.NewDispatcher(llm), fsys, b.Spec, applicable, applicable); err != nil {
-			slog.Warn("supersede: prose cascade for bug failed",
-				"bug", bid, "error", err)
-		}
-	}
-}
-
-// resolveDecisions resolves a slice of decision ids against loaded.
-// Skips ids whose decision is missing (e.g. mid-cascade race or a
-// hand-edit that broke a reference). Returned in input order.
-func resolveDecisions(loaded *spec.Loaded, ids []string) []spec.Decision {
-	out := make([]spec.Decision, 0, len(ids))
-	for _, id := range ids {
-		if d := loaded.DecisionNodeByID(id); d != nil {
-			out = append(out, d.Spec)
-		}
-	}
-	return out
+	return defs, nil
 }
 
 // printSupersedeSummary renders the operator-facing summary for a
