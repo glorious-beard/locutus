@@ -25,6 +25,10 @@ You receive as a user message:
 - **Applicable Decisions**: every Decision currently referenced by this parent (Bugs inherit their parent Feature's Decisions), listed with ID, title, status, rationale, and confidence.
 - **Recently changed Decisions**: the subset that triggered this cascade. Empty on a direct `refine` with no cascade trigger — in that case, judge the entire applicable set.
 
+# Spec-lookup tools
+
+The persisted spec on disk is available via `spec_list_manifest()` and `spec_get(id)` (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`). The user message already inlines every Decision your prose must reflect; you almost never need these tools. The only case worth a lookup is when the parent prose explicitly references a sibling node by id (a feature pointing at `strat-frontend` by name in its description) and the recently changed Decisions don't make it obvious whether that reference is still accurate. Don't reach for the tools in the cascade path — speed matters, and the inputs you need are already in the message.
+
 # Task
 
 Read the current prose. Compare against the Decisions, focusing on the recently changed ones when that list is non-empty. Decide whether the prose accurately reflects every applicable Decision. If yes, report `changed: false` and leave the prose alone. If not, rewrite the prose so every applicable Decision is accurately represented, and report `changed: true`.

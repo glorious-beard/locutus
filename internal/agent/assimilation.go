@@ -227,22 +227,25 @@ func Analyze(ctx context.Context, exec AgentExecutor, fsys specio.FS, req Assimi
 	promptBuilder.Write(inventoryJSON)
 	promptBuilder.WriteString("\n")
 
+	// Existing-spec context is delivered via the spec_list_manifest /
+	// spec_get tools (DJ-094, DJ-115), not inlined. The flag below is
+	// a data-state hint, not a directive — the scout agent's prompt
+	// covers tool usage. On greenfield runs (empty existing spec) we
+	// omit the flag entirely so the agent doesn't burn turns on
+	// lookups that would return empty.
+	//
+	// Entities are NOT exposed via the tools (per DJ-076, entities
+	// are context carriers, not persisted spec nodes). The scout's
+	// prompt is the only path they thread through; when the caller
+	// supplies an in-memory entities slice we still inline those
+	// since the tool layer has nothing to return for them.
 	if !req.ExistingSpec.IsEmpty() {
-		promptBuilder.WriteString("\n## Existing spec — update these nodes in place (match IDs) rather than duplicate them; emit new nodes only for genuinely new concepts:\n")
-		for _, f := range req.ExistingSpec.Features {
-			fmt.Fprintf(&promptBuilder, "- feature %s (%s): %s\n", f.ID, f.Status, f.Title)
-		}
-		for _, d := range req.ExistingSpec.Decisions {
-			fmt.Fprintf(&promptBuilder, "- decision %s (%s): %s — %s\n", d.ID, d.Status, d.Title, d.Rationale)
-		}
-		for _, s := range req.ExistingSpec.Strategies {
-			fmt.Fprintf(&promptBuilder, "- strategy %s (%s): %s\n", s.ID, s.Status, s.Title)
-		}
-		for _, a := range req.ExistingSpec.Approaches {
-			fmt.Fprintf(&promptBuilder, "- approach %s: %s (parent %s)\n", a.ID, a.Title, a.ParentID)
-		}
-		for _, e := range req.ExistingSpec.Entities {
-			fmt.Fprintf(&promptBuilder, "- entity %s: %s\n", e.ID, e.Name)
+		promptBuilder.WriteString("\n## Existing spec is present\n\nA persisted spec snapshot exists at `.borg/spec/`; the `spec_list_manifest` and `spec_get` tools will return non-empty results. Call `spec_list_manifest` first to scan ids + summaries; call `spec_get(id)` only for nodes whose detail you need. Update nodes in place (match IDs) rather than duplicating them; emit new nodes only for genuinely new concepts. (On greenfield runs this section is omitted.)\n")
+		if len(req.ExistingSpec.Entities) > 0 {
+			promptBuilder.WriteString("\n## In-memory entities (not on disk; see DJ-076)\n\n")
+			for _, e := range req.ExistingSpec.Entities {
+				fmt.Fprintf(&promptBuilder, "- entity %s: %s\n", e.ID, e.Name)
+			}
 		}
 	}
 

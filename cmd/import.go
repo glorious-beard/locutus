@@ -74,6 +74,23 @@ func (c *ImportCmd) Run(ctx context.Context, cli *CLI) error {
 	}
 	defer closeSink()
 
+	// Prereq pass — fill missing spec summaries before the council
+	// dispatches, so the spec_list_manifest tool the reconciler and
+	// other agents call sees authored summaries rather than truncated
+	// rationale lead-ins. On --dry-run we assert without mutating; the
+	// run will fail with an actionable error pointing at
+	// `update --check-pre-reqs`.
+	//
+	// Skipped when the LLM was not constructed (--skip-triage) because
+	// resolution requires the dispatcher. The downstream path that
+	// would skip prereqs is also the path that doesn't dispatch a
+	// council, so the missing summaries don't bite us.
+	if llm != nil {
+		if err := runSpecPrereqs(ctx, fsys, llm, !c.DryRun); err != nil {
+			return err
+		}
+	}
+
 	result, err := RunImport(ctx, llm, fsys, data, c.Path, c.Type, c.SkipTriage, c.NoPlan, c.DryRun, sink)
 	if err != nil {
 		return err

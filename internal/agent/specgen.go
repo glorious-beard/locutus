@@ -36,7 +36,12 @@ type SpecProposal struct {
 
 // FeatureProposal is an LLM-friendly subset of spec.Feature.
 type FeatureProposal struct {
-	ID                 string   `json:"id"`
+	ID string `json:"id"`
+	// Summary: one-sentence "what" description, threaded from the
+	// architect's RawFeatureProposal through reconciliation onto the
+	// persisted Feature. Optional in the schema; the prereq fills any
+	// gaps after-the-fact.
+	Summary            string   `json:"summary,omitempty"`
 	Title              string   `json:"title"`
 	Description        string   `json:"description"`
 	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
@@ -48,7 +53,9 @@ type FeatureProposal struct {
 // the spec node itself per DJ-085, so the persisted Decision carries
 // durable provenance independent of the .locutus/sessions/ transcript.
 type DecisionProposal struct {
-	ID                 string             `json:"id"`
+	ID string `json:"id"`
+	// Summary: see FeatureProposal.Summary.
+	Summary            string             `json:"summary,omitempty"`
 	Title              string             `json:"title"`
 	Rationale          string             `json:"rationale"`
 	Confidence         float64            `json:"confidence"`
@@ -62,7 +69,9 @@ type DecisionProposal struct {
 // the prose narrative persisted as the .md body alongside the JSON
 // sidecar.
 type StrategyProposal struct {
-	ID        string   `json:"id"`
+	ID string `json:"id"`
+	// Summary: see FeatureProposal.Summary.
+	Summary   string   `json:"summary,omitempty"`
 	Title     string   `json:"title"`
 	Kind      string   `json:"kind"`
 	Body      string   `json:"body"`
@@ -364,6 +373,13 @@ func reviseForIntegrity(ctx context.Context, exec AgentExecutor, archDef AgentDe
 // buildSpecGenPrompt assembles the seed prompt the workflow executor
 // passes to every agent (each agent's projection function picks what it
 // needs out of this).
+//
+// Existing-spec context is delivered via the spec_list_manifest /
+// spec_get tools (DJ-094, DJ-115), not inlined. We emit a one-line
+// data-state flag when an existing spec is present so the agent knows
+// the tools will return non-empty results; on greenfield runs the flag
+// is omitted entirely so agents don't burn turns on lookups that would
+// return empty. Mirrors projectReconcile's shape.
 func buildSpecGenPrompt(req SpecGenRequest) string {
 	var b strings.Builder
 	b.WriteString("## GOALS.md\n\n")
@@ -376,37 +392,9 @@ func buildSpecGenPrompt(req SpecGenRequest) string {
 		b.WriteString(req.DocumentBody)
 	}
 	if req.Existing != nil && !req.Existing.IsEmpty() {
-		b.WriteString("\n\n## Existing spec (reuse these IDs when extending)\n\n")
-		summarizeExistingSpec(&b, req.Existing)
+		b.WriteString("\n\n## Existing spec is present\n\nA persisted spec snapshot exists at `.borg/spec/`; the `spec_list_manifest` and `spec_get` tools will return non-empty results. Call `spec_list_manifest` first to scan ids + summaries; call `spec_get(id)` only to fetch the full content of a node you need to inspect. Reuse existing ids when extending; mint new ones only for genuinely new concepts. (On greenfield runs this section is omitted.)")
 	}
 	return b.String()
-}
-
-func summarizeExistingSpec(b *strings.Builder, e *ExistingSpec) {
-	if len(e.Features) > 0 {
-		b.WriteString("Features:\n")
-		for _, f := range e.Features {
-			fmt.Fprintf(b, "- %s: %s\n", f.ID, f.Title)
-		}
-	}
-	if len(e.Decisions) > 0 {
-		b.WriteString("\nDecisions:\n")
-		for _, d := range e.Decisions {
-			fmt.Fprintf(b, "- %s: %s (confidence=%.2f)\n", d.ID, d.Title, d.Confidence)
-		}
-	}
-	if len(e.Strategies) > 0 {
-		b.WriteString("\nStrategies:\n")
-		for _, s := range e.Strategies {
-			fmt.Fprintf(b, "- %s: %s (kind=%s)\n", s.ID, s.Title, s.Kind)
-		}
-	}
-	if len(e.Approaches) > 0 {
-		b.WriteString("\nApproaches:\n")
-		for _, a := range e.Approaches {
-			fmt.Fprintf(b, "- %s: %s\n", a.ID, a.Title)
-		}
-	}
 }
 
 // IntegrityWarning describes a structural defect in a SpecProposal —
@@ -566,6 +554,7 @@ func (p *SpecProposal) ToAssimilationResult() *AssimilationResult {
 	for _, fp := range p.Features {
 		r.Features = append(r.Features, spec.Feature{
 			ID:                 fp.ID,
+			Summary:            fp.Summary,
 			Title:              fp.Title,
 			Status:             spec.FeatureStatusProposed,
 			Description:        fp.Description,
@@ -576,6 +565,7 @@ func (p *SpecProposal) ToAssimilationResult() *AssimilationResult {
 	for _, dp := range p.Decisions {
 		d := spec.Decision{
 			ID:           dp.ID,
+			Summary:      dp.Summary,
 			Title:        dp.Title,
 			Status:       spec.DecisionStatusProposed,
 			Rationale:    dp.Rationale,
@@ -598,6 +588,7 @@ func (p *SpecProposal) ToAssimilationResult() *AssimilationResult {
 	for _, sp := range p.Strategies {
 		r.Strategies = append(r.Strategies, spec.Strategy{
 			ID:        sp.ID,
+			Summary:   sp.Summary,
 			Title:     sp.Title,
 			Kind:      spec.StrategyKind(sp.Kind),
 			Status:    "proposed",

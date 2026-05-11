@@ -143,6 +143,14 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 	}
 
 	if c.DryRun {
+		// Dry-run still asserts summaries are present — the cascade
+		// blast-radius render reads node Summary fields via the spec
+		// graph, and reporting truncated rationale leads would be a
+		// fib. On failure the prereq error points the user at
+		// `update --check-pre-reqs`.
+		if err := runSpecPrereqs(ctx, fsys, nil, false); err != nil {
+			return err
+		}
 		return renderRefineDryRun(fsys, c.ID, kind)
 	}
 
@@ -152,6 +160,14 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 	}
 	llm, sink, closeSink := withProgressSink(cli, llm)
 	defer closeSink()
+
+	// Prereq pass — refine's cascade dispatches the reconciler and
+	// rewriter, both of which call spec_list_manifest. Fill missing
+	// summaries before the council runs so those tool calls return
+	// authored values, not truncated rationale leads.
+	if err := runSpecPrereqs(ctx, fsys, llm, true); err != nil {
+		return err
+	}
 
 	if c.Supersede != "" {
 		result, err := RunRefineSupersede(ctx, llm, fsys, c.ID, kind, c.Supersede, "")

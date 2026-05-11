@@ -28,7 +28,15 @@ type RawSpecProposal struct {
 // The retry loop kicks in instead, giving the model another chance to
 // produce a conformant output.
 type RawFeatureProposal struct {
-	ID                 string                   `json:"id"`
+	ID string `json:"id"`
+	// Summary is a one-sentence "what" description of the feature.
+	// Optional in the JSON schema (some authoring agents may not yet
+	// emit it); the SummariesPresent prereq backfills any missing
+	// summaries via the fast-tier spec_summarizer agent. Producing
+	// Summary inline here is strictly higher quality than the prereq
+	// fallback because the authoring agent has the full context that
+	// the persisted node will be summarising.
+	Summary            string                   `json:"summary,omitempty"`
 	Title              string                   `json:"title"`
 	Description        string                   `json:"description"`
 	AcceptanceCriteria []string                 `json:"acceptance_criteria,omitempty"`
@@ -38,7 +46,9 @@ type RawFeatureProposal struct {
 // RawStrategyProposal is the inline-decisions counterpart to StrategyProposal.
 // Like RawFeatureProposal, Decisions is required with minItems=1 (DJ-105).
 type RawStrategyProposal struct {
-	ID        string                   `json:"id"`
+	ID string `json:"id"`
+	// Summary: see RawFeatureProposal.Summary.
+	Summary   string                   `json:"summary,omitempty"`
 	Title     string                   `json:"title"`
 	Kind      string                   `json:"kind"`
 	Body      string                   `json:"body"`
@@ -53,6 +63,8 @@ type RawStrategyProposal struct {
 // problem inline decisions were designed to eliminate. Influence
 // relationships, when they matter, are added during refine.
 type InlineDecisionProposal struct {
+	// Summary: see RawFeatureProposal.Summary.
+	Summary            string             `json:"summary,omitempty"`
 	Title              string             `json:"title"`
 	Rationale          string             `json:"rationale"`
 	Confidence         float64            `json:"confidence"`

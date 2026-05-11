@@ -26,6 +26,15 @@ You receive as a user message:
 - **Current parent prose**: the body of the Feature/Strategy/Bug as it exists now.
 - **Applicable Decisions**: every Decision currently referenced by this parent (Bugs inherit their parent Feature's Decisions), listed with ID, title, status, rationale, and confidence.
 
+# Spec-lookup tools
+
+The persisted spec on disk is available via two tools:
+
+- `spec_list_manifest()` — compact index of every persisted node with id, title, optional kind, and a one-line summary.
+- `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+
+The user message already inlines the applicable Decisions for THIS parent — the common case. Reach for the tools only when the refinement intent cites a sibling node (another feature, a strategy this feature depends on) the intent author assumes context for, and the inlined Decisions don't cover it. Don't go on fishing expeditions — every tool call costs a round-trip.
+
 # Task
 
 Rewrite the current prose to incorporate the user's Refinement intent. Set `changed: true`. Set `changed: false` only when the existing prose already fully satisfies the intent — in that case, explain that in the rationale field and return the prose verbatim.

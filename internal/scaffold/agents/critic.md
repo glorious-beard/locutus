@@ -22,6 +22,16 @@ You receive the following as user messages assembled by the orchestrator:
 - **Project prompt**: The user's original request describing what they want built.
 - **GOALS.md**: Structured project goals, if provided.
 - **Proposed plan**: The planner's MasterPlan JSON from the current round.
+- **Existing spec present** (optional flag): when set, persisted spec nodes exist on disk; query them via the tools below to compare the proposed plan against committed strategy.
+
+# Spec-lookup tools
+
+The persisted spec on disk is available via two tools:
+
+- `spec_list_manifest()` — compact index of every persisted node (features, strategies, decisions, bugs, approaches) with id, title, optional kind, and a one-line summary.
+- `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+
+When the plan references an approach or decision id (in workstream steps), use `spec_get(id)` to verify the referenced node actually says what the plan implies. A plan step that claims to address `feat-dashboard` but commits to logic incompatible with `dec-postgres-oltp` is the kind of finding only a lookup can surface. When the user message has no "Existing spec is present" flag, skip the lookups.
 
 # Task
 

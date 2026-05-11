@@ -56,6 +56,7 @@ func init() {
 	// The reconciler agent's verdict + ApplyReconciliation produce the
 	// canonical SpecProposal that downstream agents and persistence consume.
 	exampleInlineDecision := InlineDecisionProposal{
+		Summary:    "Adopt X over Y for the OLTP store.",
 		Title:      "Example decision",
 		Rationale:  "why this choice",
 		Confidence: 0.8,
@@ -74,12 +75,14 @@ func init() {
 	RegisterSchema("RawSpecProposal", RawSpecProposal{
 		Features: []RawFeatureProposal{{
 			ID:          "feat-example",
+			Summary:     "One-sentence what-the-feature-does, ending with a period.",
 			Title:       "Example feature",
 			Description: "What the feature does in one paragraph.",
 			Decisions:   []InlineDecisionProposal{exampleInlineDecision},
 		}},
 		Strategies: []RawStrategyProposal{{
 			ID:        "strat-example",
+			Summary:   "One-sentence what-the-strategy-adopts, ending with a period.",
 			Title:     "Example strategy",
 			Kind:      "foundational",
 			Body:      "prose body of the strategy",
@@ -90,12 +93,14 @@ func init() {
 	RegisterSchema("SpecProposal", SpecProposal{
 		Features: []FeatureProposal{{
 			ID:          "feat-example",
+			Summary:     "One-sentence what-the-feature-does, ending with a period.",
 			Title:       "Example feature",
 			Description: "What the feature does in one paragraph.",
 			Decisions:   []string{"dec-example"},
 		}},
 		Decisions: []DecisionProposal{{
 			ID:         "dec-example",
+			Summary:    "Adopt X over Y for the OLTP store.",
 			Title:      "Example decision",
 			Rationale:  "why this choice",
 			Confidence: 0.8,
@@ -112,10 +117,11 @@ func init() {
 			ArchitectRationale: "one-sentence summary distinct from the longer rationale",
 		}},
 		Strategies: []StrategyProposal{{
-			ID:    "strat-example",
-			Title: "Example strategy",
-			Kind:  "foundational",
-			Body:  "prose body of the strategy",
+			ID:      "strat-example",
+			Summary: "One-sentence what-the-strategy-adopts, ending with a period.",
+			Title:   "Example strategy",
+			Kind:    "foundational",
+			Body:    "prose body of the strategy",
 		}},
 	})
 
@@ -135,6 +141,7 @@ func init() {
 
 	RegisterSchema("RawFeatureProposal", RawFeatureProposal{
 		ID:          "feat-example",
+		Summary:     "One-sentence what-the-feature-does, ending with a period.",
 		Title:       "Example feature",
 		Description: "What the feature does in one paragraph.",
 		Decisions:   []InlineDecisionProposal{exampleInlineDecision},
@@ -142,6 +149,7 @@ func init() {
 
 	RegisterSchema("RawStrategyProposal", RawStrategyProposal{
 		ID:        "strat-example",
+		Summary:   "One-sentence what-the-strategy-adopts, ending with a period.",
 		Title:     "Example strategy",
 		Kind:      "foundational",
 		Body:      "prose body of the strategy",

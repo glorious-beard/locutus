@@ -370,6 +370,7 @@ func ApplyReconciliation(raw *RawSpecProposal, verdict ReconciliationVerdict, ex
 	for _, f := range raw.Features {
 		out.Features = append(out.Features, FeatureProposal{
 			ID:                 f.ID,
+			Summary:            f.Summary,
 			Title:              f.Title,
 			Description:        f.Description,
 			AcceptanceCriteria: f.AcceptanceCriteria,
@@ -379,6 +380,7 @@ func ApplyReconciliation(raw *RawSpecProposal, verdict ReconciliationVerdict, ex
 	for _, s := range raw.Strategies {
 		out.Strategies = append(out.Strategies, StrategyProposal{
 			ID:        s.ID,
+			Summary:   s.Summary,
 			Title:     s.Title,
 			Kind:      s.Kind,
 			Body:      s.Body,
@@ -394,6 +396,7 @@ func ApplyReconciliation(raw *RawSpecProposal, verdict ReconciliationVerdict, ex
 func canonicalDecisionFromInline(d InlineDecisionProposal, id string) DecisionProposal {
 	return DecisionProposal{
 		ID:                 id,
+		Summary:            d.Summary,
 		Title:              d.Title,
 		Rationale:          d.Rationale,
 		Confidence:         d.Confidence,

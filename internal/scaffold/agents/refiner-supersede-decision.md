@@ -24,6 +24,15 @@ You receive as a user message:
 - **Motivation:** the user's authoritative directive. Often includes breaking points lifted from a `justify --against` verdict (WorkOS was never evaluated; security gaps undermine the operational claim; etc.). **Treat this as the change driver.**
 - **Justify session pointer:** an optional `.locutus/sessions/.../session.yaml` path you may reference for richer context. Non-load-bearing — the durable record is the motivation above.
 
+# Spec-lookup tools
+
+The persisted spec on disk is available via two tools:
+
+- `spec_list_manifest()` — compact index of every persisted node with id, title, optional kind, and a one-line summary.
+- `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+
+Use `spec_get(id)` when the motivation cites a sibling decision or strategy by id whose detail you need to draft the replacement's rationale or alternatives section (e.g. "the existing `dec-auth-jwt` says X; this supersession is the version that reflects WorkOS now"). Use `spec_list_manifest` to check whether a candidate replacement title would slug-collide with an unrelated existing decision id. The user message inlines the decision being replaced; you don't need a lookup for that.
+
 # Task
 
 Emit a replacement Decision in the RewriteDecisionResult schema.

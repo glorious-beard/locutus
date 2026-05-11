@@ -4,7 +4,9 @@ import "time"
 
 // Bug represents a defect tied to a feature.
 type Bug struct {
-	ID                string      `json:"id" yaml:"id"`
+	ID string `json:"id" yaml:"id"`
+	// Summary: see Decision.Summary.
+	Summary           string      `json:"summary,omitempty" yaml:"summary,omitempty"`
 	Title             string      `json:"title" yaml:"title"`
 	FeatureID         string      `json:"feature_id" yaml:"feature_id"`
 	Severity          BugSeverity `json:"severity" yaml:"severity"`

@@ -12,7 +12,15 @@ import "time"
 // full LLM transcript under .locutus/sessions/ remains available as
 // debug context but is not load-bearing for justifying the decision.
 type Decision struct {
-	ID           string              `json:"id" yaml:"id"`
+	ID string `json:"id" yaml:"id"`
+	// Summary is a one-sentence "what" description of the decision,
+	// authored by the producing agent. Distinct from Rationale (the
+	// "why") and ArchitectRationale (a one-sentence rationale summary).
+	// Consumed by the spec-lookup tools (spec_list_manifest) so the
+	// council can scan the index without dumping full node content.
+	// Required at write time; legacy nodes without it are filled by
+	// the SummariesPresent prereq.
+	Summary      string              `json:"summary,omitempty" yaml:"summary,omitempty"`
 	Title        string              `json:"title" yaml:"title"`
 	Status       DecisionStatus      `json:"status" yaml:"status"`
 	Confidence   float64             `json:"confidence" yaml:"confidence"`
@@ -79,7 +87,9 @@ type DecisionProvenance struct {
 // Strategy represents a high-level engineering approach (architecture, quality, etc.).
 // Decisions and Approaches are parent→children references — no child→parent back-refs.
 type Strategy struct {
-	ID            string            `json:"id" yaml:"id"`
+	ID string `json:"id" yaml:"id"`
+	// Summary: see Decision.Summary.
+	Summary       string            `json:"summary,omitempty" yaml:"summary,omitempty"`
 	Title         string            `json:"title" yaml:"title"`
 	Kind          StrategyKind      `json:"kind" yaml:"kind"`
 	Decisions     []string          `json:"decisions,omitempty" yaml:"decisions,omitempty"`
@@ -124,7 +134,9 @@ type Relationship struct {
 
 // Feature represents a product-level capability below GOALS.md.
 type Feature struct {
-	ID                 string        `json:"id" yaml:"id"`
+	ID string `json:"id" yaml:"id"`
+	// Summary: see Decision.Summary.
+	Summary            string        `json:"summary,omitempty" yaml:"summary,omitempty"`
 	Title              string        `json:"title" yaml:"title"`
 	Status             FeatureStatus `json:"status" yaml:"status"`
 	Description        string        `json:"description,omitempty" yaml:"description,omitempty"`

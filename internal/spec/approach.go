@@ -11,7 +11,10 @@ import (
 //
 // Stored as a pure .md file (YAML frontmatter + markdown body). No JSON sidecar.
 type Approach struct {
-	ID       string `yaml:"id"`
+	ID string `yaml:"id"`
+	// Summary: see Decision.Summary. For approaches, summarises the
+	// brief — what the coding agent is being asked to build.
+	Summary  string `yaml:"summary,omitempty"`
 	Title    string `yaml:"title"`
 	ParentID string `yaml:"parent_id"`
 

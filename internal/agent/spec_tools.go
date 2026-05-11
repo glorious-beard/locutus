@@ -22,15 +22,34 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/chetan/locutus/internal/agent/adapters"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 )
+
+// validSpecID restricts spec ids to the kebab-case shape locutus
+// produces (see spec.SlugID): a known prefix followed by lowercase
+// alphanumerics and hyphens. Anything else is rejected before we
+// touch the filesystem.
+//
+// The strict form has two jobs:
+//  1. Match what authoring agents actually emit, so legitimate
+//     lookups always pass.
+//  2. Prevent path-traversal exploits via crafted ids like
+//     `dec-../../etc/passwd`. filepath.Join collapses `..` segments
+//     up the tree; an id slug containing `.` or `/` would let a
+//     prompt-injected document coerce the agent into reading any
+//     .json or .md file the process can reach. Rejecting non-
+//     alphanumeric-or-hyphen characters closes that door.
+var validSpecID = regexp.MustCompile(`^(feat|strat|dec|bug|app)-[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // SpecManifest is the index returned by spec_list_manifest. Entries
 // are grouped by kind so the model can scan the whole index at a
@@ -66,6 +85,18 @@ const summaryMaxRunes = 200
 // reads; missing kind directories (greenfield) yield empty arrays
 // rather than errors. Malformed individual files are skipped with a
 // slog.Warn — one bad file shouldn't poison the whole manifest.
+//
+// Per-node summary derivation:
+//   - If the node's authored Summary field is non-empty, use it
+//     verbatim. This is the primary path; the SummariesPresent prereq
+//     guarantees every persisted node carries one.
+//   - Else fall back to a truncated lead-in of the most-summary-like
+//     prose field on each kind. The fallback exists for two cases:
+//     (a) defensive — if the prereq somehow didn't run, the manifest
+//     stays usable; (b) tests that construct typed nodes without
+//     going through the authoring agents. Producing a misleading
+//     truncation is strictly worse than producing an authored
+//     one-liner, but strictly better than emitting an empty summary.
 func BuildSpecManifest(fsys specio.FS) SpecManifest {
 	var m SpecManifest
 
@@ -78,7 +109,7 @@ func BuildSpecManifest(fsys specio.FS) SpecManifest {
 			m.Features = append(m.Features, SpecManifestEntry{
 				ID:      p.Object.ID,
 				Title:   p.Object.Title,
-				Summary: truncate(p.Object.Description, summaryMaxRunes),
+				Summary: summaryOrFallback(p.Object.Summary, p.Object.Description),
 			})
 		}
 	}
@@ -92,7 +123,7 @@ func BuildSpecManifest(fsys specio.FS) SpecManifest {
 				ID:      p.Object.ID,
 				Title:   p.Object.Title,
 				Kind:    string(p.Object.Kind),
-				Summary: truncate(p.Body, summaryMaxRunes),
+				Summary: summaryOrFallback(p.Object.Summary, p.Body),
 			})
 		}
 	}
@@ -105,7 +136,7 @@ func BuildSpecManifest(fsys specio.FS) SpecManifest {
 			m.Decisions = append(m.Decisions, SpecManifestEntry{
 				ID:      p.Object.ID,
 				Title:   p.Object.Title,
-				Summary: truncate(p.Object.Rationale, summaryMaxRunes),
+				Summary: summaryOrFallback(p.Object.Summary, p.Object.Rationale),
 			})
 		}
 	}
@@ -118,7 +149,7 @@ func BuildSpecManifest(fsys specio.FS) SpecManifest {
 			m.Bugs = append(m.Bugs, SpecManifestEntry{
 				ID:      p.Object.ID,
 				Title:   p.Object.Title,
-				Summary: truncate(p.Object.Description, summaryMaxRunes),
+				Summary: summaryOrFallback(p.Object.Summary, p.Object.Description),
 			})
 		}
 	}
@@ -135,7 +166,7 @@ func BuildSpecManifest(fsys specio.FS) SpecManifest {
 			m.Approaches = append(m.Approaches, SpecManifestEntry{
 				ID:      obj.ID,
 				Title:   obj.Title,
-				Summary: truncate(body, summaryMaxRunes),
+				Summary: summaryOrFallback(obj.Summary, body),
 			})
 		}
 	}
@@ -143,33 +174,59 @@ func BuildSpecManifest(fsys specio.FS) SpecManifest {
 	return m
 }
 
+// summaryOrFallback returns the authored Summary verbatim when
+// non-empty, else a truncated lead-in of the fallback prose. The
+// fallback path emits a one-line collapse capped at summaryMaxRunes —
+// strictly worse than an authored summary (often picks up framing
+// instead of substance) but a graceful degradation for legacy nodes
+// the prereq hasn't filled.
+func summaryOrFallback(authored, fallback string) string {
+	if spec.HasSummary(authored) {
+		return strings.TrimSpace(authored)
+	}
+	return truncate(fallback, summaryMaxRunes)
+}
+
 // LookupSpecNode returns the raw JSON of one spec node by id. The
 // kind is inferred from the id prefix (`feat-`, `strat-`, `dec-`,
-// `bug-`, `app-`); unknown prefixes return an error. A missing file
-// returns the underlying os.ErrNotExist (or MemFS equivalent) so
-// callers can distinguish "no such id" from "id with invalid prefix."
+// `bug-`, `app-`).
+//
+// Validation is strict (validSpecID): malformed ids — empty, wrong
+// prefix, non-alphanumeric characters, embedded `..` segments —
+// return an actionable error before any filesystem access. This
+// closes the path-traversal door a permissive prefix check would
+// leave open and gives the model a clear message it can act on.
 //
 // For approach nodes (markdown only, no JSON sidecar), returns the
 // full markdown body wrapped as a JSON string so the tool's contract
 // stays "JSON in, JSON out."
+//
+// Missing files (id well-formed but no such node) return a wrapped
+// error naming the id and pointing at spec_list_manifest so the
+// model can recover by scanning the index for the correct id rather
+// than re-guessing.
 func LookupSpecNode(fsys specio.FS, id string) (json.RawMessage, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, fmt.Errorf("spec_get: empty id")
 	}
+	if !validSpecID.MatchString(id) {
+		return nil, fmt.Errorf("spec_get: id %q is malformed (expected kebab-case with prefix feat-, strat-, dec-, bug-, or app-)", id)
+	}
+	var p string
 	switch {
 	case strings.HasPrefix(id, "feat-"):
-		return readJSON(fsys, ".borg/spec/features/"+id+".json")
+		p = ".borg/spec/features/" + id + ".json"
 	case strings.HasPrefix(id, "strat-"):
-		return readJSON(fsys, ".borg/spec/strategies/"+id+".json")
+		p = ".borg/spec/strategies/" + id + ".json"
 	case strings.HasPrefix(id, "dec-"):
-		return readJSON(fsys, ".borg/spec/decisions/"+id+".json")
+		p = ".borg/spec/decisions/" + id + ".json"
 	case strings.HasPrefix(id, "bug-"):
-		return readJSON(fsys, ".borg/spec/bugs/"+id+".json")
+		p = ".borg/spec/bugs/" + id + ".json"
 	case strings.HasPrefix(id, "app-"):
 		body, err := fsys.ReadFile(".borg/spec/approaches/" + id + ".md")
 		if err != nil {
-			return nil, err
+			return nil, wrapSpecGetReadError(fsys, id, err)
 		}
 		out, mErr := json.Marshal(string(body))
 		if mErr != nil {
@@ -177,17 +234,233 @@ func LookupSpecNode(fsys specio.FS, id string) (json.RawMessage, error) {
 		}
 		return out, nil
 	default:
-		return nil, fmt.Errorf("spec_get: id %q has unknown prefix (want feat-, strat-, dec-, bug-, or app-)", id)
+		// Unreachable: validSpecID enforces one of the known prefixes.
+		return nil, fmt.Errorf("spec_get: id %q has unknown prefix", id)
+	}
+	return readJSON(fsys, id, p)
+}
+
+// wrapSpecGetReadError translates a filesystem read error into a
+// message the model can act on. Not-found is the common recoverable
+// case: model picked a typo'd or near-miss id from the manifest;
+// surface up to suggestSpecIDLimit nearest neighbors (token-Jaccard
+// over slug parts, scoped to the same prefix) so the model can fix
+// its guess in one round-trip instead of re-fetching the entire
+// manifest. When no candidate is close, fall back to pointing at
+// spec_list_manifest for the full list.
+//
+// Other errors pass through with the path stripped so the model
+// isn't asked to reason about filesystem details.
+func wrapSpecGetReadError(fsys specio.FS, id string, err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		suggestions := suggestSpecIDCandidates(fsys, id, suggestSpecIDLimit)
+		if len(suggestions) == 0 {
+			return fmt.Errorf("spec_get: no node with id %q (call spec_list_manifest to see available ids)", id)
+		}
+		return fmt.Errorf("spec_get: no node with id %q. Did you mean one of:\n%s\nOtherwise call spec_list_manifest for the full list.",
+			id, formatSpecIDSuggestions(suggestions))
+	}
+	return fmt.Errorf("spec_get: reading %s: %w", id, err)
+}
+
+// suggestSpecIDLimit caps how many near-miss candidates the not-found
+// error surfaces. Five entries is roughly 1KB of prompt overhead with
+// summaries attached — comfortably below the manifest dump cost while
+// still covering the typo / one-segment-off / sibling-confusion error
+// modes the model lands in most often.
+const suggestSpecIDLimit = 5
+
+// suggestSpecIDCandidates returns up to limit near-miss entries from
+// the manifest, scoped to the same prefix kind as the missing id and
+// ranked by token-Jaccard similarity over the slug parts.
+//
+// Why same-prefix scoping: a model that typed `dec-xyz` doesn't want
+// `feat-xyz` suggested — wrong kind = wrong answer. Restricting the
+// candidate pool to the same prefix tightens the suggestion quality
+// at zero cost.
+//
+// Why token-Jaccard: cheap, no embeddings, catches the common error
+// modes (typo of one segment, missing/extra hyphen, dropped suffix)
+// without paying for semantic similarity. Sufficient when the model's
+// guess is structurally close; falls through cleanly to the manifest
+// hint when it isn't.
+func suggestSpecIDCandidates(fsys specio.FS, missing string, limit int) []specIDSuggestion {
+	prefix := specIDPrefix(missing)
+	if prefix == "" {
+		return nil
+	}
+	manifest := BuildSpecManifest(fsys)
+	pool := manifestEntriesForPrefix(manifest, prefix)
+	if len(pool) == 0 {
+		return nil
+	}
+	wantTokens := slugTokens(missing)
+	if len(wantTokens) == 0 {
+		return nil
+	}
+
+	scored := make([]specIDSuggestion, 0, len(pool))
+	for _, entry := range pool {
+		score := jaccardSimilarity(wantTokens, slugTokens(entry.ID))
+		if score == 0 {
+			continue
+		}
+		scored = append(scored, specIDSuggestion{
+			ID:      entry.ID,
+			Summary: entry.Summary,
+			Score:   score,
+		})
+	}
+
+	// Sort by score descending; stable ordering on ties via ID for
+	// deterministic output the tests can lock down.
+	sortSpecIDSuggestions(scored)
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+	return scored
+}
+
+// specIDSuggestion is one entry in the not-found error's "did you
+// mean" list. Carries the id, its authored Summary, and the
+// similarity score (kept for test ordering verification; not surfaced
+// to the model).
+type specIDSuggestion struct {
+	ID      string
+	Summary string
+	Score   float64
+}
+
+// specIDPrefix returns the prefix segment of a spec id (one of feat-,
+// strat-, dec-, bug-, app-), or "" when the id doesn't carry one.
+// Used to scope the candidate pool to the requested kind.
+func specIDPrefix(id string) string {
+	for _, p := range []string{"feat-", "strat-", "dec-", "bug-", "app-"} {
+		if strings.HasPrefix(id, p) {
+			return p
+		}
+	}
+	return ""
+}
+
+// manifestEntriesForPrefix returns the manifest entries for one kind
+// (matched by the id-prefix), flattened to a single slice so the
+// caller can rank uniformly.
+func manifestEntriesForPrefix(m SpecManifest, prefix string) []SpecManifestEntry {
+	switch prefix {
+	case "feat-":
+		return m.Features
+	case "strat-":
+		return m.Strategies
+	case "dec-":
+		return m.Decisions
+	case "bug-":
+		return m.Bugs
+	case "app-":
+		return m.Approaches
+	}
+	return nil
+}
+
+// slugTokens splits an id on hyphens and drops the prefix segment so
+// the similarity score reflects the meaningful slug body, not the
+// (constant) kind prefix every candidate shares.
+//
+// "dec-postgres-with-pgvector" → ["postgres", "with", "pgvector"]
+func slugTokens(id string) []string {
+	parts := strings.Split(id, "-")
+	if len(parts) <= 1 {
+		return nil
+	}
+	// Drop the prefix segment ("dec", "feat", etc.); the surviving
+	// parts are the slug body.
+	body := parts[1:]
+	out := make([]string, 0, len(body))
+	for _, p := range body {
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// jaccardSimilarity returns |A ∩ B| / |A ∪ B| over two token sets.
+// Returns 0 when either side is empty.
+func jaccardSimilarity(a, b []string) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	setA := make(map[string]struct{}, len(a))
+	for _, t := range a {
+		setA[t] = struct{}{}
+	}
+	setB := make(map[string]struct{}, len(b))
+	for _, t := range b {
+		setB[t] = struct{}{}
+	}
+	var intersect int
+	for t := range setA {
+		if _, ok := setB[t]; ok {
+			intersect++
+		}
+	}
+	union := len(setA) + len(setB) - intersect
+	if union == 0 {
+		return 0
+	}
+	return float64(intersect) / float64(union)
+}
+
+// sortSpecIDSuggestions orders by score descending, then by ID
+// ascending for stable tie-breaking. Local helper kept inline so the
+// test suite can verify a deterministic ranking.
+func sortSpecIDSuggestions(s []specIDSuggestion) {
+	// Insertion sort — N≤ pool size; for any realistic project this
+	// is fine, and avoiding a sort.Slice closure keeps the call cheap
+	// and stable.
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0; j-- {
+			if specIDSuggestionLess(s[j], s[j-1]) {
+				s[j], s[j-1] = s[j-1], s[j]
+				continue
+			}
+			break
+		}
 	}
 }
 
-func readJSON(fsys specio.FS, p string) (json.RawMessage, error) {
+func specIDSuggestionLess(a, b specIDSuggestion) bool {
+	if a.Score != b.Score {
+		return a.Score > b.Score
+	}
+	return a.ID < b.ID
+}
+
+// formatSpecIDSuggestions renders the candidate list into the
+// not-found error body. Bullet-list shape so the model can scan
+// without parsing custom delimiters.
+func formatSpecIDSuggestions(s []specIDSuggestion) string {
+	var b strings.Builder
+	for _, c := range s {
+		b.WriteString("  - ")
+		b.WriteString(c.ID)
+		if c.Summary != "" {
+			b.WriteString(" — ")
+			b.WriteString(c.Summary)
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func readJSON(fsys specio.FS, id, p string) (json.RawMessage, error) {
 	data, err := fsys.ReadFile(p)
 	if err != nil {
-		return nil, err
+		return nil, wrapSpecGetReadError(fsys, id, err)
 	}
 	if !json.Valid(data) {
-		return nil, fmt.Errorf("spec_get: %s contains invalid JSON", path.Base(p))
+		return nil, fmt.Errorf("spec_get: %s contains invalid JSON (the spec file on disk is corrupt; this is not an id problem)", path.Base(p))
 	}
 	return data, nil
 }

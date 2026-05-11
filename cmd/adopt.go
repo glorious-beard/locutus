@@ -176,6 +176,24 @@ func (c *AdoptCmd) Run(ctx context.Context, cli *CLI) error {
 			cfg.Plan = realPlan(llm, fsys)
 			cfg.Dispatch = realDispatch(llm, cfg.FS)
 		}
+
+		// Prereq pass — adopt's approach-regenerator and synthesizer
+		// both call spec_list_manifest. Fill missing summaries before
+		// they run so those tool calls return authored values.
+		//
+		// On --dry-run we assert without mutating (matches assimilate's
+		// dry-run shape, which spends LLM tokens for preview but
+		// doesn't write spec changes — prereq fills are spec changes).
+		if err := runSpecPrereqs(ctx, fsys, llm, !c.DryRun); err != nil {
+			return err
+		}
+	} else if !c.DryRun {
+		// No LLM but the spec graph will be loaded. Assertion-only:
+		// if summaries are missing, the operator will see truncation
+		// fallbacks downstream. Fail fast with the actionable error.
+		if err := runSpecPrereqs(ctx, fsys, nil, false); err != nil {
+			return err
+		}
 	}
 
 	report, err := RunAdoptWithConfig(ctx, cfg)

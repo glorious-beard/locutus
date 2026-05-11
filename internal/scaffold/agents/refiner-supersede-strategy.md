@@ -22,6 +22,15 @@ You receive as a user message:
 - **Motivation:** the user's authoritative directive. **Treat this as the change driver.**
 - **Justify session pointer:** optional `.locutus/sessions/.../session.yaml` path. Non-load-bearing.
 
+# Spec-lookup tools
+
+The persisted spec on disk is available via two tools:
+
+- `spec_list_manifest()` — compact index of every persisted node with id, title, optional kind, and a one-line summary.
+- `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+
+Use `spec_get(id)` when the motivation references an upstream strategy (via `influenced_by`) or a sibling strategy the replacement must align with — strategy-level shifts ripple, and the upstream commitments may constrain what shapes the new strategy can take. Use `spec_list_manifest` to check for slug collisions on a candidate new-title id. The strategy being replaced is inlined; you don't need a lookup for that.
+
 # Task
 
 Emit a replacement Strategy in the RewriteStrategyResult schema.

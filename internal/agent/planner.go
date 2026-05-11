@@ -93,13 +93,13 @@ func Plan(ctx context.Context, exec AgentExecutor, fsys specio.FS, req PlanReque
 	return &plan, nil
 }
 
-// buildPlanPrompt constructs a rich prompt that includes all PlanRequest context
-// so the council agents have full visibility into the spec state.
-//
-// Scaling limit: this concatenates everything into a single string. For projects
-// with many features/decisions, this will exceed the model's useful context window.
-// The v2 approach is to pass spec as structured context (separate messages, or a
-// tool the agents can call to query the graph: get_decision(id), list_features).
+// buildPlanPrompt constructs the planner's user prompt. Existing-spec
+// context flows through the `spec_list_manifest` / `spec_get` tools
+// (DJ-094, DJ-115) rather than inline bullet lists — the v2 approach
+// the prior inline comment called for. The planner's prompt body
+// covers tool usage; this builder emits a one-line data-state flag so
+// the agent knows the tools will return non-empty results, and omits
+// the flag on greenfield runs.
 func buildPlanPrompt(req PlanRequest) string {
 	var b strings.Builder
 
@@ -112,28 +112,8 @@ func buildPlanPrompt(req PlanRequest) string {
 		b.WriteString("\n")
 	}
 
-	if len(req.Features) > 0 {
-		b.WriteString("\n## Existing Features\n")
-		for _, f := range req.Features {
-			fmt.Fprintf(&b, "- %s: %s (status: %s)\n", f.ID, f.Title, f.Status)
-		}
-	}
-
-	if len(req.Decisions) > 0 {
-		b.WriteString("\n## Existing Decisions\n")
-		for _, d := range req.Decisions {
-			fmt.Fprintf(&b, "- %s: %s (status: %s, confidence: %.2f)\n", d.ID, d.Title, d.Status, d.Confidence)
-			if d.Rationale != "" {
-				fmt.Fprintf(&b, "  Rationale: %s\n", d.Rationale)
-			}
-		}
-	}
-
-	if len(req.Strategies) > 0 {
-		b.WriteString("\n## Existing Strategies\n")
-		for _, s := range req.Strategies {
-			fmt.Fprintf(&b, "- %s: %s (kind: %s, decisions: [%s])\n", s.ID, s.Title, s.Kind, strings.Join(s.Decisions, ", "))
-		}
+	if len(req.Features)+len(req.Decisions)+len(req.Strategies) > 0 {
+		b.WriteString("\n## Existing spec is present\n\nA persisted spec snapshot exists at `.borg/spec/`; the `spec_list_manifest` and `spec_get` tools will return non-empty results. Call `spec_list_manifest` first to scan ids + summaries; call `spec_get(id)` only for nodes whose detail you need. (On greenfield runs this section is omitted.)\n")
 	}
 
 	return b.String()

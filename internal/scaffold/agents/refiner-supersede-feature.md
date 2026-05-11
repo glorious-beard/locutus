@@ -22,6 +22,15 @@ You receive as a user message:
 - **Motivation:** the user's authoritative directive describing what the new feature should be. **Treat this as the change driver.**
 - **Justify session pointer:** optional `.locutus/sessions/.../session.yaml` path. Non-load-bearing.
 
+# Spec-lookup tools
+
+The persisted spec on disk is available via two tools:
+
+- `spec_list_manifest()` — compact index of every persisted node with id, title, optional kind, and a one-line summary.
+- `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+
+Use `spec_get(id)` to read the full body of a decision or strategy this feature references, when the motivation implies the new framing must align with it (e.g. "scope this feature down to what `strat-frontend` actually commits to"). Use `spec_list_manifest` to check that a candidate new-title slug doesn't collide with an unrelated existing feature id. The feature being replaced is inlined; you don't need a lookup for that.
+
 # Task
 
 Emit a replacement Feature in the RewriteFeatureResult schema.

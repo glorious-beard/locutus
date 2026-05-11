@@ -23,6 +23,17 @@ You receive a JSON array of FileEntry objects as a user message assembled by the
 
 This is the full file tree of the target project, filtered by .gitignore. You will not receive file contents -- only paths, sizes, and directory flags. Your job is to extract maximum signal from this structural data alone.
 
+The user message may also include an **Existing spec is present** flag when the project has a persisted spec at `.borg/spec/`. When the flag is set, your job shifts from greenfield inference to update-in-place: prefer recognising existing nodes via the tools below over re-introducing the same concepts under fresh ids.
+
+# Spec-lookup tools
+
+The persisted spec on disk is available via two tools:
+
+- `spec_list_manifest()` — compact index of every persisted node grouped by kind (features, strategies, decisions, bugs, approaches), with id, title, optional kind, and a one-line summary describing the node. Scan this to see what the project's spec already says about itself.
+- `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+
+When the existing-spec flag is set, call `spec_list_manifest` once to see what features and strategies the persisted spec already commits to. The structural evidence in the file inventory should reconcile against that existing commitment — when you spot a discrepancy (the spec says "Postgres" but the inventory shows MySQL files), surface the discrepancy in your output rather than silently choosing the file evidence. Use `spec_get(id)` only when a manifest summary leaves real ambiguity. On greenfield (no flag), the tools return empty; skip them.
+
 # Task
 
 Analyze the file inventory to produce a codebase summary. Identify the following:

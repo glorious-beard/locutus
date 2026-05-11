@@ -25,6 +25,15 @@ You receive as a user message:
 - **Applicable Decisions** — each with ID, title, status, confidence, and rationale.
 - **Current Approach body** — may be empty on first synthesis; otherwise the prior body that this re-synthesis supersedes.
 
+# Spec-lookup tools
+
+The persisted spec on disk is available via two tools:
+
+- `spec_list_manifest()` — compact index of every persisted node with id, title, optional kind, and a one-line summary.
+- `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+
+Use `spec_list_manifest` once to scan for **sibling approaches** under the same parent — when several approaches share a parent, your synthesis should know what the siblings are already covering so the brief doesn't duplicate their scope. Use `spec_get(id)` to read a specific sibling's body when its summary suggests overlap with what you're about to synthesize. The parent and applicable Decisions are inlined in the user message; you don't need lookups for those.
+
 # Task
 
 Produce a fresh `Approach.Body` that:
