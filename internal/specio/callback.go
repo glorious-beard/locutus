@@ -9,15 +9,26 @@ import (
 
 // SpecWriteCallback is invoked after every successful spec mutation
 // routed through SavePair, SaveMarkdown, or RemovePair. Kind is the
-// directory-segment name from the basePath (e.g. "decisions",
-// "approaches") so callers can map it to spec.NodeKind without
-// reflecting on the persisted struct. Deleted is true only on
-// RemovePair calls.
+// singular canonical spec.NodeKind value ("decision", "feature",
+// "strategy", "bug", "approach") derived from the basePath's parent
+// directory. Deleted is true only on RemovePair calls.
 //
 // The callback runs synchronously on the write path; implementations
 // should keep work bounded or dispatch it elsewhere. A nil callback
 // is the no-op default and is what tests and bootstrap verbs see.
 type SpecWriteCallback func(kind, id string, deleted bool)
+
+// dirToKind maps the plural on-disk directory segment to the singular
+// canonical spec.NodeKind string. Hard-coded rather than imported from
+// internal/spec because specio is a dependency of spec — importing
+// upward would cycle. The five values are stable.
+var dirToKind = map[string]string{
+	"decisions":  "decision",
+	"features":   "feature",
+	"strategies": "strategy",
+	"bugs":       "bug",
+	"approaches": "approach",
+}
 
 // onSpecWrite is the process-global callback. Read on every write,
 // written once at cmd init (or by tests). Not protected by a mutex —
@@ -38,15 +49,17 @@ func fireSpecWrite(basePath string, deleted bool) {
 		return
 	}
 	kind, id := splitKindAndID(basePath)
-	if id == "" {
+	if kind == "" || id == "" {
 		return
 	}
 	cb(kind, id, deleted)
 }
 
-// splitKindAndID returns the second-to-last and last path segments of
-// p, stripping a trailing .md from the id. Returns empty strings when
-// p doesn't have at least two segments.
+// splitKindAndID returns the singular kind and id from p, stripping a
+// trailing .md from the id. The parent directory segment is translated
+// via dirToKind; an unknown directory yields an empty kind so callers
+// can skip the callback. Returns empty strings when p doesn't have at
+// least two segments.
 func splitKindAndID(p string) (kind, id string) {
 	p = strings.TrimSuffix(p, ".md")
 	dir, base := path.Split(p)
@@ -54,7 +67,7 @@ func splitKindAndID(p string) (kind, id string) {
 	if dir == "" || base == "" {
 		return "", ""
 	}
-	return path.Base(dir), base
+	return dirToKind[path.Base(dir)], base
 }
 
 // RemovePair deletes both sidecar files for basePath (the .json and

@@ -42,7 +42,7 @@ func TestSavePair_FiresCallback(t *testing.T) {
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-foo", d, "body"))
 
 	require.Len(t, calls, 1)
-	assert.Equal(t, capturedCall{Kind: "decisions", ID: "dec-foo", Deleted: false}, calls[0])
+	assert.Equal(t, capturedCall{Kind: "decision", ID: "dec-foo", Deleted: false}, calls[0])
 }
 
 func TestSaveMarkdown_FiresCallback(t *testing.T) {
@@ -57,7 +57,7 @@ func TestSaveMarkdown_FiresCallback(t *testing.T) {
 	require.NoError(t, specio.SaveMarkdown(fs, ".borg/spec/approaches/app-oauth.md", a, "## body\n"))
 
 	require.Len(t, calls, 1)
-	assert.Equal(t, capturedCall{Kind: "approaches", ID: "app-oauth", Deleted: false}, calls[0])
+	assert.Equal(t, capturedCall{Kind: "approach", ID: "app-oauth", Deleted: false}, calls[0])
 }
 
 func TestRemovePair_FiresCallbackAndDeletesBoth(t *testing.T) {
@@ -73,7 +73,7 @@ func TestRemovePair_FiresCallbackAndDeletesBoth(t *testing.T) {
 	require.NoError(t, specio.RemovePair(fs, ".borg/spec/decisions/dec-gone"))
 
 	require.Len(t, calls, 1)
-	assert.Equal(t, capturedCall{Kind: "decisions", ID: "dec-gone", Deleted: true}, calls[0])
+	assert.Equal(t, capturedCall{Kind: "decision", ID: "dec-gone", Deleted: true}, calls[0])
 
 	_, err := fs.ReadFile(".borg/spec/decisions/dec-gone.json")
 	assert.Error(t, err, ".json should be gone")

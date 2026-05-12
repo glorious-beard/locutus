@@ -215,18 +215,18 @@ func addTextField(d *bluge.Document, name, value string) {
 }
 
 // BuildDocument loads one spec node from fsys and returns its Bluge
-// document. kind accepts either a spec.NodeKind value ("decision",
-// "feature", ...) or the corresponding plural directory segment
-// ("decisions", "features", ...) — Phase 2's callback derives the
-// latter from the on-disk basePath. Used by the incremental index
-// hook to update a single document without walking the whole tree.
+// document. kind MUST be a singular spec.NodeKind value ("decision",
+// "feature", "strategy", "bug", "approach"); the Phase 2 callback in
+// internal/specio normalises to this form. Used by the incremental
+// index hook to update a single document without walking the whole
+// tree.
 func BuildDocument(fsys specio.FS, kind, id string) (*bluge.Document, error) {
-	singular, dir, ok := normaliseKind(kind)
+	dir, ok := kindToDir(kind)
 	if !ok {
 		return nil, fmt.Errorf("search: BuildDocument: unknown kind %q", kind)
 	}
 	basePath := path.Join(specRoot, dir, id)
-	switch singular {
+	switch kind {
 	case string(spec.KindFeature):
 		obj, body, err := specio.LoadPair[spec.Feature](fsys, basePath)
 		if err != nil {
@@ -261,24 +261,23 @@ func BuildDocument(fsys specio.FS, kind, id string) (*bluge.Document, error) {
 	return nil, fmt.Errorf("search: BuildDocument: unsupported kind %q", kind)
 }
 
-// normaliseKind accepts either a singular spec kind ("decision") or
-// the plural directory name ("decisions") and returns both forms plus
-// an ok flag. Two paths into the same builder is cheaper than forcing
-// every caller to convert before calling.
-func normaliseKind(kind string) (singular, dir string, ok bool) {
+// kindToDir maps a singular spec.NodeKind value to its on-disk plural
+// directory segment. Returns ok=false for any unrecognised input —
+// including the legacy plural form, which is no longer accepted.
+func kindToDir(kind string) (dir string, ok bool) {
 	switch kind {
-	case string(spec.KindFeature), "features":
-		return string(spec.KindFeature), "features", true
-	case string(spec.KindStrategy), "strategies":
-		return string(spec.KindStrategy), "strategies", true
-	case string(spec.KindDecision), "decisions":
-		return string(spec.KindDecision), "decisions", true
-	case string(spec.KindBug), "bugs":
-		return string(spec.KindBug), "bugs", true
-	case string(spec.KindApproach), "approaches":
-		return string(spec.KindApproach), "approaches", true
+	case string(spec.KindFeature):
+		return "features", true
+	case string(spec.KindStrategy):
+		return "strategies", true
+	case string(spec.KindDecision):
+		return "decisions", true
+	case string(spec.KindBug):
+		return "bugs", true
+	case string(spec.KindApproach):
+		return "approaches", true
 	}
-	return "", "", false
+	return "", false
 }
 
 // slugTokens converts a spec id like "dec-postgres-with-pgvector"
