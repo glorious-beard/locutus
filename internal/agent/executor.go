@@ -223,6 +223,14 @@ func (e *Executor) Banner() string {
 // schema rejection) Run returns immediately. On retryable
 // failure (ErrRateLimit / ErrTimeout / ErrIncompatible) it
 // advances to the next preference and emits a slog.Warn.
+//
+// Rate-limit hybrid: when a provider returns ErrRateLimit with a
+// usable Retry-After hint (under rateLimitWaitThreshold), Run sleeps
+// on the same pick and retries once before advancing. Above the
+// threshold, or when there's no hint, it advances immediately — the
+// fast-fallback default. When this is the only pick (no next), Run
+// always waits, since rotation isn't an option. The rationale lives
+// on maybeWaitOnPick; the env knob is LOCUTUS_RATE_LIMIT_WAIT_THRESHOLD.
 func (e *Executor) Run(ctx context.Context, def AgentDef, input AgentInput) (*AgentOutput, error) {
 	picks, err := ResolveAvailable(def, e.providers, e.cfg)
 	if err != nil {
@@ -233,19 +241,7 @@ func (e *Executor) Run(ctx context.Context, def AgentDef, input AgentInput) (*Ag
 
 	var lastErr error
 	for i, pick := range picks {
-		// Each pick gets its own timeout budget. If the parent ctx
-		// is already done, context.WithTimeout returns a context
-		// that's immediately done too — failures in early picks
-		// don't leak into later picks.
-		pickCtx := ctx
-		var cancel context.CancelFunc
-		if perPickTimeout > 0 {
-			pickCtx, cancel = context.WithTimeout(ctx, perPickTimeout)
-		}
-		out, err := e.runOne(pickCtx, def, input, pick)
-		if cancel != nil {
-			cancel()
-		}
+		out, err := e.runOnePickWithRetryAfter(ctx, def, input, pick, perPickTimeout, i, len(picks))
 		if err == nil {
 			return out, nil
 		}
@@ -260,7 +256,12 @@ func (e *Executor) Run(ctx context.Context, def AgentDef, input AgentInput) (*Ag
 		}
 		if i+1 < len(picks) {
 			next := picks[i+1]
-			slog.Warn("agent fallback: primary preference failed; advancing to next",
+			// Demoted from Warn → Debug. The 429-triggered rotation
+			// isn't actionable by a dev — the executor already did
+			// the right thing by advancing — and a WARN line on every
+			// rate-limit muddles the operator-facing console. Trace
+			// files keep the detail for post-mortem analysis.
+			slog.Debug("agent fallback: primary preference failed; advancing to next",
 				"agent", def.ID,
 				"failed_provider", pick.Provider, "failed_tier", pick.Tier,
 				"next_provider", next.Provider, "next_tier", next.Tier,
@@ -268,6 +269,145 @@ func (e *Executor) Run(ctx context.Context, def AgentDef, input AgentInput) (*Ag
 		}
 	}
 	return nil, lastErr
+}
+
+// runOnePickWithRetryAfter dispatches one pick with a single
+// retry-after-aware second attempt on rate-limit. The flow:
+//
+//  1. Dispatch with a fresh per-pick timeout.
+//  2. On success or non-rate-limit error, return.
+//  3. On ErrRateLimit, consult maybeWaitOnPick: if the provider gave
+//     a usable Retry-After (<= rateLimitWaitThreshold) OR this is the
+//     only pick, sleep and retry once with a fresh per-pick timeout.
+//     Otherwise return the rate-limit error so Run advances to the
+//     next pick.
+//  4. The retry's outcome is final for this pick — a second rate-
+//     limit returns through to Run so it can rotate. The outer
+//     RunWithRetry layer will sleep+rewalk if everything 429s.
+//
+// pickIdx and pickCount let maybeWaitOnPick decide whether there's a
+// next pick to fall over to (and therefore whether to wait even when
+// Retry-After is over threshold).
+func (e *Executor) runOnePickWithRetryAfter(ctx context.Context, def AgentDef, input AgentInput, pick *ResolvedModel, perPickTimeout time.Duration, pickIdx, pickCount int) (*AgentOutput, error) {
+	out, err := e.dispatchPickWithTimeout(ctx, def, input, pick, perPickTimeout)
+	if err == nil {
+		return out, nil
+	}
+	if !errors.Is(err, ErrRateLimit) {
+		return out, err
+	}
+
+	sleep, source, wait := maybeWaitOnPick(err, pickIdx, pickCount)
+	if !wait {
+		return out, err
+	}
+
+	// slog at debug-level only — the operator-facing surface is the
+	// sink callback below, which flips the spinner to "retrying" with
+	// the wait duration. WARN/INFO log lines on top would compete
+	// with the spinner for attention and tell the operator nothing
+	// actionable; the trace files still capture this at debug for
+	// post-mortem analysis.
+	slog.Debug("agent rate-limited; sleeping on same provider before retry",
+		"agent", def.ID,
+		"provider", pick.Provider,
+		"tier", pick.Tier,
+		"sleep", sleep,
+		"sleep_source", source,
+		"is_only_pick", pickCount == 1,
+	)
+	if cb := RateLimitWaitCallbackFromContext(ctx); cb != nil {
+		cb(sleep)
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ErrTimeout
+	case <-time.After(sleep):
+	}
+
+	// One retry on the same pick after the wait. Fresh per-pick
+	// timeout so the budget the initial attempt consumed (mostly the
+	// rate-limited round-trip) doesn't starve the retry.
+	return e.dispatchPickWithTimeout(ctx, def, input, pick, perPickTimeout)
+}
+
+// dispatchPickWithTimeout is the shared per-attempt dispatch: derive
+// a per-pick timeout from the parent ctx, run the adapter, return.
+// Split out so the rate-limit retry path can call it twice with
+// independent timeout budgets.
+func (e *Executor) dispatchPickWithTimeout(ctx context.Context, def AgentDef, input AgentInput, pick *ResolvedModel, perPickTimeout time.Duration) (*AgentOutput, error) {
+	pickCtx := ctx
+	var cancel context.CancelFunc
+	if perPickTimeout > 0 {
+		pickCtx, cancel = context.WithTimeout(ctx, perPickTimeout)
+	}
+	out, err := e.runOne(pickCtx, def, input, pick)
+	if cancel != nil {
+		cancel()
+	}
+	return out, err
+}
+
+// rateLimitWaitThresholdDefault caps the per-pick wait when a
+// provider returns Retry-After. Values up to this duration sleep on
+// the same pick; longer values advance to the next preference (or,
+// when there's no next pick, sleep anyway since rotation isn't an
+// option).
+//
+// 90s catches typical fast-tier rate-limit responses (5-60s) with a
+// margin for burst conditions, without making the operator stare at
+// a spinner for minutes. The env override
+// LOCUTUS_RATE_LIMIT_WAIT_THRESHOLD takes a Go duration string
+// ("45s", "2m"); empty or unparseable falls back to the default.
+const rateLimitWaitThresholdDefault = 90 * time.Second
+
+// rateLimitWaitThreshold returns the effective threshold,
+// recomputed per call so an env change between calls is picked up.
+// Hot-path overhead is one os.Getenv + one ParseDuration — both
+// trivially cheap relative to an LLM round-trip.
+func rateLimitWaitThreshold() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("LOCUTUS_RATE_LIMIT_WAIT_THRESHOLD")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return rateLimitWaitThresholdDefault
+}
+
+// maybeWaitOnPick decides whether to sleep on the current pick
+// before retrying, or fall through to the next preference. Returns
+// (sleep duration, source label, wait?) where wait=false means the
+// caller should advance.
+//
+// Rules:
+//   - Not a RateLimitError, or RetryAfter is zero (no provider hint):
+//     don't wait — advance to next pick (fast fallback, current
+//     Layer 1 behavior preserved).
+//   - RetryAfter <= threshold: wait. The provider gave us a usable
+//     hint and the wait is bounded; sleeping beats rotating to a
+//     different provider's quota.
+//   - RetryAfter > threshold AND there's a next pick: don't wait —
+//     advance. A long rate-limit estimate means the provider is in
+//     measured cool-down; rotating to a different provider is faster
+//     than sleeping.
+//   - RetryAfter > threshold AND this is the only pick: wait anyway.
+//     Rotation isn't an option, so the threshold doesn't apply —
+//     better to sleep through than fail immediately and force the
+//     outer RunWithRetry to sleep the same duration regardless.
+func maybeWaitOnPick(err error, pickIdx, pickCount int) (time.Duration, string, bool) {
+	var rlErr *adapters.RateLimitError
+	if !errors.As(err, &rlErr) || rlErr.RetryAfter <= 0 {
+		return 0, "", false
+	}
+	threshold := rateLimitWaitThreshold()
+	hasNextPick := pickIdx+1 < pickCount
+	if rlErr.RetryAfter <= threshold {
+		return rlErr.RetryAfter, "retry-after", true
+	}
+	if !hasNextPick {
+		return rlErr.RetryAfter, "retry-after-no-fallback", true
+	}
+	return 0, "", false
 }
 
 // runOne dispatches a single adapter call against a resolved pick.

@@ -107,13 +107,17 @@ func RunList(fsys specio.FS, query, kindFilter string) (*ListResult, error) {
 
 // Field weights. Title weighs the most because that's the curated
 // human-readable headline; the id slug is derived from the title so
-// matching it is a strong signal too. Body / rationale matches are
+// matching it is a strong signal too. Summary sits between ID and
+// Title: more curated than the slug (DJ-114 authored "what" line),
+// but with more tokens than the headline, so each match shouldn't
+// count for as much as a Title hit. Body / rationale matches are
 // real but noisy — a token can show up in passing prose without the
 // node being "about" that topic.
 const (
-	weightTitle = 3
-	weightID    = 2
-	weightBody  = 1
+	weightTitle   = 3
+	weightID      = 2
+	weightSummary = 2
+	weightBody    = 1
 )
 
 func scanLoaded(loaded *spec.Loaded, tokens []string, kindFilter string) []ListHit {
@@ -182,6 +186,7 @@ func scanLoaded(loaded *spec.Loaded, tokens []string, kindFilter string) []ListH
 func scoreDecision(n spec.DecisionNode, tokens []string) int {
 	score := scoreField(n.Spec.ID, tokens, weightID)
 	score += scoreField(n.Spec.Title, tokens, weightTitle)
+	score += scoreField(n.Spec.Summary, tokens, weightSummary)
 	score += scoreField(n.Spec.Rationale, tokens, weightBody)
 	score += scoreField(n.Body, tokens, weightBody)
 	if n.Spec.Provenance != nil {
@@ -198,6 +203,7 @@ func scoreDecision(n spec.DecisionNode, tokens []string) int {
 func scoreFeature(n spec.FeatureNode, tokens []string) int {
 	score := scoreField(n.Spec.ID, tokens, weightID)
 	score += scoreField(n.Spec.Title, tokens, weightTitle)
+	score += scoreField(n.Spec.Summary, tokens, weightSummary)
 	score += scoreField(n.Spec.Description, tokens, weightBody)
 	score += scoreField(n.Body, tokens, weightBody)
 	for _, ac := range n.Spec.AcceptanceCriteria {
@@ -209,6 +215,7 @@ func scoreFeature(n spec.FeatureNode, tokens []string) int {
 func scoreStrategy(n spec.StrategyNode, tokens []string) int {
 	score := scoreField(n.Spec.ID, tokens, weightID)
 	score += scoreField(n.Spec.Title, tokens, weightTitle)
+	score += scoreField(n.Spec.Summary, tokens, weightSummary)
 	score += scoreField(n.Body, tokens, weightBody)
 	return score
 }
@@ -216,6 +223,7 @@ func scoreStrategy(n spec.StrategyNode, tokens []string) int {
 func scoreApproach(n spec.ApproachNode, tokens []string) int {
 	score := scoreField(n.Spec.ID, tokens, weightID)
 	score += scoreField(n.Spec.Title, tokens, weightTitle)
+	score += scoreField(n.Spec.Summary, tokens, weightSummary)
 	score += scoreField(n.Spec.Body, tokens, weightBody)
 	score += scoreField(n.Body, tokens, weightBody)
 	return score
@@ -224,6 +232,7 @@ func scoreApproach(n spec.ApproachNode, tokens []string) int {
 func scoreBug(n spec.BugNode, tokens []string) int {
 	score := scoreField(n.Spec.ID, tokens, weightID)
 	score += scoreField(n.Spec.Title, tokens, weightTitle)
+	score += scoreField(n.Spec.Summary, tokens, weightSummary)
 	score += scoreField(n.Spec.Description, tokens, weightBody)
 	score += scoreField(n.Spec.RootCause, tokens, weightBody)
 	score += scoreField(n.Spec.FixPlan, tokens, weightBody)

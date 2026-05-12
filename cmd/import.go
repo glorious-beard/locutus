@@ -86,7 +86,7 @@ func (c *ImportCmd) Run(ctx context.Context, cli *CLI) error {
 	// would skip prereqs is also the path that doesn't dispatch a
 	// council, so the missing summaries don't bite us.
 	if llm != nil {
-		if err := runSpecPrereqs(ctx, fsys, llm, !c.DryRun); err != nil {
+		if err := runSpecPrereqs(ctx, fsys, llm, sink, !c.DryRun); err != nil {
 			return err
 		}
 	}

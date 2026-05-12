@@ -106,7 +106,7 @@ func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 	// opt-in via --check-pre-reqs when --offline is set (the dev
 	// compile-and-run loop).
 	if c.shouldRunPrereqs() {
-		if err := c.runPrereqs(ctx); err != nil {
+		if err := c.runPrereqs(ctx, cli); err != nil {
 			return err
 		}
 	}
@@ -130,13 +130,18 @@ func (c *UpdateCmd) shouldRunPrereqs() bool {
 // prereqs added here as the surface grows; today there's just the
 // SummariesPresent check. When the list grows past two or three, the
 // hardcoded sequence becomes a slice or config struct.
-func (c *UpdateCmd) runPrereqs(ctx context.Context) error {
+//
+// cli is threaded through so the prereq workflow's per-call events
+// render on the same CLI sink the rest of the verb's UI would use —
+// for `update --check-pre-reqs` on a legacy project, that's the only
+// console feedback the operator gets, so wiring it is load-bearing.
+func (c *UpdateCmd) runPrereqs(ctx context.Context, cli *CLI) error {
 	fsys, root, err := projectFS()
 	if err != nil {
 		return fmt.Errorf("update --check-pre-reqs: %w", err)
 	}
 
-	sctx, closeFn, err := buildPrereqsContext(fsys, root)
+	sctx, closeFn, err := buildPrereqsContext(cli, fsys, root)
 	if err != nil {
 		return fmt.Errorf("update --check-pre-reqs: %w", err)
 	}
@@ -156,24 +161,34 @@ func (c *UpdateCmd) runPrereqs(ctx context.Context) error {
 }
 
 // buildPrereqsContext constructs a SummariesContext with an LLM
-// executor + dispatcher pair. The dispatcher is registered against the
-// project filesystem so the spec_summarizer's spec_list_manifest /
-// spec_get tools (DJ-094) bind to the same files the rest of the
-// command operates on. Returns a close function the caller defers.
-func buildPrereqsContext(fsys specio.FS, root string) (prereqs.SummariesContext, func(), error) {
+// executor + dispatcher pair AND a CLI sink for spinner feedback. The
+// dispatcher is registered against the project filesystem so the
+// spec_summarizer's spec_list_manifest / spec_get tools (DJ-094) bind
+// to the same files the rest of the command operates on. The sink is
+// the CLI's per-mode default (cli pterm spinners or plain log lines)
+// so the prereq's per-summarizer-call lifecycle renders consistently
+// with every other workflow-driven verb.
+//
+// Returns a close function the caller defers — closes the session
+// recorder AND the CLI sink (in that order so any final events still
+// flush before the spinner teardown).
+func buildPrereqsContext(cli *CLI, fsys specio.FS, root string) (prereqs.SummariesContext, func(), error) {
 	llm, rec, err := recordingLLM(fsys, root, "update --check-pre-reqs")
 	if err != nil {
 		return prereqs.SummariesContext{}, func() {}, err
 	}
+	llm, sink, closeSink := withProgressSink(cli, llm)
 	closeFn := func() {
 		if rec != nil {
 			_ = rec.Close()
 		}
+		closeSink()
 	}
 	return prereqs.SummariesContext{
 		FSys:       fsys,
 		Executor:   llm,
 		Dispatcher: agent.NewDispatcher(llm),
+		Sink:       sink,
 	}, closeFn, nil
 }
 

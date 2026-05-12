@@ -29,8 +29,8 @@ import (
 // Today the prereq surface is just SummariesPresent. Future prereqs
 // (traces.json writers, etc.) plug in as additional Ensure* calls in
 // the same sequence.
-func runSpecPrereqs(ctx context.Context, fsys specio.FS, llm agent.AgentExecutor, regen bool) error {
-	sctx := prereqs.SummariesContext{FSys: fsys}
+func runSpecPrereqs(ctx context.Context, fsys specio.FS, llm agent.AgentExecutor, sink agent.EventSink, regen bool) error {
+	sctx := prereqs.SummariesContext{FSys: fsys, Sink: sink}
 	if regen {
 		// LLM is required for resolution. The assertion-only path
 		// (regen=false) doesn't construct a dispatcher — passing one

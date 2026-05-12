@@ -169,7 +169,7 @@ func (c *AdoptCmd) Run(ctx context.Context, cli *CLI) error {
 		if err != nil {
 			return err
 		}
-		llm, _, closeSink := withProgressSink(cli, llm)
+		llm, sink, closeSink := withProgressSink(cli, llm)
 		defer closeSink()
 		cfg.LLM = llm
 		if !c.DryRun {
@@ -184,14 +184,17 @@ func (c *AdoptCmd) Run(ctx context.Context, cli *CLI) error {
 		// On --dry-run we assert without mutating (matches assimilate's
 		// dry-run shape, which spends LLM tokens for preview but
 		// doesn't write spec changes — prereq fills are spec changes).
-		if err := runSpecPrereqs(ctx, fsys, llm, !c.DryRun); err != nil {
+		// Sink is threaded so the prereq's per-summarizer-call spinners
+		// render alongside the rest of adopt's UI.
+		if err := runSpecPrereqs(ctx, fsys, llm, sink, !c.DryRun); err != nil {
 			return err
 		}
 	} else if !c.DryRun {
 		// No LLM but the spec graph will be loaded. Assertion-only:
 		// if summaries are missing, the operator will see truncation
 		// fallbacks downstream. Fail fast with the actionable error.
-		if err := runSpecPrereqs(ctx, fsys, nil, false); err != nil {
+		// No sink (no LLM means no spinners).
+		if err := runSpecPrereqs(ctx, fsys, nil, nil, false); err != nil {
 			return err
 		}
 	}

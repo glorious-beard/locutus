@@ -19,6 +19,12 @@ import (
 // Dispatcher is required when regen=true (the resolution path runs an
 // LLM workflow). When regen=false the prereq does pure I/O and the
 // dispatcher may be nil.
+//
+// Sink is optional. When non-nil, the prereq workflow's per-call
+// lifecycle events (queued / started / retrying / completed / error)
+// are routed through it so the CLI's spinner UI renders the prereq
+// pass identically to every other workflow-driven verb. Nil sink is
+// silent — same effect as agent.SilentSink{}.
 type SummariesContext struct {
 	// FSys is the project filesystem; must be rooted at the project's
 	// `.borg/` parent.
@@ -30,6 +36,10 @@ type SummariesContext struct {
 	// RunItem closures. Required when regen=true. Production callers
 	// pass agent.NewDispatcher(executor); tests can swap in mocks.
 	Dispatcher agent.AgentDispatcher
+	// Sink, when non-nil, receives the workflow's per-call lifecycle
+	// events so the CLI sink can render spinner state for the prereq
+	// pass. Optional; nil sink silently drops events.
+	Sink agent.EventSink
 }
 
 // SummariesError is returned by EnsureSpecsContainSummaries when the
@@ -113,6 +123,29 @@ func EnsureSpecsContainSummaries(ctx context.Context, sctx SummariesContext, reg
 		Executor:  sctx.Executor,
 		AgentDefs: map[string]agent.AgentDef{"spec_summarizer": def},
 		Workflow:  agent.FillSummariesWorkflow,
+	}
+
+	// Bridge workflow events to the caller's sink so the prereq pass
+	// renders with the same spinner UI every other workflow-driven
+	// verb uses. Same pattern GenerateSpec uses: buffered channel +
+	// goroutine drains into sink.OnEvent. Buffer sized generously
+	// (256) because fill-summaries fans out aggressively — 270
+	// missing summaries × 3 events each = ~810 events on a winplan-
+	// sized retrofit, and a blocked emitEvent would stall the run.
+	if sctx.Sink != nil {
+		events := make(chan agent.WorkflowEvent, 256)
+		exec.Events = events
+		bridgeDone := make(chan struct{})
+		go func() {
+			defer close(bridgeDone)
+			for ev := range events {
+				sctx.Sink.OnEvent(ev)
+			}
+		}()
+		defer func() {
+			close(events)
+			<-bridgeDone
+		}()
 	}
 
 	if _, err := exec.Run(ctx, &state); err != nil {

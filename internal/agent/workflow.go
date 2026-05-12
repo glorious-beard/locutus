@@ -159,6 +159,14 @@ func (e *WorkflowExecutor[S]) executeAgent(ctx context.Context, step WorkflowSte
 		ctx = WithAcquiredCallback(ctx, func() {
 			e.emitEvent(stepID, agentID, "started", "")
 		})
+		// Rate-limit wait happens inside the dispatcher's underlying
+		// Executor.Run call. Surface it as the same "retrying" event
+		// the non-RunItem path uses so the cliSink flips spinner text
+		// to "rate-limited; waiting Ns" consistently across both
+		// dispatch shapes.
+		ctx = WithRateLimitWaitCallback(ctx, func(sleep time.Duration) {
+			e.emitEvent(stepID, agentID, "retrying", fmt.Sprintf("rate-limited; waiting %s", sleep.Round(time.Second)))
+		})
 		// RunItem owns its sub-call dispatch, but the workflow sink
 		// expects a queued → started → completed lifecycle for every
 		// step slot. Emit "started" inline (mirror of the
@@ -194,6 +202,14 @@ func (e *WorkflowExecutor[S]) executeAgent(ctx context.Context, step WorkflowSte
 	})
 	ctx = WithRetryCallback(ctx, func(attempt int, retryErr error) {
 		e.emitEvent(stepID, agentID, "retrying", fmt.Sprintf("attempt %d failed: %s", attempt, retryErr))
+	})
+	// Rate-limit wait happens INSIDE Executor.Run (single attempt) —
+	// not via RunWithRetry's full re-walk. Surface it as the same
+	// "retrying" event so the cliSink flips the spinner text in
+	// place; on resume the next concurrency Acquire fires the
+	// AcquiredCallback above and flips the spinner back to running.
+	ctx = WithRateLimitWaitCallback(ctx, func(sleep time.Duration) {
+		e.emitEvent(stepID, agentID, "retrying", fmt.Sprintf("rate-limited; waiting %s", sleep.Round(time.Second)))
 	})
 
 	project := step.Project

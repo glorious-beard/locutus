@@ -141,6 +141,37 @@ func RetryCallbackFromContext(ctx context.Context) func(int, error) {
 	return nil
 }
 
+// rateLimitWaitCallbackKey carries a callback invoked when a single
+// LLM call hits a 429 with a usable Retry-After hint and the executor
+// decides to sleep on the same pick rather than rotate. Distinct from
+// retryCallbackKey: that one fires from RunWithRetry's full re-walk;
+// this one fires from inside Executor.Run's per-pick wait. Both feed
+// the same `retrying` event on the sink so the operator sees
+// rate-limit pauses as transient spinner state, not as warning lines.
+type rateLimitWaitCallbackKey struct{}
+
+// WithRateLimitWaitCallback returns a context whose rate-limit wait
+// path invokes fn(sleep) right before sleeping. `sleep` is the
+// duration we're about to wait — usually the provider's Retry-After
+// hint; occasionally the same hint clamped to the "no fallback"
+// branch when this is the only pick.
+//
+// Distinct from WithRetryCallback because the trigger is per-attempt
+// inside Executor.Run, not per-walk inside RunWithRetry. Both
+// callbacks can be set on the same context; they fire independently.
+func WithRateLimitWaitCallback(ctx context.Context, fn func(sleep time.Duration)) context.Context {
+	return context.WithValue(ctx, rateLimitWaitCallbackKey{}, fn)
+}
+
+// RateLimitWaitCallbackFromContext returns the callback set via
+// WithRateLimitWaitCallback, or nil if none.
+func RateLimitWaitCallbackFromContext(ctx context.Context) func(time.Duration) {
+	if v, ok := ctx.Value(rateLimitWaitCallbackKey{}).(func(time.Duration)); ok {
+		return v
+	}
+	return nil
+}
+
 // SessionRecorder writes a YAML transcript of every LLM call as a
 // directory tree under .locutus/sessions/<sid>/, with a small manifest
 // file (`session.yaml`) and one file per call under `calls/`.

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -42,6 +43,20 @@ func (n *NotifyingExecutor) Run(ctx context.Context, def AgentDef, input AgentIn
 	if SuppressLLMNotify(ctx) {
 		return n.Inner.Run(ctx, def, input)
 	}
+
+	// Rate-limit wait fires from inside Inner.Run. Register a sink
+	// callback that surfaces it as a "retrying" event keyed by
+	// AgentID — same shape the workflow path uses, so cliSink renders
+	// rate-limit pauses identically whether the call originated
+	// inside or outside a workflow.
+	ctx = WithRateLimitWaitCallback(ctx, func(sleep time.Duration) {
+		n.Sink.OnEvent(WorkflowEvent{
+			AgentID:   def.ID,
+			Status:    "retrying",
+			Message:   fmt.Sprintf("rate-limited; waiting %s", sleep.Round(time.Second)),
+			Timestamp: time.Now(),
+		})
+	})
 
 	n.Sink.OnEvent(WorkflowEvent{
 		AgentID:   def.ID,
