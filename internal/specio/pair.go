@@ -73,6 +73,7 @@ func SavePair[T any](fsys FS, basePath string, obj T, body string) error {
 	if err := AtomicWriteFile(fsys, basePath+".md", mdData, 0o644); err != nil {
 		return fmt.Errorf("save pair write md: %w", err)
 	}
+	fireSpecWrite(basePath, false)
 	return nil
 }
 

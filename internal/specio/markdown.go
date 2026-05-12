@@ -27,6 +27,7 @@ func SaveMarkdown[T any](fsys FS, path string, obj T, body string) error {
 	if err := AtomicWriteFile(fsys, path, mdData, 0o644); err != nil {
 		return fmt.Errorf("save markdown write: %w", err)
 	}
+	fireSpecWrite(path, false)
 	return nil
 }
 

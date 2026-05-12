@@ -214,6 +214,73 @@ func addTextField(d *bluge.Document, name, value string) {
 	d.AddField(bluge.NewTextField(name, value).WithAnalyzer(enanalyzer.NewAnalyzer()).SearchTermPositions())
 }
 
+// BuildDocument loads one spec node from fsys and returns its Bluge
+// document. kind accepts either a spec.NodeKind value ("decision",
+// "feature", ...) or the corresponding plural directory segment
+// ("decisions", "features", ...) — Phase 2's callback derives the
+// latter from the on-disk basePath. Used by the incremental index
+// hook to update a single document without walking the whole tree.
+func BuildDocument(fsys specio.FS, kind, id string) (*bluge.Document, error) {
+	singular, dir, ok := normaliseKind(kind)
+	if !ok {
+		return nil, fmt.Errorf("search: BuildDocument: unknown kind %q", kind)
+	}
+	basePath := path.Join(specRoot, dir, id)
+	switch singular {
+	case string(spec.KindFeature):
+		obj, body, err := specio.LoadPair[spec.Feature](fsys, basePath)
+		if err != nil {
+			return nil, fmt.Errorf("search: load feature %s: %w", id, err)
+		}
+		return featureDoc(obj, body), nil
+	case string(spec.KindStrategy):
+		obj, body, err := specio.LoadPair[spec.Strategy](fsys, basePath)
+		if err != nil {
+			return nil, fmt.Errorf("search: load strategy %s: %w", id, err)
+		}
+		return strategyDoc(obj, body), nil
+	case string(spec.KindDecision):
+		obj, body, err := specio.LoadPair[spec.Decision](fsys, basePath)
+		if err != nil {
+			return nil, fmt.Errorf("search: load decision %s: %w", id, err)
+		}
+		return decisionDoc(obj, body), nil
+	case string(spec.KindBug):
+		obj, body, err := specio.LoadPair[spec.Bug](fsys, basePath)
+		if err != nil {
+			return nil, fmt.Errorf("search: load bug %s: %w", id, err)
+		}
+		return bugDoc(obj, body), nil
+	case string(spec.KindApproach):
+		obj, body, err := specio.LoadMarkdown[spec.Approach](fsys, basePath+".md")
+		if err != nil {
+			return nil, fmt.Errorf("search: load approach %s: %w", id, err)
+		}
+		return approachDoc(obj, body), nil
+	}
+	return nil, fmt.Errorf("search: BuildDocument: unsupported kind %q", kind)
+}
+
+// normaliseKind accepts either a singular spec kind ("decision") or
+// the plural directory name ("decisions") and returns both forms plus
+// an ok flag. Two paths into the same builder is cheaper than forcing
+// every caller to convert before calling.
+func normaliseKind(kind string) (singular, dir string, ok bool) {
+	switch kind {
+	case string(spec.KindFeature), "features":
+		return string(spec.KindFeature), "features", true
+	case string(spec.KindStrategy), "strategies":
+		return string(spec.KindStrategy), "strategies", true
+	case string(spec.KindDecision), "decisions":
+		return string(spec.KindDecision), "decisions", true
+	case string(spec.KindBug), "bugs":
+		return string(spec.KindBug), "bugs", true
+	case string(spec.KindApproach), "approaches":
+		return string(spec.KindApproach), "approaches", true
+	}
+	return "", "", false
+}
+
 // slugTokens converts a spec id like "dec-postgres-with-pgvector"
 // into the tokenized slug body "postgres with pgvector". The kind
 // prefix is dropped because every node with the same prefix shares

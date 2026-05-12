@@ -59,6 +59,7 @@ func (c *CLI) AfterApply() error {
 	level := resolveLogLevel(c.Verbose, c.Debug, os.Getenv(EnvKeyLogLevel))
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 	globalCLI = c
+	registerSearchHook()
 	return nil
 }
 
