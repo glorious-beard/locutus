@@ -48,6 +48,10 @@ go.work.sum
 # memory and agents rebuild from project state as needed.
 /.locutus/memory/
 
+# Spec FTS index — regenerable Bluge cache rebuilt on fingerprint mismatch.
+# Operator escape hatch: rm -rf .locutus/spec_index/
+/.locutus/spec_index/
+
 # Editor/IDE
 # .idea/
 # .vscode/
