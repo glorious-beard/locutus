@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/chetan/locutus/internal/agent/adapters"
+	"github.com/chetan/locutus/internal/search"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 )
@@ -491,18 +492,141 @@ type SpecGetInput struct {
 const (
 	ToolNameSpecListManifest = "spec_list_manifest"
 	ToolNameSpecGet          = "spec_get"
+	ToolNameSpecSearch       = "spec_search"
 )
 
-// RegisterSpecTools registers spec_list_manifest and spec_get
-// against the given tool registry. fsys is captured by closure so
-// tool calls read from the same filesystem the rest of Locutus
-// operates on (OSFS in production, MemFS in tests).
+// SpecSearchInput is the tool input shape for spec_search. Query is
+// required; Kind and Limit are optional. The struct mirrors the JSON
+// schema we expose to the LLM.
+type SpecSearchInput struct {
+	Query string `json:"query"`
+	Kind  string `json:"kind,omitempty"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+// SpecSearchResult wraps the ranked hits with a full-match count so
+// the agent can tell when its slice is truncated. Per-hit payload
+// reuses SpecManifestEntry so agents can reuse their existing
+// spec_list_manifest parsing path.
+type SpecSearchResult struct {
+	Hits         []SpecManifestEntry `json:"hits"`
+	TotalMatches int                 `json:"total_matches"`
+}
+
+// specSearchAgentDefaultLimit is the agent-surface default. Smaller
+// than internal/search.DefaultLimit (100) because agent contexts
+// prefer compact result sets — the wrapper's TotalMatches signals
+// when more is available.
+const specSearchAgentDefaultLimit = 20
+
+// specSearchAgentMaxLimit caps the per-call result count. Matches
+// internal/search.DefaultLimit so the agent surface and CLI surface
+// agree on the ceiling.
+const specSearchAgentMaxLimit = 100
+
+// specSearchKinds is the kind-filter whitelist. Mirrors the values
+// search.Options.Kind accepts. Lifting it here lets us reject unknown
+// kinds with an actionable agent-facing message before opening the
+// index.
+var specSearchKinds = map[string]struct{}{
+	string(spec.KindFeature):  {},
+	string(spec.KindStrategy): {},
+	string(spec.KindDecision): {},
+	string(spec.KindBug):      {},
+	string(spec.KindApproach): {},
+}
+
+// SearchSpecNodes runs a ranked free-text search over the spec graph
+// and returns the top hits plus the full match count.
+//
+// Validation: empty query is rejected; unknown Kind is rejected;
+// Limit is clamped (0 / negative → specSearchAgentDefaultLimit, >max
+// → specSearchAgentMaxLimit). Validation runs before any index
+// access so misuse fails fast.
+//
+// Summary derivation: each Bluge hit carries id/kind/title but not
+// the authored Summary. We build the manifest once per call and look
+// each id up in an id→entry map — cheaper than calling LookupSpecNode
+// per hit (which re-reads the file from disk) and small at the
+// target scale (<100KB for 3000 nodes).
+func SearchSpecNodes(fsys specio.FS, projectRoot string, in SpecSearchInput) (SpecSearchResult, error) {
+	q := strings.TrimSpace(in.Query)
+	if q == "" {
+		return SpecSearchResult{}, fmt.Errorf("spec_search: empty query")
+	}
+	if in.Kind != "" {
+		if _, ok := specSearchKinds[in.Kind]; !ok {
+			return SpecSearchResult{}, fmt.Errorf("spec_search: unknown kind %q (accepted: feature, strategy, decision, bug, approach)", in.Kind)
+		}
+	}
+	limit := in.Limit
+	switch {
+	case limit <= 0:
+		limit = specSearchAgentDefaultLimit
+	case limit > specSearchAgentMaxLimit:
+		limit = specSearchAgentMaxLimit
+	}
+
+	idx, err := search.Open(fsys, projectRoot)
+	if err != nil {
+		return SpecSearchResult{}, fmt.Errorf("spec_search: open index: %w", err)
+	}
+	defer idx.Close()
+
+	hits, total, err := idx.Search(q, search.Options{Kind: in.Kind, Limit: limit})
+	if err != nil {
+		return SpecSearchResult{}, fmt.Errorf("spec_search: %w", err)
+	}
+
+	summaries := summaryByID(BuildSpecManifest(fsys))
+	out := make([]SpecManifestEntry, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, SpecManifestEntry{
+			ID:      h.ID,
+			Title:   h.Title,
+			Kind:    h.Kind,
+			Summary: summaries[h.ID],
+		})
+	}
+	return SpecSearchResult{Hits: out, TotalMatches: total}, nil
+}
+
+// summaryByID flattens a manifest into an id→Summary lookup. Used to
+// attach authored summaries to spec_search hits without re-reading
+// each node's JSON.
+func summaryByID(m SpecManifest) map[string]string {
+	out := make(map[string]string, len(m.Features)+len(m.Strategies)+len(m.Decisions)+len(m.Bugs)+len(m.Approaches))
+	for _, e := range m.Features {
+		out[e.ID] = e.Summary
+	}
+	for _, e := range m.Strategies {
+		out[e.ID] = e.Summary
+	}
+	for _, e := range m.Decisions {
+		out[e.ID] = e.Summary
+	}
+	for _, e := range m.Bugs {
+		out[e.ID] = e.Summary
+	}
+	for _, e := range m.Approaches {
+		out[e.ID] = e.Summary
+	}
+	return out
+}
+
+// RegisterSpecTools registers spec_list_manifest, spec_get, and
+// spec_search against the given tool registry. fsys is captured by
+// closure so tool calls read from the same filesystem the rest of
+// Locutus operates on (OSFS in production, MemFS in tests).
+// projectRoot is the absolute OS path the on-disk search index lives
+// under; tests using MemFS pass "" to disable the spec_search tool
+// (BM25 storage is OS-bound).
 //
 // The registration is idempotent at the registry level —
 // re-registering the same name overrides the prior entry. Callers
 // gate on a sync.Once so the production path runs exactly once per
 // process.
-func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS) {
+func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, projectRoot string) {
 	if registry == nil || fsys == nil {
 		return
 	}
@@ -535,6 +659,39 @@ func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS) {
 		},
 		Handler: TypedHandler(func(ctx context.Context, in SpecGetInput) (json.RawMessage, error) {
 			return LookupSpecNode(fsys, in.ID)
+		}),
+	})
+	if projectRoot == "" {
+		// MemFS / test contexts can't host the on-disk BM25 index; skip
+		// the spec_search registration rather than register a handler
+		// that errors on every call.
+		return
+	}
+	registry.Register(adapters.ToolDef{
+		Name:        ToolNameSpecSearch,
+		Description: "Returns the ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body, with optional kind filter). Use for topic-scoped lookups (e.g. \"what do we have on authentication?\"); prefer spec_list_manifest when you need to enumerate the full graph structure.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{
+					"type":        "string",
+					"description": "Free-text query. Phrase queries via double-quotes (e.g. \"row level security\") and trailing-* prefix queries (e.g. auth*) are supported.",
+				},
+				"kind": map[string]any{
+					"type":        "string",
+					"enum":        []any{"feature", "strategy", "decision", "bug", "approach"},
+					"description": "Optional kind filter. Omitted means all kinds.",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Optional cap on returned hits. Default 20, max 100 (values outside this range are clamped). The TotalMatches field signals when the slice is truncated.",
+				},
+			},
+			"required":             []any{"query"},
+			"additionalProperties": false,
+		},
+		Handler: TypedHandler(func(ctx context.Context, in SpecSearchInput) (SpecSearchResult, error) {
+			return SearchSpecNodes(fsys, projectRoot, in)
 		}),
 	})
 }

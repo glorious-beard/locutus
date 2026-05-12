@@ -59,7 +59,7 @@ func recordingLLM(fsys specio.FS, root, command string) (agent.AgentExecutor, *a
 	if err != nil {
 		return nil, nil, err
 	}
-	registerSpecToolsOnce(inner, fsys)
+	registerSpecToolsOnce(inner, fsys, root)
 	rec, err := agent.NewSessionRecorder(fsys, command, root)
 	if err != nil {
 		return nil, nil, err
@@ -172,7 +172,7 @@ func newExecutor() (*agent.Executor, error) {
 // process-wide executor.
 var specToolsOnce sync.Once
 
-func registerSpecToolsOnce(inner agent.AgentExecutor, fsys specio.FS) {
+func registerSpecToolsOnce(inner agent.AgentExecutor, fsys specio.FS, projectRoot string) {
 	exec, ok := inner.(*agent.Executor)
 	if !ok {
 		// Mock executors in tests don't have a tool registry; nothing
@@ -182,7 +182,7 @@ func registerSpecToolsOnce(inner agent.AgentExecutor, fsys specio.FS) {
 		return
 	}
 	specToolsOnce.Do(func() {
-		agent.RegisterSpecTools(exec.Tools(), fsys)
+		agent.RegisterSpecTools(exec.Tools(), fsys, projectRoot)
 	})
 }
 

@@ -163,7 +163,9 @@ func TestRegenerateInvalidatedApproaches_AgentReturnsEmptyBodyRejected(t *testin
 func TestRegenerateInvalidatedApproaches_ReActToolPath(t *testing.T) {
 	fs := fixtureRegenerate(t, "evt-supersede-react")
 	registry := agent.NewToolRegistry()
-	agent.RegisterSpecTools(registry, fs)
+	// MemFS — pass empty projectRoot to skip spec_search registration
+	// (BM25 index is OS-bound). This test exercises spec_list_manifest only.
+	agent.RegisterSpecTools(registry, fs, "")
 
 	finalBody := "ReAct-pathed body — forward: WorkOS; backward: delete legacy auth"
 	finalPayload, err := json.Marshal(agent.RegenerateApproachResult{
