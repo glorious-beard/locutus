@@ -26,10 +26,13 @@ You receive as a user message:
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via two tools:
+The persisted spec on disk is available via three tools:
 
 - `spec_list_manifest()` — compact index of every persisted node with id, title, optional kind, and a one-line summary.
 - `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
+
+Use `spec_search` when you have a topic in mind and want the few relevant ids back. Use `spec_list_manifest` when you need the full structural picture. Before authoring the successor decision, `spec_search('<decision topic>')` finds adjacent decisions that may need to evolve in lockstep — easy to miss in a flat manifest scan.
 
 Use `spec_get(id)` when the motivation cites a sibling decision or strategy by id whose detail you need to draft the replacement's rationale or alternatives section (e.g. "the existing `dec-auth-jwt` says X; this supersession is the version that reflects WorkOS now"). Use `spec_list_manifest` to check whether a candidate replacement title would slug-collide with an unrelated existing decision id. The user message inlines the decision being replaced; you don't need a lookup for that.
 

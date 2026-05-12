@@ -24,10 +24,13 @@ You receive as a user message:
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via two tools:
+The persisted spec on disk is available via three tools:
 
 - `spec_list_manifest()` — compact index of every persisted node with id, title, optional kind, and a one-line summary.
 - `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
+
+Use `spec_search` when you have a topic in mind and want the few relevant ids back. Use `spec_list_manifest` when you need the full structural picture. When the strategy you're superseding touches a cross-cutting concern (testing, deployment, observability), `spec_search('<concern>')` surfaces the decisions and features that depend on the strategy's old shape.
 
 Use `spec_get(id)` when the motivation references an upstream strategy (via `influenced_by`) or a sibling strategy the replacement must align with — strategy-level shifts ripple, and the upstream commitments may constrain what shapes the new strategy can take. Use `spec_list_manifest` to check for slug collisions on a candidate new-title id. The strategy being replaced is inlined; you don't need a lookup for that.
 

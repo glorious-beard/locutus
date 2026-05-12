@@ -27,10 +27,13 @@ The user message may also include an **Existing spec is present** flag when the 
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via two tools:
+The persisted spec on disk is available via three tools:
 
 - `spec_list_manifest()` — compact index of every persisted node grouped by kind (features, strategies, decisions, bugs, approaches), with id, title, optional kind, and a one-line summary describing the node. Scan this to see what the project's spec already says about itself.
 - `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
+
+Use `spec_search` when you have a topic in mind and want the few relevant ids back. Use `spec_list_manifest` when you need the full structural picture. When verifying whether a claim from the user's context maps onto an existing spec node, `spec_search('<claim topic>')` is faster and more precise than scanning the full manifest.
 
 When the existing-spec flag is set, call `spec_list_manifest` once to see what features and strategies the persisted spec already commits to. The structural evidence in the file inventory should reconcile against that existing commitment — when you spot a discrepancy (the spec says "Postgres" but the inventory shows MySQL files), surface the discrepancy in your output rather than silently choosing the file evidence. Use `spec_get(id)` only when a manifest summary leaves real ambiguity. On greenfield (no flag), the tools return empty; skip them.
 

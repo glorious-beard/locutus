@@ -27,12 +27,15 @@ You receive as a user message:
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via two tools:
+The persisted spec on disk is available via three tools:
 
 - `spec_list_manifest()` — compact index of every persisted node with id, title, optional kind, and a one-line summary.
 - `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
 
 Use `spec_list_manifest` once to scan for **sibling approaches** under the same parent — when several approaches share a parent, your synthesis should know what the siblings are already covering so the brief doesn't duplicate their scope. Use `spec_get(id)` to read a specific sibling's body when its summary suggests overlap with what you're about to synthesize. The parent and applicable Decisions are inlined in the user message; you don't need lookups for those.
+
+Use `spec_search` for reuse / collision checks against the existing graph — given a topic, it finds the few relevant decisions in one call instead of forcing you to scan the full manifest. `spec_list_manifest` is for full-graph enumeration when you need the structural overview. When synthesizing inputs across the spec, `spec_search` returns the topic-relevant subset directly instead of forcing a manifest walk.
 
 # Task
 

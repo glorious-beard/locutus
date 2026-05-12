@@ -26,12 +26,13 @@ You receive the following as user messages assembled by the orchestrator:
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via two tools:
+The persisted spec on disk is available via three tools:
 
 - `spec_list_manifest()` — compact index of every persisted node (features, strategies, decisions, bugs, approaches) with id, title, optional kind, and a one-line summary.
 - `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
 
-When the plan references an approach or decision id (in workstream steps), use `spec_get(id)` to verify the referenced node actually says what the plan implies. A plan step that claims to address `feat-dashboard` but commits to logic incompatible with `dec-postgres-oltp` is the kind of finding only a lookup can surface. When the user message has no "Existing spec is present" flag, skip the lookups.
+Prefer `spec_search` for topic-scoped lookups ("does the spec already address X?"); reach for `spec_list_manifest` when you actually need the full structural overview (rare for critics — search-shaped lookups dominate your workflow). When a plan step references a spec id, `spec_get(id)` confirms what the node says; when it references a topic without an id (e.g. "we'll add caching"), `spec_search('caching')` finds the relevant decision. A plan step that claims to address `feat-dashboard` but commits to logic incompatible with `dec-postgres-oltp` is the kind of finding only a lookup can surface. When the user message has no "Existing spec is present" flag, skip the lookups.
 
 # Task
 

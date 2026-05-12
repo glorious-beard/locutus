@@ -24,10 +24,13 @@ You receive as user messages:
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via two tools:
+The persisted spec on disk is available via three tools:
 
 - `spec_list_manifest()` — compact index of every persisted node, grouped by kind (features, strategies, decisions, bugs, approaches). Each entry carries id, title, optional kind, and a one-line summary describing what the node is. Scan these first to decide whether anything is relevant.
 - `spec_get(id)` — full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
+
+Use `spec_search` for "does this concept already exist?" checks during authoring — it's the fastest way to find an id you might want to reuse instead of minting a duplicate. `spec_list_manifest` stays useful when you need the structural overview ("what does the spec look like end-to-end?"). Example: before drafting a feature called something like "User auth", run `spec_search("auth")` first — if `feat-auth-workos` already exists, propose against that id rather than minting `feat-user-authentication`.
 
 When extending an existing spec, call `spec_list_manifest()` once to see what features and strategies already exist; reuse those ids in your proposal rather than minting duplicates. Use `spec_get(id)` only when the manifest summary is insufficient to judge whether a node is the right reuse target — most lookups can be settled from the manifest alone. Greenfield runs (no existing-spec flag) need no lookups; don't burn turns on empty results.
 

@@ -25,10 +25,13 @@ You receive as user messages:
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via two tools:
+The persisted spec on disk is available via three tools:
 
 - `spec_list_manifest()` — compact index of every persisted node grouped by kind (features, strategies, decisions, bugs, approaches). Each entry carries id, title, optional kind, and a one-line summary describing the node. Scan this to decide what's relevant before fetching full content.
 - `spec_get(id)` — full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
+
+Use `spec_search` for "does this concept already exist?" checks during authoring — it's the fastest way to find an id you might want to reuse instead of minting a duplicate. `spec_list_manifest` stays useful when you need the structural overview ("what does the spec look like end-to-end?"). Example: when elaborating this feature into inline decisions, run `spec_search("<decision topic>")` before authoring an inline decision — the topic may already be settled under a canonical id the reconciler will then collapse you into anyway, and recognising it now lets you match phrasing on the first pass.
 
 Use these when this feature touches an area where existing nodes likely live — e.g. when the outline summary hints at a domain that may already be modeled, or when authoring inline decisions that may already exist as canonical decisions. The reconciler downstream dedupes decisions on its own; the value of looking up existing decisions here is recognising when your decision is the SAME conclusion (so you can match phrasing) versus a genuinely NEW one. Don't burn turns on lookups when the existing-spec flag is absent — every tool call costs a round-trip.
 

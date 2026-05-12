@@ -25,10 +25,13 @@ You receive as user messages:
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via two tools:
+The persisted spec on disk is available via three tools:
 
 - `spec_list_manifest()` — compact index of every persisted node grouped by kind (features, strategies, decisions, bugs, approaches). Each entry carries id, title, optional kind, and a one-line summary describing the node. Scan this to decide what's relevant before fetching full content.
 - `spec_get(id)` — full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
+
+Use `spec_search` for "does this concept already exist?" checks during authoring — it's the fastest way to find an id you might want to reuse instead of minting a duplicate. `spec_list_manifest` stays useful when you need the structural overview ("what does the spec look like end-to-end?"). Example: before authoring a new strategy node, run `spec_search("<concept>", kind: "strategy")` to see whether the territory is already covered. Strategies are coarse and duplicates are common when search isn't used — `strat-observability` and `strat-monitoring-stack` reaching for the same commitment is the typical failure mode.
 
 Use these when this strategy touches a domain where existing nodes likely live — particularly when extending a project, where a foundational strategy may already be in place that this elaboration should match (e.g. existing `strat-frontend` named "Next.js + SSR" means a NEW `strat-frontend-state` elaborating it must commit to choices compatible with Next.js, not a different framework). The reconciler downstream dedupes decisions on its own. Don't burn turns on lookups when the existing-spec flag is absent — every tool call costs a round-trip.
 

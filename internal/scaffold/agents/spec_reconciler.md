@@ -19,12 +19,15 @@ You receive as user messages:
 
 - **Raw proposal** — features[] and strategies[], each with inline decisions[]. Inline decisions have no IDs.
 
-The persisted spec on disk is available via two tools (no longer inlined into your prompt):
+The persisted spec on disk is available via three tools (no longer inlined into your prompt):
 
 - `spec_list_manifest()` — returns a compact index of every persisted spec node grouped by kind (features, strategies, decisions, bugs, approaches), with id + title + one-line summary per entry.
 - `spec_get(id)` — returns the full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
 
 Use these tools ONLY when you need to check whether a proposal's inline decision matches an existing one (the `reuse_existing` action). Greenfield runs need no lookups — the manifest will be empty. Don't burn turns calling tools when the raw proposal is the only input that matters.
+
+Use `spec_search` for reuse / collision checks against the existing graph — given a topic, it finds the few relevant decisions in one call instead of forcing you to scan the full manifest. `spec_list_manifest` is for full-graph enumeration when you need the structural overview. For the `reuse_existing` action, `spec_search` is the right tool: `spec_search('<inline decision headline>')` returns the top candidate ids ranked by topical similarity — much faster than scanning the whole manifest to find a match.
 
 # Task
 

@@ -24,10 +24,13 @@ You receive as a user message:
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via two tools:
+The persisted spec on disk is available via three tools:
 
 - `spec_list_manifest()` — compact index of every persisted node with id, title, optional kind, and a one-line summary.
 - `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
+- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
+
+Use `spec_search` when you have a topic in mind and want the few relevant ids back. Use `spec_list_manifest` when you need the full structural picture. Before drafting the superseding feature, `spec_search('<feature topic>')` reveals decisions and strategies attached to the area so the rewrite doesn't break their references.
 
 Use `spec_get(id)` to read the full body of a decision or strategy this feature references, when the motivation implies the new framing must align with it (e.g. "scope this feature down to what `strat-frontend` actually commits to"). Use `spec_list_manifest` to check that a candidate new-title slug doesn't collide with an unrelated existing feature id. The feature being replaced is inlined; you don't need a lookup for that.
 
