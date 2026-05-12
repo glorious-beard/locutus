@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,11 +50,46 @@ func fixtureInvalidated(t *testing.T) specio.FS {
 	return fs
 }
 
+// fixtureInvalidatedDisk mirrors fixtureInvalidated but lives on the
+// real filesystem so search.Open can write Bluge segments. Returns
+// the FS and OS root for RunList tests.
+func fixtureInvalidatedDisk(t *testing.T) (specio.FS, string) {
+	t.Helper()
+	root := t.TempDir()
+	fs := specio.NewOSFS(root)
+	for _, dir := range []string{"features", "strategies", "decisions", "approaches", "bugs"} {
+		require.NoError(t, fs.MkdirAll(".borg/spec/"+dir, 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".borg", "manifest.json"),
+		[]byte(`{"project_name":"fixture","version":"1"}`), 0o644))
+
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+
+	require.NoError(t, specio.SavePair(fs, ".borg/spec/features/feat-foo", spec.Feature{
+		ID: "feat-foo", Title: "Foo feature with auth", Status: spec.FeatureStatusProposed,
+		Approaches: []string{"app-valid", "app-stale"},
+		CreatedAt:  now, UpdatedAt: now,
+	}, ""))
+
+	require.NoError(t, specio.SaveMarkdown(fs, ".borg/spec/approaches/app-valid.md", spec.Approach{
+		ID: "app-valid", Title: "Valid auth approach", ParentID: "feat-foo",
+		CreatedAt: now, UpdatedAt: now,
+	}, "valid body"))
+
+	require.NoError(t, specio.SaveMarkdown(fs, ".borg/spec/approaches/app-stale.md", spec.Approach{
+		ID: "app-stale", Title: "Stale auth approach", ParentID: "feat-foo",
+		InvalidatedByEventID: "20260509T120953-001-node-superseded",
+		CreatedAt:            now, UpdatedAt: now,
+	}, "stale body — pre-supersede"))
+
+	return fs, root
+}
+
 // --- list badge ---
 
 func TestListBadgeMarksInvalidatedApproach(t *testing.T) {
-	fs := fixtureInvalidated(t)
-	r, err := RunList(fs, "auth", "")
+	fs, root := fixtureInvalidatedDisk(t)
+	r, err := RunList(fs, root, "auth", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, r.Hits)
 
@@ -76,8 +113,8 @@ func TestListBadgeMarksInvalidatedApproach(t *testing.T) {
 }
 
 func TestListResultExposesInvalidatedFlag(t *testing.T) {
-	fs := fixtureInvalidated(t)
-	r, err := RunList(fs, "auth", "")
+	fs, root := fixtureInvalidatedDisk(t)
+	r, err := RunList(fs, root, "auth", "")
 	require.NoError(t, err)
 
 	hitByID := map[string]ListHit{}

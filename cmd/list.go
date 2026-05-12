@@ -4,22 +4,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
+	"path"
 	"strings"
 
+	"github.com/chetan/locutus/internal/search"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 )
 
-// ListCmd searches the spec graph for nodes whose id, title, body, or
-// (for decisions) alternative rationales match the query. Pure read of
-// `.borg/`; no LLM. Companion to `explain` — `list` finds the ids,
-// `explain` renders one.
+// ListCmd searches the spec graph for nodes whose id, title, summary,
+// or body match the query. Pure read of `.borg/`; no LLM. Companion
+// to `explain` — `list` finds the ids, `explain` renders one.
 //
-// Output formats: markdown (default) or json. JSON emits the structured
-// hits so downstream tooling can pipe ids into other verbs.
+// Backed by the BM25 index in internal/search: the on-disk index lives
+// at .locutus/spec_index/ and is rebuilt automatically when stale.
+// Output formats: markdown (default) or json.
 type ListCmd struct {
-	Query  string `arg:"" help:"Free-text query (case-insensitive, whitespace-tokenised)."`
+	Query  string `arg:"" help:"Free-text query. Quote for phrases, trailing * for prefix."`
 	Kind   string `help:"Filter to one node kind: decision, feature, strategy, approach, bug." enum:",decision,feature,strategy,approach,bug" default:""`
 	Format string `help:"Output format: markdown or json." enum:"markdown,json" default:"markdown"`
 }
@@ -34,25 +35,25 @@ type ListResult struct {
 	Markdown string    `json:"markdown"`
 }
 
-// ListHit is one matching spec node. Score is an opaque relevance
+// ListHit is one matching spec node. Score is an opaque BM25 relevance
 // number — order, not magnitude, is the API. Invalidated is true for
 // approaches that carry InvalidatedByEventID; the markdown renderer
 // surfaces this via an `[invalidated]` badge so operators can spot
 // pending-reconcile work without filtering.
 type ListHit struct {
-	ID          string `json:"id"`
-	Kind        string `json:"kind"`
-	Title       string `json:"title"`
-	Score       int    `json:"score"`
-	Invalidated bool   `json:"invalidated,omitempty"`
+	ID          string  `json:"id"`
+	Kind        string  `json:"kind"`
+	Title       string  `json:"title"`
+	Score       float64 `json:"score"`
+	Invalidated bool    `json:"invalidated,omitempty"`
 }
 
 func (c *ListCmd) Run(cli *CLI) error {
-	fsys, _, err := projectFS()
+	fsys, root, err := projectFS()
 	if err != nil {
 		return err
 	}
-	result, err := RunList(fsys, c.Query, c.Kind)
+	result, err := RunList(fsys, root, c.Query, c.Kind)
 	if err != nil {
 		return err
 	}
@@ -72,11 +73,13 @@ func (c *ListCmd) Run(cli *CLI) error {
 	}
 }
 
-// RunList loads the spec graph and returns nodes matching the query.
-// Shared between the CLI handler and the MCP tool.
-func RunList(fsys specio.FS, query, kindFilter string) (*ListResult, error) {
-	tokens := tokenizeQuery(query)
-	if len(tokens) == 0 {
+// RunList opens the persistent BM25 index and returns nodes matching
+// the query. Shared between the CLI handler and the MCP tool.
+//
+// projectRoot is the absolute OS path of the project — search.Open
+// writes its segments directly to disk under .locutus/spec_index/.
+func RunList(fsys specio.FS, projectRoot, query, kindFilter string) (*ListResult, error) {
+	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("query is required")
 	}
 	kind, err := normaliseKindFilter(kindFilter)
@@ -84,18 +87,25 @@ func RunList(fsys specio.FS, query, kindFilter string) (*ListResult, error) {
 		return nil, err
 	}
 
-	loaded, err := spec.LoadSpec(fsys)
+	idx, err := search.Open(fsys, projectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("open search index: %w", err)
+	}
+	defer idx.Close()
+
+	rawHits, _, err := idx.Search(query, search.Options{Kind: kind, Limit: search.DefaultLimit})
 	if err != nil {
 		return nil, err
 	}
 
-	hits := scanLoaded(loaded, tokens, kind)
-	sort.SliceStable(hits, func(i, j int) bool {
-		if hits[i].Score != hits[j].Score {
-			return hits[i].Score > hits[j].Score
+	hits := make([]ListHit, 0, len(rawHits))
+	for _, h := range rawHits {
+		hit := ListHit{ID: h.ID, Kind: h.Kind, Title: h.Title, Score: h.Score}
+		if h.Kind == string(spec.KindApproach) {
+			hit.Invalidated = approachInvalidated(fsys, h.ID)
 		}
-		return hits[i].ID < hits[j].ID
-	})
+		hits = append(hits, hit)
+	}
 
 	return &ListResult{
 		Query:    query,
@@ -105,167 +115,16 @@ func RunList(fsys specio.FS, query, kindFilter string) (*ListResult, error) {
 	}, nil
 }
 
-// Field weights. Title weighs the most because that's the curated
-// human-readable headline; the id slug is derived from the title so
-// matching it is a strong signal too. Summary sits between ID and
-// Title: more curated than the slug (DJ-114 authored "what" line),
-// but with more tokens than the headline, so each match shouldn't
-// count for as much as a Title hit. Body / rationale matches are
-// real but noisy — a token can show up in passing prose without the
-// node being "about" that topic.
-const (
-	weightTitle   = 3
-	weightID      = 2
-	weightSummary = 2
-	weightBody    = 1
-)
-
-func scanLoaded(loaded *spec.Loaded, tokens []string, kindFilter string) []ListHit {
-	var hits []ListHit
-
-	if kindFilter == "" || kindFilter == string(spec.KindDecision) {
-		for _, n := range loaded.Decisions {
-			score := scoreDecision(n, tokens)
-			if score > 0 {
-				hits = append(hits, ListHit{
-					ID: n.Spec.ID, Kind: string(spec.KindDecision),
-					Title: n.Spec.Title, Score: score,
-				})
-			}
-		}
+// approachInvalidated returns whether an approach node carries the
+// InvalidatedByEventID marker. search.Hit doesn't carry the flag so
+// we resolve it post-search via a single markdown load per approach
+// hit. Bounded by the Limit=100 ceiling.
+func approachInvalidated(fsys specio.FS, id string) bool {
+	a, _, err := specio.LoadMarkdown[spec.Approach](fsys, path.Join(".borg/spec/approaches", id+".md"))
+	if err != nil {
+		return false
 	}
-	if kindFilter == "" || kindFilter == string(spec.KindFeature) {
-		for _, n := range loaded.Features {
-			score := scoreFeature(n, tokens)
-			if score > 0 {
-				hits = append(hits, ListHit{
-					ID: n.Spec.ID, Kind: string(spec.KindFeature),
-					Title: n.Spec.Title, Score: score,
-				})
-			}
-		}
-	}
-	if kindFilter == "" || kindFilter == string(spec.KindStrategy) {
-		for _, n := range loaded.Strategies {
-			score := scoreStrategy(n, tokens)
-			if score > 0 {
-				hits = append(hits, ListHit{
-					ID: n.Spec.ID, Kind: string(spec.KindStrategy),
-					Title: n.Spec.Title, Score: score,
-				})
-			}
-		}
-	}
-	if kindFilter == "" || kindFilter == string(spec.KindApproach) {
-		for _, n := range loaded.Approaches {
-			score := scoreApproach(n, tokens)
-			if score > 0 {
-				hits = append(hits, ListHit{
-					ID: n.Spec.ID, Kind: string(spec.KindApproach),
-					Title:       n.Spec.Title,
-					Score:       score,
-					Invalidated: n.Spec.IsInvalidated(),
-				})
-			}
-		}
-	}
-	if kindFilter == "" || kindFilter == string(spec.KindBug) {
-		for _, n := range loaded.Bugs {
-			score := scoreBug(n, tokens)
-			if score > 0 {
-				hits = append(hits, ListHit{
-					ID: n.Spec.ID, Kind: string(spec.KindBug),
-					Title: n.Spec.Title, Score: score,
-				})
-			}
-		}
-	}
-	return hits
-}
-
-func scoreDecision(n spec.DecisionNode, tokens []string) int {
-	score := scoreField(n.Spec.ID, tokens, weightID)
-	score += scoreField(n.Spec.Title, tokens, weightTitle)
-	score += scoreField(n.Spec.Summary, tokens, weightSummary)
-	score += scoreField(n.Spec.Rationale, tokens, weightBody)
-	score += scoreField(n.Body, tokens, weightBody)
-	if n.Spec.Provenance != nil {
-		score += scoreField(n.Spec.Provenance.ArchitectRationale, tokens, weightBody)
-	}
-	for _, alt := range n.Spec.Alternatives {
-		score += scoreField(alt.Name, tokens, weightBody)
-		score += scoreField(alt.Rationale, tokens, weightBody)
-		score += scoreField(alt.RejectedBecause, tokens, weightBody)
-	}
-	return score
-}
-
-func scoreFeature(n spec.FeatureNode, tokens []string) int {
-	score := scoreField(n.Spec.ID, tokens, weightID)
-	score += scoreField(n.Spec.Title, tokens, weightTitle)
-	score += scoreField(n.Spec.Summary, tokens, weightSummary)
-	score += scoreField(n.Spec.Description, tokens, weightBody)
-	score += scoreField(n.Body, tokens, weightBody)
-	for _, ac := range n.Spec.AcceptanceCriteria {
-		score += scoreField(ac, tokens, weightBody)
-	}
-	return score
-}
-
-func scoreStrategy(n spec.StrategyNode, tokens []string) int {
-	score := scoreField(n.Spec.ID, tokens, weightID)
-	score += scoreField(n.Spec.Title, tokens, weightTitle)
-	score += scoreField(n.Spec.Summary, tokens, weightSummary)
-	score += scoreField(n.Body, tokens, weightBody)
-	return score
-}
-
-func scoreApproach(n spec.ApproachNode, tokens []string) int {
-	score := scoreField(n.Spec.ID, tokens, weightID)
-	score += scoreField(n.Spec.Title, tokens, weightTitle)
-	score += scoreField(n.Spec.Summary, tokens, weightSummary)
-	score += scoreField(n.Spec.Body, tokens, weightBody)
-	score += scoreField(n.Body, tokens, weightBody)
-	return score
-}
-
-func scoreBug(n spec.BugNode, tokens []string) int {
-	score := scoreField(n.Spec.ID, tokens, weightID)
-	score += scoreField(n.Spec.Title, tokens, weightTitle)
-	score += scoreField(n.Spec.Summary, tokens, weightSummary)
-	score += scoreField(n.Spec.Description, tokens, weightBody)
-	score += scoreField(n.Spec.RootCause, tokens, weightBody)
-	score += scoreField(n.Spec.FixPlan, tokens, weightBody)
-	score += scoreField(n.Body, tokens, weightBody)
-	for _, step := range n.Spec.ReproductionSteps {
-		score += scoreField(step, tokens, weightBody)
-	}
-	return score
-}
-
-// scoreField returns weight * (sum of token occurrences in haystack).
-// Case-insensitive substring counting — sufficient for the slug + prose
-// shapes the spec graph carries.
-func scoreField(haystack string, tokens []string, weight int) int {
-	if haystack == "" {
-		return 0
-	}
-	folded := strings.ToLower(haystack)
-	total := 0
-	for _, tok := range tokens {
-		total += strings.Count(folded, tok)
-	}
-	return weight * total
-}
-
-// tokenizeQuery splits on whitespace and lowercases. Empty / whitespace
-// queries return a nil slice so the caller can reject them uniformly.
-func tokenizeQuery(query string) []string {
-	fields := strings.Fields(strings.ToLower(query))
-	if len(fields) == 0 {
-		return nil
-	}
-	return fields
+	return a.IsInvalidated()
 }
 
 func normaliseKindFilter(raw string) (string, error) {

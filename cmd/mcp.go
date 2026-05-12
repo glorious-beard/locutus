@@ -362,7 +362,7 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		if input.Query == "" {
 			return errorResult("query is required"), nil, nil
 		}
-		result, err := RunList(fsys, input.Query, input.Kind)
+		result, err := RunList(fsys, dir, input.Query, input.Kind)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}

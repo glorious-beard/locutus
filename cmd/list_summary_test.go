@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,22 +12,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestListMatchesAuthoredSummary covers the wiring from DJ-114's
-// authored Summary field through to list's scoring. Before the wiring
-// landed, a curated one-sentence "what is this node" line on a node
-// whose title/body did NOT contain the query token was invisible to
-// list — the gap the prereq's effort was supposed to close. This test
-// pins that summary text now counts.
-func TestListMatchesAuthoredSummary(t *testing.T) {
-	fs := specio.NewMemFS()
-	require.NoError(t, fs.MkdirAll(".borg/spec/decisions", 0o755))
-	require.NoError(t, fs.WriteFile(".borg/manifest.json",
+// listFixtureDisk seeds a tempdir-rooted project with the .borg
+// scaffold so search.Open has somewhere to write its segments.
+func listFixtureDisk(t *testing.T, kinds ...string) (specio.FS, string) {
+	t.Helper()
+	root := t.TempDir()
+	fs := specio.NewOSFS(root)
+	for _, k := range kinds {
+		require.NoError(t, fs.MkdirAll(".borg/spec/"+k, 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".borg", "manifest.json"),
 		[]byte(`{"project_name":"fixture","version":"1"}`), 0o644))
+	return fs, root
+}
+
+// TestListMatchesAuthoredSummary covers the wiring from DJ-114's
+// authored Summary field through to list's BM25 scoring. The synonym-
+// bridge case (title/body silent on the query token, Summary carries
+// it) must surface the node at rank 0.
+func TestListMatchesAuthoredSummary(t *testing.T) {
+	fs, root := listFixtureDisk(t, "decisions")
 	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 
-	// Decision whose title and rationale don't mention "authentication"
-	// but whose authored Summary does. This is the synonym-bridge case
-	// summaries are supposed to close.
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-adopt-workos", spec.Decision{
 		ID:        "dec-adopt-workos",
 		Title:     "Adopt WorkOS",
@@ -35,7 +43,7 @@ func TestListMatchesAuthoredSummary(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now,
 	}, ""))
 
-	// Unrelated decision so we can verify the search isn't matching
+	// Unrelated decision so we verify the search isn't matching
 	// everything indiscriminately.
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-pmtiles", spec.Decision{
 		ID:        "dec-pmtiles",
@@ -46,7 +54,7 @@ func TestListMatchesAuthoredSummary(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now,
 	}, ""))
 
-	r, err := RunList(fs, "authentication", "")
+	r, err := RunList(fs, root, "authentication", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, r.Hits)
 	assert.Equal(t, "dec-adopt-workos", r.Hits[0].ID,
@@ -57,31 +65,24 @@ func TestListMatchesAuthoredSummary(t *testing.T) {
 	}
 }
 
-// TestListSummaryWeightSitsBetweenIDAndTitle locks the relative weight
-// of Summary against Title and ID so a future tweak to weightSummary
-// can't silently flip the ranking. Concretely: a node with the query
-// token in its Title ranks ABOVE a node with the token only in its
-// Summary, and a node with the token in its Summary ranks ABOVE a
-// node with the token only in body/rationale.
-func TestListSummaryWeightSitsBetweenIDAndTitle(t *testing.T) {
-	fs := specio.NewMemFS()
-	require.NoError(t, fs.MkdirAll(".borg/spec/decisions", 0o755))
-	require.NoError(t, fs.WriteFile(".borg/manifest.json",
-		[]byte(`{"project_name":"fixture","version":"1"}`), 0o644))
+// TestListRanksTitleAboveSummaryAboveBody pins the per-field boost
+// hierarchy that mirrors the prior heuristic weights (Title=3,
+// Summary=2, Body=1) through to BM25 ranking: a node with the query
+// token in Title outranks a node with it only in Summary, which
+// outranks a node with it only in body/rationale.
+func TestListRanksTitleAboveSummaryAboveBody(t *testing.T) {
+	fs, root := listFixtureDisk(t, "decisions")
 	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 
-	// Token "auth" in Title only (weightTitle=3 per match).
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-titleonly", spec.Decision{
-		ID:    "dec-titleonly",
-		Title: "Adopt auth provider",
-		// Summary intentionally lacks the token.
+		ID:        "dec-titleonly",
+		Title:     "Adopt auth provider",
 		Summary:   "Adopt a service provider.",
 		Rationale: "Plain prose.",
 		Status:    spec.DecisionStatusProposed,
 		CreatedAt: now, UpdatedAt: now,
 	}, ""))
 
-	// Token "auth" in Summary only (weightSummary=2 per match).
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-summaryonly", spec.Decision{
 		ID:        "dec-summaryonly",
 		Title:     "Use Service X",
@@ -91,7 +92,6 @@ func TestListSummaryWeightSitsBetweenIDAndTitle(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now,
 	}, ""))
 
-	// Token "auth" in Rationale (body) only (weightBody=1 per match).
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-bodyonly", spec.Decision{
 		ID:        "dec-bodyonly",
 		Title:     "Use Service Y",
@@ -101,7 +101,7 @@ func TestListSummaryWeightSitsBetweenIDAndTitle(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now,
 	}, ""))
 
-	r, err := RunList(fs, "auth", "")
+	r, err := RunList(fs, root, "auth", "")
 	require.NoError(t, err)
 	require.Len(t, r.Hits, 3)
 	assert.Equal(t, "dec-titleonly", r.Hits[0].ID, "title hit must rank above summary hit")
@@ -109,22 +109,14 @@ func TestListSummaryWeightSitsBetweenIDAndTitle(t *testing.T) {
 	assert.Equal(t, "dec-bodyonly", r.Hits[2].ID, "body hit must rank last")
 }
 
-// TestListSummaryAcrossKinds confirms every node-kind scorer reads
-// the Summary field, not just decisions. Easy regression vector if
-// someone adds a new kind and forgets to thread Summary into the
-// scoring function.
+// TestListSummaryAcrossKinds confirms every node kind's Summary
+// participates in BM25 scoring. Easy regression vector if a new kind
+// is added and someone forgets to wire Summary into its document.
 func TestListSummaryAcrossKinds(t *testing.T) {
-	fs := specio.NewMemFS()
-	for _, dir := range []string{"features", "strategies", "decisions", "bugs", "approaches"} {
-		require.NoError(t, fs.MkdirAll(".borg/spec/"+dir, 0o755))
-	}
-	require.NoError(t, fs.WriteFile(".borg/manifest.json",
-		[]byte(`{"project_name":"fixture","version":"1"}`), 0o644))
+	fs, root := listFixtureDisk(t, "features", "strategies", "decisions", "bugs", "approaches")
 	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 
-	// Each node has the token "widgets" ONLY in its Summary. If a
-	// kind's scorer doesn't read Summary, that kind won't show up in
-	// the hit list.
+	// Each node has "widgets" ONLY in its Summary.
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/features/feat-a", spec.Feature{
 		ID: "feat-a", Title: "F", Status: spec.FeatureStatusProposed,
 		Summary:   "Render widgets on the dashboard.",
@@ -150,7 +142,7 @@ func TestListSummaryAcrossKinds(t *testing.T) {
 		Summary: "Wire the widgets endpoint behind RLS.",
 	}, "body"))
 
-	r, err := RunList(fs, "widgets", "")
+	r, err := RunList(fs, root, "widgets", "")
 	require.NoError(t, err)
 	ids := hitIDs(r.Hits)
 	for _, want := range []string{"feat-a", "strat-a", "dec-a", "bug-a", "app-a"} {

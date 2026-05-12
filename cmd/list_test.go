@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,24 +14,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fixtureList builds a small spec graph that exercises every match
-// surface RunList covers: id-slug match, title match, body/rationale
-// match, alternative-rationale match, and a non-matching node so we
-// can assert filtering works.
-func fixtureList(t *testing.T) specio.FS {
+// fixtureList builds a tempdir-rooted project on disk and seeds it
+// with a small spec graph that exercises every match surface RunList
+// covers. Returns the FS and OS root because search.Open writes
+// Bluge segments directly to disk and needs the OS path.
+func fixtureList(t *testing.T) (specio.FS, string) {
 	t.Helper()
-	fs := specio.NewMemFS()
-	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
-	require.NoError(t, fs.MkdirAll(".borg/spec/strategies", 0o755))
-	require.NoError(t, fs.MkdirAll(".borg/spec/decisions", 0o755))
-	require.NoError(t, fs.MkdirAll(".borg/spec/approaches", 0o755))
-	require.NoError(t, fs.MkdirAll(".borg/spec/bugs", 0o755))
-	require.NoError(t, fs.WriteFile(".borg/manifest.json",
-		[]byte(`{"project_name":"fixture","version":"1"}`), 0o644))
+	root := t.TempDir()
+	fs := specio.NewOSFS(root)
+	for _, dir := range []string{"features", "strategies", "decisions", "approaches", "bugs"} {
+		require.NoError(t, fs.MkdirAll(".borg/spec/"+dir, 0o755))
+	}
+	manifest := map[string]any{
+		"project_name": "fixture",
+		"version":      "1",
+		"created_at":   time.Now().UTC(),
+	}
+	mb, err := json.Marshal(manifest)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".borg", "manifest.json"), mb, 0o644))
 
 	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
 
-	// Decision with "auth" in id and title — should rank highest.
+	// Decision with "auth" in id and title — strongest signal.
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-adopt-auth-nextauth", spec.Decision{
 		ID: "dec-adopt-auth-nextauth", Title: "Adopt NextAuth for authentication",
 		Status: spec.DecisionStatusProposed, Confidence: 0.9,
@@ -36,7 +44,7 @@ func fixtureList(t *testing.T) specio.FS {
 		CreatedAt: now, UpdatedAt: now,
 	}, ""))
 
-	// Decision with "auth" only in rationale body — should still match.
+	// Decision with "auth" only in rationale body.
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-session-storage", spec.Decision{
 		ID: "dec-session-storage", Title: "Session storage uses JWT",
 		Status: spec.DecisionStatusProposed, Confidence: 0.8,
@@ -63,21 +71,18 @@ func fixtureList(t *testing.T) specio.FS {
 		CreatedAt: now, UpdatedAt: now,
 	}, ""))
 
-	// Feature touching auth in description.
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/features/feat-user-onboarding", spec.Feature{
 		ID: "feat-user-onboarding", Title: "User onboarding",
 		Status:      spec.FeatureStatusProposed,
-		Description: "Sign-in flow including authentication and email verification.",
+		Description: "Sign-in auth flow, plus email verification.",
 		CreatedAt:   now, UpdatedAt: now,
 	}, ""))
 
-	// Strategy with auth in body.
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/strategies/strat-platform", spec.Strategy{
 		ID: "strat-platform", Title: "Platform strategy",
 		Kind: spec.StrategyKindFoundational, Status: "proposed",
 	}, "Cross-cutting concerns: logging, auth, observability."))
 
-	// Bug touching auth.
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/bugs/bug-login-loop", spec.Bug{
 		ID: "bug-login-loop", Title: "Login loop after token expiry",
 		FeatureID: "feat-user-onboarding",
@@ -86,12 +91,12 @@ func fixtureList(t *testing.T) specio.FS {
 		CreatedAt:   now, UpdatedAt: now,
 	}, ""))
 
-	return fs
+	return fs, root
 }
 
 func TestListMatchesTitle(t *testing.T) {
-	fs := fixtureList(t)
-	r, err := RunList(fs, "authentication", "")
+	fs, root := fixtureList(t)
+	r, err := RunList(fs, root, "authentication", "")
 	require.NoError(t, err)
 
 	require.NotEmpty(t, r.Hits, "expected at least one hit for %q", "authentication")
@@ -101,8 +106,8 @@ func TestListMatchesTitle(t *testing.T) {
 }
 
 func TestListMatchesBodyOnly(t *testing.T) {
-	fs := fixtureList(t)
-	r, err := RunList(fs, "auth", "")
+	fs, root := fixtureList(t)
+	r, err := RunList(fs, root, "auth", "")
 	require.NoError(t, err)
 
 	ids := hitIDs(r.Hits)
@@ -111,8 +116,8 @@ func TestListMatchesBodyOnly(t *testing.T) {
 }
 
 func TestListMatchesAlternativeRationale(t *testing.T) {
-	fs := fixtureList(t)
-	r, err := RunList(fs, "auth", "")
+	fs, root := fixtureList(t)
+	r, err := RunList(fs, root, "auth", "")
 	require.NoError(t, err)
 
 	ids := hitIDs(r.Hits)
@@ -121,8 +126,8 @@ func TestListMatchesAlternativeRationale(t *testing.T) {
 }
 
 func TestListExcludesUnrelatedNodes(t *testing.T) {
-	fs := fixtureList(t)
-	r, err := RunList(fs, "auth", "")
+	fs, root := fixtureList(t)
+	r, err := RunList(fs, root, "auth", "")
 	require.NoError(t, err)
 
 	ids := hitIDs(r.Hits)
@@ -131,8 +136,8 @@ func TestListExcludesUnrelatedNodes(t *testing.T) {
 }
 
 func TestListRanksTitleAboveBody(t *testing.T) {
-	fs := fixtureList(t)
-	r, err := RunList(fs, "auth", "")
+	fs, root := fixtureList(t)
+	r, err := RunList(fs, root, "auth", "")
 	require.NoError(t, err)
 
 	require.GreaterOrEqual(t, len(r.Hits), 2, "need at least two hits to compare ranking")
@@ -156,13 +161,13 @@ func TestListRanksTitleAboveBody(t *testing.T) {
 }
 
 func TestListMatchesAcrossNodeKinds(t *testing.T) {
-	fs := fixtureList(t)
-	r, err := RunList(fs, "auth", "")
+	fs, root := fixtureList(t)
+	r, err := RunList(fs, root, "auth", "")
 	require.NoError(t, err)
 
 	ids := hitIDs(r.Hits)
-	// Sanity: every kind that contains "auth" somewhere should land
-	// in the result set (decisions, feature, strategy, bug).
+	// Every kind that contains "auth" somewhere should land in the
+	// result set (decisions, feature, strategy, bug).
 	for _, want := range []string{
 		"dec-adopt-auth-nextauth",
 		"feat-user-onboarding",
@@ -174,8 +179,8 @@ func TestListMatchesAcrossNodeKinds(t *testing.T) {
 }
 
 func TestListKindFilterDecision(t *testing.T) {
-	fs := fixtureList(t)
-	r, err := RunList(fs, "auth", "decision")
+	fs, root := fixtureList(t)
+	r, err := RunList(fs, root, "auth", "decision")
 	require.NoError(t, err)
 
 	require.NotEmpty(t, r.Hits)
@@ -186,8 +191,8 @@ func TestListKindFilterDecision(t *testing.T) {
 }
 
 func TestListKindFilterFeature(t *testing.T) {
-	fs := fixtureList(t)
-	r, err := RunList(fs, "auth", "feature")
+	fs, root := fixtureList(t)
+	r, err := RunList(fs, root, "auth", "feature")
 	require.NoError(t, err)
 
 	require.NotEmpty(t, r.Hits)
@@ -198,50 +203,49 @@ func TestListKindFilterFeature(t *testing.T) {
 }
 
 func TestListUnknownKindRejected(t *testing.T) {
-	fs := fixtureList(t)
-	_, err := RunList(fs, "auth", "widget")
+	fs, root := fixtureList(t)
+	_, err := RunList(fs, root, "auth", "widget")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown kind")
 }
 
 func TestListEmptyQueryRejected(t *testing.T) {
-	fs := fixtureList(t)
-	_, err := RunList(fs, "", "")
+	fs, root := fixtureList(t)
+	_, err := RunList(fs, root, "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "query")
 }
 
 func TestListWhitespaceOnlyQueryRejected(t *testing.T) {
-	fs := fixtureList(t)
-	_, err := RunList(fs, "   \t\n", "")
+	fs, root := fixtureList(t)
+	_, err := RunList(fs, root, "   \t\n", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "query")
 }
 
 func TestListNoMatchesIsNotAnError(t *testing.T) {
-	fs := fixtureList(t)
-	r, err := RunList(fs, "blockchain", "")
+	fs, root := fixtureList(t)
+	r, err := RunList(fs, root, "blockchain", "")
 	require.NoError(t, err)
 	assert.Empty(t, r.Hits, "no matches should produce zero hits, not an error")
 }
 
 func TestListCaseInsensitive(t *testing.T) {
-	fs := fixtureList(t)
-	rLower, err := RunList(fs, "auth", "")
+	fs, root := fixtureList(t)
+	rLower, err := RunList(fs, root, "auth", "")
 	require.NoError(t, err)
-	rUpper, err := RunList(fs, "AUTH", "")
+	rUpper, err := RunList(fs, root, "AUTH", "")
 	require.NoError(t, err)
 	assert.Equal(t, hitIDs(rLower.Hits), hitIDs(rUpper.Hits),
 		"case-folded query must produce identical hit set")
 }
 
 func TestListMultiTokenRanksAllTokensAboveOne(t *testing.T) {
-	fs := fixtureList(t)
+	fs, root := fixtureList(t)
 	// "nextauth google" — both tokens hit dec-adopt-auth-nextauth's
-	// title + rationale. Only "google" or only "nextauth" alone would
-	// match the same node. The two-token query should still surface
-	// that node at rank 0.
-	r, err := RunList(fs, "nextauth google", "")
+	// title + rationale. The two-token query should surface that node
+	// at rank 0; BM25 IDF rewards docs hitting both rare terms.
+	r, err := RunList(fs, root, "nextauth google", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, r.Hits)
 	assert.Equal(t, "dec-adopt-auth-nextauth", r.Hits[0].ID,
@@ -249,8 +253,8 @@ func TestListMultiTokenRanksAllTokensAboveOne(t *testing.T) {
 }
 
 func TestListMarkdownIncludesIDsAndTitles(t *testing.T) {
-	fs := fixtureList(t)
-	r, err := RunList(fs, "auth", "")
+	fs, root := fixtureList(t)
+	r, err := RunList(fs, root, "auth", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, r.Markdown)
 	assert.Contains(t, r.Markdown, "dec-adopt-auth-nextauth")
@@ -258,11 +262,38 @@ func TestListMarkdownIncludesIDsAndTitles(t *testing.T) {
 }
 
 func TestListMarkdownEmptyHitsMessage(t *testing.T) {
-	fs := fixtureList(t)
-	r, err := RunList(fs, "blockchain", "")
+	fs, root := fixtureList(t)
+	r, err := RunList(fs, root, "blockchain", "")
 	require.NoError(t, err)
 	assert.Contains(t, strings.ToLower(r.Markdown), "no",
 		"empty-hits markdown should explicitly say nothing matched")
+}
+
+// TestListStemming pins the BM25 indexer's English-analyzer stemming
+// behaviour through the list verb: a query for "authentication"
+// matches a node whose Summary says "authenticate". The heuristic
+// scorer this replaced couldn't do this.
+func TestListStemming(t *testing.T) {
+	root := t.TempDir()
+	fs := specio.NewOSFS(root)
+	require.NoError(t, fs.MkdirAll(".borg/spec/decisions", 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".borg", "manifest.json"),
+		[]byte(`{"project_name":"fixture","version":"1"}`), 0o644))
+	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+
+	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-adopt-workos", spec.Decision{
+		ID:        "dec-adopt-workos",
+		Title:     "Adopt WorkOS",
+		Summary:   "Authenticate users via WorkOS SSO.",
+		Rationale: "WorkOS gives us OIDC + directory sync in one vendor.",
+		Status:    spec.DecisionStatusProposed,
+		CreatedAt: now, UpdatedAt: now,
+	}, ""))
+
+	r, err := RunList(fs, root, "authentication", "")
+	require.NoError(t, err)
+	require.NotEmpty(t, r.Hits, "Porter stemmer should fold authentication and authenticate to a common stem")
+	assert.Equal(t, "dec-adopt-workos", r.Hits[0].ID)
 }
 
 // hitIDs is a tiny helper so each assertion reads as a set comparison
