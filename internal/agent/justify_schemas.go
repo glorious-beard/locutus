@@ -14,23 +14,25 @@ type JustificationBrief struct {
 // concern carries the weakness, supporting evidence, and a concrete
 // counterproposal so the advocate can address them point-by-point.
 type ChallengeBrief struct {
-	Concerns []AdversarialConcern `json:"concerns" jsonschema:"description=Between 2 and 5 distinct concerns. Less is fine if the challenge is narrow. Each concern is substantive (not a placeholder)."`
+	Concerns []AdversarialConcern `json:"concerns" jsonschema:"minItems=1,description=Between 2 and 5 distinct concerns. Less is fine if the challenge is narrow. Each concern is a real weakness with real supporting evidence."`
 }
 
 // AdversarialConcern is one entry in the challenger's brief. The
 // Adversarial prefix disambiguates this from the existing Concern
 // type used by monitor verdicts.
 //
-// All three fields are required to be full sentences carrying real
+// All three fields are required to be complete sentences with real
 // content. A downstream validator (degenerateChallengerBrief) rejects
-// outputs whose fields contain placeholder tokens like "dummy" /
-// "placeholder" / "TBD" / "foo" / one-word answers — see
+// outputs whose fields contain placeholder tokens — see
 // challengerPlaceholderTokens in justify.go. The description tags
-// here carry the same constraint into the schema doc the model sees.
+// here use positive phrasing: per docs/agent-conventions.md, listing
+// the forbidden tokens in the description primes the model to emit
+// exactly those tokens. The validator is the second line of defence;
+// the description tags steer the model toward the success mode.
 type AdversarialConcern struct {
-	Weakness        string `json:"weakness" jsonschema:"description=A complete sentence describing the specific weakness in the chosen approach. NOT a one-word label and NOT a placeholder like 'dummy' or 'TBD' — the validator rejects those and the call is retried at cost to the user."`
+	Weakness        string `json:"weakness" jsonschema:"description=A complete sentence describing the specific weakness in the chosen approach. Concrete enough that a reader who hasn't seen the spec node can understand what's wrong without re-reading the rationale."`
 	Evidence        string `json:"evidence" jsonschema:"description=A complete sentence with concrete support for the weakness. Draws from: the node's own rationale or alternatives ('the rationale claims X but does not address Y'); GOALS.md clauses (cite the relevant text); named engineering practices ('12-factor app: stateless processes'); or current vendor/library behaviour. Evidence may be conceptual when the challenge is conceptual."`
-	Counterproposal string `json:"counterproposal" jsonschema:"description=A complete sentence describing an alternative, mitigation, or test that would resolve the question. NOT a one-word label and NOT a placeholder. Specific enough that the advocate can address it point-by-point."`
+	Counterproposal string `json:"counterproposal" jsonschema:"description=A complete sentence describing an alternative, mitigation, or test that would resolve the question. Specific enough that the advocate can address it point-by-point."`
 }
 
 // AddressedConcern is the advocate's reply to one of the challenger's

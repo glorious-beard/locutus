@@ -66,6 +66,27 @@ func SchemaExample(name string) (any, bool) {
 	return v, ok
 }
 
+// RegisteredSchemaNames returns the names of every schema registered
+// via RegisterSchema or RegisterSchemaOverride. Order is not stable.
+// Used by the convention guard test (schema_conventions_test.go) to
+// walk every shipping schema and assert tag-level discipline.
+func RegisteredSchemaNames() []string {
+	schemaMu.RLock()
+	defer schemaMu.RUnlock()
+	seen := make(map[string]struct{}, len(schemaRegistry)+len(schemaOverrides))
+	for name := range schemaRegistry {
+		seen[name] = struct{}{}
+	}
+	for name := range schemaOverrides {
+		seen[name] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	return out
+}
+
 // SchemaFor returns the JSON Schema (as a generic map) reflected
 // from the registered example struct. Caches per name so reflection
 // runs once per process. AdditionalProperties:false is baked in at

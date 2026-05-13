@@ -44,7 +44,7 @@ type ChallengeSplit struct {
 // challenge that addresses it. Empty Shard means the challenge does
 // not address this decision; the orchestrator filters those out.
 type DecisionShard struct {
-	DecisionID string `json:"decision_id" jsonschema:"description=The decision id verbatim from the input list — never invent or modify the id."`
+	DecisionID string `json:"decision_id" jsonschema:"description=The decision id verbatim from the input list. Must be one of the ids passed in, character-for-character."`
 	Shard      string `json:"shard" jsonschema:"description=The slice of the user's challenge that addresses this decision. Empty when the challenge does not address this decision; the orchestrator skips empty shards rather than firing a wasted decision-level run."`
 }
 

@@ -55,8 +55,8 @@ type SynthesisVerdict struct {
 // `refine <dec-id> --supersede` per break, or `refine <parent-id>
 // --brief` for prose-only breaks.
 type StrategyBreakingPoint struct {
-	Description    string `json:"description" jsonschema:"description=The breaking point in strategy-level voice — often a paraphrase of a per-decision break, surfaced at the parent level. A complete sentence; not a one-word label."`
-	SourceDecision string `json:"source_decision,omitempty" jsonschema:"description=The dec-id this break traces back to, when it came from a per-decision verdict. Empty for prose-only breaks. When set, must be a real id from the per-decision input list — never invent an id."`
+	Description    string `json:"description" jsonschema:"description=The breaking point in strategy-level voice — often a paraphrase of a per-decision break, surfaced at the parent level. A complete sentence naming what gave way."`
+	SourceDecision string `json:"source_decision,omitempty" jsonschema:"description=The dec-id this break traces back to, when it came from a per-decision verdict. Empty for prose-only breaks. When set, must be one of the ids in the per-decision input list, verbatim."`
 }
 
 func init() {
