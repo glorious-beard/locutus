@@ -58,11 +58,14 @@ type ListHit struct {
 
 // ListFieldMatch mirrors search.FieldMatch with JSON tags suited to
 // the list output. Order of fields in the JSON encoder is fixed so
-// the output is stable across runs.
+// the output is stable across runs. ContributionPct is included
+// alongside the absolute Contribution so JSON-consuming agents can
+// pick whichever shape they find easier to reason against.
 type ListFieldMatch struct {
-	Terms        []string `json:"terms"`
-	Count        int      `json:"count"`
-	Contribution float64  `json:"contribution"`
+	Terms           []string `json:"terms"`
+	Count           int      `json:"count"`
+	Contribution    float64  `json:"contribution"`
+	ContributionPct float64  `json:"contribution_pct"`
 }
 
 func (c *ListCmd) Run(cli *CLI) error {
@@ -133,9 +136,10 @@ func RunList(fsys specio.FS, projectRoot, query, kindFilter string) (*ListResult
 			hit.Matches = make(map[string]ListFieldMatch, len(h.Matches))
 			for field, fm := range h.Matches {
 				hit.Matches[field] = ListFieldMatch{
-					Terms:        fm.Terms,
-					Count:        fm.Count,
-					Contribution: fm.Contribution,
+					Terms:           fm.Terms,
+					Count:           fm.Count,
+					Contribution:    fm.Contribution,
+					ContributionPct: fm.ContributionPct,
 				}
 			}
 		}

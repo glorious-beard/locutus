@@ -87,13 +87,22 @@ type Hit struct {
 // FieldMatch is the per-field diagnostic surfaced by Options.Explain.
 // Terms is the deduped set of query tokens that matched in this field
 // (after the same analyzer the index uses, so callers shouldn't
-// expect their exact query string back). Count is the total term
-// occurrences for matched tokens in this field on this doc.
-// Contribution is the field's BM25 contribution to the overall Score.
+// expect their exact query string back — they get the stemmed forms).
+// Count is the total term occurrences for matched tokens in this
+// field on this doc.
+//
+// Contribution is the field's BM25 contribution to the overall Score
+// — an absolute value whose meaning is corpus- and query-dependent.
+// ContributionPct expresses the same signal as a fraction of Score,
+// which is what mid-tier model consumers find easier to reason
+// against ("this hit's score is 72% alternative, 19% provenance —
+// likely incidental"). Both are populated together; consumers can
+// pick whichever shape they prefer.
 type FieldMatch struct {
-	Terms        []string
-	Count        int
-	Contribution float64
+	Terms           []string
+	Count           int
+	Contribution    float64
+	ContributionPct float64
 }
 
 // Options configures a single Search call.

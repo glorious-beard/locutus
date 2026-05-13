@@ -610,6 +610,20 @@ func buildMatchDiagnostics(match *search.DocumentMatch, docID string, perField p
 	if len(out) == 0 {
 		return nil
 	}
+
+	// Normalised contribution. We use the doc's match.Score (not a
+	// recomputed sum) as the denominator because Score IS the value
+	// the consumer sees on the Hit; surfacing percentages that don't
+	// sum to ~100% would erode the consumer's trust in the diagnostic.
+	// Float rounding means the sum may be 0.999… or 1.001 — close
+	// enough for threshold-based reasoning.
+	if match.Score != 0 {
+		for field, fm := range out {
+			fm.ContributionPct = fm.Contribution / match.Score
+			out[field] = fm
+		}
+	}
+
 	return out
 }
 

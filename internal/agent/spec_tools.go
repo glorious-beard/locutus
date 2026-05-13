@@ -541,10 +541,17 @@ type SpecSearchHit struct {
 // SpecFieldMatch is the per-field diagnostic surfaced by spec_search.
 // Mirrors search.FieldMatch with JSON tags tuned for the agent
 // surface.
+//
+// ContributionPct is the field's share of the hit's total Score,
+// expressed as a fraction in [0, 1]. Mid-tier model consumers find
+// percentages easier to reason against than absolute BM25 numbers
+// (which vary with corpus size and query shape). Sum across fields
+// is approximately 1.0; small float drift is fine.
 type SpecFieldMatch struct {
-	Terms        []string `json:"terms"`
-	Count        int      `json:"count"`
-	Contribution float64  `json:"contribution"`
+	Terms           []string `json:"terms"`
+	Count           int      `json:"count"`
+	Contribution    float64  `json:"contribution"`
+	ContributionPct float64  `json:"contribution_pct"`
 }
 
 // specSearchAgentDefaultLimit is the agent-surface default. Smaller
@@ -635,9 +642,10 @@ func SearchSpecNodes(fsys specio.FS, projectRoot string, in SpecSearchInput) (Sp
 			hit.Matches = make(map[string]SpecFieldMatch, len(h.Matches))
 			for field, fm := range h.Matches {
 				hit.Matches[field] = SpecFieldMatch{
-					Terms:        fm.Terms,
-					Count:        fm.Count,
-					Contribution: fm.Contribution,
+					Terms:           fm.Terms,
+					Count:           fm.Count,
+					Contribution:    fm.Contribution,
+					ContributionPct: fm.ContributionPct,
 				}
 			}
 		}
@@ -724,7 +732,7 @@ func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, projectRoot strin
 	}
 	registry.Register(adapters.ToolDef{
 		Name:        ToolNameSpecSearch,
-		Description: "Returns the ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body, with optional kind filter). Use for topic-scoped lookups (e.g. \"what do we have on authentication?\"); prefer spec_list_manifest when you need to enumerate the full graph structure.",
+		Description: SpecSearchToolDescription,
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -750,3 +758,30 @@ func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, projectRoot strin
 		}),
 	})
 }
+
+// SpecSearchToolDescription documents the tool surface — what it
+// does, when to reach for it, and how to interpret the per-field
+// match diagnostics. The interpretation section is the bit that
+// turns the tool from "ranked list of ids" into "ranked list with
+// context" for agents that haven't been told what the field names
+// mean: the LLM sees "this hit is 72% alternative" and knows to
+// discount it for chosen-direction questions.
+//
+// Kept as a package-level constant so it survives schema-export
+// flows without escaping or layout headaches.
+const SpecSearchToolDescription = `Returns the ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body, with optional kind filter). Use for topic-scoped lookups (e.g. "what do we have on authentication?"); prefer spec_list_manifest when you need to enumerate the full graph structure.
+
+Each hit carries a "matches" map keyed by field name. The fields and what a match in each one tells you about relevance:
+
+- title — the node's headline. A match here is strong signal the node is *about* the topic.
+- summary — the authored one-line "what" for this node. Strong signal.
+- rationale — a decision's main rationale (the "why" for the chosen direction). Strong signal for decisions.
+- description — feature or bug description prose. Strong signal for features and bugs.
+- alternative — prose inside a decision's REJECTED alternatives. A match here usually means the topic was *considered and discarded*, not chosen. Discount unless your question is specifically about rejected options.
+- acceptance — feature acceptance criteria. Moderate signal — direct relevance to a feature's contract.
+- provenance — citations and architect_rationale on a decision. Mixed signal: may quote external docs (real evidence) or reference paper/document authorship (incidental).
+- bug_detail — bug root_cause, fix_plan, reproduction_steps. Strong signal for bug-related queries.
+- body — the markdown body of the spec file (anything after frontmatter). Moderate signal.
+- id_tokens — the node's slug body. A match here means the topic is in the id itself.
+
+Each FieldMatch carries terms (the stemmed query tokens that matched there — note these are post-stemming forms like "authent" from "authentication"), count (occurrences in this field), contribution (absolute BM25 contribution to score), and contribution_pct (the fraction of the hit's total score from this field, in [0,1]). Use contribution_pct for threshold reasoning: a hit whose score is >60% alternative or >60% provenance is usually incidental rather than topically relevant.`
