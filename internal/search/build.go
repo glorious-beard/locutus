@@ -224,7 +224,7 @@ func approachDoc(a spec.Approach, body string) *bluge.Document {
 func newDoc(id, kind, title, summary string) *bluge.Document {
 	d := bluge.NewDocument(id)
 	d.AddField(bluge.NewKeywordField(fieldID, id).StoreValue())
-	d.AddField(bluge.NewTextField(fieldIDTokens, slugTokens(id)).WithAnalyzer(enanalyzer.NewAnalyzer()))
+	d.AddField(bluge.NewTextField(fieldIDTokens, slugTokens(id)).WithAnalyzer(enanalyzer.NewAnalyzer()).SearchTermPositions())
 	d.AddField(bluge.NewKeywordField(fieldKind, kind).StoreValue())
 	if title != "" {
 		d.AddField(bluge.NewTextField(fieldTitle, title).WithAnalyzer(enanalyzer.NewAnalyzer()).SearchTermPositions().StoreValue())

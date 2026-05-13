@@ -576,3 +576,29 @@ func TestSearch_KindFilterNotInMatches(t *testing.T) {
 	_, hasKind := hits[0].Matches[fieldKind]
 	assert.False(t, hasKind, "kind filter should not pollute the Matches map")
 }
+
+// Regression: id_tokens used to omit SearchTermPositions, so a
+// prefix query that matched in id_tokens would surface a non-zero
+// Contribution but nil Terms and zero Count — the diagnostic looked
+// "broken" even though the score was correct. Enabling positions
+// closes the gap.
+func TestSearch_IDTokensCarriesLocations(t *testing.T) {
+	root, fsys := fixture(t)
+	writeDecision(t, fsys, "dec-adopt-authentication-workos",
+		"Adopt WorkOS",
+		"Use WorkOS for SSO.",
+		"WorkOS bundles OIDC and directory sync.")
+
+	idx, err := Open(fsys, root)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = idx.Close() })
+
+	hits, _, err := idx.Search("authen*", Options{Explain: true})
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+
+	idTok, ok := hits[0].Matches[fieldIDTokens]
+	require.True(t, ok, "id_tokens should appear in Matches when a prefix matches the slug body")
+	assert.Greater(t, idTok.Count, 0, "id_tokens Count must reflect the slug-body match")
+	assert.NotEmpty(t, idTok.Terms, "id_tokens Terms must list the stemmed forms that matched")
+}

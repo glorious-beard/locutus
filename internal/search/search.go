@@ -37,7 +37,12 @@ import "errors"
 // provenance, bug_detail — so per-field match diagnostics carry
 // meaning. Same boosts; same ranking behaviour at the limit; the
 // signal is unmixed for explainability.
-const SchemaVersion = 2
+//
+// v3 (Phase 7 follow-up): SearchTermPositions now enabled on
+// fieldIDTokens so the per-field diagnostic reports Terms / Count
+// for slug-body matches (previously empty even when the
+// contribution was non-zero — see TestSearch_IDTokensCarriesLocations).
+const SchemaVersion = 3
 
 // IndexDir is the on-disk location of the persisted index, relative
 // to the project root. Gitignored; safe to `rm -rf` as an operator
