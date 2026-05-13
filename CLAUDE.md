@@ -14,6 +14,21 @@ Locutus — a Go CLI and MCP server that acts as an autonomous project manager f
 
 When these documents conflict with any other file in the repo, `docs/`, `.claude/plans/`, and `internal/scaffold/agents/CONVENTIONS.md` win.
 
+## Rule: Structs used as LLM response shapes MUST carry `jsonschema` tags
+
+If a Go struct is registered via `RegisterSchema` (or otherwise travels into an `OutputSchema` on an `adapters.Request`), every meaningful field MUST carry an invopop/jsonschema struct tag with enough detail to prevent the degenerate-output failure modes documented in `internal/scaffold/agents/CONVENTIONS.md`:
+
+- **Every enum-shaped string field** carries `jsonschema:"enum=v1,enum=v2,enum=v3"`. Without this, strict-mode providers don't constrain the decoder and we depend entirely on the model's prose-following. Validators that catch enum drift after the fact (`degenerateSynthesisVerdict`, etc.) are the second line of defence, not the first.
+- **Every field with semantic constraints** (must-be-non-empty, must-be-a-sentence, must-cite-a-real-source, must-not-be-placeholder) carries `jsonschema:"description=..."` naming the constraint in language the model will read on every call. The description travels into the schema doc every adapter sends to its provider's structured-output mode. This is load-bearing — schema-skeleton failures ("dummy" placeholders, one-word answers) trace back to fields with no inline guidance.
+- **Required-non-empty arrays** carry `jsonschema:"minItems=1"` (or higher). Empty arrays for things like `Concerns` or `Decisions` are a known degenerate-output mode.
+- **Fields whose enum/constraint set is too dynamic for the tag** (e.g. ids that must match an input list) carry a description that names the constraint and points the model at where to find the legal values.
+
+`RegisterSchema` example payloads (the value passed as the second arg) must use **descriptive prose** for example field values — never `"dummy"`, `"placeholder"`, `"TBD"`, `"foo"`. The example payload is rendered into the system prompt as "what a valid response looks like"; placeholder tokens prime the schema-skeleton failure the validator exists to catch.
+
+The library is `github.com/invopop/jsonschema` v0.13.0 (per DJ-118). Tag syntax is key=value, comma-separated. Don't use `github.com/google/jsonschema-go` syntax (bare-string-as-description) — it produces silent no-ops in invopop.
+
+When adding a new struct to the response-shape set: walk the field list, ask "if the model gives me garbage in this field, would the user know what went wrong?", and tag every field where the answer is "only because we wrote a validator." Push the validator's constraint into the schema. The validator becomes a safety net for the rare cases that slip through, not the primary enforcement.
+
 ## Command Surface
 
 The verb set splits into 8 mutating/operational verbs plus 2 read-only deliberation aids (DJ-101).

@@ -14,7 +14,7 @@ import (
 // already on the node; see internal/scaffold/agents/spec_summarizer.md
 // for the per-kind nuance the agent applies.
 type SpecSummaryResult struct {
-	Summary string `json:"summary"`
+	Summary string `json:"summary" jsonschema:"description=One or two sentences describing what this spec node is — the conclusion / commitment / capability, not the framing. Ends with . ! or ?. Under 600 characters. Distinct from any 'why' rationale already on the node; this is the 'what' line that scanning agents read via spec_list_manifest. Empty / one-word output is a degenerate-output failure."`
 }
 
 func init() {

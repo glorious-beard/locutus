@@ -57,7 +57,7 @@ type AddressedConcern struct {
 // and should be treated as ungrounded by downstream consumers
 // (the advocate's prompt cites them explicitly).
 type ResearchBrief struct {
-	Findings     []Finding  `json:"findings"`
+	Findings     []Finding  `json:"findings" jsonschema:"minItems=1,description=Evidence-based answers to the factual questions raised by challenger concerns. Each entry has a concrete question and a result citing real sources (when grounding is on) or named principles (when grounding is off). Empty findings array is a degenerate output."`
 	ToolOutcomes []ToolCall `json:"-"`
 }
 

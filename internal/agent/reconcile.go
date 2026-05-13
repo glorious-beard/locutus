@@ -104,7 +104,7 @@ func appendConflictActions(existing []AppliedAction, applied []AppliedAction) []
 // It describes what to do with each cluster of inline decisions across
 // the raw proposal.
 type ReconciliationVerdict struct {
-	Actions []ReconciliationAction `json:"actions,omitempty"`
+	Actions []ReconciliationAction `json:"actions,omitempty" jsonschema:"description=Cluster resolutions across the raw proposal. Each action names a kind (dedupe / resolve_conflict / reuse_existing) and the source inline decisions it operates on. Inline decisions not referenced by any action are implicitly kept separate (one canonical decision minted per leftover)."`
 }
 
 // ReconciliationAction is one cluster's resolution. Sources point at
@@ -125,12 +125,12 @@ type ReconciliationVerdict struct {
 // keep_separate is implicit: any inline decision not referenced by an
 // action becomes its own canonical Decision with a slug-derived ID.
 type ReconciliationAction struct {
-	Kind            string                  `json:"kind"`
-	Sources         []DecisionSourceRef     `json:"sources"`
-	Canonical       *InlineDecisionProposal `json:"canonical,omitempty"`
-	Loser           *InlineDecisionProposal `json:"loser,omitempty"`
-	RejectedBecause string                  `json:"rejected_because,omitempty"`
-	ExistingID      string                  `json:"existing_id,omitempty"`
+	Kind            string                  `json:"kind" jsonschema:"enum=dedupe,enum=resolve_conflict,enum=reuse_existing,description=The cluster's resolution kind. dedupe = identical decisions across sources collapsed onto one canonical; resolve_conflict = incompatible decisions on the same question, canonical survives and loser is recorded as an alternative; reuse_existing = cluster maps to an existing spec decision (use existing_id instead of minting)."`
+	Sources         []DecisionSourceRef     `json:"sources" jsonschema:"minItems=1,description=The inline decisions this action operates on, identified by (parent_kind, parent_id, index) tuples within the input RawSpecProposal."`
+	Canonical       *InlineDecisionProposal `json:"canonical,omitempty" jsonschema:"description=The canonical decision content for this cluster. Required for kind=dedupe and kind=resolve_conflict; unused for kind=reuse_existing."`
+	Loser           *InlineDecisionProposal `json:"loser,omitempty" jsonschema:"description=For kind=resolve_conflict only: the losing decision content. Folded into Canonical.Alternatives with RejectedBecause as the rejection reason."`
+	RejectedBecause string                  `json:"rejected_because,omitempty" jsonschema:"description=For kind=resolve_conflict only: one to two sentences explaining why Loser was rejected in favor of Canonical."`
+	ExistingID      string                  `json:"existing_id,omitempty" jsonschema:"description=For kind=reuse_existing only: the id (starting 'dec-') of the existing decision the cluster maps to. Must be a real id from the existing spec."`
 }
 
 // DecisionSourceRef pinpoints one inline decision in a RawSpecProposal.

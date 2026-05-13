@@ -34,9 +34,9 @@ type Decision struct {
 
 // Alternative represents a considered but not chosen option for a decision.
 type Alternative struct {
-	Name            string `json:"name" yaml:"name"`
-	Rationale       string `json:"rationale" yaml:"rationale"`
-	RejectedBecause string `json:"rejected_because" yaml:"rejected_because"`
+	Name            string `json:"name" yaml:"name" jsonschema:"description=The alternative's name — a concrete product or approach (e.g. 'MySQL', 'Server-rendered React'). A noun phrase, not a sentence; do not paraphrase the decision."`
+	Rationale       string `json:"rationale" yaml:"rationale" jsonschema:"description=Why this alternative was considered seriously. A complete sentence naming the real advantages it offered over the chosen path. Empty / 'no reason' indicates the alternative wasn't worth listing."`
+	RejectedBecause string `json:"rejected_because" yaml:"rejected_because" jsonschema:"description=The specific reason this alternative lost to the chosen option. A complete sentence pointing at a goal clause, a constraint, or a trade-off. 'Not as good' is not a rejection reason; name the constraint."`
 }
 
 // Citation is one durable reference backing a decision: a span of
@@ -51,19 +51,19 @@ type Citation struct {
 	// scout's grounded output is the load-bearing source for that
 	// citation, and the verbatim copy keeps the provenance durable
 	// even after the survey artifact is gone.
-	Kind string `json:"kind" yaml:"kind"`
+	Kind string `json:"kind" yaml:"kind" jsonschema:"enum=goals,enum=doc,enum=best_practice,enum=spec_node,enum=scout_brief,description=The source category. goals=GOALS.md clause; doc=user-imported feature document; best_practice=named engineering principle; spec_node=another node in the spec graph; scout_brief=fact from the spec_scout's output (this variant requires Excerpt to keep provenance durable)."`
 	// Reference identifies the source: a path ("GOALS.md",
 	// "docs/dashboard.md"), a named principle ("12-factor app: stateless
 	// processes"), or a spec node id ("strat-frontend").
-	Reference string `json:"reference" yaml:"reference"`
+	Reference string `json:"reference" yaml:"reference" jsonschema:"description=Identifier of the source: a filesystem path ('GOALS.md', 'docs/dashboard.md'), a named principle ('12-factor app: stateless processes'), or a spec node id ('strat-frontend'). Matches the Kind: paths for goals/doc, principle names for best_practice, ids for spec_node, an agent label for scout_brief."`
 	// Span localises within Reference when applicable: a line range
 	// ("lines 12-18"), a section heading ("## In Scope"), a factor name
 	// ("factor VI"), or empty for whole-document references.
-	Span string `json:"span,omitempty" yaml:"span,omitempty"`
+	Span string `json:"span,omitempty" yaml:"span,omitempty" jsonschema:"description=Localiser within Reference: a line range ('lines 12-18'), a section heading ('## In Scope'), a factor name ('factor VI'). Empty for whole-document references."`
 	// Excerpt is the verbatim quote being cited. Persisted so a
 	// citation survives the source moving — durable evidence, not a
 	// pointer.
-	Excerpt string `json:"excerpt,omitempty" yaml:"excerpt,omitempty"`
+	Excerpt string `json:"excerpt,omitempty" yaml:"excerpt,omitempty" jsonschema:"description=Verbatim quote from the source being cited. Required for Kind=scout_brief since the scout's output is the load-bearing artifact. Strongly recommended for goals/doc kinds; the excerpt survives the source being moved or rewritten."`
 }
 
 // DecisionProvenance captures the durable subset of the council

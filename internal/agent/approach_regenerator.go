@@ -17,8 +17,8 @@ import (
 // the prior approach via the caller; the cascade has already rewritten
 // any id references the supersede affected.
 type RegenerateApproachResult struct {
-	RevisedBody string `json:"revised_body"`
-	Rationale   string `json:"rationale"`
+	RevisedBody string `json:"revised_body" jsonschema:"description=The revised approach body covering forward direction (what implementing the new spec requires) AND backward direction (what cleanup of artifacts produced under the prior approach requires). Several paragraphs of prose; empty body is rejected by the regenerator's degenerate-output check."`
+	Rationale   string `json:"rationale" jsonschema:"description=One-line summary of how this regeneration addresses the supersession. Not a paragraph. Surfaces in traces and the renderer."`
 }
 
 func init() {

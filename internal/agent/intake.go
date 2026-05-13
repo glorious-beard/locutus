@@ -14,13 +14,13 @@ import (
 // non-empty goalsBody was provided to IntakeDocument; the caller decides
 // whether to gate admission on them.
 type IntakeResult struct {
-	ID              string   `json:"id"`
-	Title           string   `json:"title"`
-	Accepted        bool     `json:"accepted"`
-	Reason          string   `json:"reason"`
-	SuggestedLabels []string `json:"suggested_labels,omitempty"`
-	Duplicate       bool     `json:"duplicate"`
-	DuplicateOf     string   `json:"duplicate_of,omitempty"`
+	ID              string   `json:"id" jsonschema:"description=Stable slug for the document. Starts with a kind prefix (feat- / bug-), lowercase, hyphen-separated, three to five words derived from the subject. Example: 'feat-realtime-dashboard'."`
+	Title           string   `json:"title" jsonschema:"description=Concise human-readable title in sentence case. Captures what the document is about; not a copy of the document's filename."`
+	Accepted        bool     `json:"accepted" jsonschema:"description=Whether the document aligns with project goals (when GOALS.md was provided). False when out-of-scope or off-strategy; true when admissible. Greenfield projects with empty goals body get true by instruction."`
+	Reason          string   `json:"reason" jsonschema:"description=One to two sentences explaining the admission verdict. Cites the GOALS.md clause that decides admission (when relevant). Empty when greenfield (no goals to evaluate against)."`
+	SuggestedLabels []string `json:"suggested_labels,omitempty" jsonschema:"description=Optional taxonomy labels for downstream filtering ('frontend', 'auth', 'observability'). Empty when no clear classification fits; do not invent labels."`
+	Duplicate       bool     `json:"duplicate" jsonschema:"description=Whether this document overlaps substantially with an existing spec node. True when the LLM finds a clear duplicate by topic; false when content is novel."`
+	DuplicateOf     string   `json:"duplicate_of,omitempty" jsonschema:"description=The id of the existing node this duplicates, when duplicate=true. Must be a real id from the spec graph context provided; empty otherwise."`
 }
 
 // IntakeDocument runs a single agent call that derives a stable id
