@@ -61,6 +61,13 @@ type ImportState struct {
 	// invoke IntakeDocument.
 	LLM AgentExecutor
 
+	// Sink, when non-nil, receives the workflow's per-step lifecycle
+	// events (intake + plan). The inner spec-generation council that
+	// the plan step invokes wires its own sink via specgen.GenerateSpec;
+	// this surfaces the outer step boundaries that the inner workflow
+	// can't.
+	Sink EventSink
+
 	// PlanRunner is the cmd-layer-supplied closure that runs the
 	// post-admission planning pass. Captures whatever ctx / fsys /
 	// sink it needs from its enclosing scope.
@@ -230,6 +237,7 @@ func RunImportWorkflow(ctx context.Context, state *ImportState) error {
 	executor := &WorkflowExecutor[ImportState]{
 		Workflow: ImportWorkflow,
 	}
+	defer executor.BridgeToSink(state.Sink)()
 	if _, err := executor.Run(ctx, state); err != nil {
 		return err
 	}

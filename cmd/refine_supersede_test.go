@@ -124,7 +124,7 @@ func TestRunRefineSupersede_Decision_NewSlug(t *testing.T) {
 	)
 
 	res, err := RunRefineSupersede(context.Background(), mock, fs, "dec-target", spec.KindDecision,
-		"Address: missing alternative was never evaluated", "")
+		"Address: missing alternative was never evaluated", "", nil)
 	require.NoError(t, err)
 	require.NotNil(t, res)
 	require.NotNil(t, res.Supersede)
@@ -176,7 +176,7 @@ func TestRunRefineSupersede_Decision_InPlace(t *testing.T) {
 	mock := agent.NewMockExecutor(scriptSupersedeDecisionResponse(t, "dec-target", "Target decision (revised)"))
 
 	res, err := RunRefineSupersede(context.Background(), mock, fs, "dec-target", spec.KindDecision,
-		"clarify alternatives", "")
+		"clarify alternatives", "", nil)
 	require.NoError(t, err)
 	require.NotNil(t, res.Supersede)
 
@@ -202,7 +202,7 @@ func TestRunRefineSupersede_Feature_NewSlug(t *testing.T) {
 	)
 
 	res, err := RunRefineSupersede(context.Background(), mock, fs, "feat-alpha", spec.KindFeature,
-		"rescope to align with new strategy", "")
+		"rescope to align with new strategy", "", nil)
 	require.NoError(t, err)
 	require.NotNil(t, res.Supersede)
 
@@ -232,7 +232,7 @@ func TestRunRefineSupersede_BugRejected(t *testing.T) {
 	mock := agent.NewMockExecutor()
 
 	_, err := RunRefineSupersede(context.Background(), mock, fs, "bug-1", spec.KindBug,
-		"reframe", "")
+		"reframe", "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bug")
 	assert.Equal(t, 0, mock.CallCount(),
@@ -244,7 +244,7 @@ func TestRunRefineSupersede_EmptyMotivationRejected(t *testing.T) {
 	mock := agent.NewMockExecutor()
 
 	_, err := RunRefineSupersede(context.Background(), mock, fs, "dec-target", spec.KindDecision,
-		"   ", "")
+		"   ", "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "motivation")
 	assert.Equal(t, 0, mock.CallCount())
@@ -257,7 +257,7 @@ func TestRunRefineSupersede_AgentEmitsWrongPrefix(t *testing.T) {
 	mock := agent.NewMockExecutor(scriptSupersedeDecisionResponse(t, "totally-wrong", "x"))
 
 	_, err := RunRefineSupersede(context.Background(), mock, fs, "dec-target", spec.KindDecision,
-		"motivation", "")
+		"motivation", "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "prefix")
 

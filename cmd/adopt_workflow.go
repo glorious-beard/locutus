@@ -1054,6 +1054,7 @@ func runAdoptWorkflow(ctx context.Context, st *AdoptState) error {
 		AgentDefs: map[string]agent.AgentDef{},
 		Workflow:  AdoptWorkflow,
 	}
+	defer executor.BridgeToSink(st.Cfg.Sink)()
 	if _, err := executor.Run(ctx, st); err != nil {
 		return fmt.Errorf("adopt workflow: %w", err)
 	}

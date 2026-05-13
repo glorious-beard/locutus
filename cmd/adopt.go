@@ -67,12 +67,20 @@ type DispatchFunc func(ctx context.Context, plan *spec.MasterPlan, repoDir strin
 
 // AdoptConfig bundles everything RunAdoptWithConfig needs. Zero values are
 // replaced with defaults where sensible.
+//
+// Sink, when non-nil, receives the adopt workflow's per-step
+// lifecycle events (queued / started / completed / retrying / error).
+// The cmd-layer CLI handler threads its CLI sink here so the
+// 8-step main workflow renders spinners; the MCP handler threads
+// the MCP sink so progress streams over the protocol. Nil sink
+// silently drops events.
 type AdoptConfig struct {
 	FS       specio.FS
 	LLM      agent.AgentExecutor
 	RepoDir  string
 	Plan     PlanFunc
 	Dispatch DispatchFunc
+	Sink     agent.EventSink
 
 	Scope             string
 	DryRun            bool
@@ -172,6 +180,7 @@ func (c *AdoptCmd) Run(ctx context.Context, cli *CLI) error {
 		llm, sink, closeSink := withProgressSink(cli, llm)
 		defer closeSink()
 		cfg.LLM = llm
+		cfg.Sink = sink
 		if !c.DryRun {
 			cfg.Plan = realPlan(llm, fsys)
 			cfg.Dispatch = realDispatch(llm, cfg.FS)
@@ -530,6 +539,7 @@ func runPlannerForCandidates(
 		Features:   features,
 		Decisions:  decisions,
 		Strategies: strategies,
+		Sink:       cfg.Sink,
 	}
 
 	// GOALS.md lives at the project root.

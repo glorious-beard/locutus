@@ -138,7 +138,7 @@ func RunImport(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, dat
 	// runs through ImportWorkflow's intake step (its merge handler
 	// invokes IntakeDocument); when true, deterministic frontmatter +
 	// filename fallbacks cover everything.
-	meta, intake, importState, err := resolveImportMetadataWorkflow(ctx, llm, fsys, data, sourcePath, kind, skipTriage)
+	meta, intake, importState, err := resolveImportMetadataWorkflow(ctx, llm, fsys, data, sourcePath, kind, skipTriage, sink)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +229,7 @@ func RunImport(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, dat
 // resolveImportMetadata (deterministic frontmatter + filename
 // fallbacks; no LLM, no workflow). The returned ImportState is nil
 // in that case — callers know not to drive the plan step.
-func resolveImportMetadataWorkflow(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, data []byte, sourcePath, kind string, skipTriage bool) (*importMetadata, *agent.IntakeResult, *agent.ImportState, error) {
+func resolveImportMetadataWorkflow(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, data []byte, sourcePath, kind string, skipTriage bool, sink agent.EventSink) (*importMetadata, *agent.IntakeResult, *agent.ImportState, error) {
 	if skipTriage {
 		meta, intake, err := resolveImportMetadata(ctx, llm, fsys, data, sourcePath, kind, true)
 		return meta, intake, nil, err
@@ -257,6 +257,7 @@ func resolveImportMetadataWorkflow(ctx context.Context, llm agent.AgentExecutor,
 		// on a second Run after writeFeature has landed.
 		SkipPlan: true,
 		LLM:      llm,
+		Sink:     sink,
 	}
 	if err := agent.RunImportWorkflow(ctx, state); err != nil {
 		return nil, nil, nil, err

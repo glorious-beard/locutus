@@ -276,7 +276,7 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		defer sink.Close()
 		llm = &agent.NotifyingExecutor{Inner: llm, Sink: sink}
 		if input.Supersede != "" {
-			result, err := RunRefineSupersede(ctx, llm, fsys, input.ID, kind, input.Supersede, input.JustifySession)
+			result, err := RunRefineSupersede(ctx, llm, fsys, input.ID, kind, input.Supersede, input.JustifySession, sink)
 			if err != nil {
 				return errorResult(err.Error()), nil, nil
 			}
@@ -403,7 +403,7 @@ func NewMCPServerWithDir(dir string) *mcp.Server {
 		sink := newMCPSink(ctx, req)
 		defer sink.Close()
 		llm = &agent.NotifyingExecutor{Inner: llm, Sink: sink}
-		result, err := RunJustifyCommand(ctx, llm, fsys, input.ID, input.Against)
+		result, err := RunJustifyCommand(ctx, llm, fsys, input.ID, input.Against, sink)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
 		}

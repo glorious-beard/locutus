@@ -99,6 +99,49 @@ type WorkflowExecutor[S any] struct {
 	Events    chan WorkflowEvent // optional; nil disables progress reporting
 }
 
+// BridgeToSink wires e.Events so workflow step lifecycle events
+// (queued / started / completed / retrying / error) forward to
+// sink.OnEvent. Returns a closer the caller must defer; the closer
+// closes the events channel and waits for the bridging goroutine to
+// drain. No-op when sink is nil (returns a no-op closer).
+//
+// Workflow steps emit per-step events via emitEvent, which silently
+// drops them when Events is nil. They also suppress NotifyingExecutor's
+// per-LLM-call events (WithSuppressLLMNotify) to avoid double-spinners
+// when both are wired. So a WorkflowExecutor without an Events bridge
+// is *completely silent* from the operator's perspective — the
+// suppression fires but nothing replaces it. Every cmd-layer
+// WorkflowExecutor construction that runs against a CLI must call
+// BridgeToSink with the sink withProgressSink returns; sites that
+// don't are progress-reporting regressions.
+//
+// Idempotent on double-close. Buffer sized at 64 to match the
+// canonical bridging pattern in internal/agent/specgen.go and
+// internal/prereqs/summaries.go — that's "every agent fires
+// started+completed in tight succession without the consumer ever
+// falling behind."
+func (e *WorkflowExecutor[S]) BridgeToSink(sink EventSink) func() {
+	if sink == nil {
+		return func() {}
+	}
+	ch := make(chan WorkflowEvent, 64)
+	e.Events = ch
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range ch {
+			sink.OnEvent(ev)
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(ch)
+			<-done
+		})
+	}
+}
+
 // executionRetryConfig returns a retry config for workflow agent calls.
 func executionRetryConfig() RetryConfig {
 	return RetryConfig{

@@ -47,7 +47,7 @@ type SupersedeSummary struct {
 // pointer for the breaking-point analysis that motivated the
 // supersede. Pass empty string when the user invoked --supersede
 // directly without a preceding justify run.
-func RunRefineSupersede(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, id string, kind spec.NodeKind, motivation, justifySession string) (*RefineResult, error) {
+func RunRefineSupersede(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, id string, kind spec.NodeKind, motivation, justifySession string, sink agent.EventSink) (*RefineResult, error) {
 	if strings.TrimSpace(motivation) == "" {
 		return nil, fmt.Errorf("--supersede requires a motivation argument")
 	}
@@ -86,6 +86,7 @@ func RunRefineSupersede(ctx context.Context, llm agent.AgentExecutor, fsys speci
 		AgentDefs: defs,
 		Workflow:  SupersedeWorkflow,
 	}
+	defer executor.BridgeToSink(sink)()
 	if _, err := executor.Run(ctx, &state); err != nil {
 		return nil, fmt.Errorf("supersede: workflow: %w", err)
 	}

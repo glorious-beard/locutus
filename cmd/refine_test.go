@@ -330,7 +330,7 @@ func TestRunRefineDecisionDrivesCascadeWorkflow(t *testing.T) {
 		}},
 	)
 
-	result, err := RunRefine(context.Background(), mock, fs, "dec-lang")
+	result, err := RunRefine(context.Background(), mock, fs, "dec-lang", nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, spec.KindDecision, result.NodeKind)
@@ -364,7 +364,7 @@ func TestRunRefineDecisionDrivesCascadeWorkflow(t *testing.T) {
 func TestRunRefineDecisionUnknownIDFails(t *testing.T) {
 	fs := setupRefineFS(t)
 	mock := agent.NewMockExecutor()
-	_, err := RunRefine(context.Background(), mock, fs, "dec-nope")
+	_, err := RunRefine(context.Background(), mock, fs, "dec-nope", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dec-nope")
 }

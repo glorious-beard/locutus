@@ -55,10 +55,10 @@ func (c *JustifyCmd) Run(ctx context.Context, cli *CLI) error {
 	if err != nil {
 		return err
 	}
-	llm, _, closeSink := withProgressSink(cli, llm)
+	llm, sink, closeSink := withProgressSink(cli, llm)
 	defer closeSink()
 
-	result, err := RunJustifyCommand(ctx, llm, fsys, c.ID, challenge)
+	result, err := RunJustifyCommand(ctx, llm, fsys, c.ID, challenge, sink)
 	if err != nil {
 		return err
 	}
@@ -97,7 +97,13 @@ func (c *JustifyCmd) Run(ctx context.Context, cli *CLI) error {
 // dispatch time. The cmd layer remains the workflow-selection
 // boundary; the workflow itself owns phase orchestration, fanout, and
 // observability.
-func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, id, challenge string) (*JustifyResult, error) {
+//
+// sink may be nil (MCP and tests); when non-nil, each constructed
+// WorkflowExecutor bridges its lifecycle events to sink.OnEvent so
+// the CLI spinner UI renders the council's per-step progress. Without
+// the bridge the workflow is silent because WithSuppressLLMNotify
+// shuts down NotifyingExecutor inside workflow steps.
+func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, id, challenge string, sink agent.EventSink) (*JustifyResult, error) {
 	loaded, err := spec.LoadSpec(fsys)
 	if err != nil {
 		return nil, err
@@ -131,6 +137,7 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 			AgentDefs: map[string]agent.AgentDef{"spec_advocate": advocate},
 			Workflow:  agent.JustifySoloWorkflow,
 		}
+		defer exec.BridgeToSink(sink)()
 		if _, err := exec.Run(ctx, &state); err != nil {
 			return nil, err
 		}
@@ -188,6 +195,7 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 			},
 			Workflow: agent.JustifyAdversarialFallbackWorkflow,
 		}
+		defer exec.BridgeToSink(sink)()
 		_, runErr := exec.Run(ctx, &state)
 		// Adversarial fallback always populates partial outputs even
 		// on per-step failure (challenger / research / advocate each
@@ -230,6 +238,7 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 		},
 		Workflow: agent.JustifyAdversarialFanoutWorkflow,
 	}
+	defer exec.BridgeToSink(sink)()
 	_, runErr := exec.Run(ctx, &fanState)
 	fanOut := assembleFanOutResult(&fanState)
 	result.FanOut = fanOut

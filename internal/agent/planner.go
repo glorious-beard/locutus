@@ -13,12 +13,18 @@ import (
 )
 
 // PlanRequest holds inputs for the greenfield planning pipeline.
+//
+// Sink, when non-nil, receives lifecycle events from the planning
+// workflow's per-step dispatch. The cmd-layer adopt handler threads
+// its CLI sink here so the planning council's spinners render
+// alongside the rest of the adopt UI. Nil sink drops events silently.
 type PlanRequest struct {
 	Prompt     string
 	GoalsBody  string
 	Features   []spec.Feature
 	Decisions  []spec.Decision
 	Strategies []spec.Strategy
+	Sink       EventSink
 }
 
 // Plan runs the full greenfield planning pipeline.
@@ -41,6 +47,7 @@ func Plan(ctx context.Context, exec AgentExecutor, fsys specio.FS, req PlanReque
 		AgentDefs: agentDefs,
 		Workflow:  PlanningWorkflow,
 	}
+	defer executor.BridgeToSink(req.Sink)()
 
 	// 5. Build a contextualized prompt that includes spec state.
 	prompt := buildPlanPrompt(req)

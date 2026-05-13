@@ -31,7 +31,7 @@ func TestJustifySoloDispatch(t *testing.T) {
 		agent.MockResponse{Response: &agent.AgentOutput{Content: mustJSON(t, brief), Model: "test"}},
 	)
 
-	result, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "")
+	result, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "", nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "dec-shared", result.ID)
@@ -98,7 +98,7 @@ func TestJustifyAdversarialDispatch(t *testing.T) {
 		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
 	)
 
-	result, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "What about vendor lock-in?")
+	result, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "What about vendor lock-in?", nil)
 	require.NoError(t, err)
 
 	require.NotNil(t, result.Challenger)
@@ -171,7 +171,7 @@ func TestJustifyAdversarialBrokenDownSurfacesBreakingPoints(t *testing.T) {
 		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
 	)
 
-	result, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "Does this scale?")
+	result, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "Does this scale?", nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "broke_down", result.Adversarial.Verdict)
@@ -203,7 +203,7 @@ func TestJustifyInvalidVerdictRejected(t *testing.T) {
 		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
 	)
 
-	_, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "challenge")
+	_, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "challenge", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid verdict")
 }
@@ -213,7 +213,7 @@ func TestJustifyEmptyChallengerConcerns(t *testing.T) {
 	mock := agent.NewMockExecutor(
 		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: `{"concerns":[]}`, Model: "test"}},
 	)
-	_, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "challenge")
+	_, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "challenge", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no concerns")
 }

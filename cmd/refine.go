@@ -173,7 +173,7 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 	}
 
 	if c.Supersede != "" {
-		result, err := RunRefineSupersede(ctx, llm, fsys, c.ID, kind, c.Supersede, "")
+		result, err := RunRefineSupersede(ctx, llm, fsys, c.ID, kind, c.Supersede, "", sink)
 		if err != nil {
 			return err
 		}
@@ -255,7 +255,7 @@ func dispatchRefineWithOptions(
 	)
 	switch kind {
 	case spec.KindDecision:
-		result, err = RunRefine(ctx, llm, fsys, id)
+		result, err = RunRefine(ctx, llm, fsys, id, sink)
 	case spec.KindFeature:
 		result, err = RunRefineFeature(ctx, llm, fsys, id)
 	case spec.KindBug:
@@ -434,7 +434,7 @@ func RunRefineGoals(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS
 // still uses the direct-call path); the two implementations share the
 // rewriter prompt and persistence semantics so on-disk output stays
 // equivalent for the same fixture.
-func RunRefine(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, decisionID string) (*RefineResult, error) {
+func RunRefine(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, decisionID string, sink agent.EventSink) (*RefineResult, error) {
 	g := buildGraphForRefine(fsys)
 
 	dec := g.Decision(decisionID)
@@ -468,6 +468,7 @@ func RunRefine(ctx context.Context, llm agent.AgentExecutor, fsys specio.FS, dec
 		AgentDefs: defs,
 		Workflow:  agent.RefineCascadeWorkflow,
 	}
+	defer executor.BridgeToSink(sink)()
 
 	if _, err := executor.Run(ctx, &state); err != nil {
 		return &RefineResult{

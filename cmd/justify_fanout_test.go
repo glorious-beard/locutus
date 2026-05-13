@@ -133,7 +133,7 @@ func TestRunJustifyCommand_FanOutAgainstStrategy(t *testing.T) {
 	)
 
 	result, err := RunJustifyCommand(context.Background(), mock, fs, "strat-frontend",
-		"Why all the overhead of NextJS? Do we need RSC when we anticipate NO SEO?")
+		"Why all the overhead of NextJS? Do we need RSC when we anticipate NO SEO?", nil)
 	require.NoError(t, err)
 	require.NotNil(t, result.FanOut, "fan-out path must populate result.FanOut")
 	assert.Nil(t, result.Adversarial, "decision-target single-flow output must not be populated for strategy targets")
@@ -214,7 +214,7 @@ func TestRunJustifyCommand_FanOutSkipsIrrelevantShards(t *testing.T) {
 	)
 
 	result, err := RunJustifyCommand(context.Background(), mock, fs, "strat-frontend",
-		"Do we need RSC when we anticipate NO SEO?")
+		"Do we need RSC when we anticipate NO SEO?", nil)
 	require.NoError(t, err)
 	require.NotNil(t, result.FanOut)
 	require.Len(t, result.FanOut.PerDecisionResults, 1,
@@ -271,7 +271,7 @@ func TestRunJustifyCommand_DecisionlessStrategyFallsBackToSingleFlow(t *testing.
 	)
 
 	result, err := RunJustifyCommand(context.Background(), mock, fs, "strat-tdd",
-		"Blanket TDD adds friction for prototypes; should be selective.")
+		"Blanket TDD adds friction for prototypes; should be selective.", nil)
 	require.NoError(t, err)
 
 	// Single-flow output, NOT fan-out.
@@ -316,7 +316,7 @@ func TestRunJustifyCommand_DecisionTargetUsesSingleFlow(t *testing.T) {
 		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense)}},
 	)
 
-	result, err := RunJustifyCommand(context.Background(), mock, fs, "dec-framework", "Why Next.js?")
+	result, err := RunJustifyCommand(context.Background(), mock, fs, "dec-framework", "Why Next.js?", nil)
 	require.NoError(t, err)
 	require.NotNil(t, result.Adversarial,
 		"decision target must use the single-flow adversarial path")
