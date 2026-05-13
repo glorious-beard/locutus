@@ -26,26 +26,26 @@ type ChallengeSplit struct {
 	// challenge does not address that decision; the orchestrator
 	// skips empty shards rather than firing a wasted decision-
 	// level run.
-	DecisionShards []DecisionShard `json:"decision_shards"`
+	DecisionShards []DecisionShard `json:"decision_shards" jsonschema:"description=Exactly one entry per input decision, in input order. IDs must match the input decision IDs verbatim; emit empty Shard for decisions the challenge does not address rather than omitting them."`
 
 	// ParentProseShard is the portion of the challenge that engages
 	// the parent's own body prose — claims like "the rationale
 	// argues for hiring velocity but..." that don't target any
 	// specific decision. Empty when the challenge has no parent-
 	// prose-level component. Consumed by the synthesis agent.
-	ParentProseShard string `json:"parent_prose_shard,omitempty"`
+	ParentProseShard string `json:"parent_prose_shard,omitempty" jsonschema:"description=The portion of the challenge that engages the parent's body prose without mapping to any single decision. Empty when no such portion exists; do not invent content to fill it."`
 
 	// Rationale is a one-line summary of how the splitter divided
 	// the challenge. Surfaced in traces and the rendered output.
-	Rationale string `json:"rationale,omitempty"`
+	Rationale string `json:"rationale,omitempty" jsonschema:"description=One-line summary of how the challenge was divided across decisions and parent prose. Surfaced in traces and the rendered output."`
 }
 
 // DecisionShard pairs a decision id with the slice of the user's
 // challenge that addresses it. Empty Shard means the challenge does
 // not address this decision; the orchestrator filters those out.
 type DecisionShard struct {
-	DecisionID string `json:"decision_id"`
-	Shard      string `json:"shard"`
+	DecisionID string `json:"decision_id" jsonschema:"description=The decision id verbatim from the input list — never invent or modify the id."`
+	Shard      string `json:"shard" jsonschema:"description=The slice of the user's challenge that addresses this decision. Empty when the challenge does not address this decision; the orchestrator skips empty shards rather than firing a wasted decision-level run."`
 }
 
 func init() {

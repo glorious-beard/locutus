@@ -10,8 +10,9 @@ Locutus — a Go CLI and MCP server that acts as an autonomous project manager f
 
 - `docs/DECISION_JOURNAL.md` — architectural decisions with rationale, alternatives considered, and reversals. Authoritative design record.
 - `.claude/plans/` — active implementation plans (current consolidation work is in `verb-set-phase-{a,b,c,d}.md`). Copy to `docs/plans/` once a phase stabilises.
+- `internal/scaffold/agents/CONVENTIONS.md` — documented anti-patterns and conventions for agent prompt files. **Read this before editing or creating any file under `internal/scaffold/agents/`.** It captures lessons we've re-learned multiple times (anti-pattern priming, thinking-leakage, schema-skeleton placeholders) and the prefer-positive-phrasing + push-constraints-to-schema-tags patterns that replace them.
 
-When these documents conflict with any other file in the repo, `docs/` and `.claude/plans/` win.
+When these documents conflict with any other file in the repo, `docs/`, `.claude/plans/`, and `internal/scaffold/agents/CONVENTIONS.md` win.
 
 ## Command Surface
 

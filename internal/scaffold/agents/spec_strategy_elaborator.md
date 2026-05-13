@@ -46,7 +46,7 @@ In both cases, address every finding listed in the cluster — do not author for
 
 Produce a single `RawStrategyProposal` JSON object: id (preserve the outline's id verbatim), title (preserve), kind (preserve — one of `foundational`, `derived`, `quality`), body (a paragraph or two of prose committing to the choice), decisions [] — inline decision objects this strategy commits to.
 
-Strategies describe COMMITMENTS, not requirements. A body that says "the database must support geospatial queries" is REJECTED — that's a requirements restatement. The committing form names the choice and reason: "Use PostgreSQL 16 with the PostGIS extension on AWS RDS Multi-AZ. Geospatial queries are first-class via ST_* functions; relational workloads stay on the same instance." If you find yourself writing "must support" / "should provide" / "needs to handle" without naming what was chosen, rewrite.
+Strategies describe COMMITMENTS, not requirements. The committing form names the choice and the brief reason: "Use PostgreSQL 16 with the PostGIS extension on AWS RDS Multi-AZ. Geospatial queries are first-class via ST_* functions; relational workloads stay on the same instance." A body that describes the problem (e.g. "the database needs geospatial queries and high-volume relational data") instead of naming the chosen solution is a requirements restatement and gets rejected — rewrite as a commitment naming the specific vendor, library, or pattern.
 
 Each **inline decision** carries: title (concrete commitment), rationale (one paragraph), confidence (0.0–1.0), alternatives (≥1 with name, rationale, rejected_because), citations (≥1 with kind/reference/span/excerpt), architect_rationale (one short sentence).
 
