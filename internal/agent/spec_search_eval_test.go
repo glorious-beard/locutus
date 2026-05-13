@@ -210,12 +210,9 @@ var modelMatrix = []modelTier{
 	{"openai", "strong", "gpt-5"},
 	{"openai", "balanced", "gpt-5"},
 	{"openai", "fast", "gpt-5-mini"},
-	// The gemini-3.x preview models all 429'd on first call — likely
-	// no preview access on this key. Falling back to the stable
-	// 2.5 family which the same key can reach.
-	{"googleai", "strong", "gemini-2.5-pro"},
-	{"googleai", "balanced", "gemini-2.5-flash"},
-	{"googleai", "fast", "gemini-2.5-flash-lite"},
+	{"googleai", "strong", "gemini-3.1-pro-preview"},
+	{"googleai", "balanced", "gemini-3-flash-preview"},
+	{"googleai", "fast", "gemini-3.1-flash-lite-preview"},
 }
 
 // classification is the model's answer shape. The prompt asks for
@@ -450,7 +447,7 @@ func TestSpecSearchInterpretation(t *testing.T) {
 	for _, r := range rows {
 		if r.err != "" {
 			fmt.Fprintf(&b, "| %s | %s | `%s` | — | — | error: %s |\n",
-				r.mt.provider, r.mt.tier, r.mt.model, truncate(r.err, 60))
+				r.mt.provider, r.mt.tier, r.mt.model, truncate(r.err, 200))
 			continue
 		}
 		notes := strings.Join(r.notes, "; ")

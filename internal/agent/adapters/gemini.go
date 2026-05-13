@@ -339,10 +339,15 @@ func classifyGeminiError(err error) error {
 	msg := err.Error()
 	lower := strings.ToLower(msg)
 	if strings.Contains(msg, "DEADLINE_EXCEEDED") || strings.Contains(lower, "deadline_exceeded") || strings.Contains(lower, "deadline expired") {
-		return ErrTimeout
+		return fmt.Errorf("gemini: %w (underlying: %s)", ErrTimeout, msg)
 	}
 	if strings.Contains(msg, "429") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "resource_exhausted") {
-		return ErrRateLimit
+		// Wrap so errors.Is(err, ErrRateLimit) still matches AND the
+		// SDK's original message survives — useful for distinguishing
+		// "quota exceeded" from "model not available on this tier"
+		// from genuine per-minute rate limits, all of which the SDK
+		// surfaces as 429s but with different message bodies.
+		return fmt.Errorf("gemini: %w (underlying: %s)", ErrRateLimit, msg)
 	}
 	return fmt.Errorf("gemini: %w", err)
 }
