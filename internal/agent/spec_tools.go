@@ -505,12 +505,46 @@ type SpecSearchInput struct {
 }
 
 // SpecSearchResult wraps the ranked hits with a full-match count so
-// the agent can tell when its slice is truncated. Per-hit payload
-// reuses SpecManifestEntry so agents can reuse their existing
-// spec_list_manifest parsing path.
+// the agent can tell when its slice is truncated.
+//
+// Per-hit payload is SpecSearchHit (not SpecManifestEntry as in the
+// initial Phase 4 shape): the agent benefits from per-field match
+// diagnostics that let it discount a hit whose score is dominated by
+// a non-relevant field (e.g. a query for "authentication" rolling up
+// matches inside a rejected alternative's prose). The id/title/kind/
+// summary subset is unchanged — adding fields, not removing.
 type SpecSearchResult struct {
-	Hits         []SpecManifestEntry `json:"hits"`
-	TotalMatches int                 `json:"total_matches"`
+	Hits         []SpecSearchHit `json:"hits"`
+	TotalMatches int             `json:"total_matches"`
+}
+
+// SpecSearchHit is one ranked spec node with per-field diagnostics.
+// Mirrors SpecManifestEntry for identity (id, title, kind, summary)
+// and adds Score plus Matches so the agent can apply context-
+// sensitive judgment.
+//
+// Matches is a map keyed by field name (title, summary, rationale,
+// alternative, description, acceptance, provenance, bug_detail,
+// body, id_tokens). Each entry carries the query Terms that matched
+// in that field, the Count of occurrences, and the BM25
+// Contribution to the overall Score. Sum of contributions equals
+// Score within float rounding.
+type SpecSearchHit struct {
+	ID      string                    `json:"id"`
+	Title   string                    `json:"title"`
+	Kind    string                    `json:"kind,omitempty"`
+	Summary string                    `json:"summary,omitempty"`
+	Score   float64                   `json:"score"`
+	Matches map[string]SpecFieldMatch `json:"matches,omitempty"`
+}
+
+// SpecFieldMatch is the per-field diagnostic surfaced by spec_search.
+// Mirrors search.FieldMatch with JSON tags tuned for the agent
+// surface.
+type SpecFieldMatch struct {
+	Terms        []string `json:"terms"`
+	Count        int      `json:"count"`
+	Contribution float64  `json:"contribution"`
 }
 
 // specSearchAgentDefaultLimit is the agent-surface default. Smaller
@@ -573,20 +607,41 @@ func SearchSpecNodes(fsys specio.FS, projectRoot string, in SpecSearchInput) (Sp
 	}
 	defer idx.Close()
 
-	hits, total, err := idx.Search(q, search.Options{Kind: in.Kind, Limit: limit})
+	// Explain: yes. The whole point of the agent-facing tool is that
+	// the LLM can reason about per-field contributions — e.g. discount
+	// a hit whose Score is dominated by an alternative's prose when
+	// the question is about the chosen direction. The cost (one
+	// per-field scan per Search call) is fine at our scale.
+	hits, total, err := idx.Search(q, search.Options{
+		Kind:    in.Kind,
+		Limit:   limit,
+		Explain: true,
+	})
 	if err != nil {
 		return SpecSearchResult{}, fmt.Errorf("spec_search: %w", err)
 	}
 
 	summaries := summaryByID(BuildSpecManifest(fsys))
-	out := make([]SpecManifestEntry, 0, len(hits))
+	out := make([]SpecSearchHit, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, SpecManifestEntry{
+		hit := SpecSearchHit{
 			ID:      h.ID,
 			Title:   h.Title,
 			Kind:    h.Kind,
 			Summary: summaries[h.ID],
-		})
+			Score:   h.Score,
+		}
+		if len(h.Matches) > 0 {
+			hit.Matches = make(map[string]SpecFieldMatch, len(h.Matches))
+			for field, fm := range h.Matches {
+				hit.Matches[field] = SpecFieldMatch{
+					Terms:        fm.Terms,
+					Count:        fm.Count,
+					Contribution: fm.Contribution,
+				}
+			}
+		}
+		out = append(out, hit)
 	}
 	return SpecSearchResult{Hits: out, TotalMatches: total}, nil
 }

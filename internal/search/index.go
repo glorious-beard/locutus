@@ -12,6 +12,7 @@ import (
 
 	"github.com/blugelabs/bluge"
 	enanalyzer "github.com/blugelabs/bluge/analysis/lang/en"
+	"github.com/blugelabs/bluge/search"
 	"github.com/chetan/locutus/internal/specio"
 )
 
@@ -222,18 +223,20 @@ func (i *Index) hasUsableIndex() bool {
 // set, not the capped slice — callers can use it to know when their
 // results are truncated.
 //
-// Query syntax (Phase 1):
-//   - Free text → multi-field BM25 match over title, summary, body,
-//     and id_tokens, with per-field boosts mirroring the heuristic
-//     scorer (title=3, summary=2, id_tokens=2, body=1).
+// Query syntax:
+//   - Free text → multi-field BM25 match over title, summary,
+//     id_tokens, and the prose fields (rationale, description,
+//     alternative, acceptance, provenance, bug_detail, body), with
+//     per-field boosts (title=3, summary=2, id_tokens=2; prose=1).
 //   - "..." quoted phrase → multi-field MatchPhraseQuery on the same
 //     fields.
-//   - trailing * (e.g., "auth*") → multi-field PrefixQuery on the
-//     same fields.
+//   - trailing * (e.g., "auth*") → multi-field PrefixQuery.
 //
-// More expressive syntax (kind:foo AND bar, +x -y, ~fuzzy) is
-// deferred until the operator-facing list verb consumes the index
-// in Phase 3.
+// When opts.Explain is set, each Hit carries a Matches map keyed by
+// field name with per-field Terms / Count / Contribution — the
+// signal an LLM or operator uses to apply context-sensitive judgment
+// to the ranked list (e.g. discounting a hit whose Score is mostly
+// "alternative" contribution).
 func (i *Index) Search(query string, opts Options) ([]Hit, int, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -255,12 +258,31 @@ func (i *Index) Search(query string, opts Options) ([]Hit, int, error) {
 	// just the slice we materialise into hits). Without this, Count()
 	// silently returns 0 — a Bluge gotcha worth a one-line note.
 	req := bluge.NewTopNSearch(limit, q).WithStandardAggregations()
+	if opts.Explain {
+		// IncludeLocations carries per-field/term hit positions so we
+		// can populate Count and Terms in FieldMatch. Contribution
+		// comes from the per-field scan below, not from Bluge's
+		// Explanation tree — see scanPerFieldContributions.
+		req = req.IncludeLocations()
+	}
 
 	r, err := i.reader()
 	if err != nil {
 		return nil, 0, fmt.Errorf("search: open reader: %w", err)
 	}
 	defer r.Close()
+
+	// Run per-field score scans before the main query so the same
+	// Reader serves both — saves a second OpenReader and keeps the
+	// "snapshot of the index at this instant" property consistent
+	// across the diagnostics and the ranking.
+	var perField perFieldContributions
+	if opts.Explain {
+		perField, err = scanPerFieldContributions(r, query, opts.Kind)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
 
 	it, err := r.Search(context.Background(), req)
 	if err != nil {
@@ -290,6 +312,9 @@ func (i *Index) Search(query string, opts Options) ([]Hit, int, error) {
 		})
 		if err != nil {
 			return nil, 0, fmt.Errorf("search: visit stored fields: %w", err)
+		}
+		if opts.Explain {
+			hit.Matches = buildMatchDiagnostics(match, hit.ID, perField)
 		}
 		hits = append(hits, hit)
 	}
@@ -325,9 +350,11 @@ func (i *Index) reader() (*bluge.Reader, error) {
 //  3. Free text → MatchQuery across the prose fields with per-field
 //     boost mirroring the heuristic scorer's weights.
 //
-// In every branch, when opts.Kind is non-empty we wrap the scoring
-// query in a BooleanQuery that AND's a Must keyword term on the kind
-// field.
+// When opts.Kind is non-empty the scoring query is wrapped in a
+// BooleanQuery that AND's a Must keyword term on the kind field with
+// boost=0 — kind is a filter, not a ranking signal, and giving it
+// boost would let kind-IDF leak into the ranking (rare-kind docs
+// would outrank common-kind docs by an accident of corpus shape).
 func buildQuery(text, kind string) bluge.Query {
 	body := chooseInnerQuery(text)
 	if kind == "" {
@@ -335,7 +362,7 @@ func buildQuery(text, kind string) bluge.Query {
 	}
 	return bluge.NewBooleanQuery().
 		AddMust(body).
-		AddMust(bluge.NewTermQuery(kind).SetField(fieldKind))
+		AddMust(bluge.NewTermQuery(kind).SetField(fieldKind).SetBoost(0))
 }
 
 func chooseInnerQuery(text string) bluge.Query {
@@ -370,8 +397,10 @@ func matchDisjunction(text string) bluge.Query {
 	an := enanalyzer.NewAnalyzer()
 	q.AddShould(bluge.NewMatchQuery(text).SetField(fieldTitle).SetAnalyzer(an).SetBoost(boostTitle))
 	q.AddShould(bluge.NewMatchQuery(text).SetField(fieldSummary).SetAnalyzer(an).SetBoost(boostSummary))
-	q.AddShould(bluge.NewMatchQuery(text).SetField(fieldBody).SetAnalyzer(an).SetBoost(boostBody))
 	q.AddShould(bluge.NewMatchQuery(text).SetField(fieldIDTokens).SetAnalyzer(an).SetBoost(boostIDTokens))
+	for _, f := range proseFields {
+		q.AddShould(bluge.NewMatchQuery(text).SetField(f).SetAnalyzer(an).SetBoost(boostBody))
+	}
 	q.SetMinShould(1)
 	return q
 }
@@ -381,7 +410,9 @@ func phraseDisjunction(phrase string) bluge.Query {
 	an := enanalyzer.NewAnalyzer()
 	q.AddShould(bluge.NewMatchPhraseQuery(phrase).SetField(fieldTitle).SetAnalyzer(an).SetBoost(boostTitle))
 	q.AddShould(bluge.NewMatchPhraseQuery(phrase).SetField(fieldSummary).SetAnalyzer(an).SetBoost(boostSummary))
-	q.AddShould(bluge.NewMatchPhraseQuery(phrase).SetField(fieldBody).SetAnalyzer(an).SetBoost(boostBody))
+	for _, f := range proseFields {
+		q.AddShould(bluge.NewMatchPhraseQuery(phrase).SetField(f).SetAnalyzer(an).SetBoost(boostBody))
+	}
 	q.SetMinShould(1)
 	return q
 }
@@ -391,10 +422,195 @@ func prefixDisjunction(prefix string) bluge.Query {
 	q := bluge.NewBooleanQuery()
 	q.AddShould(bluge.NewPrefixQuery(lower).SetField(fieldTitle).SetBoost(boostTitle))
 	q.AddShould(bluge.NewPrefixQuery(lower).SetField(fieldSummary).SetBoost(boostSummary))
-	q.AddShould(bluge.NewPrefixQuery(lower).SetField(fieldBody).SetBoost(boostBody))
 	q.AddShould(bluge.NewPrefixQuery(lower).SetField(fieldIDTokens).SetBoost(boostIDTokens))
+	for _, f := range proseFields {
+		q.AddShould(bluge.NewPrefixQuery(lower).SetField(f).SetBoost(boostBody))
+	}
 	q.SetMinShould(1)
 	return q
+}
+
+// scoredFieldSet is allScoredFields lifted into a set for O(1)
+// lookups when filtering match-location data to fields we care about
+// — drops the kind-filter clause (boost=0, filter not signal) and
+// any future virtual field Bluge might surface.
+var scoredFieldSet = func() map[string]struct{} {
+	s := make(map[string]struct{}, len(allScoredFields))
+	for _, f := range allScoredFields {
+		s[f] = struct{}{}
+	}
+	return s
+}()
+
+// fieldBoost returns the query-time boost for a scored field. Used by
+// the per-field score scans so each single-field query mirrors the
+// boost it would have inside the main disjunction — that's the
+// invariant that lets the per-field score sum equal the disjunction's
+// total Score.
+func fieldBoost(field string) float64 {
+	switch field {
+	case fieldTitle:
+		return boostTitle
+	case fieldSummary:
+		return boostSummary
+	case fieldIDTokens:
+		return boostIDTokens
+	}
+	return boostBody
+}
+
+// perFieldContributions maps a docID (the spec node's id, since we
+// use it as the Bluge document identifier) to a per-field score. The
+// outer map is keyed by field name. Built once per Search call when
+// Options.Explain is set; consulted at hit-construction time.
+type perFieldContributions map[string]map[string]float64
+
+// scanPerFieldContributions runs one targeted MatchQuery (or phrase /
+// prefix variant) per scored field and records (docID → score) per
+// field. Bluge's CompositeSumScorer is a literal sum, so a per-field
+// MatchQuery with the same boost we used in the main disjunction
+// returns the same contribution that field made to the disjunction's
+// total Score. That's what makes this approach faithful instead of
+// approximate: the per-field score IS the contribution, by
+// construction.
+//
+// Cost: one targeted search per scored field per Search call when
+// Explain is on. At our field count (~10) and corpus size, this is
+// well under the disjunction's own cost.
+//
+// kind filter, when set, is AND'd into each per-field query with
+// boost=0 so the per-field scores match the filtered disjunction's
+// per-field contributions exactly (kind adds zero to the sum).
+func scanPerFieldContributions(r *bluge.Reader, text, kind string) (perFieldContributions, error) {
+	out := make(perFieldContributions, len(allScoredFields))
+	for _, field := range allScoredFields {
+		q := singleFieldScoreQuery(text, field)
+		if kind != "" {
+			q = bluge.NewBooleanQuery().
+				AddMust(q).
+				AddMust(bluge.NewTermQuery(kind).SetField(fieldKind).SetBoost(0))
+		}
+		req := bluge.NewAllMatches(q)
+		it, err := r.Search(context.Background(), req)
+		if err != nil {
+			return nil, fmt.Errorf("search: per-field scan for %q: %w", field, err)
+		}
+		fieldMap := make(map[string]float64)
+		for {
+			m, err := it.Next()
+			if err != nil {
+				return nil, fmt.Errorf("search: per-field iterate for %q: %w", field, err)
+			}
+			if m == nil {
+				break
+			}
+			var id string
+			if err := m.VisitStoredFields(func(name string, value []byte) bool {
+				if name == fieldID {
+					id = string(value)
+					return false
+				}
+				return true
+			}); err != nil {
+				return nil, fmt.Errorf("search: per-field visit for %q: %w", field, err)
+			}
+			if id != "" {
+				fieldMap[id] = m.Score
+			}
+		}
+		if len(fieldMap) > 0 {
+			out[field] = fieldMap
+		}
+	}
+	return out, nil
+}
+
+// singleFieldScoreQuery builds the single-field analogue of the inner
+// scoring query chosen by chooseInnerQuery — match for free text,
+// phrase for "...", prefix for foo*. The shape mirrors the main
+// disjunction's per-clause structure so the per-field score equals
+// the contribution that clause makes to the disjunction's total.
+func singleFieldScoreQuery(text, field string) bluge.Query {
+	boost := fieldBoost(field)
+	if isQuotedPhrase(text) {
+		// Phrase queries on id_tokens make little sense (the analyzer
+		// strips most phrase semantics there); skip to a match query.
+		phrase := strings.Trim(text, `"`)
+		if field == fieldIDTokens {
+			return bluge.NewMatchQuery(phrase).
+				SetField(field).
+				SetAnalyzer(enanalyzer.NewAnalyzer()).
+				SetBoost(boost)
+		}
+		return bluge.NewMatchPhraseQuery(phrase).
+			SetField(field).
+			SetAnalyzer(enanalyzer.NewAnalyzer()).
+			SetBoost(boost)
+	}
+	if isPrefixGlob(text) {
+		return bluge.NewPrefixQuery(strings.ToLower(strings.TrimSuffix(text, "*"))).
+			SetField(field).
+			SetBoost(boost)
+	}
+	return bluge.NewMatchQuery(text).
+		SetField(field).
+		SetAnalyzer(enanalyzer.NewAnalyzer()).
+		SetBoost(boost)
+}
+
+// buildMatchDiagnostics turns the DocumentMatch's locations (for
+// Count/Terms) and the precomputed perFieldContributions (for
+// Contribution) into the Matches map exposed on a Hit. Filters to
+// scoredFieldSet so the kind-filter clause never appears.
+//
+// A field shows up in the result if it has either a non-zero
+// Contribution OR at least one location for the doc. Both signals
+// are necessary: a phrase that matches in the prose but produces a
+// score below the cutoff still has locations; conversely, a doc
+// scored without positions enabled has a contribution but no
+// locations. In practice every prose field has SearchTermPositions
+// set, so both arrive together.
+func buildMatchDiagnostics(match *search.DocumentMatch, docID string, perField perFieldContributions) map[string]FieldMatch {
+	if match == nil {
+		return nil
+	}
+	out := make(map[string]FieldMatch)
+
+	for field, perTerm := range match.Locations {
+		if _, ok := scoredFieldSet[field]; !ok {
+			continue
+		}
+		fm := out[field]
+		for term, positions := range perTerm {
+			if len(positions) == 0 {
+				continue
+			}
+			fm.Terms = append(fm.Terms, term)
+			fm.Count += len(positions)
+		}
+		out[field] = fm
+	}
+	for field, perDoc := range perField {
+		if score, ok := perDoc[docID]; ok && score != 0 {
+			fm := out[field]
+			fm.Contribution = score
+			out[field] = fm
+		}
+	}
+
+	// Drop fields that have neither a Contribution nor any matched
+	// terms — they got into the map only because of an empty
+	// locations entry, and surfacing them would add noise.
+	for field, fm := range out {
+		if fm.Contribution == 0 && fm.Count == 0 {
+			delete(out, field)
+		}
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // Compile-time guard that io.Closer is satisfied — we expose Close on

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"sort"
 	"strings"
 
 	"github.com/chetan/locutus/internal/search"
@@ -40,12 +41,28 @@ type ListResult struct {
 // approaches that carry InvalidatedByEventID; the markdown renderer
 // surfaces this via an `[invalidated]` badge so operators can spot
 // pending-reconcile work without filtering.
+//
+// Matches surfaces per-field diagnostics: which field the query
+// matched in, how often, and the BM25 contribution. Lets an operator
+// (or LLM consumer of JSON output) see that a high-scoring hit is
+// dominated by, say, "alternative" — and apply context-sensitive
+// judgment to whether that match is what they're looking for.
 type ListHit struct {
-	ID          string  `json:"id"`
-	Kind        string  `json:"kind"`
-	Title       string  `json:"title"`
-	Score       float64 `json:"score"`
-	Invalidated bool    `json:"invalidated,omitempty"`
+	ID          string                       `json:"id"`
+	Kind        string                       `json:"kind"`
+	Title       string                       `json:"title"`
+	Score       float64                      `json:"score"`
+	Invalidated bool                         `json:"invalidated,omitempty"`
+	Matches     map[string]ListFieldMatch    `json:"matches,omitempty"`
+}
+
+// ListFieldMatch mirrors search.FieldMatch with JSON tags suited to
+// the list output. Order of fields in the JSON encoder is fixed so
+// the output is stable across runs.
+type ListFieldMatch struct {
+	Terms        []string `json:"terms"`
+	Count        int      `json:"count"`
+	Contribution float64  `json:"contribution"`
 }
 
 func (c *ListCmd) Run(cli *CLI) error {
@@ -93,7 +110,15 @@ func RunList(fsys specio.FS, projectRoot, query, kindFilter string) (*ListResult
 	}
 	defer idx.Close()
 
-	rawHits, _, err := idx.Search(query, search.Options{Kind: kind, Limit: search.DefaultLimit})
+	// Explain: yes. The list verb is operator-facing; the per-field
+	// diagnostic is the entire reason a human can tell whether a
+	// match came from a title hit (what they want) or from prose
+	// inside a rejected alternative (probably not what they want).
+	rawHits, _, err := idx.Search(query, search.Options{
+		Kind:    kind,
+		Limit:   search.DefaultLimit,
+		Explain: true,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +128,16 @@ func RunList(fsys specio.FS, projectRoot, query, kindFilter string) (*ListResult
 		hit := ListHit{ID: h.ID, Kind: h.Kind, Title: h.Title, Score: h.Score}
 		if h.Kind == string(spec.KindApproach) {
 			hit.Invalidated = approachInvalidated(fsys, h.ID)
+		}
+		if len(h.Matches) > 0 {
+			hit.Matches = make(map[string]ListFieldMatch, len(h.Matches))
+			for field, fm := range h.Matches {
+				hit.Matches[field] = ListFieldMatch{
+					Terms:        fm.Terms,
+					Count:        fm.Count,
+					Contribution: fm.Contribution,
+				}
+			}
 		}
 		hits = append(hits, hit)
 	}
@@ -166,11 +201,51 @@ func renderListMarkdown(query, kind string, hits []ListHit) string {
 	}
 	b.WriteString(":\n\n")
 	for _, h := range hits {
-		if h.Invalidated {
+		matched := formatMatchedFields(h.Matches)
+		switch {
+		case h.Invalidated && matched != "":
+			fmt.Fprintf(&b, "- `%s` (%s) [invalidated] [matched: %s] — %s\n", h.ID, h.Kind, matched, h.Title)
+		case h.Invalidated:
 			fmt.Fprintf(&b, "- `%s` (%s) [invalidated] — %s\n", h.ID, h.Kind, h.Title)
-		} else {
+		case matched != "":
+			fmt.Fprintf(&b, "- `%s` (%s) [matched: %s] — %s\n", h.ID, h.Kind, matched, h.Title)
+		default:
 			fmt.Fprintf(&b, "- `%s` (%s) — %s\n", h.ID, h.Kind, h.Title)
 		}
 	}
 	return b.String()
+}
+
+// formatMatchedFields renders Matches into a compact inline label
+// for the markdown list — "title, alternative ×7" — ordered by
+// Contribution descending so the dominant signal reads first. Ties
+// break by field name for determinism. Count is shown only when > 1
+// since "×1" is noise.
+func formatMatchedFields(m map[string]ListFieldMatch) string {
+	if len(m) == 0 {
+		return ""
+	}
+	type entry struct {
+		field string
+		fm    ListFieldMatch
+	}
+	entries := make([]entry, 0, len(m))
+	for f, fm := range m {
+		entries = append(entries, entry{f, fm})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].fm.Contribution != entries[j].fm.Contribution {
+			return entries[i].fm.Contribution > entries[j].fm.Contribution
+		}
+		return entries[i].field < entries[j].field
+	})
+	parts := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.fm.Count > 1 {
+			parts = append(parts, fmt.Sprintf("%s ×%d", e.field, e.fm.Count))
+		} else {
+			parts = append(parts, e.field)
+		}
+	}
+	return strings.Join(parts, ", ")
 }

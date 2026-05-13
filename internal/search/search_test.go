@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/blugelabs/bluge"
+	enanalyzer "github.com/blugelabs/bluge/analysis/lang/en"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
@@ -390,4 +393,186 @@ func TestOpenWriterWithRetry_ExhaustionNamesPID(t *testing.T) {
 	assert.Contains(t, err.Error(), "lock held by another locutus process")
 	pid := os.Getpid()
 	assert.Contains(t, err.Error(), strconv.Itoa(pid), "diagnostic should quote holder PID")
+}
+
+// ----- Phase 7 tests: explainable ranking -----
+
+// writeDecisionWithAlternatives saves a Decision carrying explicit
+// Alternatives so Phase 7 tests can exercise the per-field signal
+// split — matches in alt.RejectedBecause land in fieldAlternative,
+// not fieldRationale.
+func writeDecisionWithAlternatives(t *testing.T, fsys specio.FS, id, title, summary, rationale string, alts []spec.Alternative) {
+	t.Helper()
+	d := spec.Decision{
+		ID:           id,
+		Title:        title,
+		Summary:      summary,
+		Status:       spec.DecisionStatusActive,
+		Confidence:   0.8,
+		Rationale:    rationale,
+		Alternatives: alts,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	require.NoError(t, specio.SavePair(fsys, ".borg/spec/decisions/"+id, d, ""))
+}
+
+// Bluge-invariant lockdown: a single-field MatchQuery and the same
+// field used as one disjunction clause in a multi-field BooleanQuery
+// must yield identical per-doc Score values for the matched
+// document. That equality is what makes our per-field scan approach
+// faithful — the per-field score IS the contribution to the
+// disjunction's total, not an approximation. If a future Bluge
+// upgrade introduces cross-clause normalization in
+// CompositeSumScorer, this test fails red and we re-evaluate the
+// diagnostic approach.
+func TestBluge_PerFieldScoreEqualsDisjunctionContribution(t *testing.T) {
+	root, fsys := fixture(t)
+	writeDecision(t, fsys, "dec-workos",
+		"Adopt WorkOS",
+		"Use WorkOS for SSO.",
+		"WorkOS bundles OIDC and directory sync.")
+
+	idx, err := Open(fsys, root)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = idx.Close() })
+
+	r, err := idx.reader()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	// Single-field title-only query, English analyzer to match the
+	// way the title was indexed.
+	an := enanalyzer.NewAnalyzer()
+	soloQ := bluge.NewMatchQuery("workos").
+		SetField(fieldTitle).
+		SetAnalyzer(an).
+		SetBoost(boostTitle)
+	soloIt, err := r.Search(context.Background(), bluge.NewTopNSearch(10, soloQ))
+	require.NoError(t, err)
+	soloMatch, err := soloIt.Next()
+	require.NoError(t, err)
+	require.NotNil(t, soloMatch)
+	soloScore := soloMatch.Score
+
+	// Multi-field disjunction with title boost AND a no-op clause on
+	// a field that the doc doesn't match (description). Disjunction
+	// should drop the non-matching clause; the surviving title
+	// contribution must equal soloScore.
+	disjQ := bluge.NewBooleanQuery()
+	disjQ.AddShould(bluge.NewMatchQuery("workos").SetField(fieldTitle).SetAnalyzer(an).SetBoost(boostTitle))
+	disjQ.AddShould(bluge.NewMatchQuery("zzznotpresent").SetField(fieldDescription).SetAnalyzer(an).SetBoost(boostBody))
+	disjQ.SetMinShould(1)
+	disjIt, err := r.Search(context.Background(), bluge.NewTopNSearch(10, disjQ))
+	require.NoError(t, err)
+	disjMatch, err := disjIt.Next()
+	require.NoError(t, err)
+	require.NotNil(t, disjMatch)
+
+	assert.InDelta(t, soloScore, disjMatch.Score, 1e-6,
+		"CompositeSumScorer is supposed to be a literal sum — a disjunction with one matching clause should produce that clause's score exactly. If this fails, Bluge introduced cross-clause normalization and our per-field scan approach needs re-thinking (see scanPerFieldContributions in index.go).")
+}
+
+// When Explain is off, Matches must be nil — callers that don't ask
+// for diagnostics shouldn't pay the parsing cost or carry the data.
+func TestSearch_MatchesNilWhenExplainOff(t *testing.T) {
+	root, fsys := fixture(t)
+	writeDecision(t, fsys, "dec-foo", "Foo decision", "A foo decision.", "Some rationale about foo.")
+
+	idx, err := Open(fsys, root)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = idx.Close() })
+
+	hits, _, err := idx.Search("foo", Options{})
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Nil(t, hits[0].Matches, "Matches should be nil when Explain is off")
+}
+
+// When Explain is on, Matches is populated with the fields that
+// contributed to the score. The contributions should sum to roughly
+// the total Score (within float rounding).
+func TestSearch_MatchesContributionSum(t *testing.T) {
+	root, fsys := fixture(t)
+	writeDecision(t, fsys, "dec-foo",
+		"Foo decision",
+		"Foo is the right approach.",
+		"Foo wins because of foo properties; we considered bar but foo prevails.")
+
+	idx, err := Open(fsys, root)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = idx.Close() })
+
+	hits, _, err := idx.Search("foo", Options{Explain: true})
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	require.NotNil(t, hits[0].Matches)
+
+	var sum float64
+	for _, m := range hits[0].Matches {
+		sum += m.Contribution
+	}
+	assert.InDelta(t, hits[0].Score, sum, 1e-6,
+		"sum of per-field contributions must equal the total Score")
+}
+
+// Per-field separation: a doc where the query token appears ONLY in
+// alternatives surfaces its match under fieldAlternative, not under
+// rationale. This is the central Phase 7 capability — the operator
+// or LLM can see "this match came from rejected alternatives" and
+// apply context-sensitive judgment.
+func TestSearch_MatchesPerFieldSeparation(t *testing.T) {
+	root, fsys := fixture(t)
+	// Decision whose only "auth" mention lives in an alternative's
+	// RejectedBecause text. Title, summary, and main rationale all
+	// avoid the term.
+	writeDecisionWithAlternatives(t, fsys, "dec-pgbouncer",
+		"Adopt PgBouncer",
+		"Use PgBouncer for connection pooling.",
+		"PgBouncer is mature and battle-tested.",
+		[]spec.Alternative{{
+			Name:            "Odyssey",
+			Rationale:       "Newer alternative.",
+			RejectedBecause: "Odyssey's auth handoff lacks SCRAM passthrough.",
+		}})
+
+	idx, err := Open(fsys, root)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = idx.Close() })
+
+	hits, _, err := idx.Search("auth", Options{Explain: true})
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	require.NotNil(t, hits[0].Matches)
+
+	altMatch, hasAlt := hits[0].Matches[fieldAlternative]
+	require.True(t, hasAlt,
+		"expected 'alternative' to appear in Matches when the only 'auth' is in alt.RejectedBecause")
+	assert.Greater(t, altMatch.Count, 0)
+	assert.Greater(t, altMatch.Contribution, 0.0)
+
+	_, hasRationale := hits[0].Matches[fieldRationale]
+	assert.False(t, hasRationale,
+		"rationale should NOT appear in Matches — 'auth' is not in the main rationale")
+}
+
+// Kind-filter boost-zero: when Options.Kind is set, the kind term
+// match should not appear in Matches (it has boost=0 and is a filter,
+// not a scoring signal). Without this guard, every hit would carry
+// a constant "kind" entry that adds noise to the diagnostic.
+func TestSearch_KindFilterNotInMatches(t *testing.T) {
+	root, fsys := fixture(t)
+	writeDecision(t, fsys, "dec-foo", "Foo decision", "A foo decision.", "Rationale about foo.")
+
+	idx, err := Open(fsys, root)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = idx.Close() })
+
+	hits, _, err := idx.Search("foo", Options{Kind: string(spec.KindDecision), Explain: true})
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	require.NotNil(t, hits[0].Matches)
+
+	_, hasKind := hits[0].Matches[fieldKind]
+	assert.False(t, hasKind, "kind filter should not pollute the Matches map")
 }
