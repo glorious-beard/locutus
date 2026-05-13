@@ -124,7 +124,11 @@ func TestRunJustifyAgainst_FailsLoudOnDegenerateChallenger(t *testing.T) {
 	dummy := MockResponse{Response: &AgentOutput{
 		Content: `{"concerns":[{"weakness":"dummy","evidence":"dummy","counterproposal":"dummy"}]}`,
 	}}
-	scripts := make([]MockResponse, challengerMaxAttempts)
+	// Total budget: challengerMaxAttempts provider rotations ×
+	// (1 initial + defaultCorrectiveRetries corrective) = 3 × 3 = 9
+	// calls before terminal failure.
+	totalCalls := challengerMaxAttempts * (1 + defaultCorrectiveRetries)
+	scripts := make([]MockResponse, totalCalls)
 	for i := range scripts {
 		scripts[i] = dummy
 	}
@@ -144,15 +148,15 @@ func TestRunJustifyAgainst_FailsLoudOnDegenerateChallenger(t *testing.T) {
 	assert.Contains(t, err.Error(), "re-run")
 
 	// The orchestrator should NOT have called the researcher or
-	// advocate. The mock script length matches the retry cap; any
-	// downstream dispatch would exhaust it and surface differently.
+	// advocate. The mock script length matches the full retry budget;
+	// any downstream dispatch would exhaust it and surface differently.
 	require.NotNil(t, challenge, "challenger output must be returned so the cmd layer can show what the model produced")
 	assert.Len(t, challenge.Concerns, 1)
 	assert.Equal(t, "dummy", challenge.Concerns[0].Weakness)
 	assert.Nil(t, research, "researcher must not run when challenger output is degenerate")
 	assert.Nil(t, defense, "advocate must not run when challenger output is degenerate")
-	assert.Equal(t, challengerMaxAttempts, mock.CallCount(),
-		"orchestrator must exhaust the retry budget before failing")
+	assert.Equal(t, totalCalls, mock.CallCount(),
+		"orchestrator must exhaust the rotation × corrective retry budget before failing")
 }
 
 // TestRunJustifyAgainst_RetriesAfterDegenerateChallenger — the

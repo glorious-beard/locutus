@@ -56,9 +56,10 @@ func TestDegenerateSynthesisVerdict_HealthyVerdict(t *testing.T) {
 }
 
 func TestInvokeSynthesizer_RetriesAndRotates(t *testing.T) {
-	// First two attempts return runaway-defense degenerate output;
-	// third attempt returns clean. Provider rotation must put a
-	// different provider first on each attempt.
+	// Three degenerate responses on anthropic exhaust the corrective-
+	// retry budget (1 initial + 2 corrective), forcing a rotation to
+	// googleai; googleai's first attempt returns clean. Verifies both
+	// the inner corrective loop and the outer rotation step.
 	bad := SynthesisVerdict{
 		Defense: strings.Repeat("x", 9000),
 		Verdict: "broke_down",
@@ -70,6 +71,7 @@ func TestInvokeSynthesizer_RetriesAndRotates(t *testing.T) {
 	}
 
 	mock := NewMockExecutor(
+		MockResponse{Response: &AgentOutput{Content: mustJSONFor(t, bad)}},
 		MockResponse{Response: &AgentOutput{Content: mustJSONFor(t, bad)}},
 		MockResponse{Response: &AgentOutput{Content: mustJSONFor(t, bad)}},
 		MockResponse{Response: &AgentOutput{Content: mustJSONFor(t, good)}},
@@ -95,18 +97,16 @@ func TestInvokeSynthesizer_RetriesAndRotates(t *testing.T) {
 	}
 
 	verdict, err := InvokeSynthesizer(context.Background(), NewDispatcher(mock), def, in)
-	require.NoError(t, err, "third attempt must succeed after two degenerate retries")
+	require.NoError(t, err, "googleai's first response must be accepted after anthropic's corrective budget exhausts")
 	require.NotNil(t, verdict)
 	assert.Equal(t, "broke_down", verdict.Verdict)
 
 	calls := mock.Calls()
-	require.Len(t, calls, 3, "all 3 attempts must dispatch")
-	assert.Equal(t, "anthropic", calls[0].Def.Models[0].Provider,
-		"attempt 1 hits the first declared provider")
-	assert.Equal(t, "googleai", calls[1].Def.Models[0].Provider,
-		"attempt 2 rotates to the second provider")
-	assert.Equal(t, "openai", calls[2].Def.Models[0].Provider,
-		"attempt 3 rotates to the third provider")
+	require.Len(t, calls, 4, "3 calls on anthropic (initial + 2 corrective) + 1 on googleai")
+	assert.Equal(t, "anthropic", calls[0].Def.Models[0].Provider, "initial hits the first provider")
+	assert.Equal(t, "anthropic", calls[1].Def.Models[0].Provider, "corrective retry 1 stays on anthropic")
+	assert.Equal(t, "anthropic", calls[2].Def.Models[0].Provider, "corrective retry 2 stays on anthropic")
+	assert.Equal(t, "googleai", calls[3].Def.Models[0].Provider, "corrective budget exhausted → rotate to googleai")
 }
 
 func TestInvokeSynthesizer_ExhaustsRetriesOnPersistentDegeneracy(t *testing.T) {
@@ -115,11 +115,14 @@ func TestInvokeSynthesizer_ExhaustsRetriesOnPersistentDegeneracy(t *testing.T) {
 		Verdict: "broke_down with extra prose that fails the enum check",
 	}
 
-	mock := NewMockExecutor(
-		MockResponse{Response: &AgentOutput{Content: mustJSONFor(t, bad)}},
-		MockResponse{Response: &AgentOutput{Content: mustJSONFor(t, bad)}},
-		MockResponse{Response: &AgentOutput{Content: mustJSONFor(t, bad)}},
-	)
+	// Persistent degeneracy: synthesizerMaxAttempts (3) provider
+	// rotations × (1 initial + defaultCorrectiveRetries (2)) = 9 calls
+	// before terminal failure.
+	scripts := make([]MockResponse, 9)
+	for i := range scripts {
+		scripts[i] = MockResponse{Response: &AgentOutput{Content: mustJSONFor(t, bad)}}
+	}
+	mock := NewMockExecutor(scripts...)
 
 	def := AgentDef{
 		ID:           "justify_synthesizer",
@@ -139,8 +142,10 @@ func TestInvokeSynthesizer_ExhaustsRetriesOnPersistentDegeneracy(t *testing.T) {
 
 	_, err := InvokeSynthesizer(context.Background(), NewDispatcher(mock), def, in)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "degenerate output after 3 attempts")
-	assert.Equal(t, 3, mock.CallCount())
+	assert.Contains(t, err.Error(), "3 provider attempts")
+	assert.Contains(t, err.Error(), "2 corrective retries")
+	assert.Equal(t, 9, mock.CallCount(),
+		"3 provider attempts × (1 initial + 2 corrective) = 9 calls before terminal failure")
 }
 
 func mustJSONFor(t *testing.T, v any) string {

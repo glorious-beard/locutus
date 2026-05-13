@@ -48,23 +48,49 @@ type DispatchOptions struct {
 	// AdversarialDefense in adversarial mode).
 	OutputSchema string
 
-	// MaxAttempts caps degeneracy-retry attempts. Zero means 1 (no
-	// degeneracy retry). Degeneracy-prone agents pass 3 to cover the
-	// standard provider rotation [anthropic, googleai, openai] exactly
-	// once.
+	// MaxAttempts caps provider-rotation attempts. Zero means 1 (no
+	// rotation). Degeneracy-prone agents pass 3 to cover the standard
+	// provider list [anthropic, googleai, openai] exactly once. The
+	// inner same-model corrective-retry loop (see CorrectiveRetries)
+	// runs within each rotation attempt; total LLM calls are bounded
+	// by MaxAttempts × (1 + correctiveRetries).
 	MaxAttempts int
+
+	// CorrectiveRetries caps same-model retries with appended
+	// corrective feedback when Validator reports the output degenerate.
+	// On a degenerate response the dispatcher appends the prior
+	// response and a corrective user turn (carrying the validator's
+	// reason) to the conversation, then retries on the same provider —
+	// burning the cache-warm prefix instead of rotating away to a
+	// different provider that wouldn't see the correction at all.
+	//
+	// Zero (the unset default) uses defaultCorrectiveRetries (2). Pass
+	// -1 to disable corrective retries and restore the legacy
+	// provider-rotation-only behaviour. The retry budget resets when
+	// MaxAttempts advances to the next provider: a fresh model gets a
+	// fresh corrective-retry budget.
+	CorrectiveRetries int
 
 	// Validator runs against each successful adapter response. When it
 	// returns (reason, true), the dispatcher treats the response as
-	// degenerate — logs the reason at WARN, rotates providers, and
-	// retries (up to MaxAttempts). Nil disables validation; the first
-	// non-error response is returned as-is.
+	// degenerate — logs the reason at WARN, appends a corrective turn
+	// and retries on the same provider (up to CorrectiveRetries
+	// times), then rotates providers when the corrective budget is
+	// exhausted. Nil disables validation; the first non-error response
+	// is returned as-is.
 	Validator func(out *AgentOutput) (reason string, degenerate bool)
 
 	// Retry overrides the default transport-error retry config used
 	// inside each attempt. Nil means use executionRetryConfig().
 	Retry *RetryConfig
 }
+
+// defaultCorrectiveRetries is the per-provider corrective-retry
+// budget when DispatchOptions.CorrectiveRetries is zero. Two retries
+// covers the common single-slip recovery (placeholder echoed once,
+// enum value mistyped once) without burning excessive same-model
+// calls on a model that fundamentally can't satisfy the schema.
+const defaultCorrectiveRetries = 2
 
 // Dispatcher is the production AgentDispatcher backed by an
 // AgentExecutor. Concurrent-safe: the underlying executor and retry
@@ -105,28 +131,39 @@ func NewDispatcherWithTools(exec AgentExecutor, tools *ToolRegistry) *Dispatcher
 	return &Dispatcher{Executor: exec, Tools: tools}
 }
 
-// Dispatch executes the agent, retrying with provider rotation when
-// the validator marks the response degenerate.
+// Dispatch executes the agent, recovering from degenerate output via
+// two nested retry layers:
 //
-// Per-attempt flow:
+//  1. **Corrective retry** (inner, same-provider). On a degenerate
+//     response, the dispatcher appends the model's prior response
+//     plus a corrective user turn to the conversation (carrying the
+//     validator's reason verbatim) and retries on the SAME provider.
+//     This burns the cache-warm prompt prefix to give the model a
+//     specific fix-it instruction it can act on — strictly better
+//     than rotating away when the failure is correctable (placeholder
+//     sentinels, enum-out-of-range, schema slips). Budget per
+//     provider is CorrectiveRetries; resets when rotation advances.
 //
-//  1. Rotate AgentDef.Models left by attempt-1 so each attempt hits a
-//     different provider. Single-provider Models slices skip rotation.
-//  2. RunWithRetry against the rotated def — handles transport-error
-//     retry (ErrRateLimit / ErrTimeout) within the attempt.
-//  3. Apply Validator. If it reports degenerate, log + retry; else
-//     return.
+//  2. **Provider rotation** (outer). When corrective retries are
+//     exhausted on the current provider, rotate AgentDef.Models left
+//     by one and try again. Single-provider Models slices skip
+//     rotation. Budget is MaxAttempts total rotations.
 //
-// Returns the last AgentOutput plus an error when MaxAttempts is
+// Total LLM calls bounded by MaxAttempts × (1 + correctiveRetries).
+// Defaults give 3 × (1 + 2) = 9 calls worst case for degeneracy-prone
+// agents using the standard 3-provider list; single-provider, single-
+// attempt agents collapse to one call as before.
+//
+// Returns the last AgentOutput plus an error when both budgets are
 // exhausted; the output is the offending response so callers can
 // surface it for diagnosis.
 //
-// Wraps the loop in `agent.dispatch` and per-attempt `llm.attempt`
-// spans so the OTLP-JSON trace artifact reflects the substrate's
-// retry/rotation shape. Phase 4 (ReAct branch) plugs in above this
-// function via an early return — its instrumentation matches the
-// shape used here so the trace remains uniform across dispatch
-// shapes.
+// Wraps the loop in `agent.dispatch` and per-call `llm.attempt`
+// spans. Each LLM call (initial, corrective, or rotation) gets its
+// own llm.attempt span so the OTLP-JSON trace reflects the full
+// retry shape. The `locutus.attempt.kind` attribute distinguishes
+// "initial" / "corrective" / "rotation" so trace readers can tell
+// what each call was reacting to.
 func (d *Dispatcher) Dispatch(ctx context.Context, def AgentDef, input AgentInput, opts DispatchOptions) (*AgentOutput, error) {
 	if def.MaxIterations > 1 {
 		return d.dispatchReAct(ctx, def, input, opts)
@@ -140,6 +177,13 @@ func (d *Dispatcher) Dispatch(ctx context.Context, def AgentDef, input AgentInpu
 	maxAttempts := opts.MaxAttempts
 	if maxAttempts < 1 {
 		maxAttempts = 1
+	}
+	correctiveRetries := opts.CorrectiveRetries
+	switch {
+	case correctiveRetries < 0:
+		correctiveRetries = 0 // explicit opt-out
+	case correctiveRetries == 0:
+		correctiveRetries = defaultCorrectiveRetries
 	}
 	retry := executionRetryConfig()
 	if opts.Retry != nil {
@@ -160,55 +204,116 @@ func (d *Dispatcher) Dispatch(ctx context.Context, def AgentDef, input AgentInpu
 	defer dispatchSpan.End()
 	ctx = dispatchCtx
 
-	var lastOut *AgentOutput
+	var (
+		lastOut    *AgentOutput
+		lastReason string
+		callIdx    int // cumulative LLM-call counter across all retries
+	)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		attemptDef := def
 		attemptDef.Models = rotateModels(def.Models, attempt-1)
+		// Each provider rotation starts with the original input; the
+		// corrective turns accumulated on the prior provider don't
+		// carry over (a fresh model gets a fresh prompt).
+		currentInput := input
 
-		// llm.attempt span: one per try. Even when MaxAttempts==1
-		// (the common case) this gives the trace a stable child
-		// layer between agent.dispatch and provider.generate so the
-		// shape doesn't change when degenerate retries kick in.
-		attemptCtx, attemptSpan := Tracer().Start(ctx, "llm.attempt",
-			oteltrace.WithAttributes(
-				attribute.Int("locutus.attempt", attempt),
-				attribute.String("locutus.agent.id", def.ID),
-				attribute.String("locutus.attempt.provider", primaryProvider(attemptDef.Models)),
-			))
+		for correction := 0; correction <= correctiveRetries; correction++ {
+			callIdx++
+			kind := "initial"
+			if attempt > 1 && correction == 0 {
+				kind = "rotation"
+			} else if correction > 0 {
+				kind = "corrective"
+			}
 
-		out, err := RunWithRetry(attemptCtx, d.Executor, attemptDef, input, retry)
-		if err != nil {
-			attemptSpan.End()
-			return out, err
-		}
-		lastOut = out
+			attemptCtx, attemptSpan := Tracer().Start(ctx, "llm.attempt",
+				oteltrace.WithAttributes(
+					attribute.Int("locutus.attempt", callIdx),
+					attribute.String("locutus.attempt.kind", kind),
+					attribute.String("locutus.agent.id", def.ID),
+					attribute.String("locutus.attempt.provider", primaryProvider(attemptDef.Models)),
+				))
 
-		if opts.Validator == nil {
+			out, err := RunWithRetry(attemptCtx, d.Executor, attemptDef, currentInput, retry)
+			if err != nil {
+				attemptSpan.End()
+				return out, err
+			}
+			lastOut = out
+
+			if opts.Validator == nil {
+				attemptSpan.End()
+				return out, nil
+			}
+			reason, degenerate := opts.Validator(out)
+			if !degenerate {
+				attemptSpan.End()
+				return out, nil
+			}
+			attemptSpan.SetAttributes(attribute.String("locutus.degenerate.reason", reason))
 			attemptSpan.End()
-			return out, nil
+			lastReason = reason
+
+			if correction < correctiveRetries {
+				slog.Warn("dispatcher: degenerate output; retrying on same provider with corrective feedback",
+					"agent", def.ID,
+					"provider", primaryProvider(attemptDef.Models),
+					"correction", correction+1,
+					"max_corrections", correctiveRetries,
+					"reason", reason)
+				currentInput = appendCorrectiveTurn(currentInput, out, reason)
+				continue
+			}
+			// Corrective budget exhausted on this provider.
+			break
 		}
-		reason, degenerate := opts.Validator(out)
-		if !degenerate {
-			attemptSpan.End()
-			return out, nil
-		}
-		attemptSpan.SetAttributes(attribute.String("locutus.degenerate.reason", reason))
-		attemptSpan.End()
+
 		if attempt < maxAttempts {
-			slog.Warn("dispatcher: degenerate output; retrying with provider rotation",
+			slog.Warn("dispatcher: degenerate output after corrective retries; rotating providers",
 				"agent", def.ID,
 				"attempt", attempt,
 				"max_attempts", maxAttempts,
 				"provider_attempted", primaryProvider(attemptDef.Models),
 				"next_provider", primaryProvider(rotateModels(def.Models, attempt)),
-				"reason", reason)
+				"corrective_retries_used", correctiveRetries,
+				"reason", lastReason)
 			continue
 		}
-		return out, fmt.Errorf("dispatcher: agent %q emitted degenerate output after %d attempts (%s)", def.ID, maxAttempts, reason)
+		return lastOut, fmt.Errorf("dispatcher: agent %q emitted degenerate output after %d provider attempts × %d corrective retries (%s)",
+			def.ID, maxAttempts, correctiveRetries, lastReason)
 	}
 	// Unreachable in practice — the loop returns on every iteration —
 	// but Go's flow analysis requires a terminal return.
 	return lastOut, fmt.Errorf("dispatcher: retry loop exited without a result (agent %q)", def.ID)
+}
+
+// appendCorrectiveTurn extends a conversation with the model's prior
+// response and a user turn carrying the validator's degeneracy
+// reason. Shape:
+//
+//	prior messages ...
+//	assistant: <out.Content>
+//	user: Your previous response was rejected: <reason>. Please correct the issue and return a valid response.
+//
+// The assistant turn anchors the conversation so the model sees its
+// own output and the operator's correction together; the model
+// shouldn't have to guess what "previous response" refers to.
+//
+// The fresh user message is marked Cacheable=false (the default)
+// because the prefix-cache marker on the original Cacheable turn is
+// still effective — appending new content past the cache boundary
+// reuses the cached prefix without invalidating it.
+func appendCorrectiveTurn(input AgentInput, out *AgentOutput, reason string) AgentInput {
+	out2 := AgentInput{Messages: make([]Message, 0, len(input.Messages)+2)}
+	out2.Messages = append(out2.Messages, input.Messages...)
+	if out != nil && out.Content != "" {
+		out2.Messages = append(out2.Messages, Message{Role: "assistant", Content: out.Content})
+	}
+	out2.Messages = append(out2.Messages, Message{
+		Role:    "user",
+		Content: fmt.Sprintf("Your previous response was rejected: %s. Please correct the issue and return a valid response.", reason),
+	})
+	return out2
 }
 
 // reactSafetyCeiling caps MaxIterations regardless of the agent's

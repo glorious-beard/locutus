@@ -60,14 +60,24 @@ func TestRotateModels_DoesNotMutateInput(t *testing.T) {
 }
 
 // TestDispatchChallenger_RotatesProviderOnRetry — three degenerate
-// attempts must hit three different providers in declaration order.
-// This is the actual fix for the strat-frontend "all 3 attempts hit
-// Anthropic" failure observed in winplan on 2026-05-10.
+// rotation attempts must hit three different providers in declaration
+// order. Originally the fix for the strat-frontend "all 3 attempts
+// hit Anthropic" failure (winplan 2026-05-10); updated for the
+// corrective-retry inner loop (default 2 retries on same provider
+// before rotation), so the same 3-provider rotation now expands into
+// 3 × (1 + 2) = 9 calls with rotation boundaries at indices 0, 3, 6.
 func TestDispatchChallenger_RotatesProviderOnRetry(t *testing.T) {
 	dummy := MockResponse{Response: &AgentOutput{
 		Content: `{"concerns":[{"weakness":"dummy","evidence":"dummy","counterproposal":"dummy"}]}`,
 	}}
-	mock := NewMockExecutor(dummy, dummy, dummy)
+	// Nine identical degenerate responses: three per provider, three
+	// providers. Validator rejects every one → corrective retry × 2
+	// per provider, then rotate, repeat.
+	responses := make([]MockResponse, 9)
+	for i := range responses {
+		responses[i] = dummy
+	}
+	mock := NewMockExecutor(responses...)
 
 	def := AgentDef{
 		ID:           "spec_challenger",
@@ -80,14 +90,23 @@ func TestDispatchChallenger_RotatesProviderOnRetry(t *testing.T) {
 	}
 
 	_, err := dispatchChallengerWithRetry(context.Background(), NewDispatcher(mock), def, AgentInput{}, "node-x")
-	require.Error(t, err, "all 3 attempts return dummy → terminal failure")
+	require.Error(t, err, "all attempts return dummy → terminal failure")
 
 	calls := mock.Calls()
-	require.Len(t, calls, 3, "all 3 attempts must dispatch")
+	require.Len(t, calls, 9, "3 provider rotations × (1 initial + 2 corrective) = 9 calls")
+	// Rotation boundaries: call 0 anthropic, call 3 googleai, call 6 openai.
 	assert.Equal(t, "anthropic", calls[0].Def.Models[0].Provider,
-		"attempt 1 hits the first declared provider")
-	assert.Equal(t, "googleai", calls[1].Def.Models[0].Provider,
-		"attempt 2 rotates to the second provider")
-	assert.Equal(t, "openai", calls[2].Def.Models[0].Provider,
-		"attempt 3 rotates to the third provider")
+		"attempt 1 starts on the first declared provider")
+	assert.Equal(t, "anthropic", calls[1].Def.Models[0].Provider,
+		"corrective retry 1 stays on anthropic")
+	assert.Equal(t, "anthropic", calls[2].Def.Models[0].Provider,
+		"corrective retry 2 stays on anthropic")
+	assert.Equal(t, "googleai", calls[3].Def.Models[0].Provider,
+		"corrective budget exhausted → rotate to googleai")
+	assert.Equal(t, "googleai", calls[5].Def.Models[0].Provider,
+		"googleai retries stay on googleai")
+	assert.Equal(t, "openai", calls[6].Def.Models[0].Provider,
+		"third rotation lands on openai")
+	assert.Equal(t, "openai", calls[8].Def.Models[0].Provider,
+		"openai retries stay on openai")
 }
