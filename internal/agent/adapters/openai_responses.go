@@ -219,15 +219,22 @@ func buildOpenAIInputItems(in []Message) responses.ResponseInputParam {
 
 // buildOpenAITools translates request tools (custom + grounding)
 // into the SDK's ToolUnionParam list. Function tools opt into
-// strict:true so the schema is enforced at the API level. The
-// web_search_preview built-in is appended when grounding is set.
+// strict:true *only when* the tool's input schema is strict-
+// compatible — every property listed in `required`. OpenAI's strict
+// validator rejects tools whose schemas have optional fields (the
+// 400 surface is `'required' is required to be supplied and to be
+// an array including every key in properties`). schemaIsFullyRequired
+// is the same gate the output-schema path uses; mirroring it here
+// keeps the two strict-mode call sites consistent.
+//
+// The web_search_preview built-in is appended when grounding is set.
 func buildOpenAITools(req Request) []responses.ToolUnionParam {
 	var tools []responses.ToolUnionParam
 	for _, t := range req.Tools {
 		ft := responses.FunctionToolParam{
 			Name:       t.Name,
 			Parameters: t.InputSchema,
-			Strict:     openai.Bool(true),
+			Strict:     openai.Bool(schemaIsFullyRequired(t.InputSchema)),
 		}
 		if t.Description != "" {
 			ft.Description = openai.String(t.Description)
