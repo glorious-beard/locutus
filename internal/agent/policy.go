@@ -79,12 +79,20 @@ func ResolveAvailable(def AgentDef, providers DetectedProviders, cfg *ModelConfi
 				def.ID, pref.Provider, pref.Tier,
 			)
 		}
+		// AgentDef.Thinking overrides the tier's level when set —
+		// lets an agent opt out of (or up to) extended thinking
+		// without forcing a tier swap that would also change the
+		// model or output-token budget.
+		thinking := thinkingLevel(tierCfg.Thinking)
+		if def.Thinking != "" {
+			thinking = thinkingLevel(def.Thinking)
+		}
 		picks = append(picks, &ResolvedModel{
 			Provider:           ProviderName(pref.Provider),
 			Tier:               pref.Tier,
 			Model:              tierCfg.Model,
 			MaxOutputTokens:    tierCfg.MaxOutputTokens,
-			Thinking:           thinkingLevel(tierCfg.Thinking),
+			Thinking:           thinking,
 			ConcurrentRequests: tierCfg.ConcurrentRequests,
 		})
 	}

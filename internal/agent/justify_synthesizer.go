@@ -29,8 +29,14 @@ type SynthesisVerdict struct {
 
 	// Verdict aggregates the per-decision verdicts and the
 	// prose-level concerns. One of held_up / partially_held_up /
-	// broke_down.
-	Verdict string `json:"verdict"`
+	// broke_down — the enum constraint lands in the generated
+	// JSON schema so providers with strict structured-output modes
+	// (Gemini responseSchema, OpenAI json_schema strict) reject
+	// non-enum values at the SDK level rather than letting them
+	// reach the validator. Anthropic's tool-use mode is more
+	// lenient about string contents, but the schema documentation
+	// still signals intent to the model.
+	Verdict string `json:"verdict" jsonschema:"enum=held_up,enum=partially_held_up,enum=broke_down"`
 
 	// BreakingPoints carries the strategy-level synthesis of breaks.
 	// Each breaking point names its source decision (when it traces

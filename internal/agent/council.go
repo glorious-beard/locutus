@@ -65,7 +65,20 @@ type AgentDef struct {
 	// (default 15m). Tighten on fanout-bounded agents (per-node
 	// elaborators) so a degenerate loop surfaces as a regular
 	// cancellation rather than burning the global timeout.
-	Timeout      string `yaml:"timeout,omitempty"`
+	Timeout string `yaml:"timeout,omitempty"`
+	// Thinking, when non-empty, overrides the tier-resolved
+	// extended-thinking level for this agent's calls. Accepts the
+	// same enum as models.yaml ("off" / "on" / "high"). The override
+	// applies to every (provider, tier) pick this agent resolves to,
+	// so an agent that wants thinking off on its balanced runs gets
+	// it off on the openai/gemini balanced runs too.
+	//
+	// Use sparingly. The justify_synthesizer is the first caller:
+	// claude-sonnet-4-6 was leaking thinking-block reasoning into a
+	// constrained enum field (verdict), and the rationale field
+	// already carries the synthesizer's reasoning, so thinking
+	// budget was double-spent on output the validator then rejected.
+	Thinking     string `yaml:"thinking,omitempty"`
 	SystemPrompt string // markdown body, not from YAML
 }
 
