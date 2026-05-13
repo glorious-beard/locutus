@@ -44,11 +44,11 @@ Source files that lack corresponding test coverage.
 
 | Language | Source pattern | Expected test pattern |
 |----------|---------------|----------------------|
-| Go | `foo.go` | `foo_test.go` (same directory) |
-| TypeScript/JavaScript | `foo.ts` | `foo.test.ts` or `foo.spec.ts` or `__tests__/foo.ts` |
-| Python | `foo.py` | `test_foo.py` or `tests/test_foo.py` |
-| Rust | `foo.rs` | `#[cfg(test)]` module (requires content, flag if uncertain) |
-| Java | `Foo.java` | `FooTest.java` in test source tree |
+| Go | `handler.go` | `handler_test.go` (same directory) |
+| TypeScript/JavaScript | `handler.ts` | `handler.test.ts` or `handler.spec.ts` or `__tests__/handler.ts` |
+| Python | `handler.py` | `test_handler.py` or `tests/test_handler.py` |
+| Rust | `handler.rs` | `#[cfg(test)]` module (requires content, flag if uncertain) |
+| Java | `Handler.java` | `HandlerTest.java` in test source tree |
 
 **Severity**:
 - **high**: Core business logic or domain entities without tests (handlers, services, models with business rules)

@@ -31,7 +31,7 @@ Emit an `LLMFindingClusters` JSON object with a `clusters` array. Each cluster h
 # Mandates
 
 - **Lossless grouping.** Every input finding MUST appear in exactly one cluster's `findings` array. The total count of findings across all clusters MUST equal the total count of input findings. Dropping, paraphrasing, or annotating a finding is a contract violation.
-- **No empty clusters.** A cluster with `findings: []` is meaningless — drop the cluster. Never emit `{"topic": "...", "findings": [], "kind": "..."}` placeholder shapes; downstream code rejects them.
+- **Every cluster carries at least one finding.** If a topic has no findings to group under it, omit the cluster entirely — there's nothing to route.
 - **Cluster by topic, not by critic.** Findings from different critics that are about the same topic (e.g. cost_critic flags "no cost ceiling" and architect_critic flags "ClickHouse Cloud cost model unclear") belong in the SAME cluster. Findings from the same critic about different topics belong in different clusters.
 - **Default kind is `strategy`.** A cluster about cross-cutting concerns (CI/CD, observability, SLOs, secrets, cost, scale, security, compliance, deployment, ingestion, data architecture) is `strategy`. A cluster about a specific user-facing capability the application would expose (e.g. "data export endpoint", "advanced search UI", "audit log viewer") is `feature`.
 - **Verbatim text only.** Findings carry the EXACT text from the input. Do not summarise, normalise, or merge phrasing. The elaborator downstream needs the original wording to address the concern precisely.

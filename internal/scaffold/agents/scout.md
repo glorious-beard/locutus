@@ -64,7 +64,7 @@ Identify frameworks from dependency/config file presence. Do not guess framework
 - `angular.json` = Angular
 - `vite.config.ts` = Vite (build tool, not framework -- note the distinction)
 - `go.mod` containing known framework modules = Go framework (but you cannot read file contents, so note go.mod presence and flag for downstream analysis)
-- `Cargo.toml` = Rust project (framework TBD by downstream analyzers)
+- `Cargo.toml` = Rust project (framework determined by downstream analyzers)
 
 ## 3. Structure patterns
 
