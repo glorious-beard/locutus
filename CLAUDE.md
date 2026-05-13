@@ -10,13 +10,13 @@ Locutus — a Go CLI and MCP server that acts as an autonomous project manager f
 
 - `docs/DECISION_JOURNAL.md` — architectural decisions with rationale, alternatives considered, and reversals. Authoritative design record.
 - `.claude/plans/` — active implementation plans (current consolidation work is in `verb-set-phase-{a,b,c,d}.md`). Copy to `docs/plans/` once a phase stabilises.
-- `internal/scaffold/agents/CONVENTIONS.md` — documented anti-patterns and conventions for agent prompt files. **Read this before editing or creating any file under `internal/scaffold/agents/`.** It captures lessons we've re-learned multiple times (anti-pattern priming, thinking-leakage, schema-skeleton placeholders) and the prefer-positive-phrasing + push-constraints-to-schema-tags patterns that replace them.
+- `docs/agent-conventions.md` — documented anti-patterns and conventions for agent prompt files. **Read this before editing or creating any file under `internal/scaffold/agents/`.** It captures lessons we've re-learned multiple times (anti-pattern priming, thinking-leakage, schema-skeleton placeholders) and the prefer-positive-phrasing + push-constraints-to-schema-tags patterns that replace them.
 
-When these documents conflict with any other file in the repo, `docs/`, `.claude/plans/`, and `internal/scaffold/agents/CONVENTIONS.md` win.
+When these documents conflict with any other file in the repo, `docs/` and `.claude/plans/` win.
 
 ## Rule: Structs used as LLM response shapes MUST carry `jsonschema` tags
 
-If a Go struct is registered via `RegisterSchema` (or otherwise travels into an `OutputSchema` on an `adapters.Request`), every meaningful field MUST carry an invopop/jsonschema struct tag with enough detail to prevent the degenerate-output failure modes documented in `internal/scaffold/agents/CONVENTIONS.md`:
+If a Go struct is registered via `RegisterSchema` (or otherwise travels into an `OutputSchema` on an `adapters.Request`), every meaningful field MUST carry an invopop/jsonschema struct tag with enough detail to prevent the degenerate-output failure modes documented in `docs/agent-conventions.md`:
 
 - **Every enum-shaped string field** carries `jsonschema:"enum=v1,enum=v2,enum=v3"`. Without this, strict-mode providers don't constrain the decoder and we depend entirely on the model's prose-following. Validators that catch enum drift after the fact (`degenerateSynthesisVerdict`, etc.) are the second line of defence, not the first.
 - **Every field with semantic constraints** (must-be-non-empty, must-be-a-sentence, must-cite-a-real-source, must-not-be-placeholder) carries `jsonschema:"description=..."` naming the constraint in language the model will read on every call. The description travels into the schema doc every adapter sends to its provider's structured-output mode. This is load-bearing — schema-skeleton failures ("dummy" placeholders, one-word answers) trace back to fields with no inline guidance.
