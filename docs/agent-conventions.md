@@ -4,6 +4,18 @@ This file documents anti-patterns we've discovered (sometimes multiple times) in
 the agent prompts under this directory, and the conventions that replace them.
 If you're editing or creating an agent prompt, read this first.
 
+## Scope
+
+This file covers the **LLM-driven council and pipeline personas** defined under
+`internal/scaffold/agents/` — scout, architect, critic, advocate, synthesizer,
+refiner, archivist, and the rest. These are not the *coding agents* Locutus
+delegates to during `adopt`. Coding agents (Claude Code, Codex, Gemini) are
+external CLIs reached via the Agent Client Protocol; the transport lives under
+`internal/dispatch/acp/`, the design is DJ-119, and there are no prompt files
+for them under `internal/scaffold/agents/`. If you're here looking for how
+Locutus drives the coding agent, you want `internal/dispatch/` and DJ-119, not
+this file.
+
 The driving lesson: LLMs autocomplete from their context. **Telling a model not to
 do X often makes it do X**, especially with Anthropic models. Whenever a prompt
 fix would make the agent reliable, the wrong fix is "add a longer don't-do-this

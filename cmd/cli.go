@@ -32,10 +32,6 @@ type CLI struct {
 
 	Mcp McpCmd `cmd:"" help:"Start the MCP server."`
 
-	// Invoked by Claude Code as an MCP subprocess; end users don't run this
-	// directly. Hidden to keep it out of --help.
-	McpPermBridge McpPermBridgeCmd `cmd:"mcp-perm-bridge" hidden:"" help:"Internal: permission-prompt-tool bridge for streaming supervision."`
-
 	// mcpMode is set programmatically by McpCmd.Run before any work
 	// starts so RenderMode reflects "this process is serving MCP."
 	// Not a CLI flag — invocation is the signal.

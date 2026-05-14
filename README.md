@@ -43,7 +43,7 @@ Three operations move work through it:
 
 - **`import`** — admit a new goal, feature, or bug into the graph.
 - **`refine`** — council-driven deliberation on any node. An advocate, a challenger, and a synthesizer rewrite the node together.
-- **`adopt`** — the reconcile loop. Read the spec, observe the codebase, drive a coding agent (Claude Code, Codex, Gemini) until the diff is zero.
+- **`adopt`** — the reconcile loop. Read the spec, observe the codebase, drive a coding agent (Claude Code, Codex, Gemini) over the [Agent Client Protocol](https://agentclientprotocol.com) until the diff is zero.
 
 Three more let you reflect:
 
@@ -122,6 +122,22 @@ cd your-repo
 locutus init
 locutus import "describe the first thing you want built"
 ```
+
+## Coding agents
+
+`locutus adopt` delegates the actual code-writing to an external coding agent. The supported agent ids are `claude-code`, `codex`, and `gemini`. Locutus talks to each over the [Agent Client Protocol](https://agentclientprotocol.com), which means each agent needs an ACP-server binary discoverable on `$PATH`:
+
+| Agent id | ACP server | Source |
+| --- | --- | --- |
+| `claude-code` | `claude-agent-acp` | npm (`@agentclientprotocol/claude-agent-acp`) |
+| `codex` | `codex-acp` | GitHub release tarball ([zed-industries/codex-acp](https://github.com/zed-industries/codex-acp)) |
+| `gemini` | `gemini --acp` | native flag on the Gemini CLI |
+
+`locutus init` runs a preflight check that reports which of these are present and prints install hints for the rest. Treat the preflight output as the source of truth for install commands — the bridges' release channels move and we don't pin a version in this README.
+
+Adding a new agent comes down to registering it in the dispatch layer as `{name, command, args}`; no per-CLI driver code is required. The supervision design (test-first, retry-with-feedback, churn monitor, escalation) is preserved from earlier releases; the planning grain coarsened from per-step to per-workstream under DJ-121, with the coding agent owning its own step decomposition via a worktree-resident `_locutus/checklist.md`. See DJ-010, DJ-119, and DJ-121 for the architecture.
+
+Workstreams execute strictly sequentially in DAG-topological order — Locutus prioritises correctness (downstream workstreams benefit from seeing complete upstream output) over parallel throughput. The parallel-execution scaffolding has been removed; if you need throughput-over-consistency, that's an opt-in addition for a future release.
 
 ## Command surface
 

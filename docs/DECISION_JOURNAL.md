@@ -132,7 +132,11 @@ Session date: 2026-04-13 to 2026-04-14
 
 ## DJ-010: Agent Routing and Supervision
 
-**Status:** shipped
+**Status:** shipped (partially superseded by DJ-119 and DJ-121)
+
+**Superseded in part by [DJ-119](#dj-119-agent-client-protocol-replaces-the-coding-agent-driver-layer) (2026-05):** the wire layer between supervisor and coding agent — the per-CLI NDJSON driver model originally described here — has been replaced with an Agent Client Protocol (ACP) client. The transport layer changed; what remains of the original wire layer is gone. Read DJ-119 for the current story on how Locutus talks to coding agents.
+
+**Refined further by [DJ-121](#dj-121-coarsen-pre-planning-to-workstream-grain-agent-owns-step-decomposition-via-worktree-checklist-refines-dj-010-dj-074-dj-120) (2026-05):** the supervision *grain* described here was per-`PlanStep`: pre-plan each Approach into ordered steps with assertions, validate each step, retry each step with feedback. DJ-121 coarsens that grain to per-Workstream and removes `PlanStep` from the spec model. The retry-and-validate loop and the supervisor's dual function (validation + HIL against the spec DAG) are preserved unchanged; the agent now owns step decomposition via a worktree-resident `_locutus/checklist.md`. Workstream execution also becomes sequential-by-default (parallel is opt-in) per DJ-121's correctness-over-throughput stance. Read DJ-121 for the current planning-and-execution shape.
 
 **Decision:** Locutus maintains a registry of coding agents with their strengths and supervises their output.
 
@@ -1241,7 +1245,9 @@ Orphaned workstream records (Approaches removed from the graph while a record st
 
 ## DJ-074: True `--resume` for Interrupted Adoption
 
-**Status:** shipped (2026-04-25)
+**Status:** shipped (2026-04-25); refined by DJ-120 then DJ-121
+
+**Refined by [DJ-120](#dj-120-adopt-resume-narrows-to-step-level-under-the-acp-lifecycle-refines-dj-074) (2026-05) and [DJ-121](#dj-121-coarsen-pre-planning-to-workstream-grain-agent-owns-step-decomposition-via-worktree-checklist-refines-dj-010-dj-074-dj-120) (2026-05):** the resume-grain promise has narrowed twice. DJ-074 (below) committed two layers — *step-level* resume (worktree rebuilt from feature branch, completed PlanSteps skipped) and *conversation-level* resume (`--resume <AgentSessionID>` on the coding-agent CLI). DJ-120 dropped conversation-level resume when the ACP lifecycle (DJ-119) replaced the driver model — the agent subprocess no longer survives a Locutus restart, so there's no conversation to revive. DJ-121 dropped step-level resume on the Locutus side when `PlanStep` was removed from the spec model; step continuity is now preserved at the *agent's* level via a worktree-resident `_locutus/checklist.md`. The feature-branch durability guarantee below — completed workstreams' work persists on `locutus/<ws-id>` — is unchanged. Read DJ-121 for the current resume contract.
 
 The current `adopt` invalidates any leftover plan subdirectory from `.locutus/workstreams/` and replans from scratch, even when nothing has drifted. DJ-073's resume-path contract explicitly specifies per-session resume ("Restart the coding agent with `--resume <AgentSessionID>`, skipping PlanSteps already marked complete") but landing that cleanly requires two pieces of plumbing the Phase C MVP skipped. This DJ captures the design so future work can execute it without re-deriving the shape.
 
@@ -2909,3 +2915,187 @@ Locutus's pattern is to express constraints declaratively at the struct definiti
 **Reversal criteria:** revert if (a) `google/jsonschema-go` ships a rich struct-tag vocabulary at API parity with invopop and the MCP-SDK interop story becomes load-bearing for our schemas, OR (b) invopop's tag parser develops a stability or maintenance issue (it's been v0.x for years and that's normal in Go ecosystem; only a real regression would trigger this), OR (c) a future Locutus surface — MCP server tools, declarative schema authoring outside Go code — needs the constraint composition to happen elsewhere, in which case the imperative post-reflection model google's library encourages might fit better.
 
 **Reference:** supersedes DJ-054 on the library-choice claim only. The DJ-054 entry above this one has been amended with a "Library claim superseded by DJ-118" note pointing here so a reader landing on DJ-054 sees the divergence without scrolling.
+
+## DJ-119: Agent Client Protocol Replaces the Coding-Agent Driver Layer
+
+**Status:** proposed
+
+**Decision:** Replace [internal/dispatch/drivers/](../internal/dispatch/drivers/), the per-CLI NDJSON parsers in [internal/dispatch/streaming.go](../internal/dispatch/streaming.go), and the permission bridge in [internal/dispatch/bridge.go](../internal/dispatch/bridge.go) with a single Agent Client Protocol (ACP) client implementation under `internal/dispatch/acp/`. The supervisor, monitor, judge, registry, worktree, validators, traces.json, and OTel trace.jsonl pipeline above the driver layer stay unchanged in shape — they are fed by ACP `session/update` notifications and JSON-RPC responses instead of provider-specific NDJSON.
+
+Each coding agent we drive becomes an ACP server addressable by command-line invocation, registered as `{name, command, args}` rather than as a Go-side `StreamingDriver` implementation:
+
+- `claude-code` → spawn `claude-agent-acp` (bridge maintained under the `agentclientprotocol/` org)
+- `codex` → spawn `codex-acp` (bridge maintained by `zed-industries/`)
+- `gemini` → spawn `gemini --acp` (native support; the Gemini CLI accepts `--acp` and routes its policy engine through ACP)
+
+Any other agent listed in the [ACP registry](https://agentclientprotocol.com/get-started/registry) — Cursor CLI, GitHub Copilot CLI, Goose, Cline, Auggie, Junie, Qwen Code, Kimi CLI, Mistral Vibe, GLM, OpenCode, and the long tail — becomes reachable without writing a new driver. This is the proximate motivation: Locutus's stated value is agent-portable spec-driven planning (DJ-010, DJ-012), and the driver-per-CLI model caps that portability at whatever subset we manually implement.
+
+**Why now.** The "wait until adoption matures" hedge no longer holds. As of 2026-05-13: `coder/acp-go-sdk` v0.13.0 is the canonical Go SDK (163 stars, Apache-2.0, actively maintained); Gemini CLI ships native `--acp` (flag listed in [packages/cli/src/config/config.ts](https://github.com/google-gemini/gemini-cli)); `zed-industries/codex-acp` (741 stars) is the registry-canonical Codex bridge with full feature coverage (permissions, slash commands, multiple auth methods); `agentclientprotocol/claude-agent-acp` is the org-canonical Claude Code bridge (preferred over the more-starred community `Xuanwo/acp-claude-code` for the same reason we prefer DJ-114's `invopop` over a community fork — provenance over star count). Established orchestrator projects already ride this surface (`agentic.nvim` 457★, `obsidian-agent-client` 2016★, `agentrove`, `agentpool`), confirming the pattern is sound at our scale.
+
+**What stays.** The supervision design from DJ-010 is intact. ACP affects only the wire layer between supervisor and coding agent — the layer that produces `AgentEvent`s today. Specifically preserved:
+
+- `Supervisor` retry/validate/judge loop in [supervisor.go](../internal/dispatch/supervisor.go).
+- Sliding-window churn monitor in [monitor.go](../internal/dispatch/monitor.go); the LLM cycle-detection prompt sees the same event sequence (one-to-one mapped from ACP `session/update`s to our `AgentEvent` shape).
+- Agent registry, worktree management, and per-step file-touch source-of-truth via `git diff --name-only`.
+- `traces.json` per-step records (DJ-091 layout unchanged).
+- OTel `trace.jsonl` per session ([otel.go:99](../internal/agent/otel.go#L99)) — and *strictly upgraded* by ACP's W3C trace context propagation (see "Strict upgrades" below).
+- The supervision validators, the planner verbs, and every command surface above the dispatch layer. None of them know they're talking to ACP.
+
+**What's replaced.** Subtractive scope. The implementation deletes:
+
+- `internal/dispatch/drivers/driver.go`, `claude_stream.go`, and the per-CLI command-construction / NDJSON-parse code (~600 LOC + tests).
+- `internal/dispatch/bridge.go` — the unix-socket permission bridge. ACP's `session/request_permission` is a client-implemented method; we host it directly on the ACP `Client` rather than running `mcp-perm-bridge` as a sibling subprocess.
+- `cmd mcp-perm-bridge` subcommand and its serialization protocol.
+- The `--permission-prompt-tool=locutus_permission` flag wired into Claude Code; the embedded MCP tool config that names that tool; the `DriverConfig.PermissionToolName` / `QuestionToolName` per-driver string-match registry in [events.go:64-81](../internal/dispatch/events.go#L64-L81).
+
+**What's added.** A single `internal/dispatch/acp/` package built on `github.com/coder/acp-go-sdk` v0.13.0. It implements `acp.Client` and exposes a thin adapter that emits the existing `AgentEvent` shape so the supervisor's event loop is unchanged. One ACP `Client` instance per workstream; one ACP server subprocess per workstream (chosen from the agent registry by name).
+
+**Protocol coverage audit.** Every `AgentEvent` kind has an ACP equivalent or a documented mitigation:
+
+| Locutus event | ACP source | Notes |
+| --- | --- | --- |
+| `EventInit` | `session/new` response → `sessionId` | Direct |
+| `EventText` | `session/update agent_message_chunk` | Direct |
+| `EventToolCall` | `session/update tool_call` | Typed `kind`, typed `locations[]`, `rawInput`, `rawOutput` — strictly richer than parsing NDJSON tool inputs |
+| `EventToolResult` | `tool_call_update status: completed/failed` + `content[]` | Direct; `content` can include typed `diff` blocks |
+| `EventResult` | `session/prompt` response with `stopReason` | Richer enum (end_turn / max_tokens / max_turn_requests / refusal / cancelled) than today's binary success/failure |
+| `EventError` | JSON-RPC error response or `tool_call_update status: failed` | Direct |
+| `EventPermissionRequest` | `session/request_permission` method (we implement on Client) | Deletes the entire bridge subsystem |
+| `EventClarifyQuestion` | No first-class equivalent | **Gap A** — extension method `_locutus/clarify_question`, advertised via `_meta` capability. Bridges that don't implement it degrade to plain agent text, which is the same failure mode as a non-cooperating agent today. |
+| `EventRetry` | Not surfaced by ACP | **Gap B** — agent-internal LLM retries become invisible. Not load-bearing — today's event is purely informational verbose logging, and supervisor-side OTel spans on our own adapter calls still capture the layer we control. |
+
+**Gap C — session resume model.** The load-bearing question. Today's retry-with-feedback flow spawns a fresh agent CLI per attempt with `--resume <session-id>` + a new prompt. ACP offers two paths: `session/load` (replays the entire conversation via `session/update` notifications — expensive for long sessions) or `session/resume` (restores context without replay, gated by the `sessionCapabilities.resume` capability). The cleaner ACP-native shape is *neither*: keep one long-lived agent subprocess per workstream and send multiple `session/prompt` calls inside one session, each delivering a turn. The supervisor's lifecycle model changes from "spawn per attempt" to "spawn per workstream, prompt per attempt"; the retry-with-feedback semantics still work, the resume capability becomes irrelevant on the happy path, and the agent stays warm for cycle-monitor and validator interaction.
+
+**Phase 0 verification — outcome (2026-05-13):** confirmed positively against all three ACP servers. The probe is at `/tmp/acp-verify/cmd/phase0/` — a 220-line Go program using `coder/acp-go-sdk` that initializes, dumps capabilities, then runs two consecutive `session/prompt` calls inside one `session/new`. Result matrix:
+
+| Agent | Protocol | `loadSession` | `sessionCapabilities` | Two prompts in one session | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Gemini `--acp` (native) | v1 | true | `{}` (none) | both `end_turn` | minimum capability set; no `close` means stdin-close-to-terminate. http+sse MCP. Prompt/image/audio/embedded-context accepted. |
+| Claude Code (`@agentclientprotocol/claude-agent-acp@0.33.1`) | v1 | true | close, fork, list, **resume** | both `end_turn` | richest. Extension `_meta.claudeCode.promptQueueing: true` — Claude-specific signal we can opportunistically exploit for retry-with-feedback. |
+| Codex (`zed-industries/codex-acp@0.14.0`, GitHub release tarball) | v1 | true | close, list | both `end_turn` | middle ground. `auth.logout` advertised. http-only MCP (no SSE). |
+
+Three implications fold back into this DJ:
+
+1. **Capability degradation strategy.** The three servers do *not* expose a uniform capability surface, contrary to the earlier "ACP carries everything we need" framing. The ACP client wrapper must tolerate missing-capability cases: no `sessionCapabilities.close` → terminate by closing stdin or SIGTERM (Gemini); no `sessionCapabilities.list` → keep our own session registry (Gemini); no `sessionCapabilities.resume` → never call `session/resume` (Gemini + Codex). The spawn-per-workstream lifecycle is what makes this safe — the resume capability becomes irrelevant on the happy path because we keep the agent alive.
+
+2. **Phase 7 ops detail correction.** `codex-acp` is not on crates.io despite the Cargo.toml's `[package]` declaration; it ships only as a GitHub release tarball with prebuilt binaries per (arch, os) target. The init-time preflight check that warns operators about missing bridges needs to know this — the install hint for Codex is "download from GitHub releases", not "cargo install". The npm path for `claude-agent-acp` works as documented.
+
+3. **`promptQueueing` is opportunistic.** Claude Code's extension advertises that the agent can accept queued prompts (presumably without losing context between them). Not load-bearing for Phase 1 — the basic single-prompt-per-attempt model satisfies the retry-with-feedback flow on its own. Worth a separate, smaller follow-up DJ if we find a use for it later.
+
+The original "testable in an afternoon" framing held: from clean checkout to verified-all-three was under an hour including bridge installs. None of the three required `session/resume`, none needed `session/load`-with-replay. Gap C is closed.
+
+**Strict upgrades.** Enumerated because they materially shift the cost/benefit, especially for the observability / traceability concern raised in the design review:
+
+- **W3C trace context across the protocol boundary.** ACP's `_meta` field [explicitly reserves](https://agentclientprotocol.com/protocol/extensibility) `traceparent`, `tracestate`, and `baggage` for OpenTelemetry interop. Supervisor-side spans become parents of agent-side spans, and our existing OTel pipeline (DJ-091's `trace.jsonl` + optional OTLP HTTP exporter) sees a coherent end-to-end trace. Today the agent's internal trace context is opaque to us; under ACP it stitches.
+- **Typed `tool_call.locations[].path`.** First-class file-tracking field replaces our heuristic extraction from raw tool inputs in [events.go:130-152](../internal/dispatch/events.go#L130-L152).
+- **First-class `diff` content blocks on tool calls.** The agent reports file modifications with `oldText` + `newText` inline; today we rely on the worktree's `git diff` and the agent's own self-report.
+- **First-class `plan` notifications.** Structural progress signal for cycle detection — plan-entry status transitions ("step 2 of 4 → in_progress") are a richer cycle-detection input than text-pattern inference over the tool-call stream.
+- **Typed `stopReason` enum.** Replaces our binary EventResult-or-error judgment with an explicit signal of why the agent stopped (refusal, max-turns, end-of-turn, cancelled).
+- **JSON-RPC frame archive.** Bidirectional framed messages mean our raw event archive captures both directions, including the permission decisions and `fs/*` responses we send — today we only capture the agent's stdout NDJSON.
+
+**Reversal criteria.** Revert if (a) the verification step shows none of the three ACP servers we depend on supports a long-lived session model and `session/load`'s full replay is prohibitively expensive at our session lengths, OR (b) the bridge dependencies (`claude-agent-acp`, `codex-acp`) stop tracking upstream CLI changes such that the version-pinning + CI-integration cost exceeds the per-driver maintenance cost we're deleting, OR (c) ACP undergoes a breaking version bump and the Go SDK lags long enough to block routine upgrades — at which point we'd weigh maintaining a vendored SDK fork against reverting. None of these are likely; (a) is the only one we can falsify before committing, which is why it's the verification step.
+
+**Rejected alternatives:**
+
+- **Gemini-only ACP spike behind a `--driver acp` flag, keeping the existing drivers for Claude Code and Codex.** Considered and rejected (the design review's correction): a parallel-implementations approach leaves us maintaining two abstractions and gains nothing structural. The point of ACP is that the dispatcher's interface *becomes* ACP; the per-CLI knowledge collapses to "which command launches the ACP server." Half-migrating gives us the cost of both worlds and the deletion of neither.
+- **Keep custom NDJSON drivers, add ACP only for net-new agents.** Same parallel-implementations problem with a different framing. Doesn't address the observability upgrade (W3C trace context propagation requires ACP on every channel).
+- **Wait for native ACP support across all three CLIs.** Defers indefinitely on a hypothetical — Gemini is already native; `claude-agent-acp` and `codex-acp` are the canonical adapters under registry-listed orgs and treating them as production-quality dependencies is what the ecosystem expects. The risk transfer is real but bounded (version-pin + CI-test against the pinned versions), and it's the same kind of dependency risk we already accept for the underlying CLIs themselves.
+
+**Reference:** preserves DJ-010 (Agent Routing and Supervision) and DJ-012 (Advisory Delegation) unchanged at the supervisor layer; preserves DJ-091 (Session Trace Storage) unchanged at the artifact layer. The protocol audit informing this entry consulted the [ACP specification source](https://github.com/agentclientprotocol/agent-client-protocol/tree/main/docs/protocol) (overview, session-setup, prompt-turn, tool-calls, file-system, agent-plan, terminals, slash-commands, extensibility) and verified per-agent support via the registry. SDK pin: `github.com/coder/acp-go-sdk@v0.13.0`.
+
+## DJ-120: Adopt Resume Narrows to Step-Level Under the ACP Lifecycle (Refines DJ-074)
+
+**Status:** settled (further refined by DJ-121)
+
+**Refined further by [DJ-121](#dj-121-coarsen-pre-planning-to-workstream-grain-agent-owns-step-decomposition-via-worktree-checklist-refines-dj-010-dj-074-dj-120) (2026-05):** DJ-120 narrowed DJ-074's resume contract from conversation-level to step-level; DJ-121 narrows it further from step-level to workstream-level on Locutus's side, with the agent's `_locutus/checklist.md` preserving step continuity *at the agent's level*. The future-direction note below — `session/load`-based revival as a possible next move — still applies: it would re-introduce conversation-level resume on a different mechanism, and would supersede DJ-120 (not DJ-074, which has by then been further refined twice). Read DJ-121 for the current resume contract.
+
+**Context.** [DJ-074](#dj-074-true---resume-for-interrupted-adoption) committed a two-layer resume contract for interrupted `adopt` runs: (a) step-level resume, where the worktree is rebuilt from the workstream's feature branch and steps already marked complete are skipped, and (b) conversation-level resume, where the dispatcher reissued `--resume <AgentSessionID>` to the coding-agent CLI so the next prompt landed inside the *same* agent conversation. Both layers shipped on the driver model: `runWorkstream` took a `*ResumePoint{StepID, SessionID}`; `ClaudeCodeDriver.BuildCommand` translated `SessionID` into `--resume <id>` on the spawned CLI; the resumed step continued with the agent's prior chain-of-thought intact.
+
+[DJ-119](#dj-119-agent-client-protocol-replaces-the-coding-agent-driver-layer) replaces that wire layer with ACP. The new lifecycle (settled during Phase 3) is *spawn-per-workstream*: a single ACP subprocess is opened per workstream, a single `session/new` runs for its duration, and every step + every retry attempt sends a fresh `session/prompt` into that one warm session. The per-attempt subprocess spawn is gone — and so is the per-attempt `--resume <id>` re-entry. When Locutus exits, the agent subprocess exits with it; the conversation does not survive the process boundary.
+
+Phase 0 verification of DJ-119 confirmed that all three target agents (Gemini `--acp`, Claude Code via `claude-agent-acp`, Codex via `codex-acp`) advertise `loadSession: true`, which means `session/load`-based revival of a prior conversation is theoretically possible. It is not implemented today, and the spawn-per-workstream lifecycle does not require it on the happy path. Cross-process conversation-level resume becomes implementable, not implemented.
+
+**Decision:** DJ-074's durable contract narrows from "conversation-level resume" to "step-level resume." Concretely:
+
+- **`AgentSessionID` on `WorkstreamResult` is preserved on disk.** The field continues to be captured from the ACP `session/new` response and persisted alongside `StepStatus` on `ActiveWorkstream`. Its load-bearing role under the driver model — being replayed via `--resume <id>` on restart — is gone. It is retained for two reasons: telemetry (operators inspecting `.locutus/workstreams/*.yaml` after a crash still see *which* agent session ran which steps) and as a future hook for `session/load`-based revival if that path is ever wired up.
+- **`runWorkstream` no longer replays `AgentSessionID` into a new ACP session.** Under Phase 3's spawn-per-workstream lifecycle, the dispatcher opens a fresh `Connection`, calls `session/new` to get a brand-new session ID, and uses that for the resumed run. Step skipping by `resumeFrom.StepID` still runs — already-complete steps are bypassed exactly as DJ-074 specified — but the resumed step's first `session/prompt` lands in a fresh conversation, not a continuation of the prior one.
+- **The feature-branch durability guarantee is untouched.** [DJ-032](#dj-032-commit-per-workstream-on-a-local-feature-branch-reframed-2026-04-25)'s commit-per-workstream model means each completed step has already been merged onto `locutus/<ws-id>`. The git history is the durable record of what was done; the resumed run starts from that branch's tip and the agent observes the merged work as the prevailing state of the worktree.
+
+**Alternatives considered:**
+
+- **Cross-process conversation revival via `session/load`.** Phase 0 confirmed every target agent advertises `loadSession: true`. A future iteration could, on restart, spawn the agent, call `session/load <prior-id>`, and resume `session/prompt` into the reconstituted conversation. Deferred because (a) we have no measured pain point — feature-branch + fresh-conversation is operationally sufficient for the interruption cases we've actually hit, and (b) it's unclear how much state each agent's `session/load` actually replays. Two open questions a follow-up would have to answer first: does the agent re-establish enough chain-of-thought to be useful, and does the replay cost dominate the marginal benefit for typical Locutus workstream lengths. Promotable to its own DJ when either condition changes.
+- **Daemonize the agent subprocess across Locutus invocations.** A long-running `locutus-agent-daemon` per workstream that survives Locutus exits, addressable on restart. Rejected: it would invert the spawn-per-workstream lifecycle DJ-119 just committed to, reintroduce the cleanup-on-crash problem the new lifecycle dispatches with, and add a daemon-lifecycle concern that no other part of Locutus needs.
+- **Detach the ACP subprocess on Locutus exit (don't kill the agent).** Variant of the above. Rejected for the same reasons plus the practical one: process detachment is OS-specific, hard to reason about under SIGKILL, and the agent has no way to know it should keep running when the controller dies.
+- **Tighten the resume window: only refuse resume if the workstream record is older than N minutes since last step.** A different framing — narrow when resume is offered, not what it does. Rejected as orthogonal; the user-visible regression is "resumed step starts a fresh conversation," which a TTL would not change.
+
+**Consequences.**
+
+- **User-visible:** mostly invisible. Resume after interruption still works; the worktree picks up from the feature branch's tip; the agent runs the next pending step. The single observable difference is that the resumed agent has no recall of the prior conversation — context-without-history. For multi-step workstreams where the prior step established conventions, naming choices, or domain understanding in agent memory, the resumed run starts fresh and may make different micro-decisions. The merged work on the feature branch acts as the agent's grounding instead.
+- **Tokens:** the resumed step replays its full prompt context from the spec, not from agent memory. This is closer to a cold start on that single step than the warm continuation DJ-074's driver model offered. Workstreams that are interrupted near completion see this cost most visibly; workstreams interrupted near their start barely notice (the agent had little context to lose).
+- **Code:** `cmd/adopt.go`'s `buildResumePoint` and `classifyActivePlans` keep their existing shape — they still read `AgentSessionID` off the workstream record and pass it through the dispatch layer. The dispatch layer ignores the field for ACP transport (the adapter has no `SessionID` parameter to receive it on the wire). `internal/dispatch/resume_test.go` was deleted during Phase 3 because it exercised the `--resume <id>` codepath specifically; the StepID-skip contract is exercised by `cmd/adopt_integration_test.go`.
+- **Future direction:** if the context-loss-on-resume cost becomes measured pain, the `session/load` revival path is the natural next move. The `AgentSessionID` persistence we kept in place is the hook for it. A new DJ would supersede this one and re-introduce conversation-level resume on a different mechanism. Until then, this is where the contract sits.
+
+**Reference:** refines DJ-074 (the original resume design); preserves DJ-032's feature-branch durability semantics unchanged; depends on DJ-119's spawn-per-workstream lifecycle for the lifecycle premise. The Phase 0 capability matrix lives in [.claude/plans/acp-migration.md](../.claude/plans/acp-migration.md).
+
+## DJ-121: Coarsen Pre-Planning to Workstream Grain; Agent Owns Step Decomposition via Worktree Checklist (Refines DJ-010, DJ-074, DJ-120)
+
+**Status:** shipping (Phases 1-8 landed 2026-05-14; Phase 9 — final `spec.PlanStep` removal — pending observation of the soft-deprecate path in practice)
+
+**Context.** Locutus's planner today decomposes each [Approach](#dj-038-spec-graph-shape-and-derivation-rules) into a `MasterPlan` of `Workstream`s, each `Workstream` into a sequence of `PlanStep`s with per-step `Assertion`s. The supervisor in `internal/dispatch/supervisor.go` runs a retry-and-validate loop *per step*: the validator LLM grades each step's output against its assertions; failed steps retry with the validator's feedback as the agent's next user message; the monitor's churn detection runs at step granularity. [DJ-010](#dj-010-supervisor-implementation-design) committed this design; [DJ-074](#dj-074-true---resume-for-interrupted-adoption) and [DJ-120](#dj-120-adopt-resume-narrows-to-step-level-under-the-acp-lifecycle-refines-dj-074) both ground their resume contracts in `StepID`-level persistence.
+
+The original rationale for this fine-grained pre-planning was load-bearing in 2024: coding agents had limited attention span and tool-following discipline, so Locutus pre-chunked the work into bite-sized assertions the agent could reliably attempt and a validator could reliably grade. Pre-planning was scaffolding for the agent's limitations.
+
+May 2026 reality is different. Top-tier coding agents (Claude Code via `claude-agent-acp`, Codex via `codex-acp`, Gemini `--acp`) handle long-horizon multi-file changes competently. They plan internally, decompose their own work, spawn their own subagents when needed, and reflect on completeness mid-task. The attention-span justification for per-step pre-planning has substantially eroded.
+
+What hasn't eroded is the agents' tendency to stub, forget, or silently compromise on requirements — the failure mode the per-step validator was *secondarily* defending against. But that defense doesn't require step-grained pre-planning. A validator grading a workstream's full acceptance criteria catches the same failures (just later); the marginal benefit of per-step is earlier detection and a smaller retry blast radius, not categorical catch coverage. Weighed against the planner / supervisor / persistence complexity that per-step decomposition costs, the benefit is incremental, not categorical.
+
+The supervisor's role is also dual, not single. Per the user's framing in chat: (a) **validation** — confirm the workstream is actually complete, tests cover the spec, no functionality was left out; (b) **human-in-the-loop** — when the agent needs a decision, the supervisor consults the spec DAG, produces an answer, and persists new Decision nodes for what was decided. Function (a) was the step-grained piece; function (b) operates per-permission-request (already true under [DJ-119](#dj-119-agent-client-protocol-replaces-the-coding-agent-driver-layer)'s Phase 4 `Policy`) and is independent of step granularity entirely.
+
+Step granularity is still useful — for the *agent's* own progress tracking, not Locutus's. If the agent maintains a checklist file in the worktree as it works, step-level resume continuity is preserved without Locutus needing a step model: on resume, the agent reads its prior checklist alongside the worktree state and continues from where it stopped.
+
+**Decision.** Coarsen Locutus's pre-planning to the workstream grain. The decomposition unit for the planner is the Approach: one Approach → one Workstream. `PlanStep` is removed from the spec model.
+
+Concretely:
+
+- **The planner outputs Workstreams, not Workstreams-of-Steps.** Each Workstream carries the Approach's acceptance criteria (lifted up from where they used to live on `PlanStep.Assertion`s) and a `DependsOn` set derived from the spec DAG. No internal decomposition into steps; the agent does that work itself.
+- **`Supervise(ctx, approach, conn, sessionID)` is the new shape.** One retry-and-validate loop per workstream. The validator grades against the Approach's full acceptance criteria at workstream completion. Churn detection runs at workstream grain. Retry feedback ("your auth middleware is missing JWT signature verification on `auth.go:Verify`") is specific enough for agent repair without needing to name a step.
+- **The agent owns step decomposition via the worktree.** Each workstream's worktree gains a `_locutus/` directory:
+  - `_locutus/plan.md` — written once by Locutus when the workstream starts. Contains the Approach node, acceptance criteria, pointers into the spec DAG subtree relevant to the workstream, and the agent's instruction to maintain `checklist.md`.
+  - `_locutus/checklist.md` — written and updated by the agent as it works. The agent's internal step decomposition lives here, not in Locutus's persistence layer.
+- **The HIL function is unchanged.** Phase 4's `Policy` infrastructure (under `internal/dispatch/policy/` + `internal/dispatch/guardian/`) already operates per-permission-request and consults the spec DAG. It needs no step model. Decisions surfaced during a workstream are attributed to that Approach's Feature subtree (the existing pattern).
+- **Resume narrows again.** DJ-074 → DJ-120 → DJ-121: Locutus-side resume is now workstream-grained. On `adopt` restart, completed workstreams are skipped; the in-flight workstream is restarted from its feature-branch tip. Step-level continuity *within* the resumed workstream comes from the agent reading its own `checklist.md`, not from Locutus tracking step state.
+- **The decomposition rule is explicit: one Approach → one Workstream.** Not phase, not architectural layer, not risk tier. For greenfield projects the natural Approaches happen to be roughly phase-aligned (infra, CI/CD, scaffolding, domain models, features, deployment glue), but the unit of decomposition is the Approach; "phase" is not a concept Locutus knows about. Dependencies fall out of the spec DAG.
+- **Sequential workstream execution is the default; parallel is opt-in.** Even when the spec DAG marks two Approaches as independent (no `DependsOn` edge between them), running them concurrently against a shared codebase produces inferior results. A downstream workstream sees only a half-built state of an upstream workstream's work-in-progress, misses opportunities to mirror conventions / naming / library choices the upstream agent established, and may re-implement utilities the upstream agent introduced. Correctness — a coherent, consistent codebase where each workstream's output benefits from the *complete* output of every prior workstream — outweighs parallel throughput in every Locutus use case we have. The `Dispatcher`'s parallel-execution scaffolding (`MaxTotal`, `MaxPerAgent`, `executor.Step.Parallel: true`) is removed or defaulted to sequential. Concurrency becomes opt-in for the rare future case where a user explicitly trades consistency for speed (e.g., via a `--parallel` flag); it is not the default Locutus posture.
+
+**Alternatives considered:**
+
+- **Status quo (keep per-step decomposition).** Marginal validation-earliness benefit, but the cost is real: `spec.PlanStep` + planner output complexity + supervisor's step-grained retry loop + per-step persistence in `workstream.StepProgress` + step-grained churn detection + step-level resume bookkeeping. The user's "start simple, add" framing applies — the bar for keeping the complex shape should be "demonstrably catches things the simpler shape can't," and the failure modes we actually see (stubs, forgetting, silent compromises) are catchable at workstream grain too. Rejected.
+- **One master plan → one agent run, no workstreams.** Maximum simplicity but rejected for concrete reasons: context-window collapse on greenfield projects (too much work in one run), no concurrency (truly independent work serializes), single point of failure (one crash redoes everything), validation arrives too late to be actionable, no cost-tier mixing across workstreams, HIL traceability breaks down (decisions don't map to spec subtrees naturally). The cons dominate beyond toy projects.
+- **Phase-based workstream decomposition (infra → CI/CD → app code).** Rejected because phases are sequential by nature, so phase-based decomposition doesn't unlock the concurrency that workstreams exist to enable. "Phase" also isn't a spec-graph concept; introducing it would force pre-architectural decisions Locutus has no business making.
+- **Layer-based decomposition (frontend / backend / db / infra).** Same objection — forces premature architectural categorization. The agent should decide what the layers are by reading the actual codebase, not have Locutus impose them.
+- **Keep `PlanStep` as an internal scratch concept (planner outputs them, supervisor ignores them).** Rejected because dead-weight abstractions accumulate cost — they show up in code, in tests, in the workstream record, in the LLM prompts — and "the field exists but isn't load-bearing" is exactly the aspirational-shape failure mode `feedback_no_aspirational_fields` warns against.
+- **Move step tracking to the agent's CLI memory only (no `checklist.md` file).** Rejected because under DJ-119's spawn-per-workstream lifecycle, the agent subprocess dies with Locutus. The CLI's in-memory step state is lost on restart. A file on disk is the persistence layer; the checklist living in the worktree under git's purview is the right shape (it survives crashes, it's diff-able for debugging, it's contextually adjacent to the work it tracks).
+- **Default to parallel workstream execution when the DAG permits it (the pre-DJ-121 default).** Rejected because DAG-independence does not imply codebase-independence. Two workstreams the DAG marks as independent still produce a single merged codebase, and parallel execution against a shared codebase yields inconsistent conventions, duplicated utilities, and missed mirroring opportunities (a downstream workstream can't learn from an upstream workstream's complete output if it's running at the same time). Locutus's value is project-management quality — coherent, validated output — not throughput. The user's framing: "it's way more important to be correct than it is to be fast." Parallel execution stays implementable as opt-in (the dispatcher's executor still supports it under the hood), but the default flips to sequential. A downstream workstream now reads the complete merged state of every upstream workstream's feature branch before its first `Prompt`, exactly mirroring what a human running the same tasks one at a time would observe.
+
+**Consequences.**
+
+- **User-visible:**
+  - `locutus status` reports workstream-grained progress, not step-grained. The "step 3/7 of workstream X" output goes away; what remains is "workstream X in progress, started at T, agent: claude-code". A user wanting finer detail reads the worktree's `_locutus/checklist.md` directly.
+  - `locutus adopt` resume is workstream-grained. An interrupted workstream restarts from its feature-branch tip; the agent reads its own checklist to pick up internal step continuity. Completed workstreams skip exactly as before.
+  - The validator's feedback arrives once per workstream rather than once per step. Marginally later detection of partial-completion failures.
+- **Spec model:**
+  - `spec.PlanStep` is removed. Acceptance criteria move up to live on `spec.Approach` (or its execution-time analog). Persistence migrations needed for any project with existing PlanSteps in `.borg/` — likely a one-shot `locutus update` flow that re-derives workstream-level acceptance criteria from the union of the old PlanSteps' assertions.
+  - The planner's output shape simplifies. Prompts for the planner agent simplify too (no "decompose this Approach into ordered steps with assertions" instruction; just "scope this Approach into a workstream with acceptance criteria and a DependsOn set").
+- **Code:**
+  - `internal/dispatch/supervisor.go`: `Supervise` takes the Approach (or a workstream view of it), not a `PlanStep`. The retry loop's "feedback" string is now derived from a workstream-level validator pass, not a step-level one.
+  - `internal/dispatch/dispatcher.go`: `runWorkstream` no longer iterates `ws.Steps`. The workstream is one supervised unit. The `_locutus/plan.md` write happens here after the worktree is created and before the agent's first `Prompt`. The `Dispatcher`'s `MaxTotal` and `MaxPerAgent` parallelism controls are removed; workstreams are scheduled sequentially in DAG-topological order. `executor.Step.Parallel` is set to `false` for every workstream.
+  - `internal/workstream/`: `StepProgress` collapses. The workstream record retains status (running / complete / failed) and `AgentSessionID` (per DJ-120's telemetry rationale), but per-step bookkeeping goes away.
+  - The validator prompt template changes — grade against approach acceptance criteria, not against a specific step's assertions. The validator agent definition under `internal/scaffold/agents/` needs an update.
+  - The agent's system prompt for coding runs gains a section instructing it to maintain `_locutus/checklist.md`. The instruction goes in the scaffold-default coding-agent prompt.
+- **Tokens:**
+  - Per-workstream validation runs once per workstream instead of once per step; total validator tokens drop substantially (today's run does N validator calls for N steps).
+  - The coding agent's run is longer per invocation (no per-step retry cycle), which means more tokens-per-prompt at the top end but fewer total prompts. Net is workstream-dependent.
+- **DJ-074 / DJ-120 reference chain:** DJ-074 originally committed conversation-level resume; DJ-120 narrowed that to step-level under the ACP lifecycle; DJ-121 narrows further to workstream-level on Locutus's side, with the `checklist.md` mechanism preserving step continuity *at the agent's level*. The cumulative effect is that Locutus's persistence contract becomes simpler at each iteration while the user-visible resume promise stays roughly constant (the agent picks up where it left off).
+- **Future direction:** if `session/load`-based conversation revival ever ships (the speculative path DJ-120 mentioned), the per-workstream Locutus contract still holds — only the agent's own context recovery improves. The shape DJ-121 commits to is forward-compatible with that.
+
+**Reference:** refines DJ-010 (the supervision-implementation design — the orchestration model is preserved, only the planning grain changes); refines DJ-074 and DJ-120 (the resume contract narrows again, see chain above); depends on DJ-119's Phase 4 `Policy` for the unchanged HIL surface; preserves DJ-032's feature-branch commit-per-workstream durability.

@@ -63,16 +63,30 @@ type StepProgress struct {
 // ActiveWorkstream is the on-disk record for an in-flight dispatch. The
 // embedded Workstream is the exact plan handed to the agent — invalidated
 // on drift, not mutated mid-flight.
+//
+// Status reflects the workstream as a whole, per DJ-121. Under the
+// soft-deprecate transition path, StepStatus is retained as a legacy
+// slice for records written before the migration; new records populate
+// Status / StatusMessage / CompletedAt at the workstream level instead.
+// Phase 9 of DJ-121 removes StepStatus along with spec.PlanStep.
 type ActiveWorkstream struct {
-	WorkstreamID   string          `yaml:"workstream_id"`
-	PlanID         string          `yaml:"plan_id"`
-	ApproachIDs    []string        `yaml:"approach_ids"`
-	AgentSessionID string          `yaml:"agent_session_id,omitempty"`
-	PreFlightDone  bool            `yaml:"pre_flight_done"`
-	Plan           spec.Workstream `yaml:"plan"`
-	StepStatus     []StepProgress  `yaml:"step_status,omitempty"`
-	CreatedAt      time.Time       `yaml:"created_at"`
-	UpdatedAt      time.Time       `yaml:"updated_at"`
+	WorkstreamID   string              `yaml:"workstream_id"`
+	PlanID         string              `yaml:"plan_id"`
+	ApproachIDs    []string            `yaml:"approach_ids"`
+	AgentSessionID string              `yaml:"agent_session_id,omitempty"`
+	PreFlightDone  bool                `yaml:"pre_flight_done"`
+	Plan           spec.Workstream     `yaml:"plan"`
+	Status         StepExecutionStatus `yaml:"status,omitempty"`
+	StatusMessage  string              `yaml:"status_message,omitempty"`
+	CompletedAt    *time.Time          `yaml:"completed_at,omitempty"`
+	// StepStatus is DEPRECATED under DJ-121. Per-step progress
+	// bookkeeping has moved into the agent's _locutus/checklist.md.
+	// Records written before the migration may still carry this slice;
+	// callers should prefer Status when populated and fall back to walking
+	// StepStatus only as a transitional compatibility path.
+	StepStatus []StepProgress `yaml:"step_status,omitempty"`
+	CreatedAt  time.Time      `yaml:"created_at"`
+	UpdatedAt  time.Time      `yaml:"updated_at"`
 }
 
 // PlanRecord is the on-disk representation of the MasterPlan that owns a

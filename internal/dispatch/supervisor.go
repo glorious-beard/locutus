@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chetan/locutus/internal/agent"
+	"github.com/chetan/locutus/internal/dispatch/policy"
 	"github.com/chetan/locutus/internal/spec"
 )
 
@@ -46,13 +47,26 @@ type SupervisorConfig struct {
 	// INFO log when the monitor agent is unset). Nil falls back to
 	// slog.Default().
 	Logger *slog.Logger
+	// PolicyForWorkstream returns the permission policy applied to all
+	// attempts of the given workstream. Called once per Supervise
+	// invocation under DJ-121's coarsening; the returned Policy is threaded
+	// into every conn.Prompt for that workstream's retries. When nil, the
+	// supervisor falls back to policy.AllowOncePolicy — the same placeholder
+	// used in tests, suitable for early-integration runs before the
+	// production guardian is wired in. The cmd layer in production sets
+	// this to a closure that constructs a fresh guardian.Guardian per
+	// workstream (see DJ-119 Phase 4).
+	PolicyForWorkstream func(ws spec.Workstream) policy.Policy
 }
 
 // StepOutcome is the result of supervising a step.
 //
-// SessionID is the streaming-driver conversation ID surfaced from the
-// last attempt's event feed. Captured here so runWorkstream can roll it
-// up into WorkstreamResult.AgentSessionID for adopt to persist (DJ-074).
+// SessionID is the ACP session ID the workstream's Connection used while
+// running this step. Captured here so runWorkstream can roll it up into
+// WorkstreamResult.AgentSessionID for adopt to persist (DJ-074). Under
+// the ACP lifecycle (DJ-119), all attempts of all steps in a workstream
+// share the same sessionID — the field is preserved per-step for
+// compatibility with the WorkstreamResult contract.
 type StepOutcome struct {
 	Success    bool
 	Attempts   int
@@ -65,16 +79,6 @@ type StepOutcome struct {
 type Supervisor struct {
 	cfg    SupervisorConfig
 	runner CommandRunner
-
-	// permBridge is the permission bridge for the active streaming attempt.
-	// When non-nil, runAttempt merges bridge.Events into its event loop and
-	// routes EventPermissionRequest to handleInteraction. When nil, the
-	// supervisor does not intercept permissions — Claude runs with
-	// whatever permission-mode the driver configured (see
-	// ClaudeCodeDriver.BuildCommand, which defaults to acceptEdits).
-	// Production wire-up creates one bridge per attempt; tests can set
-	// this field directly.
-	permBridge *PermBridge
 
 	// monitorDisabledLogged ensures the "monitor agent not configured" INFO
 	// log fires exactly once per supervisor, not once per attempt.
@@ -97,7 +101,26 @@ func (s *Supervisor) logMonitorDisabledOnce() {
 	})
 }
 
+// policyForWorkstream resolves the per-workstream permission policy. When
+// SupervisorConfig.PolicyForWorkstream is unset, falls back to
+// policy.AllowOncePolicy — the placeholder behaviour that lets tests
+// and early-integration runs proceed without a configured guardian.
+func (s *Supervisor) policyForWorkstream(ws spec.Workstream) policy.Policy {
+	if s.cfg.PolicyForWorkstream == nil {
+		return policy.AllowOncePolicy{}
+	}
+	if p := s.cfg.PolicyForWorkstream(ws); p != nil {
+		return p
+	}
+	return policy.AllowOncePolicy{}
+}
+
 // NewSupervisor creates a Supervisor with the given config and command runner.
+//
+// CommandRunner is retained on the Supervisor for non-ACP code paths (e.g.,
+// the validator LLM call, which uses the agent.AgentExecutor directly).
+// Under DJ-119 the coding-agent transport is acp.Connection, plumbed
+// through Supervise's PromptConn argument — not through the runner.
 func NewSupervisor(cfg SupervisorConfig, runner CommandRunner) *Supervisor {
 	return &Supervisor{
 		cfg:    cfg,
@@ -105,54 +128,47 @@ func NewSupervisor(cfg SupervisorConfig, runner CommandRunner) *Supervisor {
 	}
 }
 
-// Supervise runs the retry-and-validate loop for a plan step. Each
-// attempt invokes runAttempt (the streaming event loop) and then
-// validates the agent's output via the validator LLM. Intra-attempt
-// *churnDetected errors short-circuit the attempt and feed into a
-// sliding-window escalation rule: if ≥2 of the last 3 attempts ended
-// in churn, the step is escalated to RefineStep — repeated cycling
-// suggests the step itself is ill-posed, not the implementation.
-func (s *Supervisor) Supervise(ctx context.Context, step spec.PlanStep, driver StreamingDriver, workDir string) (*StepOutcome, error) {
-	return s.superviseImpl(ctx, step, driver, workDir, "")
-}
-
-// SuperviseFrom is the resume-aware variant of Supervise. When
-// initialSessionID is non-empty, the first attempt re-attaches to the
-// prior agent conversation via the streaming driver's
-// BuildRetryCommand path (which translates to `--resume <id>` for
-// drivers that support it). Used by runWorkstream when DJ-074 resume
-// is in effect; equivalent to Supervise when initialSessionID is empty.
-func (s *Supervisor) SuperviseFrom(ctx context.Context, step spec.PlanStep, driver StreamingDriver, workDir, initialSessionID string) (*StepOutcome, error) {
-	return s.superviseImpl(ctx, step, driver, workDir, initialSessionID)
-}
-
-func (s *Supervisor) superviseImpl(ctx context.Context, step spec.PlanStep, driver StreamingDriver, workDir, initialSessionID string) (*StepOutcome, error) {
+// Supervise runs the retry-and-validate loop for one workstream over an
+// already-open ACP connection. Each attempt issues one Prompt on the shared
+// sessionID asking the agent to execute the workstream end-to-end against
+// its worktree-resident plan; failed attempts feed validator-derived
+// feedback into the next Prompt on the SAME session, so the agent retains
+// conversation context across attempts (the per-attempt session/resume the
+// pre-DJ-119 driver model used is now automatic).
+//
+// Per DJ-121, the supervised unit is the workstream, not the PlanStep. The
+// agent owns its own internal step decomposition via the
+// _locutus/checklist.md it maintains in the worktree; Locutus's
+// retry/validate loop grades the workstream's overall acceptance criteria
+// at completion.
+//
+// Intra-attempt *churnDetected errors short-circuit the attempt and feed
+// into a sliding-window escalation rule: if ≥2 of the last 3 attempts
+// ended in churn, the workstream is escalated to RefineStep — repeated
+// cycling suggests the workstream itself is ill-posed, not the
+// implementation.
+func (s *Supervisor) Supervise(ctx context.Context, ws spec.Workstream, conn PromptConn, sessionID string) (*StepOutcome, error) {
 	fastRetry := agent.RetryConfig{
 		MaxAttempts: 2,
 		BaseDelay:   500 * time.Millisecond,
 		MaxDelay:    2 * time.Second,
 	}
 
+	pol := s.policyForWorkstream(ws)
+
 	var (
-		sessionID = initialSessionID
 		feedback  string
 		outcomes  []outcomeKind
 		lastFiles []string
 	)
 
 	for attempt := 1; attempt <= s.cfg.MaxRetries; attempt++ {
-		result, err := s.runAttempt(ctx, step, driver, workDir, sessionID, feedback)
+		result, err := s.runAttempt(ctx, ws, conn, sessionID, feedback, pol)
 
-		// Preserve anything the attempt produced so we can surface files
-		// and resume context in subsequent attempts, even if this one
-		// aborted.
-		if result != nil {
-			if result.sessionID != "" {
-				sessionID = result.sessionID
-			}
-			if len(result.files) > 0 {
-				lastFiles = result.files
-			}
+		// Preserve anything the attempt produced so we can surface files in
+		// subsequent attempts, even if this one aborted.
+		if result != nil && len(result.files) > 0 {
+			lastFiles = result.files
 		}
 
 		// --- Intra-attempt abort signals ---
@@ -176,8 +192,8 @@ func (s *Supervisor) superviseImpl(ctx context.Context, step spec.PlanStep, driv
 		}
 
 		if err != nil {
-			// Stream parse or runner errors: treat as attempt failure,
-			// surface the error as feedback for the next attempt.
+			// Prompt or stream errors: treat as attempt failure, surface the
+			// error as feedback for the next attempt.
 			outcomes = append(outcomes, outcomeError)
 			feedback = err.Error()
 			continue
@@ -185,7 +201,7 @@ func (s *Supervisor) superviseImpl(ctx context.Context, step spec.PlanStep, driv
 
 		// --- Normal validation path ---
 
-		validationResp, verr := s.validate(ctx, step, result.finalText, fastRetry)
+		validationResp, verr := s.validate(ctx, ws, result.finalText, fastRetry)
 		if verr != nil {
 			return nil, fmt.Errorf("LLM validation on attempt %d: %w", attempt, verr)
 		}
@@ -223,13 +239,22 @@ func isPass(content string) bool {
 	return strings.HasPrefix(upper, "PASS")
 }
 
-// validate asks the LLM whether the agent output satisfies the step's acceptance criteria.
-// Uses the "validator" agent def if available; otherwise falls back to a default prompt.
-// agentOutput is the final text the agent produced (typically the accumulated
-// EventResult text from runAttempt).
-func (s *Supervisor) validate(ctx context.Context, step spec.PlanStep, agentOutput string, retryCfg agent.RetryConfig) (*agent.AgentOutput, error) {
+// validate asks the LLM whether the agent output satisfies the workstream's
+// acceptance criteria. Uses the "validator" agent def if available;
+// otherwise falls back to a default prompt. agentOutput is the final text
+// the agent produced (typically the accumulated EventResult text from
+// runAttempt).
+//
+// DJ-121 contract: acceptance criteria live on Workstream.Assertions.
+// Under the soft-deprecate transition path, this function prefers
+// ws.Assertions when populated and falls back to the union of every
+// step's assertions only when ws.Assertions is empty — covering the
+// case where the planner agent (Phase 6's update) hasn't yet been
+// migrated to emit workstream-level criteria. Phase 9 removes the
+// fallback once all planner outputs carry ws.Assertions.
+func (s *Supervisor) validate(ctx context.Context, ws spec.Workstream, agentOutput string, retryCfg agent.RetryConfig) (*agent.AgentOutput, error) {
 	var assertions strings.Builder
-	for _, a := range step.Assertions {
+	writeAssertion := func(a spec.Assertion) {
 		assertions.WriteString(fmt.Sprintf("- %s", string(a.Kind)))
 		if a.Target != "" {
 			assertions.WriteString(fmt.Sprintf(" target=%s", a.Target))
@@ -239,10 +264,27 @@ func (s *Supervisor) validate(ctx context.Context, step spec.PlanStep, agentOutp
 		}
 		assertions.WriteString("\n")
 	}
+	switch {
+	case len(ws.Assertions) > 0:
+		for _, a := range ws.Assertions {
+			writeAssertion(a)
+		}
+	default:
+		// Transition fallback: planner hasn't been migrated to emit
+		// workstream-level assertions yet. Union the step assertions so
+		// validation still runs against the criteria the planner did
+		// produce. Phase 9 deletes this branch.
+		for _, step := range ws.Steps {
+			for _, a := range step.Assertions {
+				writeAssertion(a)
+			}
+		}
+	}
 
 	userPrompt := fmt.Sprintf(
-		"Step: %s\n\nAcceptance criteria:\n%s\nAgent output:\n%s\n\nEvaluate this output.",
-		step.Description,
+		"Workstream: %s (%s)\n\nAcceptance criteria:\n%s\nAgent output:\n%s\n\nEvaluate whether the workstream is complete and the acceptance criteria hold.",
+		ws.ID,
+		ws.StrategyDomain,
 		assertions.String(),
 		agentOutput,
 	)

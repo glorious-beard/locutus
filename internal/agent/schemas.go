@@ -12,6 +12,13 @@ func init() {
 	// When an agent's frontmatter has output_schema: "MasterPlan",
 	// BuildGenerateRequest appends the JSON representation of this
 	// example struct to the system prompt as a schema reference.
+	// MasterPlan example payload: under DJ-121 the primary acceptance
+	// contract lives at workstream-level Assertions, not on PlanSteps.
+	// The planner is encouraged (via this schema example, the planner
+	// prompt, and the field's DEPRECATED doc) to emit workstream-level
+	// criteria. PlanStep.Assertions is retained as a transitional fallback
+	// but not surfaced in the example payload — Phase 9 removes PlanStep
+	// entirely once all consumers have migrated.
 	RegisterSchema("MasterPlan", spec.MasterPlan{
 		ID:      "plan-XXX",
 		Version: 1,
@@ -19,16 +26,13 @@ func init() {
 			ID:             "ws-XXX",
 			StrategyDomain: "domain",
 			DetailLevel:    spec.DetailLevelHigh,
-			Steps: []spec.PlanStep{{
-				ID:          "step-1",
-				Order:       1,
-				ApproachID:  "strat-XXX",
-				Description: "description of what to do",
-				Assertions: []spec.Assertion{{
-					Kind:    spec.AssertionKindTestPass,
-					Target:  "./pkg/...",
-					Message: "all tests pass",
-				}},
+			Assertions: []spec.Assertion{{
+				Kind:    spec.AssertionKindTestPass,
+				Target:  "./pkg/...",
+				Message: "all tests pass when this workstream completes",
+			}, {
+				Kind:    spec.AssertionKindCompiles,
+				Message: "the whole package compiles after this workstream's changes land",
 			}},
 		}},
 		Summary: "human-readable plan summary",

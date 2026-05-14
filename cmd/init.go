@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/chetan/locutus/internal/dispatch/acp"
 	"github.com/chetan/locutus/internal/render"
 	"github.com/chetan/locutus/internal/scaffold"
 	"github.com/chetan/locutus/internal/specio"
@@ -39,11 +40,44 @@ func (c *InitCmd) Run(cli *CLI) error {
 		fmt.Fprintln(os.Stderr, "warning: not inside a git repository — `.borg/` spec files are intended to be tracked in git; run `git init` before continuing.")
 	}
 
+	// ACP coding-agent binary preflight (DJ-119 Phase 7). Check-and-report
+	// only: missing binaries are surfaced but do not fail `init`. The
+	// `.borg/` scaffold is the operational deliverable of this command;
+	// the user can install any missing agents later and re-run a verb that
+	// dispatches code (`locutus adopt`).
+	acpPreflight := acp.Preflight()
+
 	if cli.JSON {
-		return json.NewEncoder(os.Stdout).Encode(map[string]string{"status": "ok", "project": name})
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"status":         "ok",
+			"project":        name,
+			"acp_preflight":  acpPreflight,
+		})
 	}
 	fmt.Print(render.StatusSummary(GatherStatus(fsys)))
+	renderACPPreflight(os.Stderr, acpPreflight)
 	return nil
+}
+
+// renderACPPreflight writes a short per-agent status block to w. Tone matches
+// the rest of `locutus init` output: state facts (which binaries are found,
+// which are missing, what to install), no editorializing.
+func renderACPPreflight(w *os.File, results []acp.PreflightResult) {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "ACP coding-agent binaries:")
+	for _, r := range results {
+		if r.Found {
+			fmt.Fprintf(w, "  found    %s (%s) → %s\n", r.AgentID, r.Binary, r.ResolvedAt)
+			continue
+		}
+		fmt.Fprintf(w, "  missing  %s (%s)\n", r.AgentID, r.Binary)
+		if r.InstallHint != "" {
+			fmt.Fprintf(w, "           install: %s\n", r.InstallHint)
+		}
+	}
+	if n := acp.MissingCount(results); n > 0 {
+		fmt.Fprintf(w, "\n%d of %d ACP agent binaries not on $PATH. `locutus adopt` will fail for any workstream routed to a missing agent until installed.\n", n, len(results))
+	}
 }
 
 // isGitRepo reports whether dir (or any of its ancestors) contains a `.git`

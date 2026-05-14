@@ -5,6 +5,8 @@ go 1.26.1
 require (
 	github.com/alecthomas/kong v1.15.0
 	github.com/anthropics/anthropic-sdk-go v1.23.0
+	github.com/blugelabs/bluge v0.2.2
+	github.com/coder/acp-go-sdk v0.13.0
 	github.com/creativeprojects/go-selfupdate v1.5.2
 	github.com/dominikbraun/graph v0.23.0
 	github.com/google/renameio/v2 v2.0.2
@@ -43,7 +45,6 @@ require (
 	github.com/blevesearch/segment v0.9.0 // indirect
 	github.com/blevesearch/snowballstem v0.9.0 // indirect
 	github.com/blevesearch/vellum v1.0.7 // indirect
-	github.com/blugelabs/bluge v0.2.2 // indirect
 	github.com/blugelabs/bluge_segment_api v0.2.0 // indirect
 	github.com/blugelabs/ice v1.0.0 // indirect
 	github.com/blugelabs/ice/v2 v2.0.1 // indirect

@@ -47,7 +47,7 @@ var fastMonitorRetry = agent.RetryConfig{
 // with a one-time INFO log per supervisor so misconfiguration is
 // discoverable. Parse errors propagate so the circuit breaker can count
 // them and eventually disable the monitor for the rest of the attempt.
-func (s *Supervisor) monitorCycle(ctx context.Context, step spec.PlanStep, events []AgentEvent) (*CycleVerdict, error) {
+func (s *Supervisor) monitorCycle(ctx context.Context, ws spec.Workstream, events []AgentEvent) (*CycleVerdict, error) {
 	def, ok := s.cfg.AgentDefs["monitor"]
 	if !ok || def.ID == "" {
 		s.logMonitorDisabledOnce()
@@ -59,7 +59,7 @@ func (s *Supervisor) monitorCycle(ctx context.Context, step spec.PlanStep, event
 	}
 
 	summary := SummarizeEvents(events)
-	prompt := fmt.Sprintf("Step goal: %s\n\nRecent agent activity:\n%s", step.Description, summary)
+	prompt := fmt.Sprintf("Workstream %s (%s) — recent agent activity:\n%s", ws.ID, ws.StrategyDomain, summary)
 
 	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt}}}
 	var verdict CycleVerdict

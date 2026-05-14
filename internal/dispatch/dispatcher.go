@@ -3,9 +3,11 @@ package dispatch
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/chetan/locutus/internal/agent"
+	"github.com/chetan/locutus/internal/dispatch/policy"
 	"github.com/chetan/locutus/internal/executor"
 	"github.com/chetan/locutus/internal/spec"
 )
@@ -24,12 +26,21 @@ type Dispatcher struct {
 	// disabled with a one-time INFO log from the supervisor.
 	FastLLM agent.AgentExecutor
 
-	// Drivers maps agent ID ("claude-code", "codex") to the StreamingDriver
-	// that builds commands and parses the NDJSON event stream for that CLI.
-	Drivers map[string]StreamingDriver
+	// OpenConn returns a per-workstream ACP connection for the given
+	// agent id. The cmd layer populates this with a closure that calls
+	// acp.Open with the agent's Spawn descriptor and wraps the result in
+	// an adapter so dispatch doesn't need to import the acp package
+	// (which would close a cycle via acp's import of dispatch.AgentEvent).
+	//
+	// Required in production. The dispatcher returns "no connection
+	// opener registered for agent X" for any workstream whose agent id
+	// has no entry — same shape as the pre-DJ-119 missing-driver error.
+	OpenConn func(ctx context.Context, agentID string) (PromptConn, error)
 
-	// Runner executes agent commands. ProductionRunner in prod; mocked
-	// in tests.
+	// Runner executes auxiliary subprocess commands (git, etc.) for the
+	// supervisor's worktree/commit/merge plumbing. Not used for the
+	// coding-agent transport itself — that flows through OpenConn under
+	// DJ-119. ProductionRunner in prod; mocked in tests.
 	Runner CommandRunner
 
 	// AgentDefs are the supervision agents (validator, monitor, etc.)
@@ -42,14 +53,6 @@ type Dispatcher struct {
 	// (see cmd/progress.go) so Claude-the-client can show live status
 	// while the dispatched agents work. Optional.
 	ProgressNotifier ProgressNotifier
-
-	// MaxTotal caps the total number of workstreams running concurrently.
-	// 0 or negative means unlimited.
-	MaxTotal int
-
-	// MaxPerAgent limits how many workstreams of a given agent type run
-	// concurrently (e.g., {"claude-code": 2, "codex": 1}).
-	MaxPerAgent map[string]int
 
 	// MaxRetriesPerStep caps retry attempts per plan step. Defaults to 3.
 	MaxRetriesPerStep int
@@ -64,6 +67,14 @@ type Dispatcher struct {
 	// recordStepProgress call after the workstream returns (existing
 	// behaviour, no resume granularity).
 	OnStepComplete StepCompleteHandler
+
+	// PolicyForWorkstream returns the permission policy threaded through
+	// every Prompt for the given workstream. The cmd layer wires this to a
+	// closure that constructs a guardian.Guardian per workstream (DJ-119
+	// Phase 4; coarsened by DJ-121 from per-step to per-workstream).
+	// Optional — when nil, the supervisor falls back to
+	// policy.AllowOncePolicy, the test/early-integration placeholder.
+	PolicyForWorkstream func(ws spec.Workstream) policy.Policy
 }
 
 // StepCompleteHandler is the per-step persistence hook. It runs
@@ -140,10 +151,16 @@ func (d *Dispatcher) Dispatch(ctx context.Context, plan *spec.MasterPlan, repoDi
 		for j, dep := range ws.DependsOn {
 			deps[j] = dep.WorkstreamID
 		}
+		// Sequential execution per DJ-121: workstreams run one at a time
+		// in DAG-topological order, even when DependsOn permits parallelism.
+		// Correctness over throughput — downstream workstreams benefit from
+		// seeing the complete merged output of every upstream workstream.
+		// Parallel:false on every step ensures the executor schedules them
+		// strictly sequentially.
 		dagSteps[i] = executor.Step{
 			ID:        ws.ID,
 			DependsOn: deps,
-			Parallel:  true,
+			Parallel:  false,
 			Type:      ws.AgentID,
 		}
 	}
@@ -172,9 +189,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, plan *spec.MasterPlan, repoDi
 				s.results = append(s.results, ws)
 			}
 		},
-		Snapshot:       func(s *dispatchState) dispatchState { return dispatchState{} }, // workstreams don't need shared state
-		MaxConcurrency: d.MaxTotal,
-		TypeLimits:     d.MaxPerAgent,
+		Snapshot: func(s *dispatchState) dispatchState { return dispatchState{} }, // workstreams don't need shared state
+		// MaxConcurrency and TypeLimits intentionally omitted per DJ-121:
+		// sequential execution is the default. Parallel:false on each
+		// executor.Step is the load-bearing guard.
 	}
 
 	exec := executor.NewExecutor(cfg)
@@ -197,8 +215,14 @@ func workstreamHasStep(ws spec.Workstream, stepID string) bool {
 	return false
 }
 
-// runWorkstream executes a single workstream: creates a worktree, routes to
-// the agent, supervises each step, merges on success, cleans up on completion.
+// runWorkstream executes a single workstream: creates a worktree, opens an
+// ACP connection on the agent for that workstream, supervises each step,
+// merges on success, and cleans up on completion.
+//
+// Under DJ-119 the connection lifetime is workstream-scoped: one
+// acp.Connection + one ACP session, shared across all steps and all retry
+// attempts within those steps. Per-attempt subprocess spawning (the
+// pre-DJ-119 driver model) is gone.
 //
 // resumeFrom controls re-entry on a previously-interrupted workstream
 // (DJ-074). When non-nil:
@@ -206,8 +230,13 @@ func workstreamHasStep(ws spec.Workstream, stepID string) bool {
 //     branch so the prior run's already-merged step output forms the
 //     starting state, not a fresh main.
 //   - Steps before resumeFrom.StepID are skipped — they're already done.
-//   - The resumed step's first attempt receives resumeFrom.SessionID so
-//     the streaming driver can `--resume <id>` the prior conversation.
+//   - resumeFrom.SessionID is preserved on the WorkstreamResult for
+//     telemetry but is NOT replayed into the new ACP session. The
+//     workstream-scoped Connection means cross-process conversation
+//     resume isn't available without a `session/load` call on a
+//     freshly-spawned subprocess — that's a separate concern to be
+//     addressed under its own DJ if it becomes load-bearing. The
+//     step-level (git) resume is the durable contract DJ-074 promises.
 //
 // When nil, the workstream runs fresh from main with no skipping.
 func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repoDir string, maxRetries int, resumeFrom *ResumePoint) *WorkstreamResult {
@@ -215,10 +244,10 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 		WorkstreamID: ws.ID,
 	}
 
-	// Find the driver for this workstream's agent.
-	driver, ok := d.Drivers[ws.AgentID]
-	if !ok {
-		result.Err = fmt.Errorf("no driver registered for agent %q", ws.AgentID)
+	// Connection opener must be wired by the caller. Missing entry is the
+	// shape of the pre-DJ-119 missing-driver error.
+	if d.OpenConn == nil {
+		result.Err = fmt.Errorf("no connection opener configured on Dispatcher")
 		return result
 	}
 
@@ -254,114 +283,120 @@ func (d *Dispatcher) runWorkstream(ctx context.Context, ws spec.Workstream, repo
 	// work actually lives after Cleanup tears down the scratch branch.
 	result.BranchName = wt.BranchName
 
-	// Supervise each step in sequence.
+	// Write the workstream's plan into the worktree before the agent's
+	// first prompt sees the directory (DJ-121). The agent reads
+	// _locutus/plan.md to understand what to build and maintains its own
+	// _locutus/checklist.md as it works. Best-effort: a plan-write failure
+	// downgrades to a logged warning rather than failing the workstream —
+	// the prompt text still carries the same content and the agent can
+	// proceed without the artifact, just without resume-side step
+	// continuity.
+	if err := WriteWorkstreamPlan(wt.WorktreeDir, ws); err != nil {
+		slog.Warn("write workstream plan",
+			"workstream_id", ws.ID,
+			"worktree", wt.WorktreeDir,
+			"error", err,
+		)
+	}
+
+	// Open the ACP connection for this workstream and create the shared
+	// session rooted at the worktree directory. Both close at workstream
+	// end via the deferred Close + the supervisor-level ctx cancel.
+	conn, err := d.OpenConn(ctx, ws.AgentID)
+	if err != nil {
+		result.Err = fmt.Errorf("open acp connection for agent %q: %w", ws.AgentID, err)
+		return result
+	}
+	defer func() { _ = conn.Close() }()
+
+	sessionID, err := conn.NewSession(ctx, wt.WorktreeDir)
+	if err != nil {
+		result.Err = fmt.Errorf("acp.NewSession on %q: %w", ws.AgentID, err)
+		return result
+	}
+	result.AgentSessionID = sessionID
+
+	// Supervise the workstream as one unit (DJ-121): one retry-and-validate
+	// loop per workstream, one commit + merge to the feature branch on
+	// success. The agent owns its own step decomposition via
+	// _locutus/checklist.md it maintains in the worktree.
 	sup := NewSupervisor(SupervisorConfig{
-		LLM:              d.LLM,
-		FastLLM:          d.FastLLM,
-		MaxRetries:       maxRetries,
-		AgentDefs:        d.AgentDefs,
-		ProgressNotifier: d.ProgressNotifier,
+		LLM:                 d.LLM,
+		FastLLM:             d.FastLLM,
+		MaxRetries:          maxRetries,
+		AgentDefs:           d.AgentDefs,
+		ProgressNotifier:    d.ProgressNotifier,
+		PolicyForWorkstream: d.PolicyForWorkstream,
 	}, d.Runner)
 
-	skipping := resumeFrom != nil
-	allPassed := true
 	featureBranch := "locutus/" + ws.ID
+
+	outcome, supErr := sup.Supervise(ctx, ws, conn, sessionID)
+	wsSuccess := supErr == nil && outcome != nil && outcome.Success
+	wsMessage := ""
+	if outcome != nil {
+		if outcome.SessionID != "" {
+			result.AgentSessionID = outcome.SessionID
+		}
+		if !wsSuccess && outcome.Escalation != "" {
+			wsMessage = outcome.Escalation
+		}
+		result.StepResults = append(result.StepResults, outcome)
+	}
+	if supErr != nil {
+		wsMessage = supErr.Error()
+	}
+
+	// Per-workstream commit + merge on success. A commit failure demotes
+	// the workstream to failed so the persisted record is honest about
+	// what landed.
 	anyMerged := false
-	for _, step := range ws.Steps {
-		// Skip already-completed steps on resume.
-		if skipping {
-			if step.ID != resumeFrom.StepID {
-				continue
+	if wsSuccess {
+		committed, commitErr := wt.CommitIfChanges(ctx, fmt.Sprintf("workstream %s", ws.ID))
+		if commitErr != nil {
+			wsSuccess = false
+			wsMessage = fmt.Sprintf("commit workstream %s: %v", ws.ID, commitErr)
+			supErr = commitErr
+		} else if committed {
+			if mergeErr := wt.MergeToFeatureBranch(ctx, featureBranch); mergeErr != nil {
+				wsSuccess = false
+				wsMessage = fmt.Sprintf("merge workstream %s: %v", ws.ID, mergeErr)
+				supErr = mergeErr
+			} else {
+				anyMerged = true
 			}
-			skipping = false
-		}
-
-		// Pre-seed sessionID on the first attempt of the resumed step
-		// so the driver issues `--resume <id>` against the prior agent
-		// conversation. Subsequent steps run as fresh conversations
-		// (existing semantics).
-		var initialSessionID string
-		if resumeFrom != nil && step.ID == resumeFrom.StepID {
-			initialSessionID = resumeFrom.SessionID
-		}
-
-		outcome, supErr := sup.SuperviseFrom(ctx, step, driver, wt.WorktreeDir, initialSessionID)
-		stepSuccess := supErr == nil && outcome != nil && outcome.Success
-		stepMessage := ""
-		sessionID := ""
-		if outcome != nil {
-			sessionID = outcome.SessionID
-			if !stepSuccess && outcome.Escalation != "" {
-				stepMessage = outcome.Escalation
-			}
-		}
-		if supErr != nil {
-			stepMessage = supErr.Error()
-		}
-
-		// Per-step commit + merge for successful steps so the feature
-		// branch accumulates completed work as we go (DJ-074: "the
-		// already-completed steps' merged work forms the starting state"
-		// on resume). A commit failure mid-workstream demotes the step
-		// to failed so the persisted record is honest about what landed.
-		if stepSuccess {
-			committed, commitErr := wt.CommitIfChanges(ctx, fmt.Sprintf("workstream %s: step %s", ws.ID, step.ID))
-			if commitErr != nil {
-				stepSuccess = false
-				stepMessage = fmt.Sprintf("commit step %s: %v", step.ID, commitErr)
-				supErr = commitErr
-			} else if committed {
-				if mergeErr := wt.MergeToFeatureBranch(ctx, featureBranch); mergeErr != nil {
-					stepSuccess = false
-					stepMessage = fmt.Sprintf("merge step %s: %v", step.ID, mergeErr)
-					supErr = mergeErr
-				} else {
-					anyMerged = true
-				}
-			}
-		}
-
-		// Persist progress for this step before moving on. SIGKILL after
-		// this point on a successful step still leaves the work on the
-		// feature branch and the record marked complete; resume picks up
-		// at the next step.
-		if d.OnStepComplete != nil {
-			d.OnStepComplete(ctx, StepEvent{
-				WorkstreamID: ws.ID,
-				StepID:       step.ID,
-				SessionID:    sessionID,
-				Success:      stepSuccess,
-				Message:      stepMessage,
-			})
-		}
-
-		if outcome != nil {
-			result.StepResults = append(result.StepResults, outcome)
-		}
-
-		if !stepSuccess {
-			if supErr != nil && result.Err == nil {
-				result.Err = fmt.Errorf("step %s: %w", step.ID, supErr)
-			}
-			allPassed = false
-			break
 		}
 	}
 
-	// Surface the most recent step's session ID for adopt persistence.
-	if n := len(result.StepResults); n > 0 {
-		result.AgentSessionID = result.StepResults[n-1].SessionID
+	// Persist progress for this workstream. SIGKILL after this point on a
+	// successful workstream still leaves the work on the feature branch
+	// and the record marked complete; resume picks up at the next
+	// workstream. The StepEvent's StepID is intentionally empty under
+	// DJ-121 — the unit of progress is now the workstream itself; the
+	// field is retained on the event for downstream-handler compatibility
+	// until Phase 5 collapses StepProgress entirely.
+	if d.OnStepComplete != nil {
+		d.OnStepComplete(ctx, StepEvent{
+			WorkstreamID: ws.ID,
+			StepID:       "",
+			SessionID:    result.AgentSessionID,
+			Success:      wsSuccess,
+			Message:      wsMessage,
+		})
+	}
+
+	if !wsSuccess {
+		if supErr != nil && result.Err == nil {
+			result.Err = fmt.Errorf("workstream %s: %w", ws.ID, supErr)
+		}
+		return result
 	}
 
 	if anyMerged {
-		// At least one step's work landed on the feature branch — that's
+		// The workstream's work landed on the feature branch — that's
 		// where the durable artefact lives after Cleanup tears down the
 		// scratch branch.
 		result.BranchName = featureBranch
-	}
-
-	if !allPassed {
-		return result
 	}
 
 	result.Success = true

@@ -20,37 +20,10 @@ func TestEventKind_String(t *testing.T) {
 		{EventRetry, "api_retry"},
 		{EventResult, "result"},
 		{EventError, "error"},
-		{EventPermissionRequest, "permission_request"},
-		{EventClarifyQuestion, "clarify_question"},
 	}
 	for _, c := range cases {
 		assert.Equal(t, c.want, string(c.kind), "EventKind constant value mismatch")
 	}
-}
-
-var claudeTestCfg = DriverConfig{
-	PermissionToolName: "locutus_permission",
-	QuestionToolName:   "AskUserQuestion",
-}
-
-func TestClassifyToolName_Permission(t *testing.T) {
-	got := ClassifyToolName("locutus_permission", claudeTestCfg)
-	assert.Equal(t, EventPermissionRequest, got)
-}
-
-func TestClassifyToolName_Question(t *testing.T) {
-	got := ClassifyToolName("AskUserQuestion", claudeTestCfg)
-	assert.Equal(t, EventClarifyQuestion, got)
-}
-
-func TestClassifyToolName_Unregistered(t *testing.T) {
-	got := ClassifyToolName("Edit", claudeTestCfg)
-	assert.Equal(t, EventToolCall, got)
-}
-
-func TestClassifyToolName_EmptyConfigFallsBackToToolCall(t *testing.T) {
-	got := ClassifyToolName("locutus_permission", DriverConfig{})
-	assert.Equal(t, EventToolCall, got)
 }
 
 func TestSummarizeEvents_Compact(t *testing.T) {

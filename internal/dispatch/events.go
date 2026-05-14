@@ -26,21 +26,19 @@ type StreamParser interface {
 type EventKind string
 
 const (
-	EventInit              EventKind = "init"
-	EventText              EventKind = "text"
-	EventToolCall          EventKind = "tool_call"
-	EventToolResult        EventKind = "tool_result"
-	EventRetry             EventKind = "api_retry"
-	EventResult            EventKind = "result"
-	EventError             EventKind = "error"
-	EventPermissionRequest EventKind = "permission_request"
-	EventClarifyQuestion   EventKind = "clarify_question"
+	EventInit       EventKind = "init"
+	EventText       EventKind = "text"
+	EventToolCall   EventKind = "tool_call"
+	EventToolResult EventKind = "tool_result"
+	EventRetry      EventKind = "api_retry"
+	EventResult     EventKind = "result"
+	EventError      EventKind = "error"
 )
 
-// AgentEvent is a normalized event from a coding-agent stream. Driver
-// parsers translate provider-specific NDJSON into this shape; the
-// permission bridge (Part 7) produces EventPermissionRequest events
-// outside the parser path.
+// AgentEvent is a normalized event from the coding-agent stream. The acp
+// translation layer in internal/dispatch/acp/events.go converts ACP
+// SessionUpdate notifications into this shape; the supervisor consumes
+// this vocabulary uniformly.
 type AgentEvent struct {
 	Kind      EventKind
 	Timestamp time.Time
@@ -50,34 +48,6 @@ type AgentEvent struct {
 	Text      string
 	FilePaths []string
 	Raw       json.RawMessage
-	// InteractionID is set only for events emitted by the permission
-	// bridge (EventPermissionRequest, EventClarifyQuestion). It matches
-	// Claude's tool_use_id so the supervisor's handleInteraction can
-	// route the decision back to the originating bridge request.
-	InteractionID string
-}
-
-// DriverConfig declares provider-level tool-name conventions used for
-// structural event classification. Empty fields disable the corresponding
-// routing (e.g., a driver without a permission-prompt tool simply never
-// emits EventPermissionRequest).
-type DriverConfig struct {
-	PermissionToolName string
-	QuestionToolName   string
-}
-
-// ClassifyToolName maps a tool-call event's tool name to an EventKind using
-// the driver's tool-name registry. An unregistered tool name yields
-// EventToolCall — judgment about what the tool is "doing" is the LLM
-// monitor's job, not ours.
-func ClassifyToolName(toolName string, cfg DriverConfig) EventKind {
-	if cfg.PermissionToolName != "" && toolName == cfg.PermissionToolName {
-		return EventPermissionRequest
-	}
-	if cfg.QuestionToolName != "" && toolName == cfg.QuestionToolName {
-		return EventClarifyQuestion
-	}
-	return EventToolCall
 }
 
 // SummarizeEvents produces a compact, deterministic text representation of a
@@ -106,7 +76,7 @@ func writeEventLine(b *strings.Builder, e AgentEvent) {
 		if e.Text != "" {
 			fmt.Fprintf(b, ": %s", truncate(singleLine(e.Text), 120))
 		}
-	case EventToolCall, EventPermissionRequest, EventClarifyQuestion:
+	case EventToolCall:
 		if e.ToolName != "" {
 			fmt.Fprintf(b, " %s", e.ToolName)
 		}

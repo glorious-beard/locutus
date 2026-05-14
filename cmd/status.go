@@ -174,16 +174,25 @@ type InFlightPlan struct {
 // leftover plan. It's the data a resume implementation would consume to
 // decide where to pick up.
 type InFlightWorkstream struct {
-	WorkstreamID   string `json:"workstream_id"`
-	AgentID        string `json:"agent_id,omitempty"`
-	AgentSessionID string `json:"agent_session_id,omitempty"`
-	PreFlightDone  bool   `json:"pre_flight_done"`
+	WorkstreamID   string   `json:"workstream_id"`
+	AgentID        string   `json:"agent_id,omitempty"`
+	AgentSessionID string   `json:"agent_session_id,omitempty"`
+	PreFlightDone  bool     `json:"pre_flight_done"`
 	ApproachIDs    []string `json:"approach_ids"`
-	StepTotal      int      `json:"step_total"`
-	StepsComplete  int      `json:"steps_complete"`
-	StepsFailed    int      `json:"steps_failed"`
-	StepsPending   int      `json:"steps_pending"`
-	NextStepID     string   `json:"next_step_id,omitempty"` // first step not marked complete
+	// Status is the workstream-level execution status under DJ-121
+	// (running / complete / failed). Empty when the record was persisted
+	// before DJ-121's persistence collapse; in that case the Step* counts
+	// below carry the per-step view.
+	Status        string `json:"status,omitempty"`
+	StatusMessage string `json:"status_message,omitempty"`
+	// Step* fields are DEPRECATED under DJ-121. They remain populated for
+	// records persisted before the migration so `locutus status` still
+	// renders them usefully. Phase 9 of DJ-121 removes them.
+	StepTotal     int    `json:"step_total"`
+	StepsComplete int    `json:"steps_complete"`
+	StepsFailed   int    `json:"steps_failed"`
+	StepsPending  int    `json:"steps_pending"`
+	NextStepID    string `json:"next_step_id,omitempty"` // first step not marked complete
 }
 
 // InFlightReport is the JSON shape emitted by `status --in-flight`.
@@ -233,6 +242,8 @@ func summariseInFlightWorkstream(ws workstream.ActiveWorkstream) InFlightWorkstr
 		AgentSessionID: ws.AgentSessionID,
 		PreFlightDone:  ws.PreFlightDone,
 		ApproachIDs:    append([]string(nil), ws.ApproachIDs...),
+		Status:         string(ws.Status),
+		StatusMessage:  ws.StatusMessage,
 		StepTotal:      len(ws.Plan.Steps),
 	}
 

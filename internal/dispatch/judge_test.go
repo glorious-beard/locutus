@@ -28,12 +28,12 @@ func TestMonitorCycle_MissingAgent_LogsOnceAndReturnsFalse(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	v1, err := sup.monitorCycle(ctx, newTestStep(), nil)
+	v1, err := sup.monitorCycle(ctx, newTestWorkstream(), nil)
 	require.NoError(t, err)
 	require.NotNil(t, v1)
 	assert.False(t, v1.IsCycle, "missing monitor must return false, not error")
 
-	v2, err := sup.monitorCycle(ctx, newTestStep(), nil)
+	v2, err := sup.monitorCycle(ctx, newTestWorkstream(), nil)
 	require.NoError(t, err)
 	assert.False(t, v2.IsCycle)
 
@@ -52,7 +52,7 @@ func TestMonitorCycle_ParsesVerdict(t *testing.T) {
 		AgentDefs: map[string]agent.AgentDef{"monitor": {ID: "monitor", SystemPrompt: "detect cycles"}},
 	}}
 
-	v, err := sup.monitorCycle(context.Background(), newTestStep(), []AgentEvent{{Kind: EventText}})
+	v, err := sup.monitorCycle(context.Background(), newTestWorkstream(), []AgentEvent{{Kind: EventText}})
 	require.NoError(t, err)
 	require.NotNil(t, v)
 	assert.True(t, v.IsCycle)
@@ -70,7 +70,7 @@ func TestMonitorCycle_MalformedJSON_ReturnsError(t *testing.T) {
 		AgentDefs: map[string]agent.AgentDef{"monitor": {ID: "monitor"}},
 	}}
 
-	v, err := sup.monitorCycle(context.Background(), newTestStep(), []AgentEvent{{Kind: EventText}})
+	v, err := sup.monitorCycle(context.Background(), newTestWorkstream(), []AgentEvent{{Kind: EventText}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse agent response")
 	assert.Nil(t, v, "no verdict returned on parse failure")
@@ -89,7 +89,7 @@ func TestMonitorCycle_UsesFastLLMNotStrong(t *testing.T) {
 		AgentDefs: map[string]agent.AgentDef{"monitor": {ID: "monitor"}},
 	}}
 
-	_, err := sup.monitorCycle(context.Background(), newTestStep(), nil)
+	_, err := sup.monitorCycle(context.Background(), newTestWorkstream(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, fast.CallCount(), "fast-tier LLM must be invoked exactly once")
 	assert.Equal(t, 0, strong.CallCount(), "strong-tier LLM must NOT be invoked for monitoring")
@@ -103,7 +103,7 @@ func TestMonitorCycle_FastLLMNil_ReturnsError(t *testing.T) {
 		AgentDefs: map[string]agent.AgentDef{"monitor": {ID: "monitor"}},
 	}}
 
-	_, err := sup.monitorCycle(context.Background(), newTestStep(), nil)
+	_, err := sup.monitorCycle(context.Background(), newTestWorkstream(), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "FastLLM")
 }

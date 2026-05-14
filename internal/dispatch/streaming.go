@@ -4,23 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os/exec"
 
+	"github.com/chetan/locutus/internal/dispatch/policy"
 	"github.com/chetan/locutus/internal/spec"
 )
-
-// StreamingDriver is the supervisor-facing contract for coding-agent drivers
-// that support event-streamed supervision. Concrete drivers in
-// `internal/dispatch/drivers` satisfy this via structural typing — they
-// also implement the batch `drivers.AgentDriver` interface for backward
-// compatibility.
-type StreamingDriver interface {
-	BuildCommand(ctx context.Context, step spec.PlanStep, workDir string) *exec.Cmd
-	BuildRetryCommand(ctx context.Context, step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd
-	ParseStream(r io.Reader) StreamParser
-	RespondToAgent(ctx context.Context, sessionID, response string) (*exec.Cmd, error)
-}
 
 // ProgressNotifier lets the supervisor emit human-readable progress updates
 // to an external observer (e.g., the MCP client that invoked the tool). A
@@ -73,12 +60,6 @@ func containsString(xs []string, x string) bool {
 	return false
 }
 
-// streamResult carries one pull from parser.Next to the main event loop.
-type streamResult struct {
-	evt AgentEvent
-	err error
-}
-
 // outcomeKind tags each attempt's outcome for the sliding-window churn
 // rule in Supervise. See churnCountInLastN.
 type outcomeKind int
@@ -107,133 +88,77 @@ func churnCountInLastN(outcomes []outcomeKind, n int) int {
 	return count
 }
 
-// runAttempt runs one event-streamed invocation of the coding agent and
-// returns the accumulated result. The event loop merges two sources:
-// the stream parser (driver output on stdout) and the permission bridge
-// (out-of-band, via Unix socket from a subprocess Claude spawns for
-// --permission-prompt-tool). When no bridge is attached the merge is
-// a no-op (a nil channel never fires in select).
+// runAttempt issues one Prompt on the shared ACP sessionID and drains
+// events until the channel closes. Under DJ-119 the channel always
+// terminates with either EventResult (success, carrying stopReason as Text)
+// or EventError (failure). Mid-stream events are observed by the monitor
+// (cycle detection) and surfaced as progress notifications; permission
+// requests come through policy.Policy injected into Prompt, not as inline
+// events on the channel.
+//
+// pol is the per-workstream Policy resolved by Supervise (typically the
+// Guardian impl built around the validator LLM, but falls back to
+// policy.AllowOncePolicy when no PolicyForWorkstream is configured).
 func (s *Supervisor) runAttempt(
 	ctx context.Context,
-	step spec.PlanStep,
-	driver StreamingDriver,
-	workDir, sessionID, feedback string,
+	ws spec.Workstream,
+	conn PromptConn,
+	sessionID, feedback string,
+	pol policy.Policy,
 ) (*attemptResult, error) {
-	// Inner cancelable ctx so that an early return from this function also
-	// tears down the parser pump goroutine.
 	attemptCtx, cancelAttempt := context.WithCancel(ctx)
 	defer cancelAttempt()
 
-	cmd := s.buildAttemptCommand(attemptCtx, driver, step, workDir, sessionID, feedback)
-
-	stream, err := s.runner(cmd)
+	text := buildPromptText(ws, feedback)
+	events, err := conn.Prompt(attemptCtx, sessionID, text, pol)
 	if err != nil {
-		return nil, fmt.Errorf("start command: %w", err)
+		return nil, fmt.Errorf("acp.Prompt: %w", err)
 	}
-	defer func() { _ = stream.Close() }()
 
-	parser := driver.ParseStream(stream)
-	defer func() { _ = parser.Close() }()
-
-	parserEvents := pumpParser(attemptCtx, parser)
-
-	result := &attemptResult{}
+	result := &attemptResult{sessionID: sessionID}
 	mon := newMonitor()
 
 	for {
-		var evt AgentEvent
 		select {
-		case r, ok := <-parserEvents:
-			if !ok {
-				// Parser goroutine exited without sending a terminal
-				// result — shouldn't happen, but treat as clean end.
-				return result, nil
-			}
-			if errors.Is(r.err, io.EOF) {
-				return result, nil
-			}
-			if r.err != nil {
-				return result, r.err
-			}
-			evt = r.evt
-		case bevt, ok := <-s.bridgeEvents():
-			if !ok {
-				// Bridge closed; continue with just the parser stream.
-				continue
-			}
-			evt = bevt
 		case <-ctx.Done():
+			// Best-effort cancel; the agent will surface stopReason=cancelled
+			// as the terminal event, which we drop on the floor because the
+			// caller has already given up on this attempt.
+			_ = conn.Cancel(context.Background(), sessionID)
 			return result, ctx.Err()
-		}
-
-		result.accumulate(evt)
-		s.emitProgress(ctx, evt)
-		mon.Observe(evt)
-
-		switch evt.Kind {
-		case EventPermissionRequest, EventClarifyQuestion:
-			if err := s.handleInteraction(ctx, step, evt); err != nil {
-				return result, err
+		case evt, ok := <-events:
+			if !ok {
+				// Channel closed without an EventResult/EventError terminal.
+				// Per the acp.Connection contract this shouldn't happen, but
+				// treat it as a clean end so the validator sees what we've
+				// accumulated.
+				return result, nil
 			}
-			// No resume needed — the bridge lets Claude continue once it
-			// receives the decision. Move on to the next event.
-			continue
-		}
 
-		if mon.ShouldCheck() {
-			verdict, cerr := s.monitorCycle(ctx, step, mon.RecentEvents())
-			mon.MarkChecked(cerr)
-			if cerr != nil {
-				continue
+			if evt.Kind == EventError {
+				return result, errors.New(evt.Text)
 			}
-			if verdict.IsCycle && verdict.Confidence >= 0.7 {
-				return result, &churnDetected{
-					pattern:   verdict.Pattern,
-					reasoning: verdict.Reasoning,
+
+			result.accumulate(evt)
+			s.emitProgress(ctx, evt)
+			mon.Observe(evt)
+
+			if mon.ShouldCheck() {
+				verdict, cerr := s.monitorCycle(ctx, ws, mon.RecentEvents())
+				mon.MarkChecked(cerr)
+				if cerr == nil && verdict.IsCycle && verdict.Confidence >= 0.7 {
+					return result, &churnDetected{
+						pattern:   verdict.Pattern,
+						reasoning: verdict.Reasoning,
+					}
 				}
 			}
-		}
-	}
-}
 
-// pumpParser drains parser.Next on a goroutine so the main event loop can
-// select between parser events and bridge events. The goroutine exits
-// when parser returns any error (including io.EOF) or when ctx is
-// canceled. The returned channel closes when the goroutine exits.
-func pumpParser(ctx context.Context, parser StreamParser) <-chan streamResult {
-	out := make(chan streamResult, 1)
-	go func() {
-		defer close(out)
-		for {
-			evt, err := parser.Next(ctx)
-			select {
-			case out <- streamResult{evt: evt, err: err}:
-			case <-ctx.Done():
-				return
-			}
-			if err != nil {
-				return
+			if evt.Kind == EventResult {
+				return result, nil
 			}
 		}
-	}()
-	return out
-}
-
-// bridgeEvents returns the bridge events channel if a bridge is attached,
-// or nil otherwise. A nil channel blocks forever in select, which is
-// exactly the "no bridge" behavior we want.
-func (s *Supervisor) bridgeEvents() <-chan AgentEvent {
-	if s.permBridge == nil {
-		return nil
 	}
-	return s.permBridge.Events
-}
-
-func (s *Supervisor) buildAttemptCommand(ctx context.Context, driver StreamingDriver, step spec.PlanStep, workDir, sessionID, feedback string) *exec.Cmd {
-	if sessionID == "" {
-		return driver.BuildCommand(ctx, step, workDir)
-	}
-	return driver.BuildRetryCommand(ctx, step, workDir, sessionID, feedback)
 }
 
 // emitProgress translates an AgentEvent into a ProgressParams update when
@@ -261,16 +186,6 @@ func progressMessage(evt AgentEvent) string {
 		if evt.ToolName != "" {
 			return fmt.Sprintf("Agent tool call: %s", evt.ToolName)
 		}
-	case EventPermissionRequest:
-		if evt.ToolName != "" {
-			return fmt.Sprintf("Agent wants permission: %s", evt.ToolName)
-		}
-		return "Agent wants permission"
-	case EventClarifyQuestion:
-		if evt.Text != "" {
-			return fmt.Sprintf("Agent asked: %s", evt.Text)
-		}
-		return "Agent asked a clarifying question"
 	case EventError:
 		if evt.Text != "" {
 			return fmt.Sprintf("Agent error: %s", evt.Text)

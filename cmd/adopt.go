@@ -12,6 +12,9 @@ import (
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/check"
 	"github.com/chetan/locutus/internal/dispatch"
+	"github.com/chetan/locutus/internal/dispatch/acp"
+	"github.com/chetan/locutus/internal/dispatch/guardian"
+	"github.com/chetan/locutus/internal/dispatch/policy"
 	"github.com/chetan/locutus/internal/overlap"
 	"github.com/chetan/locutus/internal/preflight"
 	"github.com/chetan/locutus/internal/reconcile"
@@ -427,16 +430,35 @@ func classifyPlanAction(records []workstream.ActiveWorkstream, store *state.File
 	return planActionResume
 }
 
-// buildResumePoint walks an ActiveWorkstream's StepStatus and returns a
-// ResumePoint for the first step that is not yet StepComplete. Returns
-// nil when the workstream has no AgentSessionID (resume target needs
-// one) or when every step is already complete (no work left for this
-// workstream — caller's classifier should have routed to archive in
-// that case).
+// buildResumePoint returns a ResumePoint for a workstream that needs to
+// pick up after an interruption. Returns nil when the workstream is
+// already marked complete (no work left for this workstream — the
+// caller's classifier should have routed to archive in that case) or
+// when the workstream has no AgentSessionID for telemetry continuity.
+//
+// Under DJ-121, the ResumePoint is workstream-grained: StepID is always
+// empty on the returned point because Locutus no longer tracks step-level
+// progress (the agent owns that via _locutus/checklist.md). The legacy
+// step-walk fallback below preserves resume against records persisted
+// before the migration; Phase 9 deletes it.
 func buildResumePoint(rec workstream.ActiveWorkstream) *dispatch.ResumePoint {
 	if rec.AgentSessionID == "" {
 		return nil
 	}
+	// DJ-121 path: workstream-level Status is authoritative when populated.
+	if rec.Status != "" {
+		if rec.Status == workstream.StepComplete {
+			return nil
+		}
+		return &dispatch.ResumePoint{
+			StepID:    "",
+			SessionID: rec.AgentSessionID,
+		}
+	}
+	// Legacy fallback: records persisted before DJ-121 only have
+	// StepStatus populated. Walk the steps until the first non-complete
+	// one and return a step-grained ResumePoint. Phase 9 removes this
+	// branch along with the StepStatus field.
 	for _, step := range rec.Plan.Steps {
 		progress := rec.StepByID(step.ID)
 		if progress.Status != workstream.StepComplete {
@@ -785,12 +807,55 @@ func realDispatch(llm agent.AgentExecutor, fsys specio.FS) DispatchFunc {
 	return func(ctx context.Context, plan *spec.MasterPlan, repoDir string, resume map[string]*dispatch.ResumePoint) ([]*dispatch.WorkstreamResult, error) {
 		wsStore := workstream.NewFileStore(fsys, workstreamsDir, plan.ID)
 		d := &dispatch.Dispatcher{
-			LLM:            llm,
-			FastLLM:        llm, // same provider for now; upgrade to a fast-tier model later
-			OnStepComplete: persistStepProgress(wsStore),
+			LLM:                 llm,
+			FastLLM:             llm, // same provider for now; upgrade to a fast-tier model later
+			OpenConn:            acpOpenConn,
+			OnStepComplete:      persistStepProgress(wsStore),
+			PolicyForWorkstream: guardianPolicyForWorkstream(llm),
 		}
 		return d.Dispatch(ctx, plan, repoDir, resume)
 	}
+}
+
+// guardianPolicyForWorkstream returns a SupervisorConfig.PolicyForWorkstream
+// closure that constructs a fresh guardian.Guardian per workstream. The
+// Guardian holds the workstream in scope so its validator-LLM prompt is
+// anchored to the workstream's identity + expected files (port-verbatim of
+// the pre-DJ-119 `handleInteraction` behaviour, coarsened to workstream
+// grain per DJ-121).
+//
+// The validator AgentDef remains a TODO: AgentDefs are not yet wired
+// into realDispatch end-to-end, so the Guardian's Def.ID is empty and
+// it falls back to deny-by-default (cancelOrReject). This matches the
+// pre-DJ-119 handleInteraction behaviour when no validator was
+// configured. Loading the validator agent here is a pre-existing wiring
+// gap, not a DJ-121 deliverable.
+func guardianPolicyForWorkstream(llm agent.AgentExecutor) func(spec.Workstream) policy.Policy {
+	return func(ws spec.Workstream) policy.Policy {
+		return &guardian.Guardian{
+			LLM:        llm,
+			Workstream: ws,
+			// Def: agent.AgentDef{ID: "validator", ...} once supervision agent
+			// loading is wired in realDispatch.
+		}
+	}
+}
+
+// acpOpenConn satisfies Dispatcher.OpenConn by looking up the agent's
+// Spawn descriptor in acp.AgentSpawns and opening an ACP connection. The
+// returned *acp.Connection satisfies dispatch.PromptConn structurally;
+// the per-step permission policy flows through SupervisorConfig.PolicyForStep
+// (set in realDispatch below), not via an adapter around the connection.
+func acpOpenConn(ctx context.Context, agentID string) (dispatch.PromptConn, error) {
+	spawn, ok := acp.AgentSpawns[agentID]
+	if !ok {
+		return nil, fmt.Errorf("no ACP spawn registered for agent %q (known: claude-code, codex, gemini)", agentID)
+	}
+	conn, err := acp.Open(ctx, spawn, "")
+	if err != nil {
+		return nil, fmt.Errorf("acp.Open %q: %w", agentID, err)
+	}
+	return conn, nil
 }
 
 // persistStepProgress returns a dispatch.StepCompleteHandler that records
@@ -809,7 +874,7 @@ func persistStepProgress(wsStore *workstream.FileStore) dispatch.StepCompleteHan
 	return func(ctx context.Context, evt dispatch.StepEvent) {
 		rec, err := wsStore.Load(evt.WorkstreamID)
 		if err != nil {
-			slog.Warn("step progress: load failed",
+			slog.Warn("workstream progress: load failed",
 				"workstream_id", evt.WorkstreamID,
 				"step_id", evt.StepID,
 				"error", err,
@@ -817,21 +882,35 @@ func persistStepProgress(wsStore *workstream.FileStore) dispatch.StepCompleteHan
 			return
 		}
 		now := time.Now()
-		progress := workstream.StepProgress{
-			StepID:  evt.StepID,
-			Status:  workstream.StepComplete,
-			EndedAt: &now,
-			Message: evt.Message,
-		}
+		status := workstream.StepComplete
 		if !evt.Success {
-			progress.Status = workstream.StepFailed
+			status = workstream.StepFailed
 		}
-		rec.RecordProgress(progress)
+
+		// Two paths through this handler:
+		//   - DJ-121 (StepID == ""): the dispatcher fires the handler once
+		//     per workstream completion. Populate workstream-level Status.
+		//   - Legacy (StepID != ""): older code paths still fire per-step
+		//     events. Update StepStatus for back-compat. Phase 9 deletes
+		//     this branch along with spec.PlanStep.
+		if evt.StepID == "" {
+			rec.Status = status
+			rec.StatusMessage = evt.Message
+			rec.CompletedAt = &now
+			rec.UpdatedAt = now
+		} else {
+			rec.RecordProgress(workstream.StepProgress{
+				StepID:  evt.StepID,
+				Status:  status,
+				EndedAt: &now,
+				Message: evt.Message,
+			})
+		}
 		if evt.SessionID != "" {
 			rec.AgentSessionID = evt.SessionID
 		}
 		if err := wsStore.Save(rec); err != nil {
-			slog.Warn("step progress: save failed",
+			slog.Warn("workstream progress: save failed",
 				"workstream_id", evt.WorkstreamID,
 				"step_id", evt.StepID,
 				"error", err,

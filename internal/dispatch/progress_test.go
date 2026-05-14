@@ -30,28 +30,6 @@ func TestProgressMessage_ForwardsToolCallsWithoutFiles(t *testing.T) {
 	assert.Contains(t, msg, "Bash", "tool name still shows even without a file path")
 }
 
-func TestProgressMessage_ForwardsPermissionEvents(t *testing.T) {
-	evt := AgentEvent{
-		Kind:          EventPermissionRequest,
-		ToolName:      "Bash",
-		ToolInput:     map[string]any{"command": "rm /tmp/x"},
-		InteractionID: "req-1",
-	}
-	msg := progressMessage(evt)
-	assert.NotEmpty(t, msg, "permission events must be forwarded so the user knows the agent is blocked")
-	assert.Contains(t, msg, "Bash", "the gated tool's name should appear")
-}
-
-func TestProgressMessage_ForwardsClarifyQuestions(t *testing.T) {
-	evt := AgentEvent{
-		Kind: EventClarifyQuestion,
-		Text: "Which cache TTL should I use?",
-	}
-	msg := progressMessage(evt)
-	assert.NotEmpty(t, msg)
-	assert.Contains(t, msg, "Which cache TTL", "question text should be surfaced")
-}
-
 func TestProgressMessage_ForwardsErrors(t *testing.T) {
 	evt := AgentEvent{Kind: EventError, Text: "rate-limited"}
 	msg := progressMessage(evt)
