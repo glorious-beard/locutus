@@ -3102,7 +3102,7 @@ Concretely:
 
 ## DJ-122: Graph-Mutation Workflow Executor with Spawner Nodes (Supersedes DJ-112 on Control-Flow Topology)
 
-**Status:** designed
+**Status:** shipping (Phases 1–7 landed 2026-05-14; manual smoke + Planning/Assimilation gate-spawner migration are follow-up work tracked elsewhere)
 
 **Context.** [DJ-036](#dj-036-council-agents-and-workflow-dag-are-externalizable-files) committed externally-edited workflow YAMLs to support user customization without recompiling. [DJ-112](#dj-112-workflows-move-from-external-yaml-to-go-values-supersedes-dj-036-on-workflows) walked that back when the customization affordance went unused in practice, moving workflows to Go values while preserving the DAG executor's separation of "graph topology" from "control flow." DJ-112 codified the explicit rule: *"sub-graph loops, when needed, can be expressed in Go control flow rather than as cyclic dependencies."*
 

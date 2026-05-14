@@ -2,6 +2,7 @@ package executor_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/chetan/locutus/internal/executor"
 
+	dgraph "github.com/dominikbraun/graph"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -671,4 +673,475 @@ func TestStepTypeFieldOptional(t *testing.T) {
 		state.Log,
 		"all step outputs should be merged",
 	)
+}
+
+// --- DJ-122 Phase 1: Spawn capability ---
+
+// TestSpawnAppendsStepsAndEdges verifies that a step's Spawn callback can add
+// a new vertex and an explicit edge after the step runs, and that the new
+// step then executes in dependency order.
+func TestSpawnAppendsStepsAndEdges(t *testing.T) {
+	spawnFired := 0
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{
+				ID: "A",
+				Spawn: func(_ context.Context, _ any, _ any) ([]executor.Step, []executor.Edge, error) {
+					spawnFired++
+					return []executor.Step{{ID: "B"}}, []executor.Edge{{From: "A", To: "B"}}, nil
+				},
+			},
+		},
+		RunStep:  runStep,
+		Merge:    merge,
+		Snapshot: snapshot,
+	}
+
+	state := &testState{}
+	results, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+
+	assert.NoError(t, err)
+	assert.Equal(t, 1, spawnFired, "spawn should fire exactly once (after A completes)")
+	assert.Len(t, results, 2, "both A and the spawned B should execute")
+	assert.Equal(t, "A", results[0].StepID, "A runs first")
+	assert.Equal(t, "B", results[1].StepID, "B runs after A via the spawned edge")
+	assert.Equal(t, []string{"A done", "B done"}, state.Log)
+}
+
+// TestSpawnedStepCanCarryDependsOn verifies that DependsOn on spawned steps
+// is honored exactly like initial-graph deps — so the agent-layer template
+// helper can express internal subgraph edges without needing the explicit
+// Edge list for every connection.
+func TestSpawnedStepCanCarryDependsOn(t *testing.T) {
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{
+				ID: "root",
+				Spawn: func(_ context.Context, _ any, _ any) ([]executor.Step, []executor.Edge, error) {
+					return []executor.Step{
+							{ID: "child1", DependsOn: []string{"root"}},
+							{ID: "child2", DependsOn: []string{"child1"}},
+						},
+						nil, nil
+				},
+			},
+		},
+		RunStep:  runStep,
+		Merge:    merge,
+		Snapshot: snapshot,
+	}
+
+	state := &testState{}
+	results, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+
+	assert.NoError(t, err)
+	assert.Len(t, results, 3)
+	assert.Equal(t, "root", results[0].StepID)
+	assert.Equal(t, "child1", results[1].StepID)
+	assert.Equal(t, "child2", results[2].StepID)
+}
+
+// TestSpawnRespectsGraphSizeCap verifies that a runaway spawner that keeps
+// appending nodes hits MaxGraphMultiplier and errors with ErrGraphSizeExceeded
+// naming the spawner id.
+func TestSpawnRespectsGraphSizeCap(t *testing.T) {
+	// Recursive spawner: every spawned step has the same spawner attached,
+	// so each step appends one more step. With 1 initial step and
+	// multiplier 3, the cap is 3 total nodes; the spawner must fail
+	// before exceeding that.
+	var recursiveSpawner func(ctx context.Context, snap any, out any) ([]executor.Step, []executor.Edge, error)
+	counter := 0
+	recursiveSpawner = func(_ context.Context, _ any, _ any) ([]executor.Step, []executor.Edge, error) {
+		counter++
+		id := fmt.Sprintf("gen-%d", counter)
+		return []executor.Step{{ID: id, Spawn: recursiveSpawner}}, nil, nil
+	}
+
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{ID: "root", Spawn: recursiveSpawner},
+		},
+		RunStep:           runStep,
+		Merge:             merge,
+		Snapshot:          snapshot,
+		MaxGraphMultiplier: 3, // cap = 3 * 1 initial = 3 nodes total
+	}
+
+	state := &testState{}
+	_, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, executor.ErrGraphSizeExceeded),
+		"error should wrap ErrGraphSizeExceeded, got: %v", err)
+	// The most-recently-spawning step must be named in the error so users
+	// can find the runaway spawner. After 2 successful spawns (gen-1, gen-2)
+	// the graph holds 3 nodes; the next spawner attempt from gen-2 trips
+	// the cap.
+	assert.Contains(t, err.Error(), "gen-2",
+		"error should name the spawner that tripped the cap")
+}
+
+// TestSpawnRejectsCycle verifies that a spawner whose newEdges would
+// introduce a cycle is rejected via dgraph.ErrEdgeCreatesCycle, wrapped
+// with the spawner id.
+func TestSpawnRejectsCycle(t *testing.T) {
+	// Initial graph: A → B (B depends on A).
+	// B's spawner tries to add an edge B → A, closing the cycle.
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{ID: "A"},
+			{
+				ID:        "B",
+				DependsOn: []string{"A"},
+				Spawn: func(_ context.Context, _ any, _ any) ([]executor.Step, []executor.Edge, error) {
+					return nil, []executor.Edge{{From: "B", To: "A"}}, nil
+				},
+			},
+		},
+		RunStep:  runStep,
+		Merge:    merge,
+		Snapshot: snapshot,
+	}
+
+	state := &testState{}
+	_, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, dgraph.ErrEdgeCreatesCycle),
+		"error should wrap dgraph.ErrEdgeCreatesCycle, got: %v", err)
+	assert.Contains(t, err.Error(), `"B"`,
+		"error should name the spawner that tried to introduce the cycle")
+}
+
+// TestSpawnSeesOwnOutput verifies that the spawner is invoked with a
+// snapshot taken AFTER the producing step's result is merged, so the
+// spawner can branch on its own output.
+func TestSpawnSeesOwnOutput(t *testing.T) {
+	var sawLogLen int
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{
+				ID: "A",
+				Spawn: func(_ context.Context, snap any, out any) ([]executor.Step, []executor.Edge, error) {
+					s := snap.(testState)
+					sawLogLen = len(s.Log)
+					assert.Equal(t, "A done", out, "spawn output arg should be the step's StepResult.Output")
+					return nil, nil, nil
+				},
+			},
+		},
+		RunStep:  runStep,
+		Merge:    merge,
+		Snapshot: snapshot,
+	}
+
+	state := &testState{}
+	_, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, sawLogLen, "spawner should see post-merge state including its own output")
+}
+
+// TestSpawnDoesNotFireOnSkip verifies that conditional-skipped steps do not
+// invoke their Spawn callback.
+func TestSpawnDoesNotFireOnSkip(t *testing.T) {
+	fired := false
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{
+				ID:          "A",
+				Conditional: func(_ any) bool { return false },
+				Spawn: func(_ context.Context, _ any, _ any) ([]executor.Step, []executor.Edge, error) {
+					fired = true
+					return nil, nil, nil
+				},
+			},
+		},
+		RunStep:  runStep,
+		Merge:    merge,
+		Snapshot: snapshot,
+	}
+
+	state := &testState{}
+	_, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+	assert.NoError(t, err)
+	assert.False(t, fired, "spawn must not fire when the producing step is skipped")
+}
+
+// --- DJ-122 Phase 2: iteration metadata + AppendSubgraph ---
+
+// convergenceLoopTemplate is the test fixture for the Phase 2 loop tests.
+// Each iteration adds a "work" + "gate" pair. The gate captures the
+// current iteration in its closure; its Spawn calls AppendSubgraph to
+// produce the next iteration unless terminateAt has been reached.
+// terminateAt < 0 means never terminate.
+func convergenceLoopTemplate(terminateAt int) func(executor.IterationContext) []executor.Step {
+	var template func(executor.IterationContext) []executor.Step
+	template = func(ic executor.IterationContext) []executor.Step {
+		currentIter := ic.IterationIndex
+		return []executor.Step{
+			{ID: "work"},
+			{
+				ID:        "gate",
+				DependsOn: []string{"work"},
+				Spawn: func(_ context.Context, _ any, _ any) ([]executor.Step, []executor.Edge, error) {
+					if terminateAt >= 0 && currentIter >= terminateAt {
+						return nil, nil, nil
+					}
+					gateID := fmt.Sprintf("loop#iter:%d:gate", currentIter)
+					steps, edges := executor.AppendSubgraph(template, executor.IterationContext{
+						TemplateID:     "loop",
+						IterationIndex: currentIter + 1,
+						ParentNodeID:   gateID,
+					})
+					return steps, edges, nil
+				},
+			},
+		}
+	}
+	return template
+}
+
+func seedLoopStep(template func(executor.IterationContext) []executor.Step) executor.Step {
+	return executor.Step{
+		ID: "seed",
+		Spawn: func(_ context.Context, _ any, _ any) ([]executor.Step, []executor.Edge, error) {
+			steps, edges := executor.AppendSubgraph(template, executor.IterationContext{
+				TemplateID:     "loop",
+				IterationIndex: 0,
+				ParentNodeID:   "seed",
+			})
+			return steps, edges, nil
+		},
+	}
+}
+
+func TestConvergenceLoopRunsToCompletion(t *testing.T) {
+	// Terminate at iteration 2 → iterations 0, 1, 2 run.
+	template := convergenceLoopTemplate(2)
+
+	cfg := executor.Config[testState]{
+		Steps:              []executor.Step{seedLoopStep(template)},
+		RunStep:            runStep,
+		Merge:              merge,
+		Snapshot:           snapshot,
+		MaxGraphMultiplier: 50,
+	}
+
+	state := &testState{}
+	results, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+	assert.NoError(t, err)
+	// seed + 3 iterations × 2 nodes per iter = 7 results.
+	assert.Len(t, results, 7)
+
+	seenIDs := make(map[string]bool, len(results))
+	for _, r := range results {
+		seenIDs[r.StepID] = true
+	}
+	assert.True(t, seenIDs["loop#iter:0:work"])
+	assert.True(t, seenIDs["loop#iter:0:gate"])
+	assert.True(t, seenIDs["loop#iter:1:work"])
+	assert.True(t, seenIDs["loop#iter:1:gate"])
+	assert.True(t, seenIDs["loop#iter:2:work"])
+	assert.True(t, seenIDs["loop#iter:2:gate"])
+	assert.False(t, seenIDs["loop#iter:3:work"], "loop must terminate at iter 2")
+}
+
+func TestConvergenceLoopHitsBudget(t *testing.T) {
+	// terminateAt = -1 → never converges. The graph-size cap must stop
+	// the runaway loop and surface the spawner that tripped it.
+	template := convergenceLoopTemplate(-1)
+
+	cfg := executor.Config[testState]{
+		Steps:              []executor.Step{seedLoopStep(template)},
+		RunStep:            runStep,
+		Merge:              merge,
+		Snapshot:           snapshot,
+		MaxGraphMultiplier: 5, // cap = 5 total nodes; loop blows past this fast
+	}
+
+	state := &testState{}
+	_, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, executor.ErrGraphSizeExceeded),
+		"runaway convergence loop must hit ErrGraphSizeExceeded, got: %v", err)
+	// The spawner that tripped the cap should be named — a gate from
+	// some specific iteration (the seed already fired earlier).
+	assert.Contains(t, err.Error(), "gate",
+		"the gate that tripped the cap should be named in the error")
+}
+
+func TestIterationMetadataInResults(t *testing.T) {
+	template := convergenceLoopTemplate(1) // iterations 0 and 1
+
+	cfg := executor.Config[testState]{
+		Steps:              []executor.Step{seedLoopStep(template)},
+		RunStep:            runStep,
+		Merge:              merge,
+		Snapshot:           snapshot,
+		MaxGraphMultiplier: 50,
+	}
+
+	state := &testState{}
+	results, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+	assert.NoError(t, err)
+
+	byID := make(map[string]executor.StepResult, len(results))
+	for _, r := range results {
+		byID[r.StepID] = r
+	}
+
+	assert.Equal(t, "", byID["seed"].TemplateID, "initial-graph step has no template id")
+	assert.Equal(t, 0, byID["seed"].IterationIndex, "initial-graph step has zero iteration index")
+
+	for _, base := range []string{"work", "gate"} {
+		for iter := 0; iter <= 1; iter++ {
+			id := fmt.Sprintf("loop#iter:%d:%s", iter, base)
+			r, ok := byID[id]
+			assert.True(t, ok, "expected result for %s", id)
+			assert.Equal(t, "loop", r.TemplateID, "%s template id", id)
+			assert.Equal(t, iter, r.IterationIndex, "%s iteration index", id)
+		}
+	}
+}
+
+// TestAppendSubgraphRewritesInternalDeps verifies the helper rewrites
+// DependsOn entries that reference sibling base ids, while leaving
+// external references untouched, and produces parent edges only to
+// "template-root" steps (those with no sibling dep).
+func TestAppendSubgraphRewritesInternalDeps(t *testing.T) {
+	template := func(_ executor.IterationContext) []executor.Step {
+		return []executor.Step{
+			{ID: "a"},                                       // root (no deps)
+			{ID: "b", DependsOn: []string{"a"}},             // sibling dep — should rewrite, not a root
+			{ID: "c", DependsOn: []string{"a", "external"}}, // mixed — only "a" rewrites, not a root
+			{ID: "d", DependsOn: []string{"external"}},      // external only — still a root
+		}
+	}
+
+	steps, edges := executor.AppendSubgraph(template, executor.IterationContext{
+		TemplateID:     "tpl",
+		IterationIndex: 0,
+		ParentNodeID:   "parent",
+	})
+
+	assert.Len(t, steps, 4)
+
+	depsByID := make(map[string][]string, len(steps))
+	for _, s := range steps {
+		depsByID[s.ID] = s.DependsOn
+	}
+
+	assert.Nil(t, depsByID["tpl#iter:0:a"], "a has no deps")
+	assert.Equal(t, []string{"tpl#iter:0:a"}, depsByID["tpl#iter:0:b"], "b's sibling dep rewritten")
+	assert.Equal(t, []string{"tpl#iter:0:a", "external"}, depsByID["tpl#iter:0:c"], "c rewrites only the sibling")
+	assert.Equal(t, []string{"external"}, depsByID["tpl#iter:0:d"], "d's external dep untouched")
+
+	// Roots: "a" (no deps) and "d" (only external dep). "b" and "c"
+	// have sibling deps so they're NOT roots.
+	seen := map[string]bool{}
+	for _, e := range edges {
+		seen[e.From+"->"+e.To] = true
+	}
+	assert.Equal(t, map[string]bool{
+		"parent->tpl#iter:0:a": true,
+		"parent->tpl#iter:0:d": true,
+	}, seen, "parent edges only to roots (a and d)")
+}
+
+// --- DJ-122 Phase 3: graph_mutated event ---
+
+// TestGraphMutatedEventEmitted verifies that successful Spawn appends
+// fire a "graph_mutated" event with SpawnerID + appended/total counts.
+// Step-completed events for the spawner and its spawned steps still
+// flow normally.
+func TestGraphMutatedEventEmitted(t *testing.T) {
+	events := make(chan executor.Event, 20)
+
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{
+				ID: "A",
+				Spawn: func(_ context.Context, _ any, _ any) ([]executor.Step, []executor.Edge, error) {
+					// Append two new steps: B (root) and C (depends on B).
+					return []executor.Step{
+							{ID: "B"},
+							{ID: "C", DependsOn: []string{"B"}},
+						},
+						[]executor.Edge{{From: "A", To: "B"}}, nil
+				},
+			},
+		},
+		RunStep:  runStep,
+		Merge:    merge,
+		Snapshot: snapshot,
+		Events:   events,
+	}
+
+	state := &testState{}
+	_, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+	assert.NoError(t, err)
+
+	close(events)
+	var mutations []executor.Event
+	for e := range events {
+		if e.Status == "graph_mutated" {
+			mutations = append(mutations, e)
+		}
+	}
+	assert.Len(t, mutations, 1, "exactly one graph_mutated event expected")
+	if len(mutations) == 1 {
+		assert.NotNil(t, mutations[0].Mutation, "mutation payload populated")
+		assert.Equal(t, "A", mutations[0].StepID, "event StepID echoes SpawnerID")
+		assert.Equal(t, "A", mutations[0].Mutation.SpawnerID)
+		assert.Equal(t, 2, mutations[0].Mutation.AppendedNodeCount, "B and C appended")
+		assert.Equal(t, 3, mutations[0].Mutation.TotalNodeCount, "A + B + C after append")
+	}
+}
+
+// TestGraphMutatedEventSuppressedOnEmptySpawn verifies that a spawner
+// returning no new steps (regardless of whether it returns edges-only)
+// does NOT fire a graph_mutated event — the node count didn't move.
+func TestGraphMutatedEventSuppressedOnEmptySpawn(t *testing.T) {
+	events := make(chan executor.Event, 20)
+
+	cfg := executor.Config[testState]{
+		Steps: []executor.Step{
+			{
+				ID: "A",
+				Spawn: func(_ context.Context, _ any, _ any) ([]executor.Step, []executor.Edge, error) {
+					return nil, nil, nil
+				},
+			},
+		},
+		RunStep:  runStep,
+		Merge:    merge,
+		Snapshot: snapshot,
+		Events:   events,
+	}
+
+	state := &testState{}
+	_, err := executor.NewExecutor(cfg).Run(context.Background(), state)
+	assert.NoError(t, err)
+
+	close(events)
+	for e := range events {
+		assert.NotEqual(t, "graph_mutated", e.Status, "empty spawn must not emit graph_mutated")
+	}
+}
+
+// TestAppendSubgraphEmptyParent verifies that a zero-value
+// ParentNodeID suppresses the auto-edges — useful for stand-alone
+// template expansion.
+func TestAppendSubgraphEmptyParent(t *testing.T) {
+	template := func(_ executor.IterationContext) []executor.Step {
+		return []executor.Step{{ID: "x"}}
+	}
+	steps, edges := executor.AppendSubgraph(template, executor.IterationContext{
+		TemplateID:     "tpl",
+		IterationIndex: 0,
+		// ParentNodeID empty.
+	})
+	assert.Len(t, steps, 1)
+	assert.Empty(t, edges, "no parent edges when ParentNodeID is empty")
 }

@@ -213,9 +213,10 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 	// the loop won't iterate again, just a small extra call.
 	require.NoError(t, fs.Remove(".borg/agents/convergence.md"))
 
-	// Phase 3 council flow: scout → outline → 1 elaborate_features +
+	// DJ-122 council flow: scout → outline → 1 elaborate_features +
 	// 1 elaborate_strategies (fanout) → reconcile → 4 critics (empty)
-	// → no revise → no reconcile_revise = 9 calls.
+	// → no cluster_findings (conditional, skipped when no unmatched
+	// findings) → gate (Converged:true terminates the loop) = 10 calls.
 	scoutResp := `{"domain_read":"electoral campaign","technology_options":["x: a vs b"],"implicit_assumptions":["scale: 100k. Default: 1k concurrent"],"watch_outs":[]}`
 	outlineResp := `{
 		"features": [{"id":"feat-dashboard","title":"Candidate dashboard","summary":"At-a-glance campaign view"}],
@@ -236,6 +237,7 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 	// (workflow YAML has parallel: true); the mock would race on
 	// positional consumption otherwise. Agent-tagged responses match
 	// the source agent regardless of arrival order at the mock.
+	gateConvergedResp := `{"converged":true,"reasoning":"All four lifecycle phases addressed for both deliverables."}`
 	mock := agent.NewMockExecutor(
 		agent.MockResponse{Response: &agent.AgentOutput{Content: scoutResp, Model: "m"}},
 		agent.MockResponse{Response: &agent.AgentOutput{Content: outlineResp, Model: "m"}},
@@ -246,6 +248,7 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_gate", Response: &agent.AgentOutput{Content: gateConvergedResp, Model: "m"}},
 	)
 
 	result, err := RunRefineGoals(context.Background(), mock, fs, nil)

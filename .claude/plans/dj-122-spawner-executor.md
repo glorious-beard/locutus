@@ -2,7 +2,7 @@
 
 > **Governing DJ:** [DJ-122: Graph-Mutation Workflow Executor with Spawner Nodes (Supersedes DJ-112 on Control-Flow Topology)](../../docs/DECISION_JOURNAL.md#dj-122-graph-mutation-workflow-executor-with-spawner-nodes-supersedes-dj-112-on-control-flow-topology). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes that don't belong in the DJ.
 >
-> **Status:** designed; implementation not started.
+> **Status:** DONE — Phases 1–7 landed 2026-05-14. Manual smoke + Planning/Assimilation gate-spawner migration are follow-up work tracked elsewhere. DJ-122 status flipped to `shipping`.
 > **Surface area:** `internal/executor/` (~440 LOC) + `internal/agent/workflow.go` wrapper + 3 council workflow definitions + ~25 references across agent / dispatch / cmd consumers.
 > **Discipline (per memory):** tests → design pause in chat → code; mid-impl failures trigger design judgment, not test patching. Each phase verifies independently before moving on. CLI visibility rendering is deferred per direction in chat — get the engine working first.
 

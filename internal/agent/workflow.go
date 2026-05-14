@@ -59,6 +59,32 @@ type WorkflowStep[S any] struct {
 	Project     func(StateSnapshot[S]) []Message
 	Merge       func(*S, []RoundResult)
 	RunItem     func(ctx context.Context, snap StateSnapshot[S]) (string, error)
+
+	// Spawn, when non-nil, is invoked after the step's merge and may
+	// append additional WorkflowSteps to the running DAG. It receives a
+	// post-merge snapshot and the step's RoundResults so the closure can
+	// branch on what the step actually produced. The agent-layer
+	// translator wraps this into the executor.Step.Spawn primitive
+	// landed in DJ-122 Phase 1. Returned steps go through the same
+	// translator as initial-graph steps, so they may declare Agents,
+	// RunItem, Conditional, etc. and run via ExecuteRound on a future
+	// wave. The Edge list is for cross-cutting edges that don't fit on
+	// a new step's DependsOn (e.g., parent → template-root).
+	Spawn func(ctx context.Context, snapshot StateSnapshot[S], results []RoundResult) (newSteps []WorkflowStep[S], newEdges []executor.Edge, err error)
+
+	// Budget is read by spawner closures as the iteration cap for the
+	// loop they drive. Zero falls back to Workflow.DefaultGateBudget.
+	// Has no effect on non-spawner steps; the executor does not consume
+	// this field directly.
+	Budget int
+
+	// TemplateID and IterationIndex are stamped on spawned steps by
+	// callers that drive iteration-aware loops; they propagate through
+	// to executor.Step (and onward to StepResult / RoundResult) so
+	// downstream consumers can attribute output to a specific
+	// iteration. Zero-valued on initial-graph steps.
+	TemplateID     string
+	IterationIndex int
 }
 
 // Workflow defines a verb's DAG of steps. The S type parameter is the
@@ -80,6 +106,19 @@ type Workflow[S any] struct {
 	// universally-projectable shape can leave it nil and require every
 	// step to declare Project explicitly.
 	DefaultProject func(StateSnapshot[S]) []Message
+
+	// MaxGraphMultiplier forwards to executor.Config.MaxGraphMultiplier
+	// for workflows that use spawner steps. Zero leaves the executor
+	// at its own default (1000 × initial-step-count). Setting it to 1
+	// effectively disables spawning. Has no effect when no step has a
+	// Spawn callback.
+	MaxGraphMultiplier int
+
+	// DefaultGateBudget is the fallback iteration cap for gate steps
+	// whose own WorkflowStep.Budget is zero. Spawner closures read
+	// their own budget first and fall back to this. Zero leaves the
+	// fallback at 5.
+	DefaultGateBudget int
 }
 
 // RoundResult holds the output of executing one round.
@@ -88,6 +127,14 @@ type RoundResult struct {
 	AgentID string
 	Output  string
 	Err     error
+
+	// TemplateID and IterationIndex echo the producing step's
+	// iteration metadata (DJ-122 Phase 2). Zero-valued for
+	// initial-graph and ad-hoc-spawned steps. Stamped by the RunStep
+	// wrapper from the executor.Step, so per-agent code in
+	// executeAgent doesn't need to know about iterations.
+	TemplateID     string
+	IterationIndex int
 }
 
 // WorkflowExecutor runs a workflow using the generic DAG executor with a
@@ -592,14 +639,23 @@ func (e *WorkflowExecutor[S]) snapshot(state *S) StateSnapshot[S] {
 // the round results. Multi-iteration concerns (convergence, readiness)
 // belong in verb-specific wrappers (see RunCouncil for the council case).
 func (e *WorkflowExecutor[S]) Run(ctx context.Context, state *S) ([]RoundResult, error) {
-	dagSteps := make([]executor.Step, len(e.Workflow.Rounds))
 	stepLookup := make(map[string]WorkflowStep[S], len(e.Workflow.Rounds))
-	for i, ws := range e.Workflow.Rounds {
+	// toExecutorStep is shared between the initial-graph build and the
+	// spawn translator below so spawned WorkflowSteps go through the
+	// same conversion path (Conditional wrapping, Spawn re-translation,
+	// stepLookup registration) as initial-graph steps. Closes over
+	// stepLookup, so each call registers ws.ID for later RunStep /
+	// Merge lookups; safe to call sequentially from a Spawn callback
+	// per executor's wave-then-spawn ordering.
+	var toExecutorStep func(ws WorkflowStep[S]) executor.Step
+	toExecutorStep = func(ws WorkflowStep[S]) executor.Step {
 		stepLookup[ws.ID] = ws
 		ds := executor.Step{
-			ID:        ws.ID,
-			DependsOn: ws.DependsOn,
-			Parallel:  ws.Parallel,
+			ID:             ws.ID,
+			DependsOn:      ws.DependsOn,
+			Parallel:       ws.Parallel,
+			TemplateID:     ws.TemplateID,
+			IterationIndex: ws.IterationIndex,
 		}
 		if ws.Conditional != nil {
 			cond := ws.Conditional // capture for closure
@@ -607,7 +663,32 @@ func (e *WorkflowExecutor[S]) Run(ctx context.Context, state *S) ([]RoundResult,
 				return cond(s.(*S))
 			}
 		}
-		dagSteps[i] = ds
+		if ws.Spawn != nil {
+			spawn := ws.Spawn // capture for closure
+			ds.Spawn = func(ctx context.Context, snapAny any, out any) ([]executor.Step, []executor.Edge, error) {
+				snapState, _ := snapAny.(S)
+				snap := StateSnapshot[S]{State: snapState}
+				results, _ := out.([]RoundResult) // nil-output is fine; spawn handles len==0
+				newWSs, newEdges, err := spawn(ctx, snap, results)
+				if err != nil {
+					return nil, nil, err
+				}
+				if len(newWSs) == 0 {
+					return nil, newEdges, nil
+				}
+				execSteps := make([]executor.Step, len(newWSs))
+				for i, ns := range newWSs {
+					execSteps[i] = toExecutorStep(ns)
+				}
+				return execSteps, newEdges, nil
+			}
+		}
+		return ds
+	}
+
+	dagSteps := make([]executor.Step, len(e.Workflow.Rounds))
+	for i, ws := range e.Workflow.Rounds {
+		dagSteps[i] = toExecutorStep(ws)
 	}
 
 	dagEvents, stopBridge := e.startEventBridge()
@@ -618,6 +699,15 @@ func (e *WorkflowExecutor[S]) Run(ctx context.Context, state *S) ([]RoundResult,
 		RunStep: func(ctx context.Context, step executor.Step, snap S) (executor.StepResult, error) {
 			ws := stepLookup[step.ID]
 			results, err := e.ExecuteRound(ctx, ws, &snap)
+			// Stamp iteration metadata from the executor step onto
+			// each RoundResult so callers see iteration attribution
+			// without consulting events.
+			if step.TemplateID != "" || step.IterationIndex != 0 {
+				for j := range results {
+					results[j].TemplateID = step.TemplateID
+					results[j].IterationIndex = step.IterationIndex
+				}
+			}
 			return executor.StepResult{Output: results}, err
 		},
 		Merge: func(s *S, r executor.StepResult) {
@@ -636,7 +726,8 @@ func (e *WorkflowExecutor[S]) Run(ctx context.Context, state *S) ([]RoundResult,
 			}
 			return *s
 		},
-		Events: dagEvents,
+		Events:             dagEvents,
+		MaxGraphMultiplier: e.Workflow.MaxGraphMultiplier,
 	}
 
 	dagResults, err := executor.NewExecutor(cfg).Run(ctx, state)
@@ -648,6 +739,81 @@ func (e *WorkflowExecutor[S]) Run(ctx context.Context, state *S) ([]RoundResult,
 		}
 	}
 	return allResults, err
+}
+
+// AppendSubgraph is the WorkflowStep[S] analogue of
+// executor.AppendSubgraph. A Spawn closure that drives a convergence
+// loop calls this to expand one iteration of a template into a list of
+// fully-stamped WorkflowStep[S]s plus the parent edges connecting them
+// to the spawning gate.
+//
+// For each step the template returns:
+//   - ID is rewritten as "<TemplateID>#iter:<IterationIndex>:<base_id>"
+//   - TemplateID and IterationIndex fields are populated
+//   - DependsOn entries that name a sibling base id are rewritten to
+//     the prefixed form; external references pass through unchanged
+//   - Spawn closures the template installs on iteration steps are
+//     preserved verbatim
+//
+// A "template root" is any returned step whose DependsOn names no
+// sibling. Each root receives an auto-edge from ctx.ParentNodeID. When
+// ParentNodeID is empty, no parent edges are produced.
+//
+// The helper is pure: it does not touch the workflow or executor state
+// and returns nil slices on an empty template, so callers can hand the
+// result straight back from a Spawn return without additional guarding.
+func AppendSubgraph[S any](template func(executor.IterationContext) []WorkflowStep[S], ctx executor.IterationContext) ([]WorkflowStep[S], []executor.Edge) {
+	raw := template(ctx)
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	prefix := func(base string) string {
+		return fmt.Sprintf("%s#iter:%d:%s", ctx.TemplateID, ctx.IterationIndex, base)
+	}
+
+	siblings := make(map[string]bool, len(raw))
+	for _, s := range raw {
+		siblings[s.ID] = true
+	}
+
+	steps := make([]WorkflowStep[S], len(raw))
+	var rootIDs []string
+	for i, s := range raw {
+		baseID := s.ID
+		s.ID = prefix(baseID)
+		s.TemplateID = ctx.TemplateID
+		s.IterationIndex = ctx.IterationIndex
+
+		hasInternalDep := false
+		if len(s.DependsOn) > 0 {
+			rewritten := make([]string, len(s.DependsOn))
+			for j, dep := range s.DependsOn {
+				if siblings[dep] {
+					rewritten[j] = prefix(dep)
+					hasInternalDep = true
+				} else {
+					rewritten[j] = dep
+				}
+			}
+			s.DependsOn = rewritten
+		}
+		steps[i] = s
+
+		if !hasInternalDep {
+			rootIDs = append(rootIDs, s.ID)
+		}
+	}
+
+	var edges []executor.Edge
+	if ctx.ParentNodeID != "" && len(rootIDs) > 0 {
+		edges = make([]executor.Edge, 0, len(rootIDs))
+		for _, id := range rootIDs {
+			edges = append(edges, executor.Edge{From: ctx.ParentNodeID, To: id})
+		}
+	}
+
+	return steps, edges
 }
 
 // startEventBridge spawns a goroutine that forwards executor events as
@@ -669,6 +835,7 @@ func (e *WorkflowExecutor[S]) startEventBridge() (chan executor.Event, func()) {
 				Status:    evt.Status,
 				Message:   evt.Message,
 				Timestamp: evt.Timestamp,
+				Mutation:  evt.Mutation,
 			}:
 			default:
 			}

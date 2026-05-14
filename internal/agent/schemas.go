@@ -206,6 +206,22 @@ func init() {
 		}},
 	})
 
+	// SpecGateVerdict drives the DJ-122 spec-council convergence loop.
+	// The spec_gate agent reads the assembled ProposedSpec + GOALS.md
+	// and grades it against the four-lifecycle-phases YES question
+	// (define / develop / deploy / support). Example payload uses
+	// descriptive prose, never placeholder tokens — placeholders prime
+	// the schema-skeleton failure mode the validators exist to catch.
+	RegisterSchema("SpecGateVerdict", SpecGateVerdict{
+		Converged: false,
+		Reasoning: "Define and develop are committed for the iOS companion app, but deploy lacks an explicit App Store / TestFlight rollout cadence and support has no observability commitment. Firmware deliverable converges on define/develop/support but is missing an OTA update-channel decision under deploy.",
+		OpenDimensions: []string{
+			"deployment cadence for the iOS companion app",
+			"OTA update channel for the nRF52840 firmware",
+			"observability stack for the iOS companion app",
+		},
+	})
+
 	RegisterSchema("Concern", Concern{
 		AgentID:  "critic",
 		Severity: "high",

@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/chetan/locutus/internal/history"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 )
@@ -150,7 +153,29 @@ type CriticIssues struct {
 // IntegrityViolationError instead of producing a degraded proposal —
 // silent stripping would mask a council failure the user cares about.
 func GenerateSpec(ctx context.Context, exec AgentExecutor, fsys specio.FS, req SpecGenRequest) (*SpecProposal, error) {
-	return generateSpecWithWorkflow(ctx, exec, fsys, req, SpecGenerationWorkflow)
+	budget := readSpecGateBudget()
+	var historian *history.Historian
+	if fsys != nil {
+		historian = history.NewHistorian(fsys, ".borg/history")
+	}
+	wf := NewSpecGenerationWorkflow(historian, budget)
+	return generateSpecWithWorkflow(ctx, exec, fsys, req, wf)
+}
+
+// readSpecGateBudget returns the iteration cap for the spec-council
+// convergence gate. LOCUTUS_SPEC_GEN_MAX_ITERATIONS overrides the
+// default when set to a positive integer. Invalid or zero values are
+// ignored — the workflow constructor falls back to the default.
+func readSpecGateBudget() int {
+	raw := strings.TrimSpace(os.Getenv("LOCUTUS_SPEC_GEN_MAX_ITERATIONS"))
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 // generateSpecWithWorkflow runs the spec-generation council with the

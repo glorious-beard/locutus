@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chetan/locutus/internal/executor"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -301,6 +303,111 @@ func TestWorkflowEvents(t *testing.T) {
 	}
 	assert.True(t, agentStatuses["started"])
 	assert.True(t, agentStatuses["completed"])
+}
+
+// TestEventBridgeForwardsGraphMutated verifies the startEventBridge
+// translator propagates the DJ-122 "graph_mutated" status + Mutation
+// payload from the executor channel onto the workflow events channel.
+// Phase 4 will wire WorkflowStep.Spawn so this fires end-to-end; for
+// Phase 3 we drive the bridge directly to lock the wire shape.
+func TestEventBridgeForwardsGraphMutated(t *testing.T) {
+	events := make(chan WorkflowEvent, 4)
+	exec := &WorkflowExecutor[PlanningState]{Events: events}
+
+	dagEvents, stop := exec.startEventBridge()
+	require.NotNil(t, dagEvents, "bridge should produce a channel when Events is set")
+
+	ts := time.Now()
+	dagEvents <- executor.Event{
+		StepID:    "gate",
+		Status:    "graph_mutated",
+		Timestamp: ts,
+		Mutation: &executor.MutationDetails{
+			SpawnerID:         "gate",
+			AppendedNodeCount: 4,
+			TotalNodeCount:    9,
+		},
+	}
+	stop() // flushes and waits
+
+	close(events)
+	var forwarded []WorkflowEvent
+	for e := range events {
+		forwarded = append(forwarded, e)
+	}
+	require.Len(t, forwarded, 1)
+	assert.Equal(t, "gate", forwarded[0].StepID)
+	assert.Equal(t, "graph_mutated", forwarded[0].Status)
+	require.NotNil(t, forwarded[0].Mutation, "mutation must survive the bridge")
+	assert.Equal(t, "gate", forwarded[0].Mutation.SpawnerID)
+	assert.Equal(t, 4, forwarded[0].Mutation.AppendedNodeCount)
+	assert.Equal(t, 9, forwarded[0].Mutation.TotalNodeCount)
+}
+
+// TestSpawnerStepWiringEndToEnd exercises the DJ-122 Phase 4 wiring:
+// a tiny workflow whose final step spawns one additional step on its
+// first invocation and nothing on the second. Verifies that
+//
+//   - the agent-layer Spawn closure runs with a typed snapshot
+//   - the spawned WorkflowStep is converted to an executor.Step and
+//     runs via ExecuteRound on the next wave
+//   - TemplateID + IterationIndex stamped on the spawned step flow
+//     through to the RoundResult
+//   - second-iteration Spawn returning nil terminates cleanly
+func TestSpawnerStepWiringEndToEnd(t *testing.T) {
+	mock := NewMockExecutor(
+		mockResp("seed output"),
+		mockResp("spawned-iter1 output"),
+	)
+
+	spawnCalls := 0
+	wf := &Workflow[PlanningState]{
+		MaxRounds:          1,
+		MaxGraphMultiplier: 100,
+		Rounds: []WorkflowStep[PlanningState]{
+			{
+				ID:     "seed",
+				Agents: []string{"planner"},
+				Spawn: func(_ context.Context, _ StateSnapshot[PlanningState], _ []RoundResult) ([]WorkflowStep[PlanningState], []executor.Edge, error) {
+					spawnCalls++
+					if spawnCalls > 1 {
+						return nil, nil, nil
+					}
+					next := WorkflowStep[PlanningState]{
+						ID:             "loop#iter:1:work",
+						Agents:         []string{"planner"},
+						TemplateID:     "loop",
+						IterationIndex: 1,
+					}
+					// One edge: seed → spawned-iter1
+					return []WorkflowStep[PlanningState]{next},
+						[]executor.Edge{{From: "seed", To: "loop#iter:1:work"}},
+						nil
+				},
+			},
+		},
+	}
+
+	exec := &WorkflowExecutor[PlanningState]{
+		Executor:  mock,
+		AgentDefs: map[string]AgentDef{"planner": {ID: "planner", SystemPrompt: "You are the planner."}},
+		Workflow:  wf,
+	}
+
+	results, err := exec.Run(context.Background(), &PlanningState{Prompt: "Design X."})
+	assert.NoError(t, err)
+	assert.Equal(t, 1, spawnCalls, "spawn should fire exactly once — the spawned step's own Spawn is nil")
+	require.Len(t, results, 2, "seed + one spawned step ran")
+
+	// First result: the seed step, no template metadata.
+	assert.Equal(t, "seed", results[0].StepID)
+	assert.Equal(t, "", results[0].TemplateID)
+	assert.Equal(t, 0, results[0].IterationIndex)
+
+	// Second result: the spawned step, carrying iteration metadata.
+	assert.Equal(t, "loop#iter:1:work", results[1].StepID)
+	assert.Equal(t, "loop", results[1].TemplateID)
+	assert.Equal(t, 1, results[1].IterationIndex)
 }
 
 func TestSnapshotIsolation(t *testing.T) {

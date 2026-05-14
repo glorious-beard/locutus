@@ -1,6 +1,10 @@
 package agent
 
-import "time"
+import (
+	"time"
+
+	"github.com/chetan/locutus/internal/executor"
+)
 
 // Concern is a challenge raised by the critic or stakeholder.
 //
@@ -159,7 +163,12 @@ func (s *PlanningState) HasOpenConcerns() bool {
 type WorkflowEvent struct {
 	StepID    string    `json:"step_id"`
 	AgentID   string    `json:"agent_id,omitempty"`
-	Status    string    `json:"status"` // "started", "completed", "retrying", "skipped", "error"
+	Status    string    `json:"status"` // "started", "completed", "retrying", "skipped", "error", "graph_mutated"
 	Message   string    `json:"message,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
+
+	// Mutation is populated on "graph_mutated" events forwarded from
+	// the underlying executor (DJ-122 spawner support). Nil on every
+	// other event kind.
+	Mutation *executor.MutationDetails `json:"mutation,omitempty"`
 }
