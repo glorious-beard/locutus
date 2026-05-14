@@ -171,6 +171,56 @@ func TestAgentSchemaReferencesResolve(t *testing.T) {
 	require.Greater(t, checked, 0, "no agents with output_schema scanned — directory layout regression?")
 }
 
+// TestEveryAgentDeclaresThinking guards the explicit-thinking
+// contract introduced when reasoning mode was decoupled from tier.
+// Every agent .md must declare `thinking: off | on | high` in its
+// frontmatter — no fallback, no implicit default. The whole point
+// of the decoupling was to force every agent author to make the
+// reasoning-mode choice deliberately per-agent; a missing declaration
+// would silently default to off and re-create the "what does this
+// agent want?" ambiguity we just eliminated.
+//
+// Without this guard, a new agent can ship without the choice being
+// made — the dispatcher would treat empty-string thinking as off (the
+// safer default), but the operator reading the agent .md would have
+// no way to tell whether thinking-off was intended or accidental.
+func TestEveryAgentDeclaresThinking(t *testing.T) {
+	agentsDir := filepath.Join("..", "internal", "scaffold", "agents")
+	entries, err := os.ReadDir(agentsDir)
+	require.NoError(t, err, "read agents directory")
+
+	type minimalFrontmatter struct {
+		ID       string `yaml:"id"`
+		Thinking string `yaml:"thinking"`
+	}
+
+	allowed := map[string]bool{"off": true, "on": true, "high": true}
+	checked := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		path := filepath.Join(agentsDir, e.Name())
+		data, err := os.ReadFile(path)
+		require.NoErrorf(t, err, "read %s", path)
+
+		var fm minimalFrontmatter
+		if _, err := frontmatter.Parse(data, &fm); err != nil {
+			t.Errorf("%s: frontmatter parse failed: %v", e.Name(), err)
+			continue
+		}
+		checked++
+		if fm.Thinking == "" {
+			t.Errorf("%s: missing `thinking:` declaration. Every agent must explicitly declare its reasoning mode (off / on / high) — the decoupling from tier removed the implicit default. Pick a value based on what the agent does.", e.Name())
+			continue
+		}
+		if !allowed[fm.Thinking] {
+			t.Errorf("%s: thinking: %q is not one of off / on / high.", e.Name(), fm.Thinking)
+		}
+	}
+	require.Greater(t, checked, 0, "no agents scanned — directory layout regression?")
+}
+
 // TestSchemaExamplePayloadsAvoidPlaceholderPriming extends the
 // placeholder-priming guard to cover the registered example payloads
 // themselves. With Path A wired up (BuildSystemPrompt appends a JSON
