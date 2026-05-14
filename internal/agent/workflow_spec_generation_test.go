@@ -124,17 +124,21 @@ func TestSpecGateSpawnsNextIterationOnNotConverged(t *testing.T) {
 		MockResponse{Response: &AgentOutput{
 			Content: gateVerdictJSON(t, SpecGateVerdict{
 				Converged: false,
-				Reasoning: "iOS app deploy cadence is unspecified.",
-				OpenDimensions: []string{
-					"deployment cadence for the iOS companion app",
-				},
+				Reasoning: "Deploy phase carries the remaining gap for the iOS companion app.",
+				OpenDimensions: []OpenDimension{{
+					Deliverable: "iOS companion app",
+					Phase:       "deploy",
+					Axis:        "App Store / TestFlight rollout cadence",
+					Reasoning:   "The proposal commits to App Store distribution but does not name a TestFlight gating step; without one the team cannot stage rollouts.",
+				}},
 			}),
 			Model: "m",
 		}},
 		MockResponse{Response: &AgentOutput{
 			Content: gateVerdictJSON(t, SpecGateVerdict{
-				Converged: true,
-				Reasoning: "iOS deploy cadence now committed; all phases addressed.",
+				Converged:      true,
+				Reasoning:      "Every deliverable commits across all four phases; no open concerns remain.",
+				OpenDimensions: []OpenDimension{},
 			}),
 			Model: "m",
 		}},
@@ -168,8 +172,13 @@ func TestSpecGateFailsOnBudgetExhaustion(t *testing.T) {
 		MockResponse{Response: &AgentOutput{
 			Content: gateVerdictJSON(t, SpecGateVerdict{
 				Converged: false,
-				Reasoning: "Firmware deploy is unaddressed.",
-				OpenDimensions: []string{"OTA update channel for the firmware"},
+				Reasoning: "Deploy phase for the firmware deliverable is unaddressed.",
+				OpenDimensions: []OpenDimension{{
+					Deliverable: "nRF52840 firmware",
+					Phase:       "deploy",
+					Axis:        "OTA update channel",
+					Reasoning:   "No OTA path is committed; the firmware cannot ship a security fix after first install.",
+				}},
 			}),
 			Model: "m",
 		}},
@@ -196,9 +205,9 @@ func TestSpecGateFailsOnBudgetExhaustion(t *testing.T) {
 			var evt history.Event
 			require.NoError(t, json.Unmarshal(body, &evt))
 			assert.Equal(t, "convergence_failed", evt.Kind)
-			assert.Contains(t, evt.Rationale, "Firmware deploy is unaddressed",
+			assert.Contains(t, evt.Rationale, "Deploy phase for the firmware deliverable is unaddressed",
 				"event rationale should carry the gate's verdict reasoning")
-			assert.Contains(t, evt.Rationale, "OTA update channel for the firmware",
+			assert.Contains(t, evt.Rationale, "OTA update channel",
 				"event rationale should list the unresolved open dimensions")
 		}
 	}
@@ -212,10 +221,20 @@ func TestSpecGateMergeAppendsOpenDimensionsAsConcernsAndClusters(t *testing.T) {
 	state := &PlanningState{}
 	verdict := SpecGateVerdict{
 		Converged: false,
-		Reasoning: "two phases missing",
-		OpenDimensions: []string{
-			"deployment cadence for the iOS companion app",
-			"OTA update channel for the firmware",
+		Reasoning: "Deploy and support carry the remaining gaps.",
+		OpenDimensions: []OpenDimension{
+			{
+				Deliverable: "iOS companion app",
+				Phase:       "deploy",
+				Axis:        "App Store / TestFlight rollout cadence",
+				Reasoning:   "Distribution is committed but the staged-rollout path is not.",
+			},
+			{
+				Deliverable: "nRF52840 firmware",
+				Phase:       "deploy",
+				Axis:        "OTA update channel",
+				Reasoning:   "No OTA path is committed; security fixes cannot ship after first install.",
+			},
 		},
 	}
 	results := []RoundResult{{
@@ -230,9 +249,17 @@ func TestSpecGateMergeAppendsOpenDimensionsAsConcernsAndClusters(t *testing.T) {
 	for _, c := range state.Concerns {
 		assert.Equal(t, "spec_gate", c.AgentID)
 		assert.Equal(t, "high", c.Severity)
-		assert.Equal(t, "convergence", c.Kind)
+		assert.Equal(t, "deploy", c.Kind, "Concern.Kind carries the dimension's lifecycle phase")
 	}
+	// Text should be the per-dimension reasoning, not the headline.
+	assert.Equal(t, "Distribution is committed but the staged-rollout path is not.", state.Concerns[0].Text)
+	assert.Equal(t, "No OTA path is committed; security fixes cannot ship after first install.", state.Concerns[1].Text)
+
 	assert.Len(t, state.FindingClusters, 2, "each OpenDimension becomes a FindingCluster")
+	// Cluster topic combines deliverable + axis so the elaborator
+	// prompt has the gap specifically.
+	assert.Equal(t, "iOS companion app: App Store / TestFlight rollout cadence", state.FindingClusters[0].Topic)
+	assert.Equal(t, "nRF52840 firmware: OTA update channel", state.FindingClusters[1].Topic)
 	for _, c := range state.FindingClusters {
 		assert.Equal(t, "spec_strategy_elaborator", c.AgentID,
 			"gate findings route to the strategy elaborator")
@@ -246,8 +273,9 @@ func TestSpecGateMergeNoopOnConverged(t *testing.T) {
 	// further revision).
 	state := &PlanningState{}
 	verdict := SpecGateVerdict{
-		Converged: true,
-		Reasoning: "all phases addressed",
+		Converged:      true,
+		Reasoning:      "All phases addressed across every deliverable.",
+		OpenDimensions: []OpenDimension{},
 	}
 	results := []RoundResult{{
 		StepID:  "gate",
@@ -275,6 +303,54 @@ func TestSpecGateParseVerdictRejectsEmpty(t *testing.T) {
 	_, err = parseSpecGateVerdict([]RoundResult{{AgentID: "spec_gate", Output: "not json"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse spec_gate verdict")
+}
+
+// TestSpecGateParseVerdictRejectsDegenerate locks in the safety-net
+// validator: a verdict with converged=false but empty open_dimensions
+// is rejected because the workflow has nothing to act on. This is the
+// failure mode observed in the first DJ-122 smoke run — every gap was
+// in the reasoning sentence; OpenDimensions was empty; the next
+// iteration only addressed parallel critic concerns, not the gate's
+// judgment.
+func TestSpecGateParseVerdictRejectsDegenerate(t *testing.T) {
+	verdict := SpecGateVerdict{
+		Converged:      false,
+		Reasoning:      "Deploy phase is unaddressed but I didn't bother listing the specifics here.",
+		OpenDimensions: nil,
+	}
+	results := []RoundResult{{
+		AgentID: "spec_gate",
+		Output:  gateVerdictJSON(t, verdict),
+	}}
+	_, err := parseSpecGateVerdict(results)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "degenerate",
+		"empty open_dimensions with converged=false must be rejected as degenerate")
+	assert.Contains(t, err.Error(), "Deploy phase is unaddressed",
+		"the error message must echo the verdict's reasoning so the operator can see what the gate tried to say")
+}
+
+// TestSpecGateParseVerdictRejectsContradictory locks in the inverse
+// safety net: converged=true with open_dimensions populated is also a
+// degenerate verdict shape.
+func TestSpecGateParseVerdictRejectsContradictory(t *testing.T) {
+	verdict := SpecGateVerdict{
+		Converged: true,
+		Reasoning: "Everything is addressed.",
+		OpenDimensions: []OpenDimension{{
+			Deliverable: "iOS app",
+			Phase:       "deploy",
+			Axis:        "rollout cadence",
+			Reasoning:   "but actually it isn't",
+		}},
+	}
+	results := []RoundResult{{
+		AgentID: "spec_gate",
+		Output:  gateVerdictJSON(t, verdict),
+	}}
+	_, err := parseSpecGateVerdict(results)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contradictory")
 }
 
 // TestSpecGateBudgetEnvOverride checks that LOCUTUS_SPEC_GEN_MAX_ITERATIONS

@@ -28,14 +28,31 @@ const defaultSpecGateBudget = 5
 // gate reads the assembled ProposedSpec, GOALS.md, and any open concerns;
 // it returns Converged=true when the four-lifecycle-phases YES question
 // holds for every deliverable, or Converged=false plus a list of
-// OpenDimensions naming the specific axes still unresolved. Schema is
+// OpenDimensions naming each specific axis still unresolved. Schema is
 // registered in schemas.go so providers enforce structured output.
 //
-// Per CLAUDE.md: every enum-shaped field carries `jsonschema:"enum=..."`,
-// every constrained field names its constraint in `description=...`, and
-// the example payload registered in schemas.go uses descriptive prose,
-// not placeholder tokens — placeholders prime the schema-skeleton
-// failure (DJ-118 / agent-conventions).
+// Field roles:
+//
+//   - Reasoning is a one-sentence headline naming the verdict — NOT the
+//     gap list. Specific gaps belong on OpenDimensions entries, not in
+//     prose. This split exists because the first DJ-122 smoke run had
+//     every gap richly described in Reasoning and OpenDimensions empty,
+//     so mergeGateVerdict had nothing to act on and the next iteration
+//     couldn't address the gate's judgment. Splitting the field shape
+//     removes the path of least resistance for the model to put gaps
+//     where the workflow can't reach them.
+//
+//   - OpenDimensions is the canonical list. Each entry is a structured
+//     OpenDimension with deliverable, phase, axis, and per-dimension
+//     reasoning. mergeGateVerdict converts each into a Concern + a
+//     FindingCluster so the next iteration's revise fanout addresses
+//     the gate's specific judgment, not just the parallel critic loop's
+//     findings.
+//
+// Per CLAUDE.md: enum-shaped fields carry `jsonschema:"enum=..."`,
+// constrained fields name their constraint in `description=...`, and
+// the example payload in schemas.go uses descriptive prose, not
+// placeholder tokens.
 //
 // Distinct from the older ConvergenceVerdict in convergence.go, which
 // drives the prose-parsed convergence-monitor path used by RunCouncil's
@@ -44,9 +61,36 @@ const defaultSpecGateBudget = 5
 type SpecGateVerdict struct {
 	Converged bool `json:"converged" jsonschema:"description=True only when the assembled ProposedSpec answers YES to the four-lifecycle-phases convergence question (define / develop / deploy / support) for every deliverable named in GOALS.md. False when at least one phase remains underspecified for at least one deliverable."`
 
-	Reasoning string `json:"reasoning" jsonschema:"description=Two to three sentences naming which of define / develop / deploy / support are addressed and which (if any) remain underspecified. Names specific deliverables and axes by their domain vocabulary — 'iOS app deployment cadence is uncommitted'; 'firmware OTA channel is unspecified for the nRF52840 deliverable' — not generic claims like 'looks good' or 'needs more work'."`
+	Reasoning string `json:"reasoning" jsonschema:"description=One sentence stating the verdict and pointing at the dominant pattern — e.g., 'Define and develop are committed across all deliverables; deploy and support carry the remaining gaps listed below.' This is a headline; not the gap list. Every specific gap lives on an OpenDimensions entry. Generic claims like 'looks good' or 'needs more work' are rejected."`
 
-	OpenDimensions []string `json:"open_dimensions,omitempty" jsonschema:"description=One entry per still-unresolved axis. Each entry names a specific dimension a deliverable hasn't committed to — e.g., 'deployment cadence for the iOS companion app'; 'OTA update channel for the firmware'; 'cost ceiling for the cloud backend'. Empty when Converged is true."`
+	OpenDimensions []OpenDimension `json:"open_dimensions" jsonschema:"description=One entry per still-unresolved axis. Empty array exactly when Converged is true. When Converged is false; every gap your reasoning identifies MUST appear here as a structured entry — putting gaps only in the reasoning sentence is rejected by the workflow."`
+}
+
+// OpenDimension is one structured gap the spec_gate identified. The
+// fields are sized so downstream consumers (mergeGateVerdict, the next
+// iteration's revise prompt, the eventual CLI renderer) can act on
+// them without re-parsing prose:
+//
+//   - Deliverable names the artifact the gap applies to ("iOS companion
+//     app", "nRF52840 firmware", "Vapor backend"). Use the same domain
+//     vocabulary the spec proposal uses for ids.
+//
+//   - Phase is one of define / develop / deploy / support — the
+//     lifecycle phase the gap belongs to. Enum-enforced.
+//
+//   - Axis is the specific dimension that's uncommitted — what the
+//     architect needs to decide. A noun phrase, not a sentence.
+//
+//   - Reasoning is one sentence saying why this gap blocks the YES.
+//     Becomes the Concern text the next iteration's revise sees.
+type OpenDimension struct {
+	Deliverable string `json:"deliverable" jsonschema:"description=The artifact this gap applies to; named in the same domain vocabulary the proposal uses for its ids — 'iOS companion app'; 'nRF52840 firmware'; 'Vapor backend'; 'campaign analytics dashboard'. Use the deliverable name as committed in the proposal; not a generic category."`
+
+	Phase string `json:"phase" jsonschema:"enum=define,enum=develop,enum=deploy,enum=support,description=The lifecycle phase this gap belongs to. define: who/what; success criteria; scope. develop: language/framework/testing/contracts. deploy: distribution; environments; rollout; secrets; signing; OTA; certification. support: observability; on-call; SLO; lifetime; compliance."`
+
+	Axis string `json:"axis" jsonschema:"description=The specific dimension that remains uncommitted — what the architect needs to decide. A noun phrase; not a sentence. 'App Store / TestFlight rollout cadence'; 'OTA update channel'; 'cost ceiling'; 'on-call rotation owner'. Generic axes ('deployment story'; 'observability') are rejected."`
+
+	Reasoning string `json:"reasoning" jsonschema:"description=One sentence stating why leaving this axis uncommitted blocks define/develop/deploy/support for the named deliverable. Cites the specific commitment that would resolve it. Becomes the Concern text the next iteration's revise sees; write for that reader."`
 }
 
 // SpecGenerationWorkflow drives `locutus refine goals` and `locutus
@@ -269,9 +313,16 @@ func gateSpawnFor(myIter, budget int, loopTemplate func(executor.IterationContex
 
 // convergenceLoopTemplate returns the template closure used by
 // AppendSubgraph to expand one iteration of the spec-council
-// convergence loop. Each iteration is a four-step chain:
+// convergence loop. Each iteration is a five-step chain:
 //
-//	revise → reconcile → critique → gate
+//	revise → reconcile → critique → cluster_findings → gate
+//
+// cluster_findings runs in every iteration (not just the initial
+// graph) so per-iteration critic free-text findings that don't name a
+// specific spec-node id get LLM-clustered into the same FindingCluster
+// shape mechanically-routed findings produce. Without it, iter-N's
+// critic concerns leak into state.UnmatchedFindings and never reach
+// iter-(N+1)'s revise — observed during the first DJ-122 smoke run.
 //
 // Internal DependsOn entries name siblings by their base id and are
 // rewritten by AppendSubgraph to the prefixed form. The template's
@@ -312,9 +363,23 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				Merge:     mergeCriticIssues,
 			},
 			{
+				// cluster_findings: LLM-cluster any unmatched
+				// free-text findings from this iteration's critics so
+				// they reach the next iteration's revise as
+				// FindingClusters. Skips when no unmatched findings
+				// exist (the conditional matches the initial graph's
+				// instance).
+				ID:          "cluster_findings",
+				Agents:      []string{"spec_finding_clusterer"},
+				DependsOn:   []string{"critique"},
+				Conditional: hasUnmatchedFindings,
+				Project:     projectClusterFindings,
+				Merge:       mergeFindingClusters,
+			},
+			{
 				ID:        "gate",
 				Agents:    []string{"spec_gate"},
-				DependsOn: []string{"critique"},
+				DependsOn: []string{"cluster_findings"},
 				Project:   projectSpecGate,
 				Merge:     mergeGateVerdict,
 				Budget:    budget,
@@ -330,6 +395,19 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 // the verdict's JSON; we tolerate (and surface) any decode failure as
 // an error so the spawner errors visibly rather than silently
 // treating the verdict as non-converged.
+//
+// Defensive validation, beyond decode:
+//
+//   - Converged=false with len(OpenDimensions)==0 is rejected.
+//     Surfaced as a real DJ-122 calibration failure: the gate produced
+//     a verdict the workflow cannot act on. Without this guard, the
+//     model's tendency to put gaps in the reasoning sentence and
+//     leave OpenDimensions empty would leak silently as "no work to
+//     do in the next iteration."
+//
+//   - Converged=true with len(OpenDimensions)>0 is also rejected.
+//     Same workflow contract: a converged spec has no remaining gaps;
+//     a verdict claiming both is contradictory and must not advance.
 func parseSpecGateVerdict(results []RoundResult) (*SpecGateVerdict, error) {
 	for _, r := range results {
 		if r.AgentID != "spec_gate" {
@@ -345,37 +423,77 @@ func parseSpecGateVerdict(results []RoundResult) (*SpecGateVerdict, error) {
 		if err := json.Unmarshal([]byte(r.Output), &v); err != nil {
 			return nil, fmt.Errorf("parse spec_gate verdict: %w (content=%q)", err, r.Output)
 		}
+		if !v.Converged && len(v.OpenDimensions) == 0 {
+			return nil, fmt.Errorf(
+				"spec_gate verdict is degenerate: converged=false with open_dimensions empty. "+
+					"The gate must list every gap as an OpenDimension entry; putting them only in the reasoning sentence is rejected "+
+					"because the next iteration's revise has nothing to act on. Reasoning was: %s",
+				truncateForError(v.Reasoning))
+		}
+		if v.Converged && len(v.OpenDimensions) > 0 {
+			return nil, fmt.Errorf(
+				"spec_gate verdict is contradictory: converged=true with %d open_dimensions. "+
+					"A converged spec has no remaining gaps; either the gate should have returned converged=false, or the dimensions are not actual gaps",
+				len(v.OpenDimensions))
+		}
 		return &v, nil
 	}
 	return nil, fmt.Errorf("no spec_gate result in round")
 }
 
-// mergeGateVerdict parses the SpecGateVerdict and appends its
-// OpenDimensions into state — both as Concerns (record-keeping,
-// tagged spec_gate / high) and as FindingClusters (so the next
-// iteration's revise fanout picks them up). When the verdict is
-// Converged or empty, this is a no-op aside from recording the
-// verdict for diagnostics.
+// truncateForError returns s truncated to ~200 chars with an ellipsis
+// suffix. Used inside parseSpecGateVerdict's error message so a long
+// reasoning paragraph doesn't dominate the error output.
+func truncateForError(s string) string {
+	const max = 200
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
+}
+
+// mergeGateVerdict parses the SpecGateVerdict and threads each
+// OpenDimension into the state the next iteration's revise reads:
+//
+//   - As a Concern (record-keeping). AgentID is the gate, Severity
+//     "high", Kind tagged with the dimension's lifecycle phase so the
+//     revise prompt can group by phase the same way critic concerns
+//     are grouped.
+//
+//   - As a FindingCluster (so revise fanout picks it up). Topic names
+//     the deliverable + axis so the elaborator's prompt has the gap
+//     specifically; Findings carries the per-dimension reasoning text
+//     so the elaborator sees WHY the axis matters.
+//
+// When the verdict is degenerate (covered by parseSpecGateVerdict's
+// validation), this merge is a no-op — the error path in the
+// spawner surfaces it.
 func mergeGateVerdict(s *PlanningState, results []RoundResult) {
 	verdict, err := parseSpecGateVerdict(results)
 	if err != nil {
-		// Don't blow up the merge; the Spawn closure parses again
-		// and surfaces the error there with iteration context.
+		// The Spawn closure parses again and surfaces the error
+		// with iteration context. Merge is the wrong place to
+		// fail loudly.
 		return
 	}
 	if verdict.Converged {
 		return
 	}
 	for _, dim := range verdict.OpenDimensions {
+		topic := dim.Axis
+		if dim.Deliverable != "" {
+			topic = dim.Deliverable + ": " + dim.Axis
+		}
 		s.Concerns = append(s.Concerns, Concern{
 			AgentID:  "spec_gate",
 			Severity: "high",
-			Kind:     "convergence",
-			Text:     dim,
+			Kind:     dim.Phase, // define / develop / deploy / support
+			Text:     dim.Reasoning,
 		})
 		s.FindingClusters = append(s.FindingClusters, FindingCluster{
-			Topic:    dim,
-			Findings: []string{dim},
+			Topic:    topic,
+			Findings: []string{dim.Reasoning},
 			AgentID:  "spec_strategy_elaborator",
 		})
 	}

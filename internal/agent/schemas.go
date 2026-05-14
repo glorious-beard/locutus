@@ -214,11 +214,26 @@ func init() {
 	// the schema-skeleton failure mode the validators exist to catch.
 	RegisterSchema("SpecGateVerdict", SpecGateVerdict{
 		Converged: false,
-		Reasoning: "Define and develop are committed for the iOS companion app, but deploy lacks an explicit App Store / TestFlight rollout cadence and support has no observability commitment. Firmware deliverable converges on define/develop/support but is missing an OTA update-channel decision under deploy.",
-		OpenDimensions: []string{
-			"deployment cadence for the iOS companion app",
-			"OTA update channel for the nRF52840 firmware",
-			"observability stack for the iOS companion app",
+		Reasoning: "Define and develop are committed across all three deliverables; deploy and support carry the remaining gaps listed below.",
+		OpenDimensions: []OpenDimension{
+			{
+				Deliverable: "iOS companion app",
+				Phase:       "deploy",
+				Axis:        "App Store / TestFlight rollout cadence",
+				Reasoning:   "The proposal commits to App Store distribution but never names whether releases ship behind TestFlight first; without a rollout cadence the team cannot decide release tagging or staged-rollout tooling.",
+			},
+			{
+				Deliverable: "nRF52840 firmware",
+				Phase:       "deploy",
+				Axis:        "OTA update channel",
+				Reasoning:   "The firmware deliverable has no OTA path committed; without one the team cannot ship a security fix after the first device ships.",
+			},
+			{
+				Deliverable: "Vapor backend",
+				Phase:       "support",
+				Axis:        "on-call rotation owner",
+				Reasoning:   "Observability (Datadog + SLOs) is committed but the proposal never names who carries the pager — without an owner the alerts have no audience.",
+			},
 		},
 	})
 
