@@ -106,6 +106,21 @@ type PlanningState struct {
 	FindingClusters     []FindingCluster `json:"finding_clusters,omitempty"`
 	UnmatchedFindings   []string         `json:"unmatched_findings,omitempty"`
 	RevisedNodes        []string         `json:"revised_nodes,omitempty"`
+
+	// GateAxisRecurrence tracks how many times each (deliverable, axis)
+	// pair has been flagged as an OpenDimension across all gate
+	// verdicts in this run. Populated by mergeGateVerdict. Consumed by
+	// the gate spawner to detect non-progress: if any axis has been
+	// raised RecurrenceTerminationThreshold or more iterations in a
+	// row, the gate force-terminates with a "convergence_stuck" history
+	// event rather than continuing to iterate against a moving target.
+	//
+	// Key format: strings.ToLower(deliverable)|strings.ToLower(axis)
+	// with surrounding whitespace stripped. Lowercase-and-pipe lets
+	// "WinPlan platform: On-call rotation owner" and
+	// "winplan platform: on-call rotation owner" coalesce to the same
+	// bucket even when the gate's casing drifts iteration-over-iteration.
+	GateAxisRecurrence map[string]int `json:"gate_axis_recurrence,omitempty"`
 }
 
 // StateSnapshot wraps a verb's state value with fanout context. Projections

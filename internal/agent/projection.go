@@ -248,11 +248,21 @@ func projectFindingCluster(snap StateSnapshot[PlanningState]) []Message {
 
 	if cluster.NodeID != "" {
 		fmt.Fprintf(&b, "## Targeted node\n\n- **Node ID:** `%s`\n\n", cluster.NodeID)
-		b.WriteString("## Prior content\n\n")
-		// Sniff prefix to decide which Raw*Proposal type to look up.
+		b.WriteString("## Prior content (the version you are revising)\n\n")
+		// DJ-122 Phase 5 follow-up: read from RawProposal (current,
+		// inclusive of prior-iteration revisions) NOT
+		// OriginalRawProposal (pre-iter-0 baseline). Without this, the
+		// elaborator rewrites from scratch each iteration with no
+		// awareness of what was already committed — and the gate's
+		// "this isn't specific enough" feedback feels like a fresh
+		// blank-slate request rather than a directive to strengthen
+		// what's there. Surfaced by winplan smoke run: iter-2 gate
+		// re-flagged on-call ownership AFTER iter-1 elaborator
+		// committed PagerDuty + developer-led rotation, because the
+		// iter-2 elaborator never saw what iter-1 wrote.
 		switch {
 		case strings.HasPrefix(cluster.NodeID, "feat-"):
-			if prior, ok := findRawFeature(snap.State.OriginalRawProposal, cluster.NodeID); ok {
+			if prior, ok := findRawFeature(snap.State.RawProposal, cluster.NodeID); ok {
 				data, err := json.MarshalIndent(prior, "", "  ")
 				if err == nil {
 					b.WriteString("```json\n")
@@ -260,10 +270,10 @@ func projectFindingCluster(snap StateSnapshot[PlanningState]) []Message {
 					b.WriteString("\n```\n\n")
 				}
 			} else {
-				fmt.Fprintf(&b, "(prior feature %q not found in the original proposal)\n\n", cluster.NodeID)
+				fmt.Fprintf(&b, "(prior feature %q not found in the current proposal)\n\n", cluster.NodeID)
 			}
 		case strings.HasPrefix(cluster.NodeID, "strat-"):
-			if prior, ok := findRawStrategy(snap.State.OriginalRawProposal, cluster.NodeID); ok {
+			if prior, ok := findRawStrategy(snap.State.RawProposal, cluster.NodeID); ok {
 				data, err := json.MarshalIndent(prior, "", "  ")
 				if err == nil {
 					b.WriteString("```json\n")
@@ -271,9 +281,22 @@ func projectFindingCluster(snap StateSnapshot[PlanningState]) []Message {
 					b.WriteString("\n```\n\n")
 				}
 			} else {
-				fmt.Fprintf(&b, "(prior strategy %q not found in the original proposal)\n\n", cluster.NodeID)
+				fmt.Fprintf(&b, "(prior strategy %q not found in the current proposal)\n\n", cluster.NodeID)
 			}
 		}
+	}
+
+	// When the gate quoted the present-but-insufficient commitment,
+	// surface it BEFORE the findings so the elaborator sees the exact
+	// phrase it's being asked to strengthen — not just a fresh
+	// directive that reads like a blank-slate request. Empty for
+	// critic-routed clusters; populated only by mergeGateVerdict from
+	// a SpecGateVerdict OpenDimension.
+	if strings.TrimSpace(cluster.CurrentCommitmentQuoted) != "" {
+		b.WriteString("## Current commitment that the gate judged insufficient\n\n")
+		b.WriteString("> ")
+		b.WriteString(strings.ReplaceAll(strings.TrimSpace(cluster.CurrentCommitmentQuoted), "\n", "\n> "))
+		b.WriteString("\n\nStrengthen this text — don't replace it with substantively similar language. If you re-emit a commitment that says the same thing in different words; the gate will flag the same gap on the next iteration and the loop will not converge.\n\n")
 	}
 
 	b.WriteString("## Findings to address (verbatim)\n\n")

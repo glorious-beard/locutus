@@ -50,6 +50,16 @@ type FindingCluster struct {
 	Findings []string `json:"findings"`
 	AgentID  string   `json:"agent_id"`
 	NodeID   string   `json:"node_id,omitempty"`
+
+	// CurrentCommitmentQuoted is set when this cluster originates
+	// from a SpecGateVerdict OpenDimension whose gate identified a
+	// PRESENT-BUT-INSUFFICIENT commitment in the current proposal.
+	// The elaborator's projection renders it as a quoted block so
+	// the model sees exactly what it's expected to strengthen,
+	// rather than rewriting from a blank slate. Empty on
+	// critic-routed (mechanical + LLM-clustered) clusters where the
+	// finding text itself carries the context.
+	CurrentCommitmentQuoted string `json:"current_commitment_quoted,omitempty"`
 }
 
 // FindingClusters is the LLM clusterer's structured output: one cluster

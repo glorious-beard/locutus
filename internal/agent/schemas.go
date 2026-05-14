@@ -214,25 +214,28 @@ func init() {
 	// the schema-skeleton failure mode the validators exist to catch.
 	RegisterSchema("SpecGateVerdict", SpecGateVerdict{
 		Converged: false,
-		Reasoning: "Define and develop are committed across all three deliverables; deploy and support carry the remaining gaps listed below.",
+		Reasoning: "Define and develop are committed; deploy carries a weak commitment and support has a genuine gap.",
 		OpenDimensions: []OpenDimension{
 			{
-				Deliverable: "iOS companion app",
-				Phase:       "deploy",
-				Axis:        "App Store / TestFlight rollout cadence",
-				Reasoning:   "The proposal commits to App Store distribution but never names whether releases ship behind TestFlight first; without a rollout cadence the team cannot decide release tagging or staged-rollout tooling.",
+				Deliverable:             "iOS companion app",
+				Phase:                   "deploy",
+				Axis:                    "App Store / TestFlight rollout cadence",
+				Reasoning:               "Distribution channel is named but the staged-rollout cadence between TestFlight and App Store is not committed; the team cannot decide release tagging without it.",
+				CurrentCommitmentQuoted: "Releases ship to the App Store via Fastlane.",
 			},
 			{
-				Deliverable: "nRF52840 firmware",
-				Phase:       "deploy",
-				Axis:        "OTA update channel",
-				Reasoning:   "The firmware deliverable has no OTA path committed; without one the team cannot ship a security fix after the first device ships.",
+				Deliverable:             "nRF52840 firmware",
+				Phase:                   "deploy",
+				Axis:                    "OTA update channel",
+				Reasoning:               "The firmware deliverable has no OTA path committed; without one the team cannot ship a security fix after the first device ships.",
+				CurrentCommitmentQuoted: "",
 			},
 			{
-				Deliverable: "Vapor backend",
-				Phase:       "support",
-				Axis:        "on-call rotation owner",
-				Reasoning:   "Observability (Datadog + SLOs) is committed but the proposal never names who carries the pager — without an owner the alerts have no audience.",
+				Deliverable:             "Vapor backend",
+				Phase:                   "support",
+				Axis:                    "incident response runbook structure",
+				Reasoning:               "Datadog and SLOs are committed but the proposal never says where runbooks live or how they're authored; on-call engineers will have alerts without a response playbook.",
+				CurrentCommitmentQuoted: "Observability is provided via Datadog with OpenTelemetry, tracking p99 latency and error-rate SLOs at 99.9%.",
 			},
 		},
 	})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -217,23 +218,27 @@ func TestSpecGateFailsOnBudgetExhaustion(t *testing.T) {
 func TestSpecGateMergeAppendsOpenDimensionsAsConcernsAndClusters(t *testing.T) {
 	// Unit test on mergeGateVerdict: a non-converged verdict appends
 	// each OpenDimension as a Concern (record-keeping) AND a
-	// FindingCluster (so the next iteration's revise picks them up).
+	// FindingCluster (so the next iteration's revise picks them up),
+	// and threads CurrentCommitmentQuoted through to the cluster so
+	// the elaborator's projection can render it.
 	state := &PlanningState{}
 	verdict := SpecGateVerdict{
 		Converged: false,
 		Reasoning: "Deploy and support carry the remaining gaps.",
 		OpenDimensions: []OpenDimension{
 			{
-				Deliverable: "iOS companion app",
-				Phase:       "deploy",
-				Axis:        "App Store / TestFlight rollout cadence",
-				Reasoning:   "Distribution is committed but the staged-rollout path is not.",
+				Deliverable:             "iOS companion app",
+				Phase:                   "deploy",
+				Axis:                    "App Store / TestFlight rollout cadence",
+				Reasoning:               "Distribution is committed but the staged-rollout path is not.",
+				CurrentCommitmentQuoted: "Releases ship to the App Store via Fastlane.",
 			},
 			{
-				Deliverable: "nRF52840 firmware",
-				Phase:       "deploy",
-				Axis:        "OTA update channel",
-				Reasoning:   "No OTA path is committed; security fixes cannot ship after first install.",
+				Deliverable:             "nRF52840 firmware",
+				Phase:                   "deploy",
+				Axis:                    "OTA update channel",
+				Reasoning:               "No OTA path is committed; security fixes cannot ship after first install.",
+				CurrentCommitmentQuoted: "",
 			},
 		},
 	}
@@ -251,13 +256,10 @@ func TestSpecGateMergeAppendsOpenDimensionsAsConcernsAndClusters(t *testing.T) {
 		assert.Equal(t, "high", c.Severity)
 		assert.Equal(t, "deploy", c.Kind, "Concern.Kind carries the dimension's lifecycle phase")
 	}
-	// Text should be the per-dimension reasoning, not the headline.
 	assert.Equal(t, "Distribution is committed but the staged-rollout path is not.", state.Concerns[0].Text)
 	assert.Equal(t, "No OTA path is committed; security fixes cannot ship after first install.", state.Concerns[1].Text)
 
 	assert.Len(t, state.FindingClusters, 2, "each OpenDimension becomes a FindingCluster")
-	// Cluster topic combines deliverable + axis so the elaborator
-	// prompt has the gap specifically.
 	assert.Equal(t, "iOS companion app: App Store / TestFlight rollout cadence", state.FindingClusters[0].Topic)
 	assert.Equal(t, "nRF52840 firmware: OTA update channel", state.FindingClusters[1].Topic)
 	for _, c := range state.FindingClusters {
@@ -265,6 +267,110 @@ func TestSpecGateMergeAppendsOpenDimensionsAsConcernsAndClusters(t *testing.T) {
 			"gate findings route to the strategy elaborator")
 		assert.Len(t, c.Findings, 1, "one finding per cluster")
 	}
+
+	// CurrentCommitmentQuoted flows through.
+	assert.Equal(t, "Releases ship to the App Store via Fastlane.", state.FindingClusters[0].CurrentCommitmentQuoted,
+		"present commitment is threaded onto the cluster so the elaborator's projection can render it")
+	assert.Empty(t, state.FindingClusters[1].CurrentCommitmentQuoted,
+		"empty quote when nothing was previously committed on the axis")
+
+	// GateAxisRecurrence ticks for each dimension.
+	assert.Equal(t, 1, state.GateAxisRecurrence["ios companion app|app store / testflight rollout cadence"])
+	assert.Equal(t, 1, state.GateAxisRecurrence["nrf52840 firmware|ota update channel"])
+}
+
+// TestSpecGateMergeAccumulatesRecurrence verifies that calling
+// mergeGateVerdict across multiple iterations correctly accumulates
+// the per-axis recurrence count, including coalescing casing drift
+// ("On-call rotation owner" vs "on-call rotation owner") into the
+// same bucket.
+func TestSpecGateMergeAccumulatesRecurrence(t *testing.T) {
+	state := &PlanningState{}
+	for i, axis := range []string{"on-call rotation owner", "On-Call Rotation Owner", "on-call rotation owner  "} {
+		v := SpecGateVerdict{
+			Converged: false,
+			Reasoning: fmt.Sprintf("iter %d", i),
+			OpenDimensions: []OpenDimension{{
+				Deliverable: "WinPlan platform",
+				Phase:       "support",
+				Axis:        axis,
+				Reasoning:   "On-call owner still uncommitted.",
+			}},
+		}
+		results := []RoundResult{{AgentID: "spec_gate", Output: gateVerdictJSON(t, v)}}
+		mergeGateVerdict(state, results)
+	}
+	assert.Equal(t, 3, state.GateAxisRecurrence["winplan platform|on-call rotation owner"],
+		"casing + whitespace variants coalesce to a single recurrence bucket")
+}
+
+// TestSpecGateSpawnerForceTerminatesOnStuck drives the spawner directly
+// with a pre-seeded state.GateAxisRecurrence at the termination
+// threshold. The spawner must produce a convergence_stuck terminal
+// step (NOT continue to the next iteration), and the terminal step's
+// RunItem must write a DJ-103 history event tagged convergence_stuck
+// and return a non-nil error naming the stuck axis.
+func TestSpecGateSpawnerForceTerminatesOnStuck(t *testing.T) {
+	tmp := t.TempDir()
+	fs := specio.NewOSFS(tmp)
+	require.NoError(t, fs.MkdirAll(".borg/history", 0o755))
+	historian := history.NewHistorian(fs, ".borg/history")
+
+	// Build a state where one axis has already recurred at the
+	// termination threshold (3 by default). The next gate-spawn
+	// invocation must force-terminate.
+	state := PlanningState{
+		GateAxisRecurrence: map[string]int{
+			"winplan platform|on-call rotation owner": recurrenceTerminationThreshold,
+		},
+	}
+
+	// The verdict the closure receives is non-converged with the
+	// stuck axis re-flagged for a fourth time.
+	verdict := SpecGateVerdict{
+		Converged: false,
+		Reasoning: "Same on-call gap, fourth time.",
+		OpenDimensions: []OpenDimension{{
+			Deliverable: "WinPlan platform",
+			Phase:       "support",
+			Axis:        "on-call rotation owner",
+			Reasoning:   "Gate still finds the on-call commitment insufficient.",
+		}},
+	}
+	results := []RoundResult{{AgentID: "spec_gate", Output: gateVerdictJSON(t, verdict)}}
+
+	// Generous budget — we expect the stuck check to fire before
+	// budget exhaustion.
+	spawner := gateSpawnFor(2, 10, nil, historian)
+	steps, edges, err := spawner(context.Background(), StateSnapshot[PlanningState]{State: state}, results)
+	require.NoError(t, err, "stuck detection produces a terminal step; not an inline error")
+	assert.Nil(t, edges)
+	require.Len(t, steps, 1, "exactly one terminal step is spawned")
+	assert.Contains(t, steps[0].ID, "convergence_stuck_iter:",
+		"the terminal step ID names the stuck-recurrence failure mode")
+
+	// Running the terminal step writes the history event and errors.
+	_, runErr := steps[0].RunItem(context.Background(), StateSnapshot[PlanningState]{State: state})
+	require.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "stuck")
+	assert.Contains(t, runErr.Error(), "on-call rotation owner")
+
+	entries, err := os.ReadDir(filepath.Join(tmp, ".borg", "history"))
+	require.NoError(t, err)
+	var found bool
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "convergence_stuck") && strings.HasSuffix(e.Name(), ".json") {
+			found = true
+			body, err := os.ReadFile(filepath.Join(tmp, ".borg", "history", e.Name()))
+			require.NoError(t, err)
+			var evt history.Event
+			require.NoError(t, json.Unmarshal(body, &evt))
+			assert.Equal(t, "convergence_stuck", evt.Kind)
+			assert.Contains(t, evt.Rationale, "on-call rotation owner",
+				"history event rationale lists the stuck axes")
+		}
+	}
+	assert.True(t, found, "a convergence_stuck DJ-103 event must be written under .borg/history/")
 }
 
 func TestSpecGateMergeNoopOnConverged(t *testing.T) {

@@ -24,6 +24,18 @@ const specLoopTemplateID = "spec_loop"
 // failure rather than silently burning model time.
 const defaultSpecGateBudget = 5
 
+// recurrenceTerminationThreshold caps how many iterations the same
+// (deliverable, axis) pair can appear in gate verdicts before the
+// workflow force-terminates with a "convergence_stuck" history event.
+// Three is the threshold the winplan smoke run validated: on-call
+// ownership recurred in iter-1, iter-2, and iter-3 gates despite the
+// elaborator committing PagerDuty + developer-led rotation in iter-1
+// — by iter-3 it's clear the gate is goalpost-shifting, not finding
+// real residual gaps. Force-termination produces a clear failure mode
+// (and a forensic history event) rather than letting the run drift to
+// budget exhaustion with no diagnosis.
+const recurrenceTerminationThreshold = 3
+
 // SpecGateVerdict is the structured output of the spec_gate agent. The
 // gate reads the assembled ProposedSpec, GOALS.md, and any open concerns;
 // it returns Converged=true when the four-lifecycle-phases YES question
@@ -84,13 +96,15 @@ type SpecGateVerdict struct {
 //   - Reasoning is one sentence saying why this gap blocks the YES.
 //     Becomes the Concern text the next iteration's revise sees.
 type OpenDimension struct {
-	Deliverable string `json:"deliverable" jsonschema:"description=The artifact this gap applies to; named in the same domain vocabulary the proposal uses for its ids — 'iOS companion app'; 'nRF52840 firmware'; 'Vapor backend'; 'campaign analytics dashboard'. Use the deliverable name as committed in the proposal; not a generic category."`
+	Deliverable string `json:"deliverable" jsonschema:"description=The artifact this gap applies to; named in the same domain vocabulary the proposal uses for its ids — 'iOS companion app'; 'nRF52840 firmware'; 'Vapor backend'; 'campaign analytics dashboard'. Use the deliverable name as committed in the proposal; not a generic category. Use the SAME name across iterations — switching between 'WinPlan platform' and 'WinPlan web application' for the same deliverable is rejected; pick one and stay consistent."`
 
 	Phase string `json:"phase" jsonschema:"enum=define,enum=develop,enum=deploy,enum=support,description=The lifecycle phase this gap belongs to. define: who/what; success criteria; scope. develop: language/framework/testing/contracts. deploy: distribution; environments; rollout; secrets; signing; OTA; certification. support: observability; on-call; SLO; lifetime; compliance."`
 
 	Axis string `json:"axis" jsonschema:"description=The specific dimension that remains uncommitted — what the architect needs to decide. A noun phrase; not a sentence. 'App Store / TestFlight rollout cadence'; 'OTA update channel'; 'cost ceiling'; 'on-call rotation owner'. Generic axes ('deployment story'; 'observability') are rejected."`
 
 	Reasoning string `json:"reasoning" jsonschema:"description=One sentence stating why leaving this axis uncommitted blocks define/develop/deploy/support for the named deliverable. Cites the specific commitment that would resolve it. Becomes the Concern text the next iteration's revise sees; write for that reader."`
+
+	CurrentCommitmentQuoted string `json:"current_commitment_quoted" jsonschema:"description=The verbatim text from the current proposal that you judge insufficient — usually one or two sentences from a strategy body or a decision rationale. Empty when nothing was committed on this axis at all. When populated; the elaborator sees the exact phrase to strengthen; if you flag an axis as unaddressed but the proposal already contains a substantive commitment on it; the next-iteration elaborator will re-emit substantively the same content and the loop will not converge. Either accept the existing commitment or quote what's there and say what's missing."`
 }
 
 // SpecGenerationWorkflow drives `locutus refine goals` and `locutus
@@ -284,6 +298,23 @@ func gateSpawnFor(myIter, budget int, loopTemplate func(executor.IterationContex
 			return nil, nil, nil
 		}
 
+		// Non-progress detection: if any (deliverable, axis) pair has
+		// recurred at the termination threshold, the gate is not
+		// making forward progress on that axis — either it's
+		// goalpost-shifting against a present-but-elaborated
+		// commitment, or the elaborator is genuinely unable to
+		// strengthen the commitment further. Either way the loop is
+		// not converging on the recurrent axis; force-terminate with
+		// the stuck axes named so the failure mode is diagnosable
+		// instead of letting the run drift to budget exhaustion.
+		//
+		// Check BEFORE budget — a stuck loop should fail with the
+		// stuck-axes diagnosis, not budget exhaustion.
+		if stuck := stuckAxes(&snap.State); len(stuck) > 0 {
+			terminal := convergenceStuckTerminal(historian, &snap.State, verdict, myIter, stuck)
+			return []WorkflowStep[PlanningState]{terminal}, nil, nil
+		}
+
 		nextIter := myIter + 1
 		if nextIter >= budget {
 			// Budget exhausted: spawn a single terminal step that
@@ -308,6 +339,73 @@ func gateSpawnFor(myIter, budget int, loopTemplate func(executor.IterationContex
 			ParentNodeID:   parentID,
 		})
 		return steps, edges, nil
+	}
+}
+
+// convergenceStuckTerminal returns a one-shot WorkflowStep whose
+// RunItem writes a DJ-103 history event tagged convergence_stuck and
+// errors out. Differs from convergenceFailedTerminal in the failure
+// reason: budget exhaustion means the problem is hard or the
+// prompting is wrong; stuck means a specific axis recurred without
+// the elaborator producing a substantively different commitment, so
+// the gate is most likely goalpost-shifting or the elaborator is at
+// its ceiling for that axis. The history event names the stuck axes
+// so the operator can see WHICH axes caused the stall.
+func convergenceStuckTerminal(historian *history.Historian, snapState *PlanningState, verdict *SpecGateVerdict, iter int, stuck []string) WorkflowStep[PlanningState] {
+	terminalID := fmt.Sprintf("convergence_stuck_iter:%d", iter)
+	snapshotSpec := snapState.ProposedSpec
+	concerns := append([]Concern(nil), snapState.Concerns...)
+	stuckCopy := append([]string(nil), stuck...)
+	return WorkflowStep[PlanningState]{
+		ID:     terminalID,
+		Agents: []string{"spec_gate"},
+		RunItem: func(_ context.Context, _ StateSnapshot[PlanningState]) (string, error) {
+			if historian != nil {
+				evt := buildConvergenceStuckEvent(verdict, iter, snapshotSpec, concerns, stuckCopy)
+				if err := historian.Record(evt); err != nil {
+					slog.Warn("convergence_stuck: failed to record DJ-103 event", "err", err)
+				}
+			}
+			return "", fmt.Errorf(
+				"spec-generation council stuck at iter %d: %d axis/axes recurred %d+ times without convergence — likely gate goalpost-shifting or elaborator ceiling. Stuck axes: %s",
+				iter+1, len(stuckCopy), recurrenceTerminationThreshold, strings.Join(stuckCopy, "; "),
+			)
+		},
+	}
+}
+
+// buildConvergenceStuckEvent constructs the DJ-103 history.Event for
+// a stuck-recurrence termination. NewValue carries the
+// ProposedSpec snapshot; Rationale names the stuck axes and the
+// last verdict reasoning so a forensic reader can see what the gate
+// was saying when the loop stalled.
+func buildConvergenceStuckEvent(verdict *SpecGateVerdict, iter int, snapshotSpec string, concerns []Concern, stuck []string) history.Event {
+	now := time.Now()
+	var rationale strings.Builder
+	fmt.Fprintf(&rationale, "spec_gate stuck at iter %d: %d axis/axes recurred %d+ times.\n\nStuck axes:",
+		iter+1, len(stuck), recurrenceTerminationThreshold)
+	for _, s := range stuck {
+		fmt.Fprintf(&rationale, "\n- %s", s)
+	}
+	fmt.Fprintf(&rationale, "\n\nLast verdict reasoning: %s", verdict.Reasoning)
+	if len(verdict.OpenDimensions) > 0 {
+		rationale.WriteString("\n\nLast iteration's open dimensions:")
+		for _, d := range verdict.OpenDimensions {
+			fmt.Fprintf(&rationale, "\n- [%s] %s :: %s", d.Phase, d.Deliverable, d.Axis)
+		}
+	}
+	if len(concerns) > 0 {
+		rationale.WriteString("\n\nUnresolved concerns at the time of stall:")
+		for _, c := range concerns {
+			fmt.Fprintf(&rationale, "\n- [%s/%s] %s", c.AgentID, c.Severity, c.Text)
+		}
+	}
+	return history.Event{
+		ID:        history.EventID("convergence_stuck", "", now),
+		Timestamp: now,
+		Kind:      "convergence_stuck",
+		Rationale: rationale.String(),
+		NewValue:  snapshotSpec,
 	}
 }
 
@@ -480,6 +578,9 @@ func mergeGateVerdict(s *PlanningState, results []RoundResult) {
 	if verdict.Converged {
 		return
 	}
+	if s.GateAxisRecurrence == nil {
+		s.GateAxisRecurrence = make(map[string]int, len(verdict.OpenDimensions))
+	}
 	for _, dim := range verdict.OpenDimensions {
 		topic := dim.Axis
 		if dim.Deliverable != "" {
@@ -492,11 +593,40 @@ func mergeGateVerdict(s *PlanningState, results []RoundResult) {
 			Text:     dim.Reasoning,
 		})
 		s.FindingClusters = append(s.FindingClusters, FindingCluster{
-			Topic:    topic,
-			Findings: []string{dim.Reasoning},
-			AgentID:  "spec_strategy_elaborator",
+			Topic:                   topic,
+			Findings:                []string{dim.Reasoning},
+			AgentID:                 "spec_strategy_elaborator",
+			CurrentCommitmentQuoted: dim.CurrentCommitmentQuoted,
 		})
+		s.GateAxisRecurrence[gateAxisKey(dim)]++
 	}
+}
+
+// gateAxisKey builds the canonical key the GateAxisRecurrence map
+// uses. Lowercased + pipe-joined so casing drift across iterations
+// ("On-call rotation owner" vs "on-call rotation owner") doesn't fork
+// the bucket. Whitespace is trimmed but interior punctuation is left
+// alone — slight wording variation ("on-call owner" vs "on-call
+// rotation owner") will fork; that's acceptable because such variation
+// is itself a signal the gate isn't being stable about axis naming.
+func gateAxisKey(dim OpenDimension) string {
+	return strings.ToLower(strings.TrimSpace(dim.Deliverable)) + "|" + strings.ToLower(strings.TrimSpace(dim.Axis))
+}
+
+// stuckAxes returns the (deliverable, axis) pairs that have recurred
+// at or above the termination threshold. Empty when the loop is still
+// making progress.
+func stuckAxes(s *PlanningState) []string {
+	if s == nil || len(s.GateAxisRecurrence) == 0 {
+		return nil
+	}
+	var stuck []string
+	for key, count := range s.GateAxisRecurrence {
+		if count >= recurrenceTerminationThreshold {
+			stuck = append(stuck, fmt.Sprintf("%s (raised %d×)", key, count))
+		}
+	}
+	return stuck
 }
 
 // projectSpecGate builds the prompt for the spec_gate agent. The

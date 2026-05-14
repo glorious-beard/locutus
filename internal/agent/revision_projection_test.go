@@ -70,6 +70,7 @@ func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 			State: PlanningState{
 				Prompt:              "Build it.",
 				OriginalRawProposal: string(raw),
+				RawProposal:         string(raw),
 			},
 			FanoutItem: string(clusterRaw),
 		}
@@ -99,6 +100,7 @@ func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 			State: PlanningState{
 				Prompt:              "Build it.",
 				OriginalRawProposal: string(raw),
+				RawProposal:         string(raw),
 			},
 			FanoutItem: string(clusterRaw),
 		}
@@ -122,6 +124,7 @@ func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 			State: PlanningState{
 				Prompt:              "Build it.",
 				OriginalRawProposal: string(raw),
+				RawProposal:         string(raw),
 			},
 			FanoutItem: string(clusterRaw),
 		}
@@ -153,6 +156,7 @@ func TestProjectFindingClusterRendersAddMode(t *testing.T) {
 			State: PlanningState{
 				Prompt:              "Build it.",
 				OriginalRawProposal: string(raw),
+				RawProposal:         string(raw),
 			},
 			FanoutItem: string(clusterRaw),
 		}
