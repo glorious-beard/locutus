@@ -349,5 +349,19 @@ func classifyGeminiError(err error) error {
 		// surfaces as 429s but with different message bodies.
 		return fmt.Errorf("gemini: %w (underlying: %s)", ErrRateLimit, msg)
 	}
-	return fmt.Errorf("gemini: %w", err)
+	// 5xx server-side transient failures the genai SDK reports as text.
+	// "unavailable" matches gRPC UNAVAILABLE; the numeric forms match
+	// the SDK's "Error 5xx, Message: ..." surface for HTTP transport.
+	if strings.Contains(msg, "500") || strings.Contains(msg, "502") || strings.Contains(msg, "503") ||
+		strings.Contains(lower, "unavailable") || strings.Contains(lower, "internal_error") {
+		return fmt.Errorf("gemini: %w (underlying: %s)", ErrTimeout, msg)
+	}
+	// Default: ErrIncompatible so the executor's fallback walk
+	// advances to the next provider preference. Plain fmt.Errorf here
+	// would abort the walk before googleai's failure handed off to
+	// anthropic / openai — the bug the multi-provider chain exists to
+	// avoid. RunWithRetry won't loop on this sentinel, which is
+	// correct: account-state and malformed-body errors won't resolve
+	// themselves in 30 seconds.
+	return fmt.Errorf("gemini: %w (underlying: %s)", ErrIncompatible, msg)
 }

@@ -376,7 +376,8 @@ func dispatchOpenAITools(ctx context.Context, registry []ToolDef, calls []openAI
 }
 
 // classifyOpenAIError translates SDK errors into the neutral
-// sentinels the executor's retry layer pattern-matches.
+// sentinels the executor's retry layer pattern-matches. See
+// classifyAnthropicError for the canonical mapping; this mirrors it.
 func classifyOpenAIError(err error) error {
 	if err == nil {
 		return nil
@@ -393,9 +394,9 @@ func classifyOpenAIError(err error) error {
 				hint = parseRetryAfterSeconds(apiErr.Response.Header)
 			}
 			return &RateLimitError{RetryAfter: hint, cause: err}
-		case http.StatusGatewayTimeout:
-			return ErrTimeout
+		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return fmt.Errorf("openai: %w (underlying: %s)", ErrTimeout, err.Error())
 		}
 	}
-	return fmt.Errorf("openai: %w", err)
+	return fmt.Errorf("openai: %w (underlying: %s)", ErrIncompatible, err.Error())
 }

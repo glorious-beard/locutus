@@ -466,8 +466,27 @@ func dispatchAnthropicTools(ctx context.Context, registry []ToolDef, toolUses []
 
 // classifyAnthropicError translates the SDK's error shape into the
 // neutral sentinels the executor's retry layer pattern-matches.
-// Anthropic errors carry an HTTP status; 429 is rate-limited,
-// context-deadline exceeded becomes ErrTimeout.
+// Mapping:
+//
+//   - context-deadline / canceled → ErrTimeout
+//   - 429 → RateLimitError (Is-matches ErrRateLimit; carries
+//     Retry-After hint for the same-pick retry path)
+//   - 5xx (500, 502, 503, 504) → ErrTimeout — transient provider-side
+//     failures; the in-walk rotation and the outer RunWithRetry re-walk
+//     both apply.
+//   - any other status code (400, 401, 402, 403, 404, 413, ...) →
+//     ErrIncompatible. The fallback chain advances to the next
+//     preference but RunWithRetry doesn't loop: pounding on the same
+//     account-state failure (e.g. "credit balance too low" returned as
+//     a 400 invalid_request_error) wastes calls.
+//   - SDK error with no usable status (network refused, TLS) → also
+//     ErrIncompatible. The wrap preserves the original message text
+//     in the operator-facing error string.
+//
+// The previous default-branch behavior wrapped non-classified errors
+// as a plain fmt.Errorf, which broke the multi-provider fallback chain
+// — any unclassified Anthropic error would abort the whole walk before
+// the executor tried googleai or openai.
 func classifyAnthropicError(err error) error {
 	if err == nil {
 		return nil
@@ -484,9 +503,9 @@ func classifyAnthropicError(err error) error {
 				hint = parseRetryAfterSeconds(apiErr.Response.Header)
 			}
 			return &RateLimitError{RetryAfter: hint, cause: err}
-		case http.StatusGatewayTimeout:
-			return ErrTimeout
+		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return fmt.Errorf("anthropic: %w (underlying: %s)", ErrTimeout, err.Error())
 		}
 	}
-	return fmt.Errorf("anthropic: %w", err)
+	return fmt.Errorf("anthropic: %w (underlying: %s)", ErrIncompatible, err.Error())
 }
