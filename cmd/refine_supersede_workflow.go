@@ -103,12 +103,13 @@ var SupersedeWorkflow = &agent.Workflow[SupersedeState]{
 			Merge:    mergeSupersedeReplace,
 		},
 		{
-			ID:       "prose_cascade",
-			Agents:   []string{"refiner"},
-			Parallel: false, // mirrors legacy runProseCascade sequential ordering
-			Fanout:   fanoutSupersedeProse,
-			Project:  projectSupersedeProse,
-			Merge:    mergeSupersedeProse,
+			ID:        "prose_cascade",
+			DependsOn: []string{"emit_replacement"},
+			Agents:    []string{"refiner"},
+			Parallel:  false, // mirrors legacy runProseCascade sequential ordering
+			Fanout:    fanoutSupersedeProse,
+			Project:   projectSupersedeProse,
+			Merge:     mergeSupersedeProse,
 		},
 	},
 	MaxRounds: 1,
