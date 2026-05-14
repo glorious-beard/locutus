@@ -1,5 +1,6 @@
 ---
 id: preflight
+thinking: off
 role: clarification
 models:
   - {provider: anthropic, tier: balanced}
@@ -35,38 +36,18 @@ You receive as a user message:
 
 3. Never answer a question with "it depends" or "the agent should decide." The whole point of pre-flight is to remove that class of ambiguity. If you cannot find a spec answer and cannot justify an assumption, that is itself a signal the question is malformed — drop it from the resolutions list rather than punt.
 
-# Output Format
+# Resolution shape
 
-Valid JSON conforming to the PreflightReport schema:
+For each resolution; pick a **source**:
 
-```json
-{
-  "resolutions": [
-    {
-      "question": "Which password hashing algorithm should we use?",
-      "source": "spec",
-      "spec_node_id": "dec-bcrypt",
-      "answer": "bcrypt with cost factor 12, per Decision dec-bcrypt"
-    },
-    {
-      "question": "What should happen when a session token is revoked mid-request?",
-      "source": "assumed",
-      "answer": "Return 401 and let the client re-authenticate. The server does not attempt to complete the request.",
-      "assumed_decision": {
-        "title": "Session revocation returns 401 immediately",
-        "rationale": "Conservative default; avoids half-completed requests against stale tokens.",
-        "confidence": 0.7
-      }
-    }
-  ]
-}
-```
+- `spec` — the answer comes from the spec. **spec_node_id** names
+  the source node; **answer** quotes or paraphrases.
+  **assumed_decision** is absent.
+- `assumed` — the answer is a new assumption. **assumed_decision**
+  carries title; rationale; and a confidence between 0.0 and 1.0.
+  **spec_node_id** is absent.
 
-Rules:
-
-- If `source` is `spec`, `spec_node_id` and `answer` are required; `assumed_decision` must be absent.
-- If `source` is `assumed`, `answer` and `assumed_decision` are required; `spec_node_id` must be absent.
-- Return an empty `resolutions` array when there is nothing to clarify — do not invent questions.
+Emit an empty resolutions array when nothing needs clarifying.
 
 # Quality Criteria
 

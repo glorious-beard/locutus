@@ -23,12 +23,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chetan/locutus/internal/frontmatter"
 	"github.com/stretchr/testify/require"
 
 	"github.com/chetan/locutus/internal/agent"
-	// Pull cascade in so its init() registers RewriteResult before
-	// the walk runs. The blank import is load-bearing.
+	// Pull every package whose init() registers a schema so all of
+	// them are present at test time. The blank imports are load-
+	// bearing: cascade registers RewriteResult; remediate registers
+	// RemediationPlan; preflight registers PreflightReport; eval
+	// registers LLMJudgeResult.
 	_ "github.com/chetan/locutus/internal/cascade"
+	_ "github.com/chetan/locutus/internal/eval"
+	_ "github.com/chetan/locutus/internal/preflight"
+	_ "github.com/chetan/locutus/internal/remediate"
 )
 
 // forbiddenPlaceholderTokens names the literal strings observed (or
@@ -106,6 +113,88 @@ func TestAgentPromptsAvoidPlaceholderPriming(t *testing.T) {
 		}
 	}
 	require.Greater(t, scanned, 0, "no output_schema agents scanned — directory layout regression?")
+}
+
+// TestAgentSchemaReferencesResolve guards the cross-boundary integrity
+// of the agent → schema contract. Every agent .md that declares
+// `output_schema: X` must have a Go-side registration for X (via
+// agent.RegisterSchema). Without this guard, an agent can ship
+// referencing a phantom schema name (a fictional type that exists
+// only in markdown), pass code review, pass tests using mocks that
+// bypass the registration check, and then fail loudly the first time
+// it's actually dispatched against a real model.
+//
+// This is the class of bug that surfaced when scout / backend_analyzer
+// / frontend_analyzer / infra_analyzer / gap_analyst / remediator /
+// preflight / llm_judge had been referencing types that didn't exist
+// in Go for months — the tests passed because the test fixtures used
+// minimal frontmatter without output_schema.
+func TestAgentSchemaReferencesResolve(t *testing.T) {
+	agentsDir := filepath.Join("..", "internal", "scaffold", "agents")
+	entries, err := os.ReadDir(agentsDir)
+	require.NoError(t, err, "read agents directory")
+
+	type minimalFrontmatter struct {
+		ID           string `yaml:"id"`
+		OutputSchema string `yaml:"output_schema"`
+	}
+
+	checked := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		path := filepath.Join(agentsDir, e.Name())
+		data, err := os.ReadFile(path)
+		require.NoErrorf(t, err, "read %s", path)
+
+		var fm minimalFrontmatter
+		if _, err := frontmatter.Parse(data, &fm); err != nil {
+			t.Errorf("%s: frontmatter parse failed: %v", e.Name(), err)
+			continue
+		}
+		if fm.OutputSchema == "" {
+			continue
+		}
+		checked++
+
+		if _, err := agent.SchemaFor(fm.OutputSchema); err != nil {
+			t.Errorf(
+				"%s declares output_schema: %q but no Go-side registration exists. "+
+					"Either define the type and call agent.RegisterSchema(%q, ...) in the package that owns the consumer, "+
+					"or drop the output_schema declaration from the agent's frontmatter. "+
+					"(Original error: %v)",
+				e.Name(), fm.OutputSchema, fm.OutputSchema, err,
+			)
+		}
+	}
+	require.Greater(t, checked, 0, "no agents with output_schema scanned — directory layout regression?")
+}
+
+// TestSchemaExamplePayloadsAvoidPlaceholderPriming extends the
+// placeholder-priming guard to cover the registered example payloads
+// themselves. With Path A wired up (BuildSystemPrompt appends a JSON
+// example for thinking-off + schema agents), the registered example
+// payload reaches the model on every call — same priming surface as
+// schema descriptions. An example like {Severity: "dummy"} would
+// recreate exactly the priming bug the conventions-doc workflow is
+// guarding against.
+func TestSchemaExamplePayloadsAvoidPlaceholderPriming(t *testing.T) {
+	names := agent.RegisteredSchemaNames()
+	require.NotEmpty(t, names, "no schemas registered — package init order regression?")
+
+	for _, name := range names {
+		doc := agent.SchemaPromptDoc(name)
+		if doc == "" {
+			continue
+		}
+		for i, line := range strings.Split(doc, "\n") {
+			if m := forbiddenPattern.FindString(line); m != "" {
+				t.Errorf("schema %q example payload line %d names forbidden token %q — the example payload reaches the model verbatim via BuildSystemPrompt for thinking-off agents. Rewrite the registered example struct's field values to use descriptive prose instead of placeholder tokens. Line: %q",
+					name, i+1, strings.ToLower(m), strings.TrimSpace(line))
+			}
+		}
+	}
 }
 
 func walkDescriptions(t *testing.T, schemaName, path string, node any) {

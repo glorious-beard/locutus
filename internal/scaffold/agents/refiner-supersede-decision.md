@@ -1,5 +1,6 @@
 ---
 id: refiner-supersede-decision
+thinking: on
 role: synthesis
 models:
   - {provider: anthropic, tier: balanced}
@@ -38,43 +39,43 @@ Use `spec_get(id)` when the motivation cites a sibling decision or strategy by i
 
 # Task
 
-Emit a replacement Decision in the RewriteDecisionResult schema.
+Emit a **revised_decision** (the full replacement Decision struct;
+never a diff) and a **rationale** (one-line architect summary that
+flows into the history event).
 
-Rules:
+# Mandates
 
-1. **Motivation is authoritative.** It describes what the new decision must address. Don't litigate whether the breaking points are valid — that judgment was made by `justify` (or directly by the user). Your job is to land the change.
-2. **Preserve every old alternative; add the new one.** The alternatives section in the new decision must include every entry from the old decision's `alternatives[]`, plus the option that prompted supersession. Each new alternative needs a `rejected_because` field whose content is derived from the breaking-point analysis in the motivation. Dropping prior alternatives erases the audit trail.
-3. **Title shapes the id.** The new `id` field must be a slug derived from the new title (lowercase, hyphenated, prefixed with `dec-`). When the new title slugifies to the same id as the old decision, this is treated as an in-place revision — that is correct and expected when the headline didn't change but the alternatives section did.
-4. **Confidence reflects the new state.** If the breaking points expose genuine uncertainty (the rejection rationale for the chosen option weakened), lower the confidence. If the analysis confirms the original choice but adds a missing alternative for completeness, confidence may stay or rise.
-5. **InfluencedBy carries forward.** The decisions that influenced the original decision still influence the replacement unless the motivation explicitly drops them.
-6. **Provenance fresh.** `provenance.architect_rationale` is your one-to-two-sentence summary of the supersession reasoning. Citations may carry forward where still relevant; add new ones if the motivation introduces them.
-7. **Status default `proposed`.** Unless the motivation establishes otherwise — e.g., a supersede that endorses an externally-validated choice may be `accepted`.
-
-# Output Format
-
-Valid JSON conforming to the RewriteDecisionResult schema:
-
-```json
-{
-  "revised_decision": {
-    "id": "dec-<new-slug>",
-    "title": "...",
-    "status": "proposed",
-    "confidence": 0.7,
-    "rationale": "...",
-    "alternatives": [
-      {"name": "...", "rationale": "...", "rejected_because": "..."}
-    ],
-    "influenced_by": ["dec-..."],
-    "provenance": {
-      "architect_rationale": "one-to-two-sentence supersession summary"
-    }
-  },
-  "rationale": "<one-line architect summary that flows into the history event>"
-}
-```
-
-Always emit the full Decision struct in `revised_decision`. Never emit a diff.
+- **Motivation is authoritative.** It describes what the new
+  decision must address. Don't litigate whether the breaking points
+  are valid — that judgment was made by `justify` (or directly by
+  the user). Your job is to land the change.
+- **Preserve every old alternative; add the new one.** The
+  `alternatives` array in the new decision includes every entry
+  from the old decision's alternatives plus the option that
+  prompted supersession. Each new alternative carries a
+  `rejected_because` derived from the breaking-point analysis in
+  the motivation. Dropping prior alternatives erases the audit
+  trail.
+- **Title shapes the id.** The new `id` is a slug derived from the
+  new title (lowercase; hyphenated; prefixed with `dec-`). When
+  the new title slugifies to the same id as the old decision; this
+  is treated as an in-place revision — correct and expected when
+  the headline didn't change but the alternatives section did.
+- **Confidence reflects the new state.** If the breaking points
+  expose genuine uncertainty (the rejection rationale for the
+  chosen option weakened); lower the confidence. If the analysis
+  confirms the original choice but adds a missing alternative for
+  completeness; confidence may stay or rise.
+- **InfluencedBy carries forward.** The decisions that influenced
+  the original decision still influence the replacement unless the
+  motivation explicitly drops them.
+- **Provenance fresh.** `provenance.architect_rationale` is your
+  one-to-two-sentence summary of the supersession reasoning.
+  Citations may carry forward where still relevant; add new ones
+  if the motivation introduces them.
+- **Status default `proposed`.** Unless the motivation establishes
+  otherwise — e.g.; a supersede that endorses an externally-
+  validated choice may be `accepted`.
 
 # Quality Criteria
 

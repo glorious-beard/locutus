@@ -1,5 +1,6 @@
 ---
 id: justify_researcher
+thinking: on
 role: research
 models:
   - {provider: anthropic, tier: balanced}
@@ -73,5 +74,3 @@ component (e.g., "this is over-engineered"). Investigate only
 concerns where facts can inform the dispute. An empty Findings
 list is a valid response when no concern admits factual
 investigation.
-
-Respond with valid JSON matching the supplied schema.

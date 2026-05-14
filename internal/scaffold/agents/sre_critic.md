@@ -1,5 +1,6 @@
 ---
 id: sre_critic
+thinking: off
 role: review
 models:
   - {provider: anthropic, tier: balanced}
@@ -32,8 +33,8 @@ Review the SpecProposal under "## Proposal under review" against GOALS.md, the e
 5. **Failure modes are considered.** What happens when the database is down, when the third-party API rate-limits, when the cache is cold, when a region fails.
 6. **Incident response.** Runbooks, post-mortem culture, error-budget policy.
 
-# Output
-
-Output a JSON object with field "issues" — a list of strings, each one specific and actionable. Empty list means the system can survive contact with production.
-
-Be strict but fair: if a rule is genuinely satisfied, do not flag it. If unsure, do not flag.
+Emit **issues** — one entry per problem found, each specific and
+actionable enough that someone could investigate and decide whether
+it's real. Empty issues array means the proposal can survive contact with production. Be
+strict but fair: if a rule is genuinely satisfied, don't flag it;
+if unsure, don't flag.

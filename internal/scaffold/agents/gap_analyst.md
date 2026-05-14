@@ -1,11 +1,12 @@
 ---
 id: gap_analyst
+thinking: off
 role: gap-analysis
 models:
   - {provider: anthropic, tier: balanced}
   - {provider: googleai, tier: balanced}
   - {provider: openai, tier: balanced}
-output_schema: GapAnalysis
+output_schema: AssimilationContribution
 ---
 # Identity
 
@@ -149,29 +150,6 @@ Features (inferred or otherwise) without testable acceptance criteria.
 - **low**: Internal tooling or admin features without criteria
 
 # Output Format
-
-Valid JSON conforming to the GapAnalysis schema:
-
-```json
-{
-  "gaps": [
-    {
-      "category": "missing_tests",
-      "severity": "high",
-      "description": "internal/auth/handler.go has no corresponding handler_test.go. This file contains authentication logic (HandleLogin, HandleLogout, ValidateToken) which is security-critical.",
-      "affected_ids": ["e-user", "d-auth-jwt"],
-      "suggested_remediation": "Create internal/auth/handler_test.go with table-driven tests covering: valid credentials, invalid credentials, expired tokens, missing auth header."
-    },
-    {
-      "category": "missing_quality_strategy",
-      "severity": "high",
-      "description": "No linter configuration detected. No golangci-lint config, no ESLint config, no lint step in CI pipeline.",
-      "affected_ids": [],
-      "suggested_remediation": "Add .golangci.yml with standard rules (errcheck, govet, staticcheck) and add a lint step to the CI workflow."
-    }
-  ]
-}
-```
 
 # Quality Criteria
 

@@ -1,11 +1,12 @@
 ---
 id: scout
+thinking: off
 role: codebase-discovery
 models:
   - {provider: anthropic, tier: balanced}
   - {provider: googleai, tier: balanced}
   - {provider: openai, tier: balanced}
-output_schema: ScoutSummary
+output_schema: AssimilationContribution
 ---
 # Identity
 
@@ -16,10 +17,6 @@ You do not make aspirational claims about what a codebase "might" be. You report
 # Context
 
 You receive a JSON array of FileEntry objects as a user message assembled by the orchestrator:
-
-```json
-[{"path": "go.mod", "size": 245, "is_dir": false}, ...]
-```
 
 This is the full file tree of the target project, filtered by .gitignore. You will not receive file contents -- only paths, sizes, and directory flags. Your job is to extract maximum signal from this structural data alone.
 
@@ -104,49 +101,6 @@ Flag the presence of: `Dockerfile`, `docker-compose.yml`, `.github/workflows/`, 
 List notable configuration files: `.env.example`, `config.yaml`, `settings.json`, `.editorconfig`, `.prettierrc`, `.eslintrc`, `golangci-lint` config, `.pre-commit-config.yaml`.
 
 # Output Format
-
-Valid JSON conforming to the ScoutSummary schema:
-
-```json
-{
-  "languages": [
-    {
-      "name": "go",
-      "confidence": 0.95,
-      "evidence": ["go.mod present", "47 .go files totaling 128KB"],
-      "role": "primary"
-    }
-  ],
-  "frameworks": [
-    {
-      "name": "kong",
-      "confidence": 0.60,
-      "evidence": ["go.mod present — framework detection requires content analysis"]
-    }
-  ],
-  "structure_pattern": "go-standard-layout",
-  "structure_evidence": ["cmd/ directory present", "internal/ directory present", "pkg/ absent"],
-  "build_system": "task",
-  "build_evidence": ["Taskfile.yml present at root"],
-  "config_files": [".editorconfig", ".golangci.yml"],
-  "infrastructure": [
-    {
-      "kind": "containerization",
-      "files": ["Dockerfile", "docker-compose.yml"],
-      "confidence": 0.90
-    }
-  ],
-  "notable_patterns": [
-    "Test files co-located with source (Go convention)",
-    "No vendor/ directory — uses Go module proxy"
-  ],
-  "file_stats": {
-    "total_files": 142,
-    "total_dirs": 23,
-    "largest_file": {"path": "go.sum", "size": 45000}
-  }
-}
-```
 
 # Quality Criteria
 

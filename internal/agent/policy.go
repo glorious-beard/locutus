@@ -79,20 +79,17 @@ func ResolveAvailable(def AgentDef, providers DetectedProviders, cfg *ModelConfi
 				def.ID, pref.Provider, pref.Tier,
 			)
 		}
-		// AgentDef.Thinking overrides the tier's level when set —
-		// lets an agent opt out of (or up to) extended thinking
-		// without forcing a tier swap that would also change the
-		// model or output-token budget.
-		thinking := thinkingLevel(tierCfg.Thinking)
-		if def.Thinking != "" {
-			thinking = thinkingLevel(def.Thinking)
-		}
+		// Thinking is a per-agent decision (declared in frontmatter),
+		// not a tier property. Empty defaults to off — the safer
+		// side of the dial when a deployment hasn't explicitly opted
+		// in (and a guard test fails the build if any agent ships
+		// without an explicit thinking declaration).
 		picks = append(picks, &ResolvedModel{
 			Provider:           ProviderName(pref.Provider),
 			Tier:               pref.Tier,
 			Model:              tierCfg.Model,
 			MaxOutputTokens:    tierCfg.MaxOutputTokens,
-			Thinking:           thinking,
+			Thinking:           thinkingLevel(def.Thinking),
 			ConcurrentRequests: tierCfg.ConcurrentRequests,
 		})
 	}
@@ -126,4 +123,56 @@ func thinkingLevel(s string) adapters.ThinkingLevel {
 	default:
 		return adapters.ThinkingOff
 	}
+}
+
+// ResolveFormatPicks returns the resolved fast-tier picks for the
+// dispatcher's structured-output format pass, in cfg.FormatProviders
+// order (or the default-sorted provider list when unset). Each pick
+// has Thinking pinned to off — the format pass exists specifically
+// to avoid the reasoning-mode pathology that makes the split
+// necessary in the first place.
+//
+// Returns an error when every listed format provider is either
+// missing from the detected providers set (no API key) or absent
+// from the model-config tier table. That's a misconfigured
+// deployment for any project using thinking + structured output, so
+// failing loudly is the right call.
+func ResolveFormatPicks(providers DetectedProviders, cfg *ModelConfig) ([]*ResolvedModel, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("resolve format picks: nil model config")
+	}
+	order := cfg.FormatProviderOrder()
+	if len(order) == 0 {
+		return nil, fmt.Errorf("resolve format picks: model config has no providers")
+	}
+	var picks []*ResolvedModel
+	var attempted []string
+	for _, name := range order {
+		attempted = append(attempted, name+"/fast")
+		if !providers.Has(ProviderName(name)) {
+			continue
+		}
+		tierCfg, ok := cfg.Resolve(name, string(TierFast))
+		if !ok {
+			// parseModelConfig already validated every
+			// FormatProviders entry has a fast tier; if we get
+			// here, the default-order path resolved a provider
+			// that genuinely lacks fast. Skip rather than fail
+			// the whole call — the next provider in the list may
+			// have what we need.
+			continue
+		}
+		picks = append(picks, &ResolvedModel{
+			Provider:           ProviderName(name),
+			Tier:               string(TierFast),
+			Model:              tierCfg.Model,
+			MaxOutputTokens:    tierCfg.MaxOutputTokens,
+			Thinking:           adapters.ThinkingOff,
+			ConcurrentRequests: tierCfg.ConcurrentRequests,
+		})
+	}
+	if len(picks) == 0 {
+		return nil, fmt.Errorf("resolve format picks: none of %v are configured", attempted)
+	}
+	return picks, nil
 }

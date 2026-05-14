@@ -63,9 +63,9 @@ func BriefFromContext(ctx context.Context) string {
 
 // RewriteResult is the JSON shape the rewriter agent returns.
 type RewriteResult struct {
-	RevisedBody string `json:"revised_body" jsonschema:"description=The revised parent prose, in full. Returned verbatim when no change is needed (changed=false) so callers can write atomically. Must be the complete body — not a diff, not a fragment, not a summary."`
+	RevisedBody string `json:"revised_body" jsonschema:"description=The revised parent prose; in full. Returned verbatim when no change is needed (changed=false) so callers can write atomically. Must be the complete body — not a diff; not a fragment; not a summary."`
 	Changed     bool   `json:"changed" jsonschema:"description=Whether the parent prose was modified. true when the current prose no longer reflects the applicable decisions and the body has been revised; false when the prose still holds and revised_body echoes the input."`
-	Rationale   string `json:"rationale" jsonschema:"description=One-line summary of what changed and why, or one-line summary of why no change was needed (when changed=false). Surfaces in cascade events for operator review."`
+	Rationale   string `json:"rationale" jsonschema:"description=One-line summary of what changed and why; or one-line summary of why no change was needed (when changed=false). Surfaces in cascade events for operator review."`
 }
 
 func init() {

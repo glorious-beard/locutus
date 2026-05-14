@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -52,6 +53,13 @@ const (
 // operational defaults the executor applies to the request before
 // dispatch. Agents do not configure any of these — frontmatter only
 // declares (provider, tier) preferences.
+//
+// Reasoning mode is intentionally absent here. Whether to use extended
+// thinking is a per-agent decision (declared in agent frontmatter),
+// not a tier property. The previous design coupled them, which led to
+// the structured-emit-degradation failure mode: balanced-tier agents
+// inherited thinking-on by default, and thinking + structured output +
+// tool use is empirically unreliable across providers.
 type TierConfig struct {
 	// Model is the concrete provider-side model identifier.
 	Model string `yaml:"model"`
@@ -59,10 +67,6 @@ type TierConfig struct {
 	// "use the provider default"; Anthropic's adapter substitutes a
 	// safe minimum since its SDK rejects MaxTokens=0.
 	MaxOutputTokens int `yaml:"max_output_tokens,omitempty"`
-	// Thinking is the coarse extended-thinking level —
-	// "off" / "on" / "high". The adapter maps to provider-specific
-	// budget knobs. Empty defaults to "off".
-	Thinking string `yaml:"thinking,omitempty"`
 	// ConcurrentRequests caps in-flight calls to this
 	// (provider, model) so fanout-shaped workloads don't exceed
 	// provider RPM ceilings. Zero means unbounded; positive values
@@ -74,6 +78,16 @@ type TierConfig struct {
 // mirrors the YAML on disk one-to-one for round-trip simplicity.
 type ModelConfig struct {
 	Providers map[string]map[string]TierConfig `yaml:"providers"`
+	// FormatProviders names the rotation order the dispatcher uses
+	// for the structured-output format pass (the "call 2" of the
+	// reason-then-format split for agents with thinking + schema).
+	// Each entry resolves to that provider's `fast` tier at load
+	// time; the dispatcher walks the list in order and skips
+	// providers whose adapter init fails. Empty list means "use the
+	// providers in declaration order above" — kept as a soft default
+	// so a stripped-down models.yaml still routes format calls
+	// somewhere reasonable.
+	FormatProviders []string `yaml:"format_providers,omitempty"`
 }
 
 // Resolve returns the TierConfig for a (provider, tier) pair and a
@@ -95,10 +109,41 @@ func (c *ModelConfig) Resolve(provider, tier string) (TierConfig, bool) {
 	return cfg, true
 }
 
+// FormatProviderOrder returns the provider names the dispatcher walks
+// for the structured-output format pass. When FormatProviders is set
+// explicitly, returns it verbatim. When unset, defaults to the
+// declaration order of the providers map (stable across runs because
+// YAML preserves map insertion order via yaml.v3 when unmarshaled
+// into a structured shape — but the providers map is a hash, so we
+// have to sort for determinism). Sorted alphabetically for
+// stability when the default kicks in. Operators who want a specific
+// order set it explicitly.
+func (c *ModelConfig) FormatProviderOrder() []string {
+	if c == nil {
+		return nil
+	}
+	if len(c.FormatProviders) > 0 {
+		out := make([]string, len(c.FormatProviders))
+		copy(out, c.FormatProviders)
+		return out
+	}
+	names := make([]string, 0, len(c.Providers))
+	for name := range c.Providers {
+		names = append(names, name)
+	}
+	// Deterministic default. Operators who care about order set
+	// format_providers explicitly.
+	sort.Strings(names)
+	return names
+}
+
 // parseModelConfig unmarshals YAML bytes into a ModelConfig. Returns
 // an error on malformed YAML or an empty providers map — a config
 // with no providers would silently make every dispatch unroutable,
-// which is worse than a clear error at load time.
+// which is worse than a clear error at load time. Also validates
+// every format_providers entry resolves to a provider with a `fast`
+// tier; typos here would silently disable the format pass for an
+// agent that needs it.
 func parseModelConfig(data []byte) (*ModelConfig, error) {
 	var cfg ModelConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -106,6 +151,15 @@ func parseModelConfig(data []byte) (*ModelConfig, error) {
 	}
 	if len(cfg.Providers) == 0 {
 		return nil, fmt.Errorf("parse model config: providers map is empty")
+	}
+	for _, name := range cfg.FormatProviders {
+		tiers, ok := cfg.Providers[name]
+		if !ok {
+			return nil, fmt.Errorf("parse model config: format_providers names %q, which has no entry under providers:", name)
+		}
+		if _, ok := tiers[string(TierFast)]; !ok {
+			return nil, fmt.Errorf("parse model config: format_providers names %q, which has no `fast` tier — format pass needs the fast tier", name)
+		}
 	}
 	return &cfg, nil
 }

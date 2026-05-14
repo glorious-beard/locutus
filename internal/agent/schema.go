@@ -188,11 +188,24 @@ func deepCopyValue(v any) any {
 // stripJSONSchemaArtifacts removes draft / version metadata that
 // providers reject when validating json_schema strict requests. The
 // $schema URI in particular trips OpenAI's strict-mode validator.
+//
+// Also strips `examples` keys. Example payloads belong in the prompt
+// (via SchemaPromptDoc + BuildSystemPrompt for thinking-off agents)
+// rather than the strict-mode schema — the Anthropic docs explicitly
+// list `minLength`/`maxLength`/`pattern`/etc. as constraints the SDK
+// transforms away, and while `examples` isn't explicitly listed,
+// keeping it in the schema risks both priming the model with literal
+// example values and rejection by stricter provider validators. Defense
+// in depth: nothing in the codebase currently uses `example=` tags, but
+// future struct authors who add them shouldn't accidentally leak them
+// into provider strict-mode.
 func stripJSONSchemaArtifacts(node map[string]any) {
 	delete(node, "$schema")
 	delete(node, "$id")
 	delete(node, "$defs")
 	delete(node, "definitions")
+	delete(node, "examples")
+	delete(node, "example")
 	for _, v := range node {
 		switch t := v.(type) {
 		case map[string]any:
@@ -255,6 +268,11 @@ func enforceStrict(node map[string]any) {
 // example for inline documentation in the agent's system prompt.
 // Rendered to providers without strict-mode coverage as a concrete
 // shape to target. Empty string when no example is registered.
+//
+// Superseded for BuildSystemPrompt by SchemaFieldHints (the labeled-
+// prose rendering of the reflected schema), but retained as a
+// standalone helper for callers that still want a concrete example
+// payload.
 func SchemaPromptDoc(name string) string {
 	example, ok := SchemaExample(name)
 	if !ok {
@@ -266,3 +284,4 @@ func SchemaPromptDoc(name string) string {
 	}
 	return string(data)
 }
+

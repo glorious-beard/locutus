@@ -10,16 +10,16 @@ import "time"
 // category specifically. Defaulted from AgentID at merge time when not
 // set explicitly.
 type Concern struct {
-	AgentID  string `json:"agent_id" jsonschema:"description=The id of the agent that raised this concern (architect_critic, devops_critic, etc.). Defaulted from the calling agent at merge time when not set; the renderer groups concerns by agent."`
+	AgentID  string `json:"agent_id" jsonschema:"description=The id of the agent that raised this concern (architect_critic; devops_critic; etc.). Defaulted from the calling agent at merge time when not set; the renderer groups concerns by agent."`
 	Severity string `json:"severity" jsonschema:"enum=high,enum=medium,enum=low,description=Severity bucket. high blocks the spec from shipping; medium is a real concern worth addressing; low is a polish-pass note."`
-	Kind     string `json:"kind,omitempty" jsonschema:"description=The lens that produced this concern (integrity, architecture, devops, sre, cost). The revise projection groups concerns by Kind so the architect addresses categories specifically. Defaulted from AgentID at merge time when not set."`
+	Kind     string `json:"kind,omitempty" jsonschema:"description=The lens that produced this concern (integrity; architecture; devops; sre; cost). The revise projection groups concerns by Kind so the architect addresses categories specifically. Defaulted from AgentID at merge time when not set."`
 	Text     string `json:"text" jsonschema:"description=The concern itself — a complete sentence naming the specific finding. Cites the spec node id or GOALS.md clause when relevant. Not a generic complaint."`
 }
 
 // Finding is a research result from the researcher.
 type Finding struct {
 	Query  string `json:"query" jsonschema:"description=The factual question this finding answers — a complete sentence pulled from a critic's concern or from a known gap in the spec. Phrasing the question concretely makes the research result concretely answerable."`
-	Result string `json:"result" jsonschema:"description=Evidence-based answer to Query, citing retrieved sources. When grounding was on, the research result cites real URLs / vendor docs; when grounding is off the result still cites named principles ('the CAP theorem trade-off for AP systems'). Empty result or 'no information available' is acceptable when the question genuinely has no answer."`
+	Result string `json:"result" jsonschema:"description=Evidence-based answer to Query; citing retrieved sources. When grounding was on; the research result cites real URLs / vendor docs; when grounding is off the result still cites named principles ('the CAP theorem trade-off for AP systems'). Empty result or 'no information available' is acceptable when the question genuinely has no answer."`
 }
 
 // PlanningState is the typed blackboard for council workflow execution.

@@ -64,14 +64,14 @@ type FindingClusters struct {
 // Topic + findings + kind only. Workflow-side code converts each to a
 // FindingCluster with AgentID set from kind.
 type LLMFindingClusters struct {
-	Clusters []LLMFindingCluster `json:"clusters,omitempty" jsonschema:"description=One cluster per coherent topic across the input findings. Every input finding must be routed into exactly one cluster — the clusterer cannot drop, paraphrase, or annotate findings, only group them. Empty clusters (findings:[]) are not valid."`
+	Clusters []LLMFindingCluster `json:"clusters,omitempty" jsonschema:"description=One cluster per coherent topic across the input findings. Every input finding must be routed into exactly one cluster — the clusterer cannot drop; paraphrase; or annotate findings; only group them. Empty clusters (findings:[]) are not valid."`
 }
 
 // LLMFindingCluster is the per-cluster shape the clusterer emits.
 // Kind is "feature" or "strategy"; the workflow promotes it to AgentID.
 type LLMFindingCluster struct {
-	Topic    string   `json:"topic" jsonschema:"description=Short label naming the cluster's topic ('Auth and identity', 'Data persistence'). A noun phrase, not a sentence; downstream renderers display it as a section heading."`
-	Findings []string `json:"findings" jsonschema:"minItems=1,description=The input findings routed into this cluster, verbatim. Each entry is one finding from the input list — do not paraphrase or summarise. Order within a cluster doesn't matter."`
+	Topic    string   `json:"topic" jsonschema:"description=Short label naming the cluster's topic ('Auth and identity'; 'Data persistence'). A noun phrase; not a sentence; downstream renderers display it as a section heading."`
+	Findings []string `json:"findings" jsonschema:"minItems=1,description=The input findings routed into this cluster; verbatim. Each entry is one finding from the input list — do not paraphrase or summarise. Order within a cluster doesn't matter."`
 	Kind     string   `json:"kind" jsonschema:"enum=feature,enum=strategy,description=Whether the topic surfaces as a Feature (user-facing capability) or a Strategy (foundational engineering commitment). The workflow promotes this to the AgentID of the elaborator that will handle the cluster."`
 }
 

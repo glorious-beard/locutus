@@ -82,10 +82,66 @@ type AssimilationResult struct {
 
 // Gap represents a detected gap in the codebase.
 type Gap struct {
-	Category    string   `json:"category"`
-	Severity    string   `json:"severity"`
-	Description string   `json:"description"`
-	AffectedIDs []string `json:"affected_ids,omitempty"`
+	Category    string   `json:"category" jsonschema:"description=Short kebab-case classifier for the gap kind — e.g. missing_tests; orphan_code; undocumented_decision; missing_quality_strategy. Drives downstream routing; the remediator inspects this to pick which feature/strategy slot to populate."`
+	Severity    string   `json:"severity" jsonschema:"enum=high,enum=medium,enum=low,description=high = will cause production issues / security gaps / onboarding friction; medium = creates technical debt or friction; low = nice-to-have polish."`
+	Description string   `json:"description" jsonschema:"description=One-to-three-sentence description of the gap. Concrete enough that the remediator can author a remediation step without needing additional context — names the specific file/decision/entity and what's missing about it."`
+	AffectedIDs []string `json:"affected_ids,omitempty" jsonschema:"description=Spec node ids (feature / decision / strategy / entity) the gap relates to. Empty when the gap is cross-cutting or doesn't map onto a specific existing node."`
+}
+
+// AssimilationContribution is the per-call output of every agent in
+// the assimilation pipeline (scout / backend_analyzer / frontend_analyzer
+// / infra_analyzer / gap_analyst). It's a union of contribution slots —
+// each agent populates the subset that fits its task. The orchestrator's
+// parseAssimilationResults merges contributions across all rounds into
+// a single AssimilationResult.
+//
+// Historically this contract was implicit: agents emitted free-form JSON
+// and the parser pulled out a fixed set of known field names via a
+// loose `map[string]json.RawMessage` walk. Typing the contract here
+// gives the dispatcher a real schema to enforce strict-mode against
+// (per-provider structured-output API) so the agents' .md frontmatter
+// `output_schema:` references resolve to something concrete.
+type AssimilationContribution struct {
+	Features   []spec.Feature  `json:"features,omitempty" jsonschema:"description=Feature nodes the agent inferred from the codebase. Each is a user-facing capability the project delivers; the analyzer surfaces these from code structure / framework patterns / module boundaries."`
+	Decisions  []spec.Decision `json:"decisions,omitempty" jsonschema:"description=Architectural decisions the agent inferred from concrete evidence in the codebase. Each names a committed choice (e.g. 'Use PostgreSQL for OLTP store') with rationale grounded in observable file evidence — go.mod entries; framework configs; CI commands."`
+	Strategies []spec.Strategy `json:"strategies,omitempty" jsonschema:"description=Cross-cutting engineering commitments the agent surfaced — testing approach; deployment posture; observability stack; build system. Strategies bundle related decisions and the prerequisites/commands that operationalize them."`
+	Approaches []spec.Approach `json:"approaches,omitempty" jsonschema:"description=Implementation approaches the agent surfaced — typically empty for analyzer agents; populated by adopt-time synthesis. Listed here for completeness since the parser accepts the field."`
+	Entities   []spec.Entity   `json:"entities,omitempty" jsonschema:"description=Domain entities the agent extracted from data models / DB schemas / struct definitions. Each entity carries its fields and relationships so downstream remediation can scope tests and ownership to specific business objects."`
+	Gaps       []Gap           `json:"gaps,omitempty" jsonschema:"description=Detected gaps — typically populated only by gap_analyst. Each gap names a missing test / undocumented decision / orphan code / missing quality strategy with a severity tier and the spec node ids it affects."`
+}
+
+func init() {
+	RegisterSchema("AssimilationContribution", AssimilationContribution{
+		Features: []spec.Feature{{
+			ID:          "feat-dashboard",
+			Title:       "Real-time fleet dashboard",
+			Description: "Operators view live fleet status from a single dashboard with sub-second refresh.",
+			Status:      spec.FeatureStatusProposed,
+		}},
+		Decisions: []spec.Decision{{
+			ID:         "dec-postgres-oltp",
+			Title:      "Use PostgreSQL 16 for OLTP store",
+			Rationale:  "Strong relational guarantees; PostGIS available for geospatial queries; team has operational experience.",
+			Confidence: 0.85,
+			Status:     spec.DecisionStatusProposed,
+		}},
+		Strategies: []spec.Strategy{{
+			ID:    "strat-test-runner",
+			Title: "Go test runner with table-driven tests",
+			Kind:  spec.StrategyKindQuality,
+		}},
+		Entities: []spec.Entity{{
+			ID:     "e-user",
+			Name:   "User",
+			Source: "internal/model/user.go",
+		}},
+		Gaps: []Gap{{
+			Category:    "missing_tests",
+			Severity:    "high",
+			Description: "internal/auth/handler.go has no corresponding handler_test.go; auth flow lacks coverage.",
+			AffectedIDs: []string{"e-user", "dec-postgres-oltp"},
+		}},
+	})
 }
 
 // WalkInventory produces a file inventory from the given FS, respecting .gitignore.

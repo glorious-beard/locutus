@@ -1,5 +1,6 @@
 ---
 id: approach-regenerator
+thinking: on
 role: synthesis
 models:
   - {provider: anthropic, tier: balanced}
@@ -42,34 +43,52 @@ Use `spec_search` for reuse / collision checks against the existing graph — gi
 
 # Task
 
-Emit a revised Body in the RegenerateApproachResult schema. The body must cover both directions:
+Emit a **revised_body** that covers both directions plus a
+**rationale** that summarizes how the regeneration addresses the
+supersession:
 
-1. **Forward.** What the coding agent must build to satisfy the current spec. Acceptance criteria, sequencing, and any current-state guardrails. Match the voice of the prior body where the prior framing remains correct.
-2. **Backward.** What to do with each entry from the prior artifact list:
-   - **Keep** when the file is still required and the new spec doesn't change it.
-   - **Modify** when the file remains but its content needs updating to align with the new spec; describe the specific edits.
-   - **Replace** when the file's role is taken over by a new file under the new spec.
-   - **Delete** when the file's role is fully obsolete (e.g. NextAuth-specific middleware after a switch to a managed IdP).
+**Forward.** What the coding agent must build to satisfy the
+current spec. Acceptance criteria; sequencing; current-state
+guardrails. Match the voice of the prior body where the prior
+framing remains correct.
 
-Be specific. A coding agent reading the body must be able to point at each prior artifact path and know which bucket it lands in. "Update the auth code to use the new provider" is too vague; "Replace `lib/auth/nextauth.ts` with `lib/auth/workos.ts` (delete the former, create the latter using WorkOS AuthKit)" is the right shape.
+**Backward.** What to do with each entry from the prior artifact
+list — pick one bucket per file:
 
-Rules:
+- `keep` when the file is still required and the new spec doesn't
+  change it.
+- `modify` when the file remains but its content needs updating to
+  align with the new spec; describe the specific edits.
+- `replace` when the file's role is taken over by a new file under
+  the new spec.
+- `delete` when the file's role is fully obsolete (e.g.
+  NextAuth-specific middleware after a switch to a managed IdP).
 
-1. **No new architectural commitments in the body.** The decisions list is authoritative. If the supersession motivation implies a new technical choice the current decisions don't cover, surface that in the rationale field — don't bake it into the body. The user follows up with `refine --supersede` on the relevant decision.
-2. **Don't invent acceptance criteria.** The parent's structured fields drive scope. Body prose may restate or sharpen criteria that already exist in the parent; it must not introduce new ones.
-3. **Preserve voice.** Same writing style as the prior body unless the supersession motivation explicitly changes the framing.
-4. **Cleanup is mandatory when there are prior artifacts.** A regeneration that ignores the artifact list and ships only forward-direction prose is wrong — the coding agent needs the cleanup instructions to avoid leaving obsolete code in place.
-
-# Output Format
-
-```json
-{
-  "revised_body": "<the full revised approach body in markdown>",
-  "rationale": "<one-line summary of how the regeneration addresses the supersession>"
-}
-```
+Be specific. A coding agent reading the body must be able to point
+at each prior artifact path and know which bucket it lands in.
+"Update the auth code to use the new provider" is too vague;
+"Replace `lib/auth/nextauth.ts` with `lib/auth/workos.ts` (delete
+the former; create the latter using WorkOS AuthKit)" is the right
+shape.
 
 Always emit the full body. Never emit a diff.
+
+# Mandates
+
+- **No new architectural commitments in the body.** The decisions
+  list is authoritative. If the supersession motivation implies a
+  new technical choice the current decisions don't cover; surface
+  that in **rationale** — don't bake it into the body. The user
+  follows up with `refine --supersede` on the relevant decision.
+- **Don't invent acceptance criteria.** The parent's structured
+  fields drive scope. Body prose may restate or sharpen criteria
+  that already exist in the parent; it must not introduce new ones.
+- **Preserve voice.** Same writing style as the prior body unless
+  the supersession motivation explicitly changes the framing.
+- **Cleanup is mandatory when there are prior artifacts.** A
+  regeneration that ignores the artifact list and ships only
+  forward-direction prose is wrong — the coding agent needs the
+  cleanup instructions to avoid leaving obsolete code in place.
 
 # Quality Criteria
 

@@ -1,5 +1,6 @@
 ---
 id: critic
+thinking: off
 role: review
 models:
   - {provider: anthropic, tier: balanced}
@@ -45,16 +46,18 @@ Produce a JSON array of concerns. Examine the plan through these lenses, in orde
 5. **Sequencing problems**: Are there steps ordered in a way that creates unnecessary blocking? Are there circular dependencies? Could earlier steps be restructured to unblock parallel work?
 6. **Missing test coverage**: Are assertions actually testable? Do they cover failure cases, not just the happy path?
 
-For each concern, provide:
+For each concern, write a `**Concern N**` section that names the
+specific **text** of the critique (what is wrong and why it matters)
+and proposes a concrete alternative or mitigation. Pick a
+**severity**:
 
-- `severity`: high (will cause implementation failure), medium (will cause pain but is workable), low (improvement opportunity)
-- `category`: one of over-engineering, failure-mode, scope-creep, dependency-risk, sequencing, testability
-- `text`: the specific critique — what is wrong and why it matters
-- `suggestion`: a concrete alternative or mitigation
+- `high` — the plan will fail or produce a broken result if this is
+  not addressed.
+- `medium` — the plan will cause pain but is workable.
+- `low` — improvement opportunity.
 
-# Output Format
-
-A JSON array of concern objects conforming to the Concern schema (injected below by the system).
+Pick a **category**: `over-engineering` / `failure-mode` /
+`scope-creep` / `dependency-risk` / `sequencing` / `testability`.
 
 # Quality Criteria
 

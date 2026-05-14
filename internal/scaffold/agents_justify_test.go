@@ -40,27 +40,34 @@ func TestSpecAdvocate_HasGroundingDiscipline(t *testing.T) {
 
 // TestSpecChallenger_BroadEvidenceSources — the challenger prompt
 // must list the four evidence sources (node rationale, GOALS,
-// engineering practices, current practice) and warn the model that
-// empty/one-word fields are rejected. The framework-philosophy
-// failure mode this addresses (justify against strat-frontend on
-// 2026-05-10) was caused by the prompt being too narrow about what
-// counted as evidence.
+// engineering practices, current practice). The framework-
+// philosophy failure mode this addresses (justify against
+// strat-frontend on 2026-05-10) was caused by the prompt being
+// too narrow about what counted as evidence.
+//
+// The previous version also asserted the prompt warned the model
+// that "empty/one-word fields are rejected by a downstream
+// validator" — that anti-pattern priming was intentionally
+// removed during the prompt sweep that decoupled thinking from
+// tier (per docs/agent-conventions.md: mentioning rejection
+// modes near schema field names primes the model to emit exactly
+// the rejected tokens). The schema description tags carry the
+// positive-form guidance instead.
 func TestSpecChallenger_BroadEvidenceSources(t *testing.T) {
 	def, err := LoadAgent(specio.NewMemFS(), "spec_challenger")
 	require.NoError(t, err, "embedded scaffold must include spec_challenger.md")
 
 	flat := strings.Join(strings.Fields(def.SystemPrompt), " ")
+	flatLower := strings.ToLower(flat)
 
-	assert.Contains(t, flat, "node's own rationale",
+	assert.Contains(t, flatLower, "node's own rationale",
 		"evidence sources must include the node's rationale/alternatives/provenance")
 	assert.Contains(t, flat, "GOALS.md",
 		"evidence sources must include GOALS clauses")
-	assert.Contains(t, flat, "Named engineering practices",
+	assert.Contains(t, flatLower, "named engineering practices",
 		"evidence sources must include named practices")
-	assert.Contains(t, flat, "Current practice in the field",
+	assert.Contains(t, flatLower, "current practice in the field",
 		"evidence sources must include current practice")
-	assert.Contains(t, flat, "rejected by a downstream validator",
-		"prompt must warn the model that empty/one-word fields fail validation")
 }
 
 // TestJustifyResearcher_HasAntiFallbackDirective — the researcher

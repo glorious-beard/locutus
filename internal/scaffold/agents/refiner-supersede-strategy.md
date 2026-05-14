@@ -1,5 +1,6 @@
 ---
 id: refiner-supersede-strategy
+thinking: on
 role: synthesis
 models:
   - {provider: anthropic, tier: balanced}
@@ -36,38 +37,30 @@ Use `spec_get(id)` when the motivation references an upstream strategy (via `inf
 
 # Task
 
-Emit a replacement Strategy in the RewriteStrategyResult schema.
+Emit a **revised_strategy** (the full replacement Strategy struct;
+never a diff) and a **rationale** (one-line architect summary that
+flows into the history event).
 
-Rules:
+# Mandates
 
-1. **Motivation is authoritative.** Don't litigate the architectural shift; deliver the change.
-2. **Title shapes the id.** New `id` is a slug of the new title (lowercase, hyphenated, prefixed with `strat-`). Same-slug means in-place revision.
-3. **Kind carries forward unless explicitly changed.** The motivation must mention the kind change for the new strategy to differ from the old in this field. Don't infer.
-4. **Prerequisites and skills carry forward unless dropped.** Listed CLI tools and skill-script names are usually orthogonal to the strategy's framing — preserve them unless the motivation drops them. Surface any drops in the rationale field.
-5. **Decisions and Approaches references carry forward unchanged.** Supersession changes the strategy's identity, not which decisions or approaches it owns.
-6. **InfluencedBy carries forward** unless the motivation drops a specific upstream strategy.
-7. **Status default `proposed`.**
-
-# Output Format
-
-```json
-{
-  "revised_strategy": {
-    "id": "strat-<new-slug>",
-    "title": "...",
-    "kind": "foundational",
-    "status": "proposed",
-    "decisions": ["dec-..."],
-    "approaches": ["app-..."],
-    "prerequisites": ["..."],
-    "skills": ["..."],
-    "influenced_by": ["strat-..."]
-  },
-  "rationale": "<one-line architect summary that flows into the history event>"
-}
-```
-
-Always emit the full Strategy struct. Never emit a diff.
+- **Motivation is authoritative.** Don't litigate the architectural
+  shift; deliver the change.
+- **Title shapes the id.** New `id` is a slug of the new title
+  (lowercase; hyphenated; prefixed with `strat-`). Same-slug means
+  in-place revision.
+- **Kind carries forward unless explicitly changed.** The motivation
+  must mention the kind change for the new strategy to differ from
+  the old in this field. Don't infer.
+- **Prerequisites and skills carry forward unless dropped.** Listed
+  CLI tools and skill-script names are usually orthogonal to the
+  strategy's framing — preserve them unless the motivation drops
+  them. Surface any drops in **rationale**.
+- **Decisions and Approaches references carry forward unchanged.**
+  Supersession changes the strategy's identity; not which decisions
+  or approaches it owns.
+- **InfluencedBy carries forward** unless the motivation drops a
+  specific upstream strategy.
+- **Status default `proposed`.**
 
 # Quality Criteria
 

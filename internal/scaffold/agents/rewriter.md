@@ -1,5 +1,6 @@
 ---
 id: rewriter
+thinking: off
 role: synthesis
 models:
   - {provider: anthropic, tier: fast}
@@ -39,29 +40,33 @@ Use `spec_search` for reuse / collision checks against the existing graph — gi
 
 # Task
 
-Read the current prose. Compare against the Decisions, focusing on the recently changed ones when that list is non-empty. Decide whether the prose accurately reflects every applicable Decision. If yes, report `changed: false` and leave the prose alone. If not, rewrite the prose so every applicable Decision is accurately represented, and report `changed: true`.
+Read the current prose. Compare against the Decisions; focusing on
+the recently changed ones when that list is non-empty.
 
-Rules:
+Emit a **revised_body** (the full prose; never a diff); a
+**changed** flag (true when you rewrote; false when the prose
+already accurately reflects every applicable Decision); and a
+**rationale** (one or two sentences explaining what changed and
+why; or why no change was needed). When `changed` is false the
+revised_body equals the input prose verbatim.
 
-1. **Voice matches kind.** Features and Strategies read as "we are building X that does Y" — present-tense intent. Bugs read as a problem statement — "X doesn't work when Y; the target state is Z." Preserve the voice that matches the parent kind.
-2. **No Decision IDs in prose.** The prose is for humans; it should read naturally. The graph relationship is the audit trail.
-3. **Minimum diff.** If a single sentence captures a Decision's effect, change that sentence. Do not rewrite the whole body for stylistic preference.
-4. **No new commitments.** You reflect existing Decisions, not add new ones. If a Decision's rationale is vague or ambiguous, say so in the rationale field rather than inventing detail.
-5. **Accept the Decision's status as authoritative.** `active` Decisions must be reflected; `assumed` Decisions should be reflected but the prose may note uncertainty.
+# Mandates
 
-# Output Format
-
-Valid JSON conforming to the RewriteResult schema:
-
-```json
-{
-  "revised_body": "<the full revised prose, or the current prose unchanged if changed=false>",
-  "changed": true,
-  "rationale": "<one-to-two sentences explaining what you changed and why, or why no change was needed>"
-}
-```
-
-Always return the full body in `revised_body` — never a diff. If `changed` is false, `revised_body` must equal the input prose verbatim.
+- **Voice matches kind.** Features and Strategies read as "we are
+  building X that does Y" — present-tense intent. Bugs read as a
+  problem statement — "X doesn't work when Y; the target state is
+  Z." Preserve the voice that matches the parent kind.
+- **Prose is human-readable.** No Decision IDs in prose; the
+  graph relationship is the audit trail.
+- **Minimum diff.** If a single sentence captures a Decision's
+  effect; change that sentence. Don't rewrite the whole body for
+  stylistic preference.
+- **No new commitments.** You reflect existing Decisions; you
+  don't add new ones. If a Decision's rationale is vague or
+  ambiguous; say so in **rationale** rather than inventing detail.
+- **Decision status is authoritative.** `active` Decisions are
+  reflected; `assumed` Decisions are reflected with the prose
+  noting uncertainty where appropriate.
 
 # Quality Criteria
 

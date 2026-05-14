@@ -1,5 +1,6 @@
 ---
 id: reviewer
+thinking: off
 role: review
 models:
   - {provider: anthropic, tier: balanced}

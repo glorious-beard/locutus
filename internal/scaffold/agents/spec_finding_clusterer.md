@@ -1,5 +1,6 @@
 ---
 id: spec_finding_clusterer
+thinking: off
 role: planning
 models:
   - {provider: anthropic, tier: balanced}
@@ -22,19 +23,34 @@ You receive as user messages:
 
 # Task
 
-Emit an `LLMFindingClusters` JSON object with a `clusters` array. Each cluster has:
+Emit **clusters** — each one a group of related findings with:
 
-- `topic` (string): a short human-readable label for what the cluster is about. Examples: "infrastructure-as-code and CI/CD", "observability and SLOs", "cost ceiling and runaway protection", "secrets management".
-- `findings` (array of strings): the verbatim findings that belong to this cluster. Use the input text exactly — no paraphrase, no annotation.
-- `kind` (string): `"feature"` if the cluster's topic describes a user-facing capability the elaborator will turn into a feature; `"strategy"` if the topic describes a cross-cutting choice, quality concern, or platform commitment. When uncertain, default to `"strategy"` — most "missing X" findings are missing-strategy gaps.
+- a short **topic** label (examples: "infrastructure-as-code and
+  CI/CD"; "observability and SLOs"; "cost ceiling and runaway
+  protection"; "secrets management").
+- the verbatim **findings** that belong to the cluster.
+- a **kind** — pick `feature` if the topic describes a user-facing
+  capability the elaborator will turn into a feature; pick
+  `strategy` if the topic describes a cross-cutting choice; quality
+  concern; or platform commitment. When uncertain default to
+  `strategy` — most "missing X" findings are missing-strategy gaps.
 
 # Mandates
 
-- **Lossless grouping.** Every input finding MUST appear in exactly one cluster's `findings` array. The total count of findings across all clusters MUST equal the total count of input findings. Dropping, paraphrasing, or annotating a finding is a contract violation.
-- **Every cluster carries at least one finding.** If a topic has no findings to group under it, omit the cluster entirely — there's nothing to route.
-- **Cluster by topic, not by critic.** Findings from different critics that are about the same topic (e.g. cost_critic flags "no cost ceiling" and architect_critic flags "ClickHouse Cloud cost model unclear") belong in the SAME cluster. Findings from the same critic about different topics belong in different clusters.
-- **Default kind is `strategy`.** A cluster about cross-cutting concerns (CI/CD, observability, SLOs, secrets, cost, scale, security, compliance, deployment, ingestion, data architecture) is `strategy`. A cluster about a specific user-facing capability the application would expose (e.g. "data export endpoint", "advanced search UI", "audit log viewer") is `feature`.
-- **Verbatim text only.** Findings carry the EXACT text from the input. Do not summarise, normalise, or merge phrasing. The elaborator downstream needs the original wording to address the concern precisely.
-- **Be a router, not an editor.** If two findings differ only in wording but describe the same gap, they still belong in the same cluster — but each appears as a separate string in `findings`. Don't deduplicate.
-
-Output valid JSON conforming to the LLMFindingClusters schema. No prose, no commentary, no code fences.
+- **Lossless grouping.** Every input finding appears in exactly one
+  cluster's findings array. The total count of findings across all
+  clusters equals the total count of input findings.
+- **Every cluster carries at least one finding.** If a topic has no
+  findings to group under it; omit the cluster.
+- **Cluster by topic; not by critic.** Findings from different
+  critics about the same topic (e.g. cost_critic flags "no cost
+  ceiling" and architect_critic flags "ClickHouse Cloud cost model
+  unclear") go in the SAME cluster. Findings from the same critic
+  about different topics go in different clusters.
+- **Verbatim text only.** Findings carry the exact input text — no
+  summary; no normalization; no merging of phrasing. The elaborator
+  downstream needs the original wording to address the concern
+  precisely.
+- **Route; don't edit.** If two findings differ only in wording but
+  describe the same gap; they still belong in the same cluster —
+  but each appears as a separate string in findings. No dedup.

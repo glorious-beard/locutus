@@ -131,40 +131,201 @@ func NewDispatcherWithTools(exec AgentExecutor, tools *ToolRegistry) *Dispatcher
 	return &Dispatcher{Executor: exec, Tools: tools}
 }
 
-// Dispatch executes the agent, recovering from degenerate output via
-// two nested retry layers:
+// FormatProvider is implemented by AgentExecutors that know how to
+// resolve the model-preference list for the dispatcher's structured-
+// output format pass. The production *Executor implements it from
+// the loaded model config's `format_providers` ordering. Test mocks
+// that omit this interface silently disable the split path — the
+// dispatcher falls back to single-call mode and the test fixture's
+// mock responses control output as before.
+type FormatProvider interface {
+	FormatPreferences() []ModelPreference
+}
+
+// Dispatch routes the call. Two paths:
 //
-//  1. **Corrective retry** (inner, same-provider). On a degenerate
-//     response, the dispatcher appends the model's prior response
-//     plus a corrective user turn to the conversation (carrying the
-//     validator's reason verbatim) and retries on the SAME provider.
-//     This burns the cache-warm prompt prefix to give the model a
-//     specific fix-it instruction it can act on — strictly better
-//     than rotating away when the failure is correctable (placeholder
-//     sentinels, enum-out-of-range, schema slips). Budget per
-//     provider is CorrectiveRetries; resets when rotation advances.
+//  1. **Single-call** (default). The agent's def goes straight through
+//     dispatchOnce — provider rotation + corrective retry as documented
+//     on that method. Used when the agent doesn't need the format
+//     split (thinking off, or no output_schema, or no format provider
+//     wired up).
 //
-//  2. **Provider rotation** (outer). When corrective retries are
-//     exhausted on the current provider, rotate AgentDef.Models left
-//     by one and try again. Single-provider Models slices skip
-//     rotation. Budget is MaxAttempts total rotations.
+//  2. **Reason-then-format split**. Used when the agent declares
+//     both `thinking != "off"` AND `output_schema`. Two LLM calls
+//     run back-to-back:
 //
-// Total LLM calls bounded by MaxAttempts × (1 + correctiveRetries).
-// Defaults give 3 × (1 + 2) = 9 calls worst case for degeneracy-prone
-// agents using the standard 3-provider list; single-provider, single-
-// attempt agents collapse to one call as before.
+//     - **Call 1 (reasoning)**: the agent's declared model/tools/
+//       thinking, with `OutputSchema` cleared. The model emits prose
+//       — its natural reasoning shape — without competing pressure
+//       to satisfy a JSON schema.
+//     - **Call 2 (format)**: a synthetic "format" pass using the
+//       fast tier of one of `format_providers` (rotated through
+//       each on failure). Thinking off, no tools, `OutputSchema`
+//       set to the original schema, canonical extractor system
+//       prompt, user message = call 1's prose response.
 //
-// Returns the last AgentOutput plus an error when both budgets are
-// exhausted; the output is the offending response so callers can
-// surface it for diagnosis.
+//     This split addresses the cross-provider failure mode where
+//     reasoning-on + structured-output emits degenerate placeholder
+//     values (Anthropic Claude emits "dummy"; OpenAI Responses
+//     models emit `{}` tool args under reasoning_effort; Gemini
+//     thinking models exhibit the same shape). The fast-tier
+//     formatter eval (output_formatter_eval_test.go) verified the
+//     format step is reliable on Haiku and gpt-5-mini at 6/6
+//     scores; Gemini Flash-Lite scored 3/6 due to transient 503s
+//     that the rotation handles cleanly.
 //
-// Wraps the loop in `agent.dispatch` and per-call `llm.attempt`
-// spans. Each LLM call (initial, corrective, or rotation) gets its
-// own llm.attempt span so the OTLP-JSON trace reflects the full
-// retry shape. The `locutus.attempt.kind` attribute distinguishes
-// "initial" / "corrective" / "rotation" so trace readers can tell
-// what each call was reacting to.
+// Both paths open an `agent.dispatch` span. The split path's outer
+// span carries `dispatch.shape=split` to distinguish in trace tooling.
 func (d *Dispatcher) Dispatch(ctx context.Context, def AgentDef, input AgentInput, opts DispatchOptions) (*AgentOutput, error) {
+	if d.shouldSplitForFormat(def) {
+		return d.dispatchSplit(ctx, def, input, opts)
+	}
+	return d.dispatchOnce(ctx, def, input, opts)
+}
+
+// shouldSplitForFormat decides whether this call needs the reason-
+// then-format split. All three conditions must hold:
+//
+//   - def.Thinking != "off" (and not empty — empty defaults to off
+//     via the guard test that requires every agent declare it)
+//   - def.OutputSchema != "" (no schema = nothing to format into)
+//   - The executor exposes FormatPreferences() with at least one
+//     entry (production paths always do; tests using MockExecutor
+//     don't, which keeps test fixtures simple)
+func (d *Dispatcher) shouldSplitForFormat(def AgentDef) bool {
+	if def.Thinking == "" || def.Thinking == "off" {
+		return false
+	}
+	if def.OutputSchema == "" {
+		return false
+	}
+	fp, ok := d.Executor.(FormatProvider)
+	if !ok {
+		return false
+	}
+	return len(fp.FormatPreferences()) > 0
+}
+
+// canonicalFormatterPrompt is the system prompt the format pass uses.
+// Deliberately narrow — extraction, not analysis. Mirrors the prompt
+// used in the formatter reliability eval that scored 6/6 on Haiku and
+// gpt-5-mini.
+const canonicalFormatterPrompt = `You receive a reasoning agent's prose output. Extract the structured content into a JSON object matching the supplied schema.
+
+Rules:
+- Do not reason about the underlying topic. Your job is extraction; not analysis.
+- Do not invent facts that aren't in the prose. If a field has no source in the prose; omit it (when optional) or copy the closest matching content.
+- Preserve specifics: vendor names; version numbers; citations; quoted text.
+- Each schema field receives the corresponding content from the prose.`
+
+// dispatchSplit runs the reason-then-format two-call sequence. See
+// Dispatch's doc for the architectural rationale. Returns the format
+// pass's structured output as the agent's response, with reasoning-
+// side metadata (tool calls; citations; round count) and combined
+// token usage merged in for traceability.
+func (d *Dispatcher) dispatchSplit(ctx context.Context, def AgentDef, input AgentInput, opts DispatchOptions) (*AgentOutput, error) {
+	dispatchCtx, dispatchSpan := Tracer().Start(ctx, "agent.dispatch.split",
+		oteltrace.WithAttributes(
+			attribute.String("locutus.agent.id", def.ID),
+			attribute.String("locutus.dispatch.shape", "split"),
+		))
+	defer dispatchSpan.End()
+	ctx = dispatchCtx
+
+	// Call 1: reasoning. Clear OutputSchema so the agent's reasoning
+	// call hits no strict-mode enforcement; the model emits prose.
+	reasoningDef := def
+	reasoningDef.OutputSchema = ""
+	reasoning, err := d.dispatchOnce(ctx, reasoningDef, input, opts)
+	if err != nil {
+		return reasoning, fmt.Errorf("dispatch %q reasoning: %w", def.ID, err)
+	}
+	if reasoning == nil || reasoning.Content == "" {
+		return reasoning, fmt.Errorf("dispatch %q reasoning: empty response", def.ID)
+	}
+
+	// Call 2: format. Synthetic def with the fast-tier rotation,
+	// thinking off, no tools. The agent ID gets a "-format" suffix so
+	// the per-call YAML and trace clearly distinguish the two calls.
+	fp := d.Executor.(FormatProvider)
+	formatPrefs := fp.FormatPreferences()
+	formatDef := AgentDef{
+		ID:           def.ID + "-format",
+		SystemPrompt: canonicalFormatterPrompt,
+		Models:       formatPrefs,
+		Thinking:     "off",
+		OutputSchema: def.OutputSchema,
+	}
+	formatInput := AgentInput{
+		Messages: []Message{{Role: "user", Content: reasoning.Content}},
+	}
+	formatOpts := DispatchOptions{
+		Role: "format",
+		// Each format provider gets one attempt — rotation handles
+		// transient infra failures (e.g. Gemini's intermittent 503s
+		// the eval surfaced). No corrective retry: the format pass
+		// exists to AVOID the degenerate-output regime, so degeneracy
+		// detection here would re-introduce the cost we're trying to
+		// eliminate.
+		MaxAttempts:       len(formatPrefs),
+		CorrectiveRetries: -1, // explicit opt-out
+	}
+
+	formatted, err := d.dispatchOnce(ctx, formatDef, formatInput, formatOpts)
+	if err != nil {
+		return formatted, fmt.Errorf("dispatch %q format: %w", def.ID, err)
+	}
+
+	return mergeReasoningAndFormat(reasoning, formatted), nil
+}
+
+// mergeReasoningAndFormat composes the final AgentOutput from the
+// reason+format pair. The Content is the format pass's structured
+// JSON (that's the agent's contract); reasoning-side state (the
+// thinking text; tool calls; citations) gets carried forward so
+// downstream consumers see the full picture; token counts sum
+// across both calls.
+func mergeReasoningAndFormat(reasoning, formatted *AgentOutput) *AgentOutput {
+	if formatted == nil {
+		return reasoning
+	}
+	merged := *formatted
+	if reasoning != nil {
+		// Reasoning's reasoning is the thinking-block content from
+		// call 1. Preserve it on the merged result so trace consumers
+		// see why the model produced what it produced.
+		if reasoning.Reasoning != "" {
+			merged.Reasoning = reasoning.Reasoning
+		}
+		// Tools / citations only flow from the reasoning call (the
+		// format call has neither).
+		if len(reasoning.ToolCalls) > 0 {
+			merged.ToolCalls = reasoning.ToolCalls
+		}
+		if len(reasoning.Citations) > 0 {
+			merged.Citations = reasoning.Citations
+		}
+		// ReAct rounds from the reasoning call flow forward.
+		if len(reasoning.Rounds) > 0 {
+			merged.Rounds = reasoning.Rounds
+		}
+		// Token sums.
+		merged.InputTokens += reasoning.InputTokens
+		merged.OutputTokens += reasoning.OutputTokens
+		merged.ThoughtsTokens += reasoning.ThoughtsTokens
+		merged.TotalTokens += reasoning.TotalTokens
+		merged.CacheCreationInputTokens += reasoning.CacheCreationInputTokens
+		merged.CacheReadInputTokens += reasoning.CacheReadInputTokens
+	}
+	return &merged
+}
+
+// dispatchOnce is the single-call dispatch path — provider rotation +
+// corrective retry as documented on Dispatch. Renamed from the
+// previous Dispatch body so the split path can call this helper twice
+// (once for reasoning, once for format) without re-entering the
+// split predicate.
+func (d *Dispatcher) dispatchOnce(ctx context.Context, def AgentDef, input AgentInput, opts DispatchOptions) (*AgentOutput, error) {
 	if def.MaxIterations > 1 {
 		return d.dispatchReAct(ctx, def, input, opts)
 	}

@@ -123,22 +123,36 @@ func LoadAgentDefs(fsys specio.FS, dir string) ([]AgentDef, error) {
 	return defs, nil
 }
 
-// BuildSystemPrompt returns the agent's system prompt with the
-// output-schema documentation appended when the agent declares one.
-// The schema doc is the indented JSON of the registered example
-// struct — providers with strict-mode coverage get it as the API
-// contract via the executor; the prompt copy gives the model the
-// same shape as a textual reference, which materially reduces
-// drift when free-form-text fields appear inside a structured
-// output.
+// BuildSystemPrompt returns the agent's system prompt with an
+// optional JSON example payload appended.
+//
+// The example is appended only when BOTH conditions hold:
+//
+//  1. The agent declares an OutputSchema. (Without it, there's
+//     nothing to demonstrate.)
+//  2. The agent's thinking mode is off. Thinking-on agents that
+//     emit structured output run through the dispatcher's two-call
+//     split (reasoning call has no schema; format call extracts
+//     into JSON), so a JSON example on the reasoning call would
+//     suggest a JSON output shape the reasoning call isn't asked
+//     to produce.
+//
+// Schema descriptions reach the model via the provider's strict-
+// mode structured-output configuration on every call. The example
+// payload here is complementary — concrete shape demonstration
+// alongside the description-driven field semantics. Agents that
+// want positive "cover these aspects" prose framing add it to
+// their .md directly.
 func BuildSystemPrompt(def AgentDef) string {
-	prompt := def.SystemPrompt
 	if def.OutputSchema == "" {
-		return prompt
+		return def.SystemPrompt
+	}
+	if def.Thinking != "" && def.Thinking != "off" {
+		return def.SystemPrompt
 	}
 	doc := SchemaPromptDoc(def.OutputSchema)
 	if doc == "" {
-		return prompt
+		return def.SystemPrompt
 	}
-	return prompt + "\n\n## Output JSON Schema\n\n```json\n" + doc + "\n```\n"
+	return def.SystemPrompt + "\n\n## Example output\n\n```json\n" + doc + "\n```\n"
 }

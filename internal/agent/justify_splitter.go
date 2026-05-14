@@ -26,7 +26,7 @@ type ChallengeSplit struct {
 	// challenge does not address that decision; the orchestrator
 	// skips empty shards rather than firing a wasted decision-
 	// level run.
-	DecisionShards []DecisionShard `json:"decision_shards" jsonschema:"description=Exactly one entry per input decision, in input order. IDs must match the input decision IDs verbatim; emit empty Shard for decisions the challenge does not address rather than omitting them."`
+	DecisionShards []DecisionShard `json:"decision_shards" jsonschema:"description=Exactly one entry per input decision; in input order. IDs must match the input decision IDs verbatim; emit empty Shard for decisions the challenge does not address rather than omitting them."`
 
 	// ParentProseShard is the portion of the challenge that engages
 	// the parent's own body prose — claims like "the rationale
@@ -44,7 +44,7 @@ type ChallengeSplit struct {
 // challenge that addresses it. Empty Shard means the challenge does
 // not address this decision; the orchestrator filters those out.
 type DecisionShard struct {
-	DecisionID string `json:"decision_id" jsonschema:"description=The decision id verbatim from the input list. Must be one of the ids passed in, character-for-character."`
+	DecisionID string `json:"decision_id" jsonschema:"description=The decision id verbatim from the input list. Must be one of the ids passed in; character-for-character."`
 	Shard      string `json:"shard" jsonschema:"description=The slice of the user's challenge that addresses this decision. Empty when the challenge does not address this decision; the orchestrator skips empty shards rather than firing a wasted decision-level run."`
 }
 

@@ -1,5 +1,6 @@
 ---
 id: spec_advocate
+thinking: on
 role: synthesis
 models:
   - {provider: anthropic, tier: balanced}
@@ -86,21 +87,19 @@ Be specific about which goal-clauses you cite. Avoid generic
 language like "best practice" without a concrete reference.
 
 When a challenger's brief is present, ALSO address each concern
-point-by-point. For each concern:
-- concern_summary: one line restating the challenger's point.
-- response: the paragraph that addresses it.
-- still_stands: whether the original spec node holds up on this
-  point (true means the rationale answers the concern; false means
-  the challenger surfaced a real gap).
+point-by-point. For each concern write a `**Concern N**` section
+that restates the challenger's point as a **concern_summary**;
+provides a **response** paragraph that addresses it; and marks
+**still_stands** — `true` when the original spec node's rationale
+answers the concern; `false` when the challenger surfaced a real
+gap.
 
-Then set verdict to one of:
-- "held_up" — every concern was answered; the node stands.
-- "partially_held_up" — most concerns answered, one or two surfaced
+Then pick a **verdict**:
+- `held_up` — every concern was answered; the node stands.
+- `partially_held_up` — most concerns answered; one or two surfaced
   real gaps; the node needs a follow-up refine.
-- "broke_down" — the challenge revealed that the chosen path is
+- `broke_down` — the challenge revealed that the chosen path is
   wrong or substantially incomplete.
 
-When verdict is "partially_held_up" or "broke_down", populate
-breaking_points with the specific gaps that need follow-up.
-
-Respond with valid JSON matching the supplied schema.
+When verdict is `partially_held_up` or `broke_down`; populate
+**breaking_points** with the specific gaps that need follow-up.

@@ -1,5 +1,6 @@
 ---
 id: analyst
+thinking: off
 role: history
 models:
   - {provider: anthropic, tier: balanced}

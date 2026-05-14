@@ -22,8 +22,8 @@ import (
 // not invented during spec generation. The architect produces features,
 // strategies, and decisions; adopt fills in approaches per parent.
 type SpecProposal struct {
-	Features   []FeatureProposal  `json:"features,omitempty" jsonschema:"description=User-facing capabilities. Decisions referenced from Decisions[] are listed here by id under Feature.Decisions, not inlined."`
-	Decisions  []DecisionProposal `json:"decisions,omitempty" jsonschema:"description=Canonical architectural decisions, deduped across the proposal by the reconciler. Referenced by id from Feature.Decisions and Strategy.Decisions."`
+	Features   []FeatureProposal  `json:"features,omitempty" jsonschema:"description=User-facing capabilities. Decisions referenced from Decisions[] are listed here by id under Feature.Decisions; not inlined."`
+	Decisions  []DecisionProposal `json:"decisions,omitempty" jsonschema:"description=Canonical architectural decisions; deduped across the proposal by the reconciler. Referenced by id from Feature.Decisions and Strategy.Decisions."`
 	Strategies []StrategyProposal `json:"strategies,omitempty" jsonschema:"description=Cross-cutting engineering commitments. Decisions referenced from Decisions[] are listed here by id."`
 	// ConflictActions records reconciler conflict resolutions that
 	// flipped a decision under one or more parent feature/strategy.
@@ -36,15 +36,15 @@ type SpecProposal struct {
 
 // FeatureProposal is an LLM-friendly subset of spec.Feature.
 type FeatureProposal struct {
-	ID string `json:"id" jsonschema:"description=Stable slug starting with 'feat-', lowercase, hyphen-separated (e.g. 'feat-realtime-dashboard'). Preserved verbatim from the source RawFeatureProposal through reconciliation."`
+	ID string `json:"id" jsonschema:"description=Stable slug starting with 'feat-'; lowercase; hyphen-separated (e.g. 'feat-realtime-dashboard'). Preserved verbatim from the source RawFeatureProposal through reconciliation."`
 	// Summary: one-sentence "what" description, threaded from the
 	// architect's RawFeatureProposal through reconciliation onto the
 	// persisted Feature. Optional in the schema; the prereq fills any
 	// gaps after-the-fact.
-	Summary            string   `json:"summary,omitempty" jsonschema:"description=One-sentence what-the-feature-does, ending with a period. Read by scanning agents via spec_list_manifest; distinct from Description."`
+	Summary            string   `json:"summary,omitempty" jsonschema:"description=One-sentence what-the-feature-does; ending with a period. Read by scanning agents via spec_list_manifest; distinct from Description."`
 	Title              string   `json:"title" jsonschema:"description=Concise human-readable title in sentence case. A noun phrase."`
-	Description        string   `json:"description" jsonschema:"description=Full paragraph describing what the feature does — actor, trigger, outcome."`
-	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty" jsonschema:"description=Testable assertions that gate the feature as shipped. Each entry in the form 'When X happens, Y is observable.'"`
+	Description        string   `json:"description" jsonschema:"description=Full paragraph describing what the feature does — actor; trigger; outcome."`
+	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty" jsonschema:"description=Testable assertions that gate the feature as shipped. Each entry in the form 'When X happens; Y is observable.'"`
 	Decisions          []string `json:"decisions,omitempty" jsonschema:"description=IDs (starting 'dec-') of decisions this feature relies on. Empty when no canonical decisions are tied to the feature."`
 }
 
@@ -53,14 +53,14 @@ type FeatureProposal struct {
 // the spec node itself per DJ-085, so the persisted Decision carries
 // durable provenance independent of the .locutus/sessions/ transcript.
 type DecisionProposal struct {
-	ID string `json:"id" jsonschema:"description=Stable slug starting with 'dec-', assigned canonically by the reconciler at apply time when inline decisions are deduped across features and strategies."`
+	ID string `json:"id" jsonschema:"description=Stable slug starting with 'dec-'; assigned canonically by the reconciler at apply time when inline decisions are deduped across features and strategies."`
 	// Summary: see FeatureProposal.Summary.
-	Summary            string             `json:"summary,omitempty" jsonschema:"description=One-sentence what-was-decided, ending with a period."`
+	Summary            string             `json:"summary,omitempty" jsonschema:"description=One-sentence what-was-decided; ending with a period."`
 	Title              string             `json:"title" jsonschema:"description=Concise human-readable title naming the decision. A noun phrase."`
 	Rationale          string             `json:"rationale" jsonschema:"description=Multi-sentence prose explaining why this choice was made over the alternatives. Distinct from ArchitectRationale (one-sentence) and Summary (the what)."`
 	Confidence         float64            `json:"confidence" jsonschema:"description=Confidence on a 0.0 to 1.0 scale. 1.0 = fully committed; 0.5 = leaning but reversible."`
-	Alternatives       []spec.Alternative `json:"alternatives,omitempty" jsonschema:"description=The other options weighed, each with rationale and rejection reasoning."`
-	Citations          []spec.Citation    `json:"citations,omitempty" jsonschema:"description=Sources backing the decision: GOALS.md clauses, vendor docs, prior decisions. Verbatim excerpts."`
+	Alternatives       []spec.Alternative `json:"alternatives,omitempty" jsonschema:"description=The other options weighed; each with rationale and rejection reasoning."`
+	Citations          []spec.Citation    `json:"citations,omitempty" jsonschema:"description=Sources backing the decision: GOALS.md clauses; vendor docs; prior decisions. Verbatim excerpts."`
 	ArchitectRationale string             `json:"architect_rationale,omitempty" jsonschema:"description=One-sentence summary of why this choice fits the architecture; used by the reconciler when matching inline duplicates across features."`
 	InfluencedBy       []string           `json:"influenced_by,omitempty" jsonschema:"description=IDs of other decisions whose outcome made this decision necessary or constrained the option set. Empty when the decision stands on its own."`
 }
@@ -69,12 +69,12 @@ type DecisionProposal struct {
 // the prose narrative persisted as the .md body alongside the JSON
 // sidecar.
 type StrategyProposal struct {
-	ID string `json:"id" jsonschema:"description=Stable slug starting with 'strat-', lowercase, hyphen-separated."`
+	ID string `json:"id" jsonschema:"description=Stable slug starting with 'strat-'; lowercase; hyphen-separated."`
 	// Summary: see FeatureProposal.Summary.
-	Summary   string   `json:"summary,omitempty" jsonschema:"description=One-sentence what-the-strategy-adopts, ending with a period."`
+	Summary   string   `json:"summary,omitempty" jsonschema:"description=One-sentence what-the-strategy-adopts; ending with a period."`
 	Title     string   `json:"title" jsonschema:"description=Concise human-readable title in sentence case. A noun phrase."`
-	Kind      string   `json:"kind" jsonschema:"description=Category of cross-cutting concern (foundational, derived, quality)."`
-	Body      string   `json:"body" jsonschema:"description=The prose argument for the strategy: what is being adopted, why, what the system-wide consequences are. Multi-paragraph allowed."`
+	Kind      string   `json:"kind" jsonschema:"description=Category of cross-cutting concern (foundational; derived; quality)."`
+	Body      string   `json:"body" jsonschema:"description=The prose argument for the strategy: what is being adopted; why; what the system-wide consequences are. Multi-paragraph allowed."`
 	Decisions []string `json:"decisions,omitempty" jsonschema:"description=IDs (starting 'dec-') of decisions this strategy relies on."`
 }
 
@@ -111,10 +111,10 @@ type SpecGenRequest struct {
 // implicit assumption. Schema is registered in schemas.go so Genkit's
 // structured-output path enforces it at the API layer.
 type ScoutBrief struct {
-	DomainRead          string   `json:"domain_read" jsonschema:"description=A paragraph or two describing what the scout believes the project is about based on GOALS.md and the (optional) feature/design document. Names the domain (e.g. 'campaign software for political organizing'), the user(s), and the central capability. Concrete, not generic — 'real-time collaboration on geospatial data' beats 'a web app'."`
-	TechnologyOptions   []string `json:"technology_options" jsonschema:"description=Specific candidate technology choices the proposer should pick from for foundational decisions (compute platform, data store, frontend framework, etc.). Each entry names a real product/library ('Postgres with PostGIS', 'Next.js App Router'), not a category ('a database', 'a frontend')."`
-	ImplicitAssumptions []string `json:"implicit_assumptions" jsonschema:"description=Assumptions GOALS.md makes implicitly that need explicit commitment (e.g. 'expected concurrent-user count', 'data sensitivity classification', 'team size and tenure'). Each entry names the assumption clearly enough that the proposer can either commit to a value or flag it."`
-	WatchOuts           []string `json:"watch_outs" jsonschema:"description=Risks, gotchas, or non-obvious constraints the proposer should be aware of (e.g. 'election-cycle traffic seasonality: months of near-zero load followed by 6-week sprint', 'PII handling regulations vary by state'). Each entry actionable, not generic."`
+	DomainRead          string   `json:"domain_read" jsonschema:"description=A paragraph or two describing what the scout believes the project is about based on GOALS.md and the (optional) feature/design document. Names the domain (e.g. 'campaign software for political organizing'); the user(s); and the central capability. Concrete; not generic — 'real-time collaboration on geospatial data' beats 'a web app'."`
+	TechnologyOptions   []string `json:"technology_options" jsonschema:"description=Specific candidate technology choices the proposer should pick from for foundational decisions (compute platform; data store; frontend framework; etc.). Each entry names a real product/library ('Postgres with PostGIS'; 'Next.js App Router'); not a category ('a database'; 'a frontend')."`
+	ImplicitAssumptions []string `json:"implicit_assumptions" jsonschema:"description=Assumptions GOALS.md makes implicitly that need explicit commitment (e.g. 'expected concurrent-user count'; 'data sensitivity classification'; 'team size and tenure'). Each entry names the assumption clearly enough that the proposer can either commit to a value or flag it."`
+	WatchOuts           []string `json:"watch_outs" jsonschema:"description=Risks; gotchas; or non-obvious constraints the proposer should be aware of (e.g. 'election-cycle traffic seasonality: months of near-zero load followed by 6-week sprint'; 'PII handling regulations vary by state'). Each entry actionable; not generic."`
 }
 
 // CriticIssues is the structured output of every critic on the council
@@ -123,7 +123,7 @@ type ScoutBrief struct {
 // merge_as=critic_issues handler flattens them into PlanningState.Concerns
 // for the revise step to address.
 type CriticIssues struct {
-	Issues []string `json:"issues" jsonschema:"description=Specific, actionable findings the proposer should address. Each entry is a complete sentence naming a concrete concern (e.g. 'dec-postgres rationale does not address the 50ms p99 latency budget from GOALS §3'). Generic concerns ('not enough error handling') are too vague; reject them in favour of pointing at the specific node and clause."`
+	Issues []string `json:"issues" jsonschema:"description=Specific; actionable findings the proposer should address. Each entry is a complete sentence naming a concrete concern (e.g. 'dec-postgres rationale does not address the 50ms p99 latency budget from GOALS §3'). Generic concerns ('not enough error handling') are too vague; reject them in favour of pointing at the specific node and clause."`
 }
 
 // GenerateSpec runs the spec-generation council to derive a spec graph

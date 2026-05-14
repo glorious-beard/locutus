@@ -1,5 +1,6 @@
 ---
 id: refiner-supersede-feature
+thinking: on
 role: synthesis
 models:
   - {provider: anthropic, tier: balanced}
@@ -36,35 +37,32 @@ Use `spec_get(id)` to read the full body of a decision or strategy this feature 
 
 # Task
 
-Emit a replacement Feature in the RewriteFeatureResult schema.
+Emit a **revised_feature** (the full replacement Feature struct;
+never a diff) and a **rationale** (one-line architect summary that
+flows into the history event).
 
-Rules:
+# Mandates
 
-1. **Motivation is authoritative.** Don't second-guess whether the rescoping is a good idea — the user typed it because they want it. Land the change.
-2. **Title shapes the id.** New `id` is a slug of the new title (lowercase, hyphenated, prefixed with `feat-`). Same-slug means in-place revision; that is correct when the headline is stable but the description / acceptance criteria changed.
-3. **AcceptanceCriteria carry forward unless retired.** Every criterion from the old feature must appear in the new one unless the motivation explicitly retires it. Add new criteria the motivation introduces. Don't quietly drop criteria — surface any drops in the rationale field so the operator can see what was removed.
-4. **Decisions and Approaches references carry forward.** Supersession changes the feature's identity, not its decisions or its existing approach state. Copy these slices verbatim. The cascade engine handles approach invalidation downstream.
-5. **Description is human prose.** No decision IDs in the description text. The graph relationship is the audit trail.
-6. **Status default `proposed`** unless the motivation establishes otherwise.
-
-# Output Format
-
-```json
-{
-  "revised_feature": {
-    "id": "feat-<new-slug>",
-    "title": "...",
-    "status": "proposed",
-    "description": "...",
-    "acceptance_criteria": ["..."],
-    "decisions": ["dec-..."],
-    "approaches": ["app-..."]
-  },
-  "rationale": "<one-line architect summary that flows into the history event>"
-}
-```
-
-Always emit the full Feature struct. Never emit a diff.
+- **Motivation is authoritative.** Don't second-guess whether the
+  rescoping is a good idea — the user typed it because they want
+  it. Land the change.
+- **Title shapes the id.** New `id` is a slug of the new title
+  (lowercase; hyphenated; prefixed with `feat-`). Same-slug means
+  in-place revision; correct when the headline is stable but the
+  description / acceptance criteria changed.
+- **AcceptanceCriteria carry forward unless retired.** Every
+  criterion from the old feature appears in the new one unless
+  the motivation explicitly retires it. Add new criteria the
+  motivation introduces. No silent criterion drops — surface any
+  drops in **rationale** so the operator can see what was removed.
+- **Decisions and Approaches references carry forward.**
+  Supersession changes the feature's identity; not its decisions
+  or its existing approach state. Copy these slices verbatim. The
+  cascade engine handles approach invalidation downstream.
+- **Description is human prose.** No decision IDs in the
+  description text. The graph relationship is the audit trail.
+- **Status default `proposed`** unless the motivation establishes
+  otherwise.
 
 # Quality Criteria
 

@@ -19,21 +19,21 @@ import (
 // reasoning that flows into the history event. One or two sentences
 // — the structured fields carry the durable record.
 type RewriteDecisionResult struct {
-	RevisedDecision spec.Decision `json:"revised_decision" jsonschema:"description=The full replacement Decision node — title, status, confidence, rationale, alternatives, and citations all required. The supersession's reasoning belongs in the revised_decision.rationale plus the alternatives entries (the prior choice becomes a rejected alternative)."`
+	RevisedDecision spec.Decision `json:"revised_decision" jsonschema:"description=The full replacement Decision node — title; status; confidence; rationale; alternatives; and citations all required. The supersession's reasoning belongs in the revised_decision.rationale plus the alternatives entries (the prior choice becomes a rejected alternative)."`
 	Rationale       string        `json:"rationale" jsonschema:"description=One-to-two-sentence architect-voice summary of the supersession that flows into the history event. The structured fields on revised_decision carry the durable record; this is the human-readable why."`
 }
 
 // RewriteFeatureResult is the JSON the refiner-supersede-feature
 // agent returns.
 type RewriteFeatureResult struct {
-	RevisedFeature spec.Feature `json:"revised_feature" jsonschema:"description=The full replacement Feature node — title, status, description, and decisions array required. Acceptance criteria carry forward when the supersession doesn't change them."`
+	RevisedFeature spec.Feature `json:"revised_feature" jsonschema:"description=The full replacement Feature node — title; status; description; and decisions array required. Acceptance criteria carry forward when the supersession doesn't change them."`
 	Rationale      string       `json:"rationale" jsonschema:"description=One-to-two-sentence architect-voice summary of the supersession. Flows into the history event alongside the revised feature."`
 }
 
 // RewriteStrategyResult is the JSON the refiner-supersede-strategy
 // agent returns.
 type RewriteStrategyResult struct {
-	RevisedStrategy spec.Strategy `json:"revised_strategy" jsonschema:"description=The full replacement Strategy node — title, kind, status, and decisions array required. Strategy body prose names the committed-to choice in committing form (not a requirements restatement)."`
+	RevisedStrategy spec.Strategy `json:"revised_strategy" jsonschema:"description=The full replacement Strategy node — title; kind; status; and decisions array required. Strategy body prose names the committed-to choice in committing form (not a requirements restatement)."`
 	Rationale       string       `json:"rationale" jsonschema:"description=One-to-two-sentence architect-voice summary of the supersession. Flows into the history event alongside the revised strategy."`
 }
 

@@ -68,25 +68,53 @@ type Report struct {
 	DriftedApproaches []string      // Approaches marked drifted by cascade of new Decisions
 }
 
-// proposedAssumption is the LLM's raw suggestion for a new Decision.
-type proposedAssumption struct {
-	Title      string  `json:"title"`
-	Rationale  string  `json:"rationale"`
-	Confidence float64 `json:"confidence"`
+// PreflightAssumption is the LLM's raw suggestion for a new Decision —
+// used inside an PreflightResolution when source=assumed. Embedded into a
+// real spec.Decision by materialise() before persistence.
+type PreflightAssumption struct {
+	Title      string  `json:"title" jsonschema:"description=Concise human-readable decision title in sentence case. A commitment ('Adopt bcrypt with cost factor 12') rather than a description ('Use a password hash')."`
+	Rationale  string  `json:"rationale" jsonschema:"description=One-or-two-sentence rationale grounded in the inputs. The assumption is a coding-agent-safe default the spec hasn't explicitly addressed; the rationale explains why this default is reasonable."`
+	Confidence float64 `json:"confidence" jsonschema:"description=Confidence in the assumption on a 0.0-1.0 scale (exclusive of endpoints). 0.9 = obvious default with high conviction. 0.5 = plausible either way; just picking one. Stay honest about uncertainty."`
 }
 
-// agentResolution is the LLM's per-question response shape.
-type agentResolution struct {
-	Question         string               `json:"question"`
-	Source           ResolutionSource     `json:"source"`
-	SpecNodeID       string               `json:"spec_node_id,omitempty"`
-	Answer           string               `json:"answer"`
-	AssumedDecision  *proposedAssumption  `json:"assumed_decision,omitempty"`
+// PreflightResolution is the LLM's per-question response shape — one
+// entry per question the preflight agent resolved this round.
+type PreflightResolution struct {
+	Question        string               `json:"question" jsonschema:"description=The clarification question being resolved — typically lifted from the inputs verbatim so the operator can trace each answer back to its origin."`
+	Source          ResolutionSource     `json:"source" jsonschema:"enum=spec,enum=assumed,description=spec = the answer is already stated or implied in the Approach body / parent prose / Decisions / PlanStep — cite the source node id. assumed = the answer is not in the spec; propose an explicit assumption that will be saved as a new Decision with status=assumed."`
+	SpecNodeID      string               `json:"spec_node_id,omitempty" jsonschema:"description=The spec node id (feat- / dec- / strat- / app- / bug-) that supplied the answer. Required when source=spec; must be absent when source=assumed."`
+	Answer          string               `json:"answer" jsonschema:"description=The answer to the question; quoting or paraphrasing the spec source (when source=spec) or stating the assumption's content (when source=assumed)."`
+	AssumedDecision *PreflightAssumption `json:"assumed_decision,omitempty" jsonschema:"description=The proposed new Decision content. Required when source=assumed; must be absent when source=spec."`
 }
 
-// agentReport is the full JSON shape returned by the pre-flight agent.
-type agentReport struct {
-	Resolutions []agentResolution `json:"resolutions"`
+// PreflightReport is the full JSON shape returned by the pre-flight
+// agent — the LLM-side schema, distinct from the package-public
+// `Report` which adds round counts and post-materialise state.
+type PreflightReport struct {
+	Resolutions []PreflightResolution `json:"resolutions" jsonschema:"description=One entry per question resolved this round. Emit an empty array when there is nothing to clarify — don't invent questions."`
+}
+
+func init() {
+	agent.RegisterSchema("PreflightReport", PreflightReport{
+		Resolutions: []PreflightResolution{
+			{
+				Question:   "Which password hashing algorithm should we use?",
+				Source:     SourceSpec,
+				SpecNodeID: "dec-bcrypt",
+				Answer:     "bcrypt with cost factor 12 per Decision dec-bcrypt",
+			},
+			{
+				Question: "What should happen when a session token is revoked mid-request?",
+				Source:   SourceAssumed,
+				Answer:   "Return 401 and let the client re-authenticate. The server does not attempt to complete the request.",
+				AssumedDecision: &PreflightAssumption{
+					Title:      "Session revocation returns 401 immediately",
+					Rationale:  "Conservative default; avoids half-completed requests against stale tokens.",
+					Confidence: 0.7,
+				},
+			},
+		},
+	})
 }
 
 // Preflight runs the DJ-071 clarification protocol over every Approach in
@@ -221,7 +249,7 @@ func invokePreflight(
 	approach spec.Approach,
 	ws spec.Workstream,
 	roundsRemaining int,
-) (*agentReport, error) {
+) (*PreflightReport, error) {
 	var prompt strings.Builder
 	fmt.Fprintf(&prompt, "## Approach\n\nID: %s\nTitle: %s\nParent: %s\n\n### Body\n%s\n\n",
 		approach.ID, approach.Title, approach.ParentID, approach.Body)
@@ -256,10 +284,11 @@ func invokePreflight(
 
 	def := agent.AgentDef{
 		ID:           "preflight",
-		SystemPrompt: "You are the pre-flight clarifier. Respond with valid JSON matching the PreflightReport schema.",
+		SystemPrompt: "You are the pre-flight clarifier. For each question the coding agent will hit when executing the Approach; emit a resolution: cite the spec node that answers it; or propose an explicit assumption (rendered as a new Decision with status=assumed) when the spec doesn't.",
+		OutputSchema: "PreflightReport",
 	}
 	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt.String()}}}
-	var out agentReport
+	var out PreflightReport
 	if err := agent.RunInto(ctx, llm, def, input, &out); err != nil {
 		return nil, fmt.Errorf("preflight: %w", err)
 	}
@@ -270,7 +299,7 @@ func invokePreflight(
 // Preflight returns and, for assumed resolutions, constructs the new
 // Decision. It enforces the invariants the DJ-071 schema requires
 // (spec/assumed exclusivity; confidence bounds; non-empty answer).
-func materialise(res agentResolution, approachID string) (Resolution, *spec.Decision, error) {
+func materialise(res PreflightResolution, approachID string) (Resolution, *spec.Decision, error) {
 	if res.Question == "" || res.Answer == "" {
 		return Resolution{}, nil, fmt.Errorf("preflight: agent returned resolution with empty question or answer")
 	}

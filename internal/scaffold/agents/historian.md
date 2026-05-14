@@ -1,5 +1,6 @@
 ---
 id: historian
+thinking: off
 role: record-keeping
 models:
   - {provider: googleai, tier: fast}

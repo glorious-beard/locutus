@@ -1,5 +1,6 @@
 ---
 id: spec_reconciler
+thinking: high
 role: reconcile
 models:
   - {provider: anthropic, tier: strong}
@@ -71,8 +72,6 @@ Decisions can overlap in topic without conflicting:
 
 The approach synthesizer at adopt time integrates these when planning the implementation; spec-time merging is lossy and premature.
 
-# Output
+# When to act vs leave alone
 
-Output valid JSON conforming to the `ReconciliationVerdict` schema. No prose, no commentary, no code fences.
-
-If no clusters need action — every inline decision is independently good — return `{"actions": []}`. The assembler will keep every inline decision as a separate canonical decision.
+If no clusters need action — every inline decision is independently good — emit an empty actions array. The assembler will keep every inline decision as a separate canonical decision.

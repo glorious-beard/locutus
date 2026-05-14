@@ -1,5 +1,6 @@
 ---
 id: devops_critic
+thinking: off
 role: review
 models:
   - {provider: anthropic, tier: balanced}
@@ -32,8 +33,8 @@ Review the SpecProposal under "## Proposal under review" against GOALS.md, the e
 5. **Dependency / supply-chain hygiene.** Lockfiles, vulnerability scanning, version pinning policy.
 6. **Build reproducibility.** Can the same commit produce the same artifact on a fresh machine?
 
-# Output
-
-Output a JSON object with field "issues" — a list of strings, each one specific and actionable. Empty list means the build/ship/rollback story is plausible.
-
-Be strict but fair: if a rule is genuinely satisfied, do not flag it. If unsure, do not flag.
+Emit **issues** — one entry per problem found, each specific and
+actionable enough that someone could investigate and decide whether
+it's real. Empty issues array means the proposal build/ship/rollback story is plausible. Be
+strict but fair: if a rule is genuinely satisfied, don't flag it;
+if unsure, don't flag.

@@ -161,19 +161,48 @@ You are the architect.
 		"missing grounding key must default to false; agents not opted-in stay ungrounded")
 }
 
-func TestBuildSystemPromptAppendsSchemaDoc(t *testing.T) {
+func TestBuildSystemPrompt(t *testing.T) {
+	// Schema descriptions reach the model via the provider's strict-
+	// mode structured-output configuration on every call. The
+	// example payload appended here is complementary — concrete
+	// shape demonstration for the thinking-off path. Thinking-on
+	// agents go through the dispatcher's two-call split and don't
+	// need (or want) a JSON example on the reasoning call.
+
 	t.Run("no schema yields prompt unchanged", func(t *testing.T) {
 		def := AgentDef{ID: "noschema", SystemPrompt: "hello"}
-		out := BuildSystemPrompt(def)
-		assert.Equal(t, "hello", out)
+		assert.Equal(t, "hello", BuildSystemPrompt(def))
 	})
 
-	t.Run("registered schema is appended as a fenced JSON block", func(t *testing.T) {
-		def := AgentDef{ID: "scout", SystemPrompt: "scout prompt", OutputSchema: "ScoutBrief"}
+	t.Run("thinking-on agents do not get the example", func(t *testing.T) {
+		def := AgentDef{ID: "spec_advocate", SystemPrompt: "advocate prompt", OutputSchema: "ChallengeBrief", Thinking: "on"}
+		out := BuildSystemPrompt(def)
+		assert.Equal(t, "advocate prompt", out, "thinking-on agents route through the split; no JSON example on the reasoning call")
+		assert.NotContains(t, out, "Example output")
+	})
+
+	t.Run("thinking-high agents do not get the example", func(t *testing.T) {
+		def := AgentDef{ID: "spec_architect", SystemPrompt: "architect prompt", OutputSchema: "RawSpecProposal", Thinking: "high"}
+		out := BuildSystemPrompt(def)
+		assert.Equal(t, "architect prompt", out, "thinking-high agents are still split; no JSON example on the reasoning call")
+	})
+
+	t.Run("thinking-off agent with schema gets the example appended", func(t *testing.T) {
+		def := AgentDef{ID: "scout", SystemPrompt: "scout prompt", OutputSchema: "ScoutBrief", Thinking: "off"}
 		out := BuildSystemPrompt(def)
 		assert.Contains(t, out, "scout prompt")
-		assert.Contains(t, out, "## Output JSON Schema")
-		assert.Contains(t, out, "domain_read")
+		assert.Contains(t, out, "## Example output")
+		assert.Contains(t, out, "domain_read", "example payload's field names appear in the rendered JSON")
+	})
+
+	t.Run("empty thinking treated as off", func(t *testing.T) {
+		// Defensive: if an agent ships without an explicit
+		// thinking value (the guard test in Phase E catches this
+		// but BuildSystemPrompt must still behave sensibly), treat
+		// it as off so the agent gets the example.
+		def := AgentDef{ID: "scout", SystemPrompt: "scout prompt", OutputSchema: "ScoutBrief"}
+		out := BuildSystemPrompt(def)
+		assert.Contains(t, out, "## Example output")
 	})
 }
 

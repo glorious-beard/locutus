@@ -1,5 +1,6 @@
 ---
 id: cost_critic
+thinking: off
 role: review
 models:
   - {provider: anthropic, tier: balanced}
@@ -40,8 +41,8 @@ Cite retrieved sources in your finding text where the search produced a load-bea
 
 Do NOT add categories to your output schema. Search informs *what you flag*, not *what shape your finding takes*.
 
-# Output
-
-Output a JSON object with field "issues" — a list of strings, each one specific and actionable. Empty list means the proposal lives within its declared budget.
-
-Be strict but fair: if a rule is genuinely satisfied, do not flag it. If unsure, do not flag.
+Emit **issues** — one entry per problem found, each specific and
+actionable enough that someone could investigate and decide whether
+it's real. Empty issues array means the proposal lives within its declared budget. Be
+strict but fair: if a rule is genuinely satisfied, don't flag it;
+if unsure, don't flag.

@@ -1,11 +1,12 @@
 ---
 id: infra_analyzer
+thinking: off
 role: infrastructure-analysis
 models:
   - {provider: anthropic, tier: balanced}
   - {provider: googleai, tier: balanced}
   - {provider: openai, tier: balanced}
-output_schema: InfraAnalysis
+output_schema: AssimilationContribution
 ---
 # Identity
 
@@ -96,70 +97,6 @@ Critical distinction: **"uses Docker" (Dockerfile present) does not mean "deploy
 | No monitoring signals | Monitoring not configured | max 0.60 |
 
 # Output Format
-
-Valid JSON conforming to the InfraAnalysis schema:
-
-```json
-{
-  "decisions": [
-    {
-      "id": "d-infra-container-docker",
-      "title": "Application containerized with Docker multi-stage builds",
-      "status": "inferred",
-      "confidence": 0.90,
-      "rationale": "Dockerfile present with multi-stage build: builder stage uses golang:1.22-alpine, production stage uses alpine:3.19. Exposes port 8080.",
-      "alternatives": [
-        {
-          "name": "Podman",
-          "rationale": "Docker-compatible container runtime",
-          "rejected_because": "No Containerfile or podman-specific config found"
-        }
-      ]
-    },
-    {
-      "id": "d-infra-ci-github-actions",
-      "title": "CI/CD via GitHub Actions with test and deploy workflows",
-      "status": "inferred",
-      "confidence": 0.95,
-      "rationale": ".github/workflows/ci.yml triggers on push to main, runs go test, go vet, and golangci-lint. .github/workflows/deploy.yml triggers on release tags.",
-      "alternatives": [
-        {
-          "name": "GitLab CI",
-          "rationale": "Integrated CI for GitLab-hosted repos",
-          "rejected_because": "No .gitlab-ci.yml present"
-        }
-      ]
-    }
-  ],
-  "strategies": [
-    {
-      "id": "s-infra-docker-build",
-      "title": "Docker container build",
-      "kind": "foundational",
-      "decision_id": "d-infra-container-docker",
-      "status": "active",
-      "commands": {
-        "build": "docker build -t app .",
-        "run": "docker compose up -d"
-      },
-      "governs": ["Dockerfile", "docker-compose.yml", ".dockerignore"]
-    },
-    {
-      "id": "s-infra-ci-pipeline",
-      "title": "GitHub Actions CI pipeline",
-      "kind": "quality",
-      "decision_id": "d-infra-ci-github-actions",
-      "status": "active",
-      "commands": {
-        "lint": "golangci-lint run",
-        "test": "go test ./...",
-        "vet": "go vet ./..."
-      },
-      "governs": [".github/workflows/*.yml"]
-    }
-  ]
-}
-```
 
 Use id prefix `d-infra-` for all infrastructure decisions and `s-infra-` for all infrastructure strategies.
 

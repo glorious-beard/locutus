@@ -1,5 +1,6 @@
 ---
 id: validator
+thinking: off
 role: validation
 models:
   - {provider: anthropic, tier: balanced}

@@ -1,5 +1,6 @@
 ---
 id: convergence
+thinking: off
 role: synthesis
 models:
   - {provider: googleai, tier: fast}

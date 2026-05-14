@@ -1,5 +1,6 @@
 ---
 id: architect_critic
+thinking: off
 role: review
 models:
   - {provider: anthropic, tier: balanced}
@@ -46,8 +47,8 @@ Review the SpecProposal under "## Proposal under review" against GOALS.md, the e
 8. **Every decision is cited.** Each decision must carry at least one citation grounding it in a traceable source — a span of GOALS.md, a `doc` the user imported, a named best practice (precise — "12-factor app: stateless processes" not "industry best practices"), or another spec node. Vague rationale without a citation is a flag. The citation's excerpt should be the verbatim text, not a paraphrase.
 9. **Long-running workloads** (ETL, schedulers, background jobs) have a host. Vercel functions and most serverless platforms have execution-time caps; flag work that doesn't fit.
 
-# Output
-
-Output a JSON object with field "issues" — a list of strings, each one specific and actionable. Empty list means architecturally sound.
-
-Be strict but fair: if a rule is genuinely satisfied, do not flag it. If unsure, do not flag.
+Emit **issues** — one entry per problem found, each specific and
+actionable enough that someone could investigate and decide whether
+it's real. Empty issues array means the proposal is architecturally
+sound. Be strict but fair: if a rule is genuinely satisfied, don't
+flag it; if unsure, don't flag.

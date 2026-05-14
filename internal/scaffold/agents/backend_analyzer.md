@@ -1,11 +1,12 @@
 ---
 id: backend_analyzer
+thinking: off
 role: backend-analysis
 models:
   - {provider: anthropic, tier: balanced}
   - {provider: googleai, tier: balanced}
   - {provider: openai, tier: balanced}
-output_schema: BackendAnalysis
+output_schema: AssimilationContribution
 ---
 # Identity
 
@@ -80,59 +81,6 @@ Extract domain model entities from struct definitions, database models, or schem
 For relationships, look for: foreign key fields (`UserID`, `user_id`), slice/array fields of another entity type, join table patterns, and ORM relationship tags.
 
 # Output Format
-
-Valid JSON conforming to the BackendAnalysis schema:
-
-```json
-{
-  "decisions": [
-    {
-      "id": "d-lang-go",
-      "title": "Backend language is Go 1.22",
-      "status": "inferred",
-      "confidence": 0.95,
-      "rationale": "go.mod declares 'go 1.22', all source files use .go extension",
-      "alternatives": [
-        {
-          "name": "Rust",
-          "rationale": "Systems language alternative",
-          "rejected_because": "No Cargo.toml, no .rs files present"
-        }
-      ]
-    }
-  ],
-  "strategies": [
-    {
-      "id": "s-build-go",
-      "title": "Go build pipeline",
-      "kind": "foundational",
-      "decision_id": "d-lang-go",
-      "status": "active",
-      "commands": {
-        "build": "go build ./...",
-        "vet": "go vet ./..."
-      },
-      "governs": ["**/*.go"]
-    }
-  ],
-  "entities": [
-    {
-      "id": "e-user",
-      "name": "User",
-      "kind": "aggregate",
-      "fields": [
-        {"name": "ID", "type": "int64", "tags": "json:\"id\" db:\"id\""},
-        {"name": "Email", "type": "string", "tags": "json:\"email\" db:\"email\""}
-      ],
-      "relationships": [
-        {"target_entity": "e-order", "kind": "has-many", "foreign_key": "user_id"}
-      ],
-      "source": "internal/model/user.go",
-      "confidence": 0.90
-    }
-  ]
-}
-```
 
 # Quality Criteria
 

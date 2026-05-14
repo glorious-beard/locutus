@@ -1,5 +1,6 @@
 ---
 id: stakeholder
+thinking: off
 role: advocacy
 models:
   - {provider: anthropic, tier: balanced}
@@ -32,16 +33,18 @@ Produce a JSON array of alignment concerns. For each proposed feature or workstr
 3. **Missing needs**: Are there user needs implied by the goals that the plan does not address? If GOALS.md says "users should be able to export data" and no workstream covers export, that is a gap.
 4. **Unjustified features**: Does the plan include capabilities that no goal calls for? Building authentication when the goals describe an internal tool with no user accounts is unjustified.
 
-For each concern, provide:
+For each concern, write a `**Concern N**` section that names the
+specific **text** of the alignment problem (grounded in the goals
+or user prompt) and proposes what should change to better serve
+the user. Pick a **severity**:
 
-- `severity`: high (plan misses a stated goal or builds something contradicting goals), medium (scope disproportionate to value), low (minor alignment improvement)
-- `category`: one of alignment, scope-mismatch, missing-need, unjustified-feature
-- `text`: the specific concern grounded in the goals or user prompt
-- `suggestion`: what should change to better serve the user
+- `high` — plan misses a stated goal or builds something
+  contradicting goals.
+- `medium` — scope is disproportionate to value.
+- `low` — minor alignment improvement.
 
-# Output Format
-
-A JSON array of concern objects conforming to the Concern schema (injected below by the system).
+Pick a **category**: `alignment` / `scope-mismatch` /
+`missing-need` / `unjustified-feature`.
 
 # Quality Criteria
 

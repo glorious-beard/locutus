@@ -18,7 +18,7 @@ type SynthesisVerdict struct {
 	// Defense is the strategy-level defense paragraph: how the
 	// parent as a whole holds up against the challenge given the
 	// per-decision verdicts and the parent's own prose.
-	Defense string `json:"defense" jsonschema:"description=Two to three paragraphs of strategy-level prose. Names which decisions held and which broke, what that means for the parent as a whole, and cites the relevant goal clauses. Even when verdict is held_up the defense explains why the parent stands."`
+	Defense string `json:"defense" jsonschema:"description=Two to three paragraphs of strategy-level prose. Names which decisions held and which broke; what that means for the parent as a whole; and cites the relevant goal clauses. Even when verdict is held_up the defense explains why the parent stands."`
 
 	// ParentProseAddress is the synthesizer's response to the
 	// parent-prose shard from the splitter — the part of the user's
@@ -42,7 +42,7 @@ type SynthesisVerdict struct {
 	// Each breaking point names its source decision (when it traces
 	// back to a per-decision verdict) so the suggested-next-step
 	// renderer can route each break to the right `refine` target.
-	BreakingPoints []StrategyBreakingPoint `json:"breaking_points,omitempty" jsonschema:"description=Every break that landed somewhere — from a per-decision verdict or from the parent-prose engagement. A single break that surfaced via both paths counts as one entry, sourced to the decision (more actionable for refine routing)."`
+	BreakingPoints []StrategyBreakingPoint `json:"breaking_points,omitempty" jsonschema:"description=Every break that landed somewhere — from a per-decision verdict or from the parent-prose engagement. A single break that surfaced via both paths counts as one entry; sourced to the decision (more actionable for refine routing)."`
 
 	// Rationale is a one-to-two-sentence summary of the aggregation
 	// reasoning. Surfaced in traces and rendered output.
@@ -55,8 +55,8 @@ type SynthesisVerdict struct {
 // `refine <dec-id> --supersede` per break, or `refine <parent-id>
 // --brief` for prose-only breaks.
 type StrategyBreakingPoint struct {
-	Description    string `json:"description" jsonschema:"description=The breaking point in strategy-level voice — often a paraphrase of a per-decision break, surfaced at the parent level. A complete sentence naming what gave way."`
-	SourceDecision string `json:"source_decision,omitempty" jsonschema:"description=The dec-id this break traces back to, when it came from a per-decision verdict. Empty for prose-only breaks. When set, must be one of the ids in the per-decision input list, verbatim."`
+	Description    string `json:"description" jsonschema:"description=The breaking point in strategy-level voice — often a paraphrase of a per-decision break; surfaced at the parent level. A complete sentence naming what gave way."`
+	SourceDecision string `json:"source_decision,omitempty" jsonschema:"description=The dec-id this break traces back to; when it came from a per-decision verdict. Empty for prose-only breaks. When set; must be one of the ids in the per-decision input list; verbatim."`
 }
 
 func init() {

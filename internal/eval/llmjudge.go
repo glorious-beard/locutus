@@ -34,12 +34,22 @@ type LLMJudge struct {
 // Name identifies this evaluator in EvalMetric.EvaluatorName.
 func (j *LLMJudge) Name() string { return "llm_judge" }
 
-// llmJudgeResponse mirrors the JSON schema llm_judge.md instructs the
-// model to emit.
-type llmJudgeResponse struct {
-	Passed     bool    `json:"passed"`
-	Reasoning  string  `json:"reasoning"`
-	Confidence float64 `json:"confidence"`
+// LLMJudgeResult is the structured JSON the llm_judge agent emits —
+// the model's verdict on one assertion against one approach's
+// artifacts. Lives here (not in internal/agent/schemas.go) so the
+// type and the consumer code stay colocated.
+type LLMJudgeResult struct {
+	Passed     bool    `json:"passed" jsonschema:"description=true when the assertion holds against the artifacts; false when it does not (or when the evidence is insufficient to verify it)."`
+	Reasoning  string  `json:"reasoning" jsonschema:"description=One-to-three-sentence justification citing specific file:line evidence. Empty or vague reasoning ('looks fine') is not acceptable — the runner surfaces this to the operator and the historian's event record."`
+	Confidence float64 `json:"confidence" jsonschema:"description=Subjective certainty on a 0.0-1.0 scale. The runner doesn't gate on this; it surfaces the value to the operator. Honest under-confidence when artifacts give weak evidence beats padding to 0.95."`
+}
+
+func init() {
+	agent.RegisterSchema("LLMJudgeResult", LLMJudgeResult{
+		Passed:     true,
+		Reasoning:  "internal/auth/middleware.go:23 registers OAuth2 middleware on the chi router via app.Use(auth.OAuth2()).",
+		Confidence: 0.92,
+	})
 }
 
 // Evaluate renders a judgment. Returns an error only on (a) nil LLM, or
@@ -57,14 +67,15 @@ func (j *LLMJudge) Evaluate(ctx context.Context, c EvalCase) (*EvalMetric, error
 
 	def := agent.AgentDef{
 		ID:           "llm_judge",
-		SystemPrompt: "You are the llm_judge evaluator. Respond with valid JSON matching the schema {passed: bool, reasoning: string, confidence: number}.",
+		SystemPrompt: "You are the llm_judge evaluator. Read the approach body, the assertion's question, and the artifacts; emit a structured pass/fail verdict with reasoning citing specific file:line evidence and an honest confidence score.",
+		OutputSchema: "LLMJudgeResult",
 	}
 	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt}}}
 	resp, err := j.LLM.Run(ctx, def, input)
 	if err != nil {
 		return nil, fmt.Errorf("llm_judge generate: %w", err)
 	}
-	var out llmJudgeResponse
+	var out LLMJudgeResult
 	if err := json.Unmarshal([]byte(resp.Content), &out); err != nil {
 		return nil, fmt.Errorf("llm_judge parse: %w", err)
 	}

@@ -17,64 +17,78 @@
 #   max_output_tokens    — caps the model's response length. Adapters
 #                          substitute a safe minimum when the API
 #                          rejects 0 (Anthropic).
-#   thinking             — coarse extended-thinking level.
-#                          off  = no thinking budget.
-#                          on   = ~4k thinking tokens (provider-mapped).
-#                          high = ~8k thinking tokens.
 #   concurrent_requests  — per-(provider, model) semaphore cap. Bound
 #                          fanout-shaped workloads (one elaborator
 #                          per outline node) below provider RPM
 #                          ceilings without coordination across the
 #                          workflow. Zero = unbounded.
+#
+# Tier no longer carries a thinking knob — reasoning mode is a per-agent
+# concern, declared in each agent's frontmatter (`thinking: off|on|high`).
+# Tier picks the model strength; the agent decides whether to reason.
 
 providers:
   anthropic:
     fast:
       model: claude-haiku-4-5-20251001
       max_output_tokens: 8192
-      thinking: off
       concurrent_requests: 10
     balanced:
       model: claude-sonnet-4-6
       max_output_tokens: 16384
-      thinking: on
       concurrent_requests: 12
     strong:
       model: claude-opus-4-7
       max_output_tokens: 32768
-      thinking: high
       concurrent_requests: 8
 
   googleai:
     fast:
       model: gemini-3.1-flash-lite-preview
       max_output_tokens: 16384
-      thinking: off
       concurrent_requests: 10
     balanced:
       model: gemini-3-flash-preview
       max_output_tokens: 32768
-      thinking: on
       concurrent_requests: 12
     strong:
       model: gemini-3.1-pro-preview
       max_output_tokens: 65536
-      thinking: high
       concurrent_requests: 8
 
   openai:
     fast:
       model: gpt-5-mini
       max_output_tokens: 8192
-      thinking: off
       concurrent_requests: 10
     balanced:
       model: gpt-5
       max_output_tokens: 16384
-      thinking: on
       concurrent_requests: 12
     strong:
       model: o3-pro
       max_output_tokens: 32768
-      thinking: high
       concurrent_requests: 8
+
+# Provider rotation order for the dispatcher's structured-output format
+# pass. When an agent declares `thinking: on/high` AND `output_schema`,
+# the dispatcher splits the call into a reasoning pass (the agent's
+# declared model, thinking on, schema-free) followed by a format pass
+# (one of these providers' fast tier, thinking off, no tools, schema set).
+# The dispatcher walks the list in order, skipping providers whose
+# adapter init fails (missing API key, rate-limited, etc.) — same skip
+# semantics as the agent-dispatch fallback walk.
+#
+# Default when absent: providers in declaration order above. Each entry
+# must name a provider with a `fast` tier defined; a mismatch is a
+# config error at load time.
+#
+# Why this is separate from agent `models:` priority: format calls are a
+# different operational concern (mechanical schema extraction, not
+# reasoning quality). An operator may rationally prefer Anthropic Haiku
+# here for cost + per-eval reliability while still preferring a different
+# rotation order for agent calls.
+format_providers:
+  - anthropic
+  - openai
+  - googleai

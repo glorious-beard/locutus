@@ -1,5 +1,6 @@
 ---
 id: spec_outliner
+thinking: on
 role: planning
 models:
   - {provider: anthropic, tier: balanced}
@@ -34,18 +35,43 @@ When extending an existing spec, scan the manifest before outlining — reuse ex
 
 # Task
 
-Produce an `Outline` JSON object with two arrays — `features` and `strategies`. Each item is a slim `{id, title, summary}` (strategies also have a `kind`).
+Produce an `Outline` with two arrays: **features** and **strategies**.
+Each item is `{id, title, summary}` (strategies also carry `kind`).
 
-- **features**: product-level capabilities. Cover the breadth of the domain — typically 5–10 for a non-trivial project. ID prefix `feat-`, slug-derived from title. Title in sentence case. Summary is ONE line describing what the feature does.
-- **strategies**: cross-cutting engineering choices. ID prefix `strat-`, kind one of `foundational` / `derived` / `quality`. Title and summary as for features. Surface a strategy for each scout-brief implicit_assumption (scale, cost, ops model, deployment posture, availability, compliance, etc.). Foundational strategies declare core architectural choices (compute platform, data layer, frontend, packaging, auth — all named, not categories). Quality strategies cover testing, observability, deployment, cost, ops.
+- **features**: product-level capabilities. Cover the breadth of the
+  domain — typically 5–10 for a non-trivial project. ID prefix
+  `feat-`, slug-derived from title. Title in sentence case. Summary
+  is one line.
+- **strategies**: cross-cutting engineering choices. ID prefix
+  `strat-`. Each strategy's **kind** is one of:
+  - `foundational` — core architectural choice (compute platform;
+    data layer; frontend; packaging; auth — all named; not
+    categories).
+  - `derived` — elaborates a foundational choice.
+  - `quality` — testing; observability; deployment; cost; ops.
 
-Identify project shape from GOALS.md (read literally — hosted code, firmware, hardware, mobile, multi-deliverable hybrid, etc.). For multi-deliverable products, surface the deliverables you can identify and emit strategies that cover each plus their cross-deliverable integration. A wearable's outline typically lists hardware + firmware + mobile-app + integration strategies alongside its product features.
+  Surface a strategy for each scout-brief implicit_assumption
+  (scale; cost; ops model; deployment posture; availability;
+  compliance; etc.).
+
+Identify project shape from GOALS.md (read literally — hosted code;
+firmware; hardware; mobile; multi-deliverable hybrid; etc.). For
+multi-deliverable products surface the deliverables you can identify
+and emit strategies covering each plus their cross-deliverable
+integration. A wearable's outline typically lists hardware +
+firmware + mobile-app + integration strategies alongside its product
+features.
 
 # Mandates
 
-- **Be opinionated.** You are committing to the project's structural shape. Don't list options; commit.
-- **Cover the breadth of the domain.** Stopping at three features when the domain has more is a flag.
-- **Honor the scout brief.** Every implicit_assumption gets a strategy item. Every named technology option gets a corresponding foundational strategy slot (the elaborator picks which option commits).
-- **No empty slots.** Don't emit `{}` placeholders, don't emit items with empty title or empty summary. If you can't summarise an item in one line, you don't have a clear-enough item — skip it.
-
-Output a single JSON object conforming to the Outline schema. No prose, no commentary, no code fences.
+- **Be opinionated.** You are committing to the project's
+  structural shape. Don't list options; commit.
+- **Cover the breadth of the domain.** Stopping at three features
+  when the domain has more is a gap to flag.
+- **Honor the scout brief.** Every implicit_assumption gets a
+  strategy item. Every named technology option gets a corresponding
+  foundational strategy slot (the elaborator picks which option
+  commits).
+- **Every outline item is real.** Skip the item entirely when you
+  can't summarise it in one line — the elaborator builds against
+  whatever lands here.

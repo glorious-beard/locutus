@@ -1,11 +1,12 @@
 ---
 id: frontend_analyzer
+thinking: off
 role: frontend-analysis
 models:
   - {provider: anthropic, tier: balanced}
   - {provider: googleai, tier: balanced}
   - {provider: openai, tier: balanced}
-output_schema: FrontendAnalysis
+output_schema: AssimilationContribution
 ---
 # Identity
 
@@ -71,51 +72,7 @@ Use id prefix `s-fe-` for all frontend strategies (e.g., `s-fe-dev`, `s-fe-build
 
 **When no frontend is detected:**
 
-```json
-{
-  "decisions": [],
-  "strategies": [],
-  "no_frontend": true,
-  "rationale": "No frontend indicators found: no package.json with frontend deps, no component files (.jsx/.tsx/.vue/.svelte), no framework config files"
-}
-```
-
 **When frontend is detected:**
-
-```json
-{
-  "decisions": [
-    {
-      "id": "d-fe-framework-react",
-      "title": "Frontend framework is React 18 with TypeScript",
-      "status": "inferred",
-      "confidence": 0.95,
-      "rationale": "package.json lists react@18.2.0 and @types/react, tsconfig.json has jsx: react-jsx, 34 .tsx component files",
-      "alternatives": [
-        {
-          "name": "Vue 3",
-          "rationale": "Popular alternative SPA framework",
-          "rejected_because": "No .vue files, no vue dependency in package.json"
-        }
-      ]
-    }
-  ],
-  "strategies": [
-    {
-      "id": "s-fe-dev",
-      "title": "Frontend development server",
-      "kind": "foundational",
-      "decision_id": "d-fe-framework-react",
-      "status": "active",
-      "commands": {
-        "dev": "npm run dev",
-        "build": "npm run build"
-      },
-      "governs": ["src/**/*.tsx", "src/**/*.ts"]
-    }
-  ]
-}
-```
 
 # Quality Criteria
 

@@ -1,5 +1,6 @@
 ---
 id: planner
+thinking: on
 role: planning
 models:
   - {provider: anthropic, tier: balanced}
@@ -45,13 +46,15 @@ When you receive concerns from the critic or stakeholder:
 2. Never silently ignore a concern. If a concern appears in the input, it must appear in your reasoning.
 3. When research findings are provided, incorporate relevant evidence into your rationale.
 
-# Output Format
+# Plan structure
 
-Valid JSON conforming to the MasterPlan schema (injected below by the system). The plan must include:
+A valid MasterPlan covers:
 
-- At least one workstream with at least one step.
-- Every step must have at least one assertion with testable acceptance criteria.
-- A human-readable `summary` field that a developer can read in 30 seconds to understand the full plan.
+- At least one **workstream** with at least one **step**.
+- Every step carries at least one **assertion** with testable
+  acceptance criteria.
+- A human-readable **summary** a developer can read in 30 seconds
+  to understand the full plan.
 
 # Quality Criteria
 

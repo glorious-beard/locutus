@@ -33,10 +33,10 @@ import (
 // Plan is the structured output of the remediator agent. Mirrors the
 // JSON the agent produces against the RemediationPlan output schema.
 type Plan struct {
-	Decisions      []spec.Decision  `json:"decisions,omitempty"`
-	Strategies     []spec.Strategy  `json:"strategies,omitempty"`
-	Features       []spec.Feature   `json:"features,omitempty"`
-	FeatureUpdates []FeatureUpdate  `json:"feature_updates,omitempty"`
+	Decisions      []spec.Decision  `json:"decisions,omitempty" jsonschema:"description=New assumed decisions the remediator proposes to close gaps. Each carries status=assumed; confidence in the 0.60-0.80 range (these are reasonable defaults rather than high-confidence inferences); a rationale explicitly naming the gap it addresses."`
+	Strategies     []spec.Strategy  `json:"strategies,omitempty" jsonschema:"description=New strategies that implement the assumed decisions — typically quality-tier strategies (linting; testing; observability) or derived strategies feature-specific to a gap area. Each carries concrete commands and the file patterns it governs."`
+	Features       []spec.Feature   `json:"features,omitempty" jsonschema:"description=New features the remediator created to host cross-cutting remediation work (e.g. 'Establish project quality infrastructure' that bundles linting; coverage; pre-commit gaps). One feature per cross-cutting concern at most — consolidate when in doubt."`
+	FeatureUpdates []FeatureUpdate  `json:"feature_updates,omitempty" jsonschema:"description=Updates to existing features — appends additional Decision references onto a feature already on disk (or one freshly created in the same plan). Use when a gap belongs to an existing feature's scope rather than warranting a new feature."`
 }
 
 // FeatureUpdate appends Decision references to an existing Feature
@@ -44,8 +44,44 @@ type Plan struct {
 // Used by the remediator to attach feature-specific gaps to the right
 // Feature without rewriting the Feature's prose.
 type FeatureUpdate struct {
-	FeatureID      string   `json:"feature_id"`
-	AddedDecisions []string `json:"added_decisions,omitempty"`
+	FeatureID      string   `json:"feature_id" jsonschema:"description=Id (starting 'feat-') of the existing feature to update. Must be a feature already on disk or one in this same Plan's Features array."`
+	AddedDecisions []string `json:"added_decisions,omitempty" jsonschema:"description=Decision ids (starting 'dec-') to append to the feature's Decisions[] slice. Must reference decisions in this same Plan's Decisions array or existing decisions on disk."`
+}
+
+// Register Plan under the schema name agents reference in their
+// frontmatter (`output_schema: RemediationPlan`). Lives in this package
+// rather than internal/agent/schemas.go so the example payload travels
+// with the consumer's source.
+func init() {
+	agent.RegisterSchema("RemediationPlan", Plan{
+		Features: []spec.Feature{{
+			ID:                 "feat-project-quality",
+			Title:              "Establish project quality infrastructure",
+			Description:        "Addresses cross-cutting quality gaps: missing linter; no test coverage threshold; no pre-commit hooks.",
+			Status:             spec.FeatureStatusProposed,
+			AcceptanceCriteria: []string{
+				"golangci-lint runs clean on all packages",
+				"Test coverage is measured and reported in CI",
+			},
+			Decisions: []string{"dec-assumed-linter-golangci"},
+		}},
+		Decisions: []spec.Decision{{
+			ID:         "dec-assumed-linter-golangci",
+			Title:      "Adopt golangci-lint for Go static analysis",
+			Status:     spec.DecisionStatusAssumed,
+			Confidence: 0.75,
+			Rationale:  "Addresses gap: missing_quality_strategy — no linter detected. golangci-lint is the standard Go meta-linter supporting errcheck; govet; staticcheck; and other linters via a single config file.",
+		}},
+		Strategies: []spec.Strategy{{
+			ID:    "strat-go-lint",
+			Title: "Go lint pipeline with golangci-lint",
+			Kind:  spec.StrategyKindQuality,
+		}},
+		FeatureUpdates: []FeatureUpdate{{
+			FeatureID:      "feat-auth",
+			AddedDecisions: []string{"dec-assumed-test-auth"},
+		}},
+	})
 }
 
 // Result is the package's outward-facing summary. Plan is the raw
@@ -175,7 +211,8 @@ func mergeUnique(existing, added []string) []string {
 func invokeRemediator(ctx context.Context, llm agent.AgentExecutor, gaps []agent.Gap, existing *agent.ExistingSpec) (*Plan, error) {
 	def := agent.AgentDef{
 		ID:           "remediator",
-		SystemPrompt: "You are the gap remediator. Respond with valid JSON matching the Plan schema {decisions, strategies, features, feature_updates}.",
+		SystemPrompt: "You are the gap remediator. For each gap surfaced by the analyzer pass; propose the new decisions; strategies; and features (or feature_updates) that close it. Bundle related quality gaps into one feature where possible.",
+		OutputSchema: "RemediationPlan",
 	}
 	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: buildPrompt(gaps, existing)}}}
 	var plan Plan

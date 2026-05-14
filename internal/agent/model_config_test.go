@@ -34,7 +34,7 @@ func TestResolve_ReturnsTierConfig(t *testing.T) {
 	cfg := &ModelConfig{
 		Providers: map[string]map[string]TierConfig{
 			"anthropic": {
-				"balanced": TierConfig{Model: "claude-sonnet-4-6", MaxOutputTokens: 16384, Thinking: "on"},
+				"balanced": TierConfig{Model: "claude-sonnet-4-6", MaxOutputTokens: 16384, ConcurrentRequests: 12},
 			},
 		},
 	}
@@ -43,7 +43,7 @@ func TestResolve_ReturnsTierConfig(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "claude-sonnet-4-6", got.Model)
 	assert.Equal(t, 16384, got.MaxOutputTokens)
-	assert.Equal(t, "on", got.Thinking)
+	assert.Equal(t, 12, got.ConcurrentRequests)
 }
 
 func TestResolve_MissingProviderOrTier(t *testing.T) {

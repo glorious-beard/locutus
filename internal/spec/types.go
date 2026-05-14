@@ -34,9 +34,9 @@ type Decision struct {
 
 // Alternative represents a considered but not chosen option for a decision.
 type Alternative struct {
-	Name            string `json:"name" yaml:"name" jsonschema:"description=The alternative's name — a concrete product or approach (e.g. 'MySQL', 'Server-rendered React'). A noun phrase, not a sentence; do not paraphrase the decision."`
+	Name            string `json:"name" yaml:"name" jsonschema:"description=The alternative's name — a concrete product or approach (e.g. 'MySQL' or 'Server-rendered React'). A noun phrase rather than a sentence; do not paraphrase the decision."`
 	Rationale       string `json:"rationale" yaml:"rationale" jsonschema:"description=Why this alternative was considered seriously. A complete sentence naming the real advantages it offered over the chosen path. Empty / 'no reason' indicates the alternative wasn't worth listing."`
-	RejectedBecause string `json:"rejected_because" yaml:"rejected_because" jsonschema:"description=The specific reason this alternative lost to the chosen option. A complete sentence pointing at a goal clause, a constraint, or a trade-off. 'Not as good' is not a rejection reason; name the constraint."`
+	RejectedBecause string `json:"rejected_because" yaml:"rejected_because" jsonschema:"description=The specific reason this alternative lost to the chosen option. A complete sentence pointing at a goal clause / constraint / trade-off. 'Not as good' is not a rejection reason — name the constraint."`
 }
 
 // Citation is one durable reference backing a decision: a span of
@@ -55,11 +55,11 @@ type Citation struct {
 	// Reference identifies the source: a path ("GOALS.md",
 	// "docs/dashboard.md"), a named principle ("12-factor app: stateless
 	// processes"), or a spec node id ("strat-frontend").
-	Reference string `json:"reference" yaml:"reference" jsonschema:"description=Identifier of the source: a filesystem path ('GOALS.md', 'docs/dashboard.md'), a named principle ('12-factor app: stateless processes'), or a spec node id ('strat-frontend'). Matches the Kind: paths for goals/doc, principle names for best_practice, ids for spec_node, an agent label for scout_brief."`
+	Reference string `json:"reference" yaml:"reference" jsonschema:"description=Identifier of the source — a filesystem path like 'GOALS.md' or 'docs/dashboard.md'; a named principle like '12-factor app: stateless processes'; or a spec node id like 'strat-frontend'. Matches the Kind: paths for goals/doc; principle names for best_practice; ids for spec_node; an agent label for scout_brief."`
 	// Span localises within Reference when applicable: a line range
 	// ("lines 12-18"), a section heading ("## In Scope"), a factor name
 	// ("factor VI"), or empty for whole-document references.
-	Span string `json:"span,omitempty" yaml:"span,omitempty" jsonschema:"description=Localiser within Reference: a line range ('lines 12-18'), a section heading ('## In Scope'), a factor name ('factor VI'). Empty for whole-document references."`
+	Span string `json:"span,omitempty" yaml:"span,omitempty" jsonschema:"description=Localiser within Reference — a line range like 'lines 12-18'; a section heading like '## In Scope'; or a factor name like 'factor VI'. Empty for whole-document references."`
 	// Excerpt is the verbatim quote being cited. Persisted so a
 	// citation survives the source moving — durable evidence, not a
 	// pointer.

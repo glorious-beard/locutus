@@ -1,5 +1,6 @@
 ---
 id: justify_splitter
+thinking: off
 role: classification
 models:
   - {provider: anthropic, tier: fast}
@@ -50,5 +51,3 @@ A different challenge says "The hiring-velocity argument doesn't hold; campaign-
 
 - All three decision shards: ""
 - `parent_prose_shard`: "The hiring-velocity argument doesn't hold; campaign-tech engineers are scarce..."
-
-Respond with valid JSON matching the supplied schema.

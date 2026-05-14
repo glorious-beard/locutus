@@ -1,5 +1,6 @@
 ---
 id: remediator
+thinking: on
 role: remediation
 models:
   - {provider: anthropic, tier: balanced}
@@ -100,59 +101,6 @@ New strategies to implement the assumed decisions:
 - **prerequisites**: Strategy IDs that must exist first (e.g., a lint strategy requires the build strategy)
 
 # Output Format
-
-Valid JSON conforming to the RemediationPlan schema:
-
-```json
-{
-  "features": [
-    {
-      "id": "f-project-remediation",
-      "title": "Establish project quality infrastructure",
-      "status": "proposed",
-      "description": "Addresses cross-cutting quality gaps: missing linter, no test coverage threshold, no pre-commit hooks.",
-      "acceptance_criteria": [
-        "golangci-lint runs clean on all packages",
-        "Test coverage is measured and reported in CI",
-        "Pre-commit hooks prevent unlinted code from being committed"
-      ],
-      "decisions": ["d-assumed-linter-golangci", "d-assumed-coverage-threshold", "d-assumed-precommit"]
-    }
-  ],
-  "decisions": [
-    {
-      "id": "d-assumed-linter-golangci",
-      "title": "Adopt golangci-lint for Go static analysis",
-      "status": "assumed",
-      "feature": "f-project-remediation",
-      "confidence": 0.75,
-      "rationale": "Addresses gap: missing_quality_strategy — no linter detected. golangci-lint is the standard Go meta-linter, supporting errcheck, govet, staticcheck, and 50+ other linters via a single config file.",
-      "alternatives": [
-        {
-          "name": "Individual linter invocations",
-          "rationale": "Run errcheck, govet, staticcheck separately",
-          "rejected_because": "Higher maintenance burden, no unified config, harder CI integration"
-        }
-      ]
-    }
-  ],
-  "strategies": [
-    {
-      "id": "s-assumed-lint",
-      "title": "Go lint pipeline with golangci-lint",
-      "kind": "quality",
-      "decision_id": "d-assumed-linter-golangci",
-      "status": "proposed",
-      "commands": {
-        "lint": "golangci-lint run ./...",
-        "lint-fix": "golangci-lint run --fix ./..."
-      },
-      "governs": ["**/*.go"],
-      "prerequisites": ["s-build-go"]
-    }
-  ]
-}
-```
 
 # Quality Criteria
 

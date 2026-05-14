@@ -7,7 +7,7 @@ package agent
 type JustificationBrief struct {
 	Defense                     string   `json:"defense" jsonschema:"description=Two to four paragraphs of prose argument defending the spec node against the challenge. Cite specific goal clauses by their text. Avoid generic 'best practice' language without a concrete reference."`
 	GoalClausesCited            []string `json:"goal_clauses_cited" jsonschema:"description=Verbatim excerpts from GOALS.md that the defense relies on. Each entry is a real quote from the goals document; paraphrases are not accepted."`
-	ConditionsUnderWhichInvalid []string `json:"conditions_under_which_invalid" jsonschema:"description=Concrete conditions (constraint changes, new evidence) that would prompt revisiting this node. Each entry names a specific trigger; vague entries like 'if circumstances change' are not useful."`
+	ConditionsUnderWhichInvalid []string `json:"conditions_under_which_invalid" jsonschema:"description=Concrete conditions (constraint changes; new evidence) that would prompt revisiting this node. Each entry names a specific trigger; vague entries like 'if circumstances change' are not useful."`
 }
 
 // ChallengeBrief is the spec challenger's structured critique. Each
@@ -32,7 +32,7 @@ type ChallengeBrief struct {
 type AdversarialConcern struct {
 	Weakness        string `json:"weakness" jsonschema:"description=A complete sentence describing the specific weakness in the chosen approach. Concrete enough that a reader who hasn't seen the spec node can understand what's wrong without re-reading the rationale."`
 	Evidence        string `json:"evidence" jsonschema:"description=A complete sentence with concrete support for the weakness. Draws from: the node's own rationale or alternatives ('the rationale claims X but does not address Y'); GOALS.md clauses (cite the relevant text); named engineering practices ('12-factor app: stateless processes'); or current vendor/library behaviour. Evidence may be conceptual when the challenge is conceptual."`
-	Counterproposal string `json:"counterproposal" jsonschema:"description=A complete sentence describing an alternative, mitigation, or test that would resolve the question. Specific enough that the advocate can address it point-by-point."`
+	Counterproposal string `json:"counterproposal" jsonschema:"description=A complete sentence describing an alternative; mitigation; or test that would resolve the question. Specific enough that the advocate can address it point-by-point."`
 }
 
 // AddressedConcern is the advocate's reply to one of the challenger's
@@ -40,7 +40,7 @@ type AdversarialConcern struct {
 // up to the critique on this point.
 type AddressedConcern struct {
 	ConcernSummary string `json:"concern_summary" jsonschema:"description=One-line restatement of the challenger's concern in the advocate's own words. Lets the rendered output stand alone without forcing the reader to cross-reference the challenger brief."`
-	Response       string `json:"response" jsonschema:"description=The advocate's paragraph addressing this specific concern. Names what in the original node's rationale answers the concern, or concedes the gap if the concern surfaces a real one."`
+	Response       string `json:"response" jsonschema:"description=The advocate's paragraph addressing this specific concern. Names what in the original node's rationale answers the concern; or concedes the gap if the concern surfaces a real one."`
 	StillStands    bool   `json:"still_stands" jsonschema:"description=True when the original spec node's rationale answers this concern. False when the challenger surfaced a real gap that requires follow-up."`
 }
 

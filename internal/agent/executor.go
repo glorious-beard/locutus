@@ -182,6 +182,30 @@ func NewExecutor(cfg *ModelConfig, providers DetectedProviders, adapterSet []ada
 // construction without a circular dependency.
 func (e *Executor) Tools() *ToolRegistry { return e.tools }
 
+// FormatPreferences returns the model-preference list the dispatcher
+// uses for the structured-output format pass — each entry resolves
+// to a provider's fast tier in cfg.FormatProviderOrder() order.
+// Empty when no providers are configured for the format pass; the
+// dispatcher treats that as "no split path available" and runs the
+// agent as a single call (which will likely degenerate if the agent
+// is thinking-on + structured).
+//
+// Implements the FormatProvider interface the Dispatcher detects to
+// decide whether the split path is wired up. Production wiring
+// always supplies a real *Executor; test mocks that omit this method
+// silently fall through to single-call mode.
+func (e *Executor) FormatPreferences() []ModelPreference {
+	if e == nil || e.cfg == nil {
+		return nil
+	}
+	order := e.cfg.FormatProviderOrder()
+	prefs := make([]ModelPreference, 0, len(order))
+	for _, name := range order {
+		prefs = append(prefs, ModelPreference{Provider: name, Tier: string(TierFast)})
+	}
+	return prefs
+}
+
 // Providers reports which provider SDKs the executor was
 // initialized with. Used by the CLI's startup banner.
 func (e *Executor) Providers() DetectedProviders { return e.providers }

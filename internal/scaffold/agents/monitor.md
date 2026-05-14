@@ -1,5 +1,6 @@
 ---
 id: monitor
+thinking: off
 role: supervision
 models:
   - {provider: googleai, tier: fast}

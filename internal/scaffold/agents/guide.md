@@ -1,5 +1,6 @@
 ---
 id: guide
+thinking: off
 role: guidance
 models:
   - {provider: anthropic, tier: balanced}

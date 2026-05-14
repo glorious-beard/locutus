@@ -1,5 +1,6 @@
 ---
 id: spec_strategy_elaborator
+thinking: on
 role: planning
 models:
   - {provider: anthropic, tier: balanced}
@@ -46,16 +47,31 @@ In both cases, address every finding listed in the cluster — do not author for
 
 Produce a single `RawStrategyProposal` JSON object: id (preserve the outline's id verbatim), title (preserve), kind (preserve — one of `foundational`, `derived`, `quality`), body (a paragraph or two of prose committing to the choice), decisions [] — inline decision objects this strategy commits to.
 
-Strategies describe COMMITMENTS, not requirements. The committing form names the choice and the brief reason: "Use PostgreSQL 16 with the PostGIS extension on AWS RDS Multi-AZ. Geospatial queries are first-class via ST_* functions; relational workloads stay on the same instance." A body that describes the problem (e.g. "the database needs geospatial queries and high-volume relational data") instead of naming the chosen solution is a requirements restatement and gets rejected — rewrite as a commitment naming the specific vendor, library, or pattern.
+Strategies describe COMMITMENTS rather than requirements. The
+committing form names the choice and the brief reason: "Use
+PostgreSQL 16 with the PostGIS extension on AWS RDS Multi-AZ.
+Geospatial queries are first-class via ST_* functions; relational
+workloads stay on the same instance." A body that describes the
+problem (e.g. "the database needs geospatial queries and
+high-volume relational data") instead of naming the chosen solution
+is a requirements restatement — rewrite as a commitment naming the
+specific vendor; library; or pattern.
 
-Each **inline decision** carries: title (concrete commitment), rationale (one paragraph), confidence (0.0–1.0), alternatives (≥1 with name, rationale, rejected_because), citations (≥1 with kind/reference/span/excerpt), architect_rationale (one short sentence).
+Each inline decision carries a concrete **title** (a committed
+choice); a **rationale** paragraph; a **confidence** value
+(0.0–1.0); at least one **alternative** with its rationale and
+rejected_because; at least one **citation**; and a one-sentence
+**architect_rationale**.
 
-You do NOT assign decision IDs (the reconciler does). You do NOT cross-reference decisions between this strategy and other strategies/features — emit each decision inline locally. The reconciler dedupes.
+You don't assign decision IDs (the reconciler does). You don't
+cross-reference decisions between this strategy and other
+strategies/features — emit each decision inline locally. The
+reconciler dedupes.
 
 # Mandates
 
 - **Foundational strategies MUST commit to NAMED technology.** Compute platform / data layer / frontend / packaging / auth (and the equivalent shape-specific axes for firmware / hardware / mobile / docs) — name the specific vendor, not a category. "AWS ECS Fargate" not "the cloud"; "STM32H743ZI on FreeRTOS with arm-gcc 13" not "an MCU running an RTOS"; "4-layer FR4 at JLCPCB with components from LCSC stocked-≥1k" not "off-the-shelf PCB manufacturing".
-- **Every strategy MUST have at least one inline decision.** The strategy body narrates the choice; the inline decisions justify it with rationale, alternatives, and citations. The strict-mode JSON schema enforces this (DJ-105: `decisions` is required with minItems=1); a response without decisions will be rejected by the API and force a retry.
+- **Every strategy has at least one inline decision.** The strategy body narrates the choice; the inline decisions justify it with rationale; alternatives; and citations. The strict-mode JSON schema enforces this (DJ-105: `decisions` is required with minItems=1).
 - **Every strategy and inline decision MUST emit `summary`** — one or two sentences describing what it is, ending in `.`, `!`, or `?`, under 600 characters. The summary captures the conclusion ("Adopt Postgres with logical replication for the OLTP store."), not the framing. Distinct from `architect_rationale` on decisions (the "why" in one line); `summary` is the "what" in one line. Other council agents read these summaries via `spec_list_manifest` when scanning the spec graph.
 - **Every decision is a real commitment.** A valid decision carries a concrete title, a one-paragraph rationale, at least one alternative considered, and at least one citation. If the strategy genuinely cannot be elaborated yet, emit a single decision titled "Defer architectural commitment" with rationale explaining what blocks elaboration so the critic can route the strategy for removal or rework.
 - **Honor GOALS.md as a HARD CONSTRAINT.** Any technology, framework, or architectural shape it names is non-negotiable.
@@ -67,6 +83,4 @@ You do NOT assign decision IDs (the reconciler does). You do NOT cross-reference
   - `spec_node` — `reference: "<node-id>"` like "strat-frontend" or "feat-dashboard". Just kind+reference; OMIT `excerpt`.
   - `scout_brief` — `reference: "scout_brief: <field>"` where `<field>` is one of `domain_read`, `technology_options`, `implicit_assumptions`, `watch_outs`. `excerpt: "verbatim copy of the relevant scout claim"`. The scout brief is the project's grounded survey output; cite it directly when a decision rests on a fact the scout surfaced (current vendor status, version pin, watch-out the scout flagged) rather than recasting that fact as a `best_practice` claim. The excerpt is mandatory — it preserves grounded provenance after the survey artifact is gone.
 
-  Prefer the most specific kind that fits. A fact in GOALS.md cites `goals`, even when the scout brief restated it. A named industry principle cites `best_practice`. The scout brief is the right kind when the decision's anchor is a fact the scout retrieved (e.g., a current major version, a vendor lifecycle status, a deprecation), not when the same conclusion is reachable from a named principle.
-
-Output valid JSON conforming to RawStrategyProposal. No prose, no commentary, no code fences.
+  Prefer the most specific kind that fits. A fact in GOALS.md cites `goals`; even when the scout brief restated it. A named industry principle cites `best_practice`. The scout brief is the right kind when the decision's anchor is a fact the scout retrieved (e.g.; a current major version; a vendor lifecycle status; a deprecation); not when the same conclusion is reachable from a named principle.
