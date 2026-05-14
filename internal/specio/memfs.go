@@ -8,11 +8,19 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
-// MemFS is an in-memory filesystem for testing. It implements the FS interface.
+// MemFS is an in-memory filesystem for testing. It implements the FS
+// interface. Goroutine-safe: every map read/write is guarded by mu so
+// parallel-fanout tests (FillSummariesWorkflow et al.) can share a
+// single MemFS across goroutines the same way OSFS callers share a
+// kernel-state FS. Without this, Go's race detector flags every
+// concurrent ReadFile/WriteFile pair against the same MemFS even when
+// the paths are disjoint, because Go maps are race-unsafe by design.
 type MemFS struct {
+	mu    sync.RWMutex
 	files map[string][]byte
 	dirs  map[string]bool
 }
@@ -28,6 +36,8 @@ func NewMemFS() *MemFS {
 // Open returns an fs.File for the named file.
 func (m *MemFS) Open(name string) (fs.File, error) {
 	name = cleanPath(name)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if data, ok := m.files[name]; ok {
 		return &memFile{name: path.Base(name), data: bytes.NewReader(data), size: int64(len(data))}, nil
 	}
@@ -40,6 +50,8 @@ func (m *MemFS) Open(name string) (fs.File, error) {
 // ReadFile returns the contents of the named file.
 func (m *MemFS) ReadFile(name string) ([]byte, error) {
 	name = cleanPath(name)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	data, ok := m.files[name]
 	if !ok {
 		return nil, &fs.PathError{Op: "read", Path: name, Err: fs.ErrNotExist}
@@ -52,6 +64,8 @@ func (m *MemFS) ReadFile(name string) ([]byte, error) {
 // WriteFile writes data to the named file, creating it if needed.
 func (m *MemFS) WriteFile(name string, data []byte, _ os.FileMode) error {
 	name = cleanPath(name)
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	// Ensure parent directory exists.
 	dir := path.Dir(name)
 	if dir != "." && !m.dirs[dir] {
@@ -69,6 +83,8 @@ func (m *MemFS) WriteFile(name string, data []byte, _ os.FileMode) error {
 // provides via O_APPEND.
 func (m *MemFS) AppendFile(name string, data []byte) error {
 	name = cleanPath(name)
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	dir := path.Dir(name)
 	if dir != "." && !m.dirs[dir] {
 		return &fs.PathError{Op: "append", Path: name, Err: fs.ErrNotExist}
@@ -84,6 +100,8 @@ func (m *MemFS) AppendFile(name string, data []byte) error {
 // MkdirAll creates a directory path (and all parents).
 func (m *MemFS) MkdirAll(p string, _ os.FileMode) error {
 	p = cleanPath(p)
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	parts := strings.Split(p, "/")
 	for i := range parts {
 		m.dirs[strings.Join(parts[:i+1], "/")] = true
@@ -94,6 +112,8 @@ func (m *MemFS) MkdirAll(p string, _ os.FileMode) error {
 // Remove removes a file or empty directory.
 func (m *MemFS) Remove(name string) error {
 	name = cleanPath(name)
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if _, ok := m.files[name]; ok {
 		delete(m.files, name)
 		return nil
@@ -108,6 +128,8 @@ func (m *MemFS) Remove(name string) error {
 // Stat returns file info for the named path.
 func (m *MemFS) Stat(name string) (os.FileInfo, error) {
 	name = cleanPath(name)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if data, ok := m.files[name]; ok {
 		return &memFileInfo{name: path.Base(name), size: int64(len(data))}, nil
 	}
@@ -119,6 +141,8 @@ func (m *MemFS) Stat(name string) (os.FileInfo, error) {
 
 // AllFiles returns all file paths stored in the MemFS, sorted alphabetically.
 func (m *MemFS) AllFiles() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	result := make([]string, 0, len(m.files))
 	for name := range m.files {
 		result = append(result, name)
@@ -130,6 +154,8 @@ func (m *MemFS) AllFiles() []string {
 // ListDir returns sorted file paths under the given directory (non-recursive).
 func (m *MemFS) ListDir(dir string) ([]string, error) {
 	dir = cleanPath(dir)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	var result []string
 	for name := range m.files {
 		if path.Dir(name) == dir {
@@ -146,6 +172,8 @@ func (m *MemFS) ListDir(dir string) ([]string, error) {
 // are surfaced here so callers see the same behaviour as the OS-backed FS.
 func (m *MemFS) ListSubdirs(dir string) ([]string, error) {
 	dir = cleanPath(dir)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	seen := make(map[string]struct{})
 
 	for d := range m.dirs {
