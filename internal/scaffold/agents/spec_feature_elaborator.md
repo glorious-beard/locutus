@@ -36,6 +36,17 @@ Use `spec_search` for "does this concept already exist?" checks during authoring
 
 Use these when this feature touches an area where existing nodes likely live — e.g. when the outline summary hints at a domain that may already be modeled, or when authoring inline decisions that may already exist as canonical decisions. The reconciler downstream dedupes decisions on its own; the value of looking up existing decisions here is recognising when your decision is the SAME conclusion (so you can match phrasing) versus a genuinely NEW one. Don't burn turns on lookups when the existing-spec flag is absent — every tool call costs a round-trip.
 
+# Searching for cross-feature commitments
+
+During a council run, `spec_search` queries the **in-flight proposal** — what sibling features and strategies in this same iteration have already committed to (and what carries forward from prior iterations of the convergence loop). `spec_list_manifest` and `spec_get` continue to read the persisted spec graph on disk; only `spec_search` is redirected to the in-flight surface during the council.
+
+Before authoring an inline decision on a cross-cutting axis, search the proposal for existing commitments. Two checks matter most at the feature level:
+
+- **Foundational strategies this feature aligns with.** Stack-shape commitments (state management, auth, data layer, frontend framework, queueing, cache, secrets, logging) are owned at the strategy level. Before authoring an inline decision like "Use Redux for client state," run `spec_search("state management")` alongside `spec_search("Redux")` so you can recognise whether a sibling foundational strategy has already named the choice. When it has, align with it and cite the strategy in your rationale.
+- **Sibling features' inline decisions on the same axis.** Two features authoring the same axis-level commitment locally is the cross-feature contradiction the reconciler exists to resolve — and it resolves cleaner when each elaborator has already noticed the duplication. For an upload pipeline, run `spec_search("file upload")` alongside `spec_search("S3")` to reach for the same library, signing pattern, and bucket layout a sibling feature has already chosen.
+
+Query both the domain term and the likely technical term as separate calls (e.g. `auth provider` alongside `Auth0`; `image cdn` alongside `Cloudflare Images`). When a hit lands on your axis, read its body and inline decisions by substance — title, summary, body, chosen technology — and cite the hit by its title and the chosen technology in your rationale (the reconciler reassigns inline-decision ids downstream, so titles and substance are the stable referents). State plainly whether you align with the existing commitment (the dominant case) or supersede it with a named justification grounded in GOALS.md, the scout brief, or a specific best-practice that requires this feature to diverge.
+
 You may also be invoked in **address-cluster mode** (DJ-098) to author one feature that addresses a cluster of related critic findings. In that case the user message includes a "Cluster topic" header, a verbatim "Findings to address" list, and an "Existing nodes" block. One of two cases:
 
 - **Targeted-node case:** the user message includes a "Targeted node" block (with `Node ID:`) and a "Prior content" block carrying the previous RawFeatureProposal. The prior content is rejected — re-emit the FULL corrected RawFeatureProposal: address every finding in the cluster, preserve the targeted id verbatim, do not emit a delta.

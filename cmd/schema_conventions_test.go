@@ -221,6 +221,65 @@ func TestEveryAgentDeclaresThinking(t *testing.T) {
 	require.Greater(t, checked, 0, "no agents scanned — directory layout regression?")
 }
 
+// TestAgentPromptsAvoidPrimingPhrases guards the distinctive §2 and §4
+// anti-pattern wordings from docs/agent-conventions.md: priming phrases
+// like "If you find yourself writing..." (§2) and trust-the-schema
+// undercutters like "no preamble" / "no scratchpad" / "no internal
+// monologue" (§4), plus the §3 trailing-warning marker "READ THIS
+// BEFORE EMITTING".
+//
+// These phrases are narrow enough to be reliable mechanical guards —
+// none of the current output_schema prompts contain them, so the test
+// fails only when a regression reintroduces a documented anti-pattern.
+// Broader candidates ("don't" / "do not write") false-positive on
+// legitimate prose ("you do not write code", "you do not write the
+// marker") and were intentionally rejected for this guard.
+//
+// Scoped to agents with an output_schema, mirroring
+// TestAgentPromptsAvoidPlaceholderPriming. Free-form agents that
+// describe input patterns to scan are out of scope.
+func TestAgentPromptsAvoidPrimingPhrases(t *testing.T) {
+	agentsDir := filepath.Join("..", "internal", "scaffold", "agents")
+	entries, err := os.ReadDir(agentsDir)
+	require.NoError(t, err, "read agents directory")
+
+	// Phrases below are the documented anti-pattern wordings from
+	// docs/agent-conventions.md §2/§3/§4. Each is distinctive enough
+	// that legitimate prose has no reason to contain it.
+	primingPhrases := []string{
+		"if you find yourself",       // §2 — anti-pattern priming with different hat
+		"read this before emitting",  // §3 — trailing-warning marker
+		"no preamble",                // §4 — trust the schema, don't lecture
+		"no scratchpad",              // §4
+		"no internal monologue",      // §4
+	}
+	primingPattern := regexp.MustCompile(`(?i)(` + strings.Join(primingPhrases, "|") + `)`)
+
+	scanned := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		path := filepath.Join(agentsDir, e.Name())
+		data, err := os.ReadFile(path)
+		require.NoErrorf(t, err, "read %s", path)
+		body := string(data)
+
+		if !strings.Contains(body, "\noutput_schema:") && !strings.HasPrefix(body, "output_schema:") {
+			continue
+		}
+		scanned++
+
+		for i, line := range strings.Split(body, "\n") {
+			if m := primingPattern.FindString(line); m != "" {
+				t.Errorf("%s:%d contains anti-pattern phrase %q — see docs/agent-conventions.md §2/§3/§4. Rewrite positively (describe what the agent should DO, not what it should avoid). Line: %q",
+					e.Name(), i+1, strings.ToLower(m), strings.TrimSpace(line))
+			}
+		}
+	}
+	require.Greater(t, scanned, 0, "no output_schema agents scanned — directory layout regression?")
+}
+
 // TestSchemaExamplePayloadsAvoidPlaceholderPriming extends the
 // placeholder-priming guard to cover the registered example payloads
 // themselves. With Path A wired up (BuildSystemPrompt appends a JSON

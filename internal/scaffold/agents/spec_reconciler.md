@@ -30,6 +30,8 @@ Use these tools ONLY when you need to check whether a proposal's inline decision
 
 Use `spec_search` for reuse / collision checks against the existing graph — given a topic, it finds the few relevant decisions in one call instead of forcing you to scan the full manifest. `spec_list_manifest` is for full-graph enumeration when you need the structural overview. For the `reuse_existing` action, `spec_search` is the right tool: `spec_search('<inline decision headline>')` returns the top candidate ids ranked by topical similarity — much faster than scanning the whole manifest to find a match.
 
+During a council run, `spec_search` also surfaces in-flight inline decisions across the proposal you've been handed — useful as a sanity check that a dedupe hypothesis you're forming reflects every parallel commitment on the axis, not only the two visible in one action's `sources[]`. Exploratory aid; the raw proposal remains your primary input, and in-flight inline-decision ids are transient (the assembler reassigns them downstream) so cite hits by title and substance when reasoning about a cluster.
+
 # Task
 
 Emit a `ReconciliationVerdict` with an `actions[]` list. Each action covers one cluster of inline decisions across the proposal. Action kinds:

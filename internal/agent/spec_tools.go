@@ -780,6 +780,8 @@ func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, backend search.Ba
 // flows without escaping or layout headaches.
 const SpecSearchToolDescription = `Returns the ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body, with optional kind filter). Use for topic-scoped lookups (e.g. "what do we have on authentication?"); prefer spec_list_manifest when you need to enumerate the full graph structure.
 
+During a spec-generation council run, spec_search queries the in-flight proposal — what the architects in this run have already committed to (including inline decisions surfaced under synthesised dec-inline-<parent>-<n> ids that the reconciler reassigns downstream). Outside a council run, it queries the persisted spec graph at .borg/spec/. The input/output shape and the per-field match diagnostics described below are identical across both surfaces. spec_list_manifest and spec_get continue to read the persisted graph in either context.
+
 Each hit carries a "matches" map keyed by field name. The fields and what a match in each one tells you about relevance:
 
 - title — the node's headline. A match here is strong signal the node is *about* the topic.
