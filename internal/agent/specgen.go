@@ -164,6 +164,46 @@ func GenerateSpec(ctx context.Context, exec AgentExecutor, fsys specio.FS, req S
 	return generateSpecWithWorkflow(ctx, exec, fsys, req, wf)
 }
 
+// logSpecSearchAggregate emits the per-council spec_search summary
+// (DJ-123 Phase 5). Called once from the deferred council-teardown
+// path. Pulls totals + empty-result rate off the collector and lands
+// them on a single slog.Info line so the DJ-123 reversal criterion (a)
+// threshold (>25% empty) can be measured from operator-side logs.
+//
+// The summary is intentionally a single log line rather than a new
+// session-trace file: the per-call records live on the collector for
+// in-process consumers (tests, future operator surfaces); the
+// reversal-criteria threshold reads only the aggregate, which is what
+// surfaces here.
+//
+// Per-agent breakdown is deliberately absent: the calling-agent
+// identity isn't plumbed into the spec_search handler, and the
+// aggregate rate is what feeds the reversal criterion regardless of
+// which elaborator issued the queries.
+func logSpecSearchAggregate(m *SpecSearchMetrics) {
+	if m == nil {
+		return
+	}
+	agg := m.Aggregate()
+	if agg.TotalCalls == 0 {
+		// No spec_search activity this run — emit a minimal note so
+		// the audit trail still shows the council was instrumented,
+		// just nothing fired. Cheaper than a structured zero-row.
+		slog.Info("spec_search metrics: no calls this run", "dj", "DJ-123")
+		return
+	}
+	slog.Info("spec_search metrics for council run",
+		"dj", "DJ-123",
+		"total_calls", agg.TotalCalls,
+		"completed_calls", agg.CompletedCalls,
+		"empty_calls", agg.EmptyCalls,
+		"error_calls", agg.ErrorCalls,
+		"empty_rate", agg.EmptyRate,
+		"reversal_threshold", SpecSearchEmptyRateThreshold,
+		"above_threshold", agg.EmptyRate > SpecSearchEmptyRateThreshold,
+	)
+}
+
 // specSearchSwap returns the SwappableSpecSearch wired on the
 // underlying AgentExecutor, or nil when none was wired (CLI path that
 // failed to open the on-disk index; mocks that don't opt into the swap
@@ -278,6 +318,15 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 		} else {
 			prev := swap.Swap(inflight)
 			state.InFlightIndex = inflight
+			// DJ-123 Phase 5: install a council-scoped SpecSearchMetrics
+			// collector for the duration of the run. The spec_search
+			// tool handler records one entry per call into it; the
+			// deferred aggregate log at council end surfaces total
+			// calls + empty-result rate, which feeds the DJ-123
+			// reversal criterion (a) threshold (>25% empty means
+			// BM25-only is no longer viable on the in-flight surface).
+			metrics := &SpecSearchMetrics{}
+			swap.SetMetrics(metrics)
 			defer func() {
 				// Restore the disk backend at function exit so
 				// subsequent CLI verbs (and any caller that reuses this
@@ -287,7 +336,9 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 				// in-flight index — intentional, since the repair
 				// operates on the proposal that's still in flight.
 				swap.Swap(prev)
+				swap.SetMetrics(nil)
 				_ = inflight.Close()
+				logSpecSearchAggregate(metrics)
 			}()
 		}
 	}

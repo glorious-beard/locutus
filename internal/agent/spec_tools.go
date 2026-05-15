@@ -29,6 +29,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/chetan/locutus/internal/agent/adapters"
 	"github.com/chetan/locutus/internal/search"
@@ -763,9 +764,52 @@ func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, backend search.Ba
 			"additionalProperties": false,
 		},
 		Handler: TypedHandler(func(ctx context.Context, in SpecSearchInput) (SpecSearchResult, error) {
-			return SearchSpecNodes(fsys, backend, in)
+			start := time.Now()
+			result, err := SearchSpecNodes(fsys, backend, in)
+			recordSpecSearchCall(backend, in, result, err, time.Since(start))
+			return result, err
 		}),
 	})
+}
+
+// recordSpecSearchCall captures one spec_search invocation into the
+// council-scoped SpecSearchMetrics collector (DJ-123 Phase 5). The
+// collector lives on the SwappableSpecSearch the council wires at run
+// start; outside a council run the swap carries no collector and this
+// function is a cheap nil-check no-op. Backends that aren't the
+// council swappable (e.g. test paths passing a raw *search.Index) are
+// skipped — instrumentation is council-scoped by design.
+//
+// Status: "success" when hits came back, "empty" when the backend
+// returned no hits (the agent's tool response was an empty Hits
+// array), "error" when the backend call failed. The DJ-123 reversal
+// criterion (a) >25% empty-result threshold reads only the "empty"
+// status; errors are excluded from the rate denominator.
+func recordSpecSearchCall(backend search.Backend, in SpecSearchInput, result SpecSearchResult, err error, elapsed time.Duration) {
+	swap, ok := backend.(*SwappableSpecSearch)
+	if !ok {
+		return
+	}
+	m := swap.Metrics()
+	if m == nil {
+		return
+	}
+	record := SpecSearchCallRecord{
+		Query:  in.Query,
+		TookMs: elapsed.Milliseconds(),
+	}
+	if err != nil {
+		record.Status = "error"
+		record.ErrorText = err.Error()
+	} else {
+		record.HitCount = len(result.Hits)
+		if record.HitCount == 0 {
+			record.Status = "empty"
+		} else {
+			record.Status = "success"
+		}
+	}
+	m.Record(record)
 }
 
 // SpecSearchToolDescription documents the tool surface — what it

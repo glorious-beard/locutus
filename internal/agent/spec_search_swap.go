@@ -28,6 +28,14 @@ import (
 type SwappableSpecSearch struct {
 	mu      sync.RWMutex
 	current search.Backend
+	// metrics is the council-scoped SpecSearchMetrics collector (DJ-123
+	// Phase 5). Set by generateSpecWithWorkflow at council start,
+	// cleared by the same defer that restores the disk backend. The
+	// spec_search tool handler reads it through Metrics() and records
+	// per-call (query, hit_count, took_ms) into it; nil outside a
+	// council run, which makes recording a no-op on the production
+	// non-council path.
+	metrics *SpecSearchMetrics
 }
 
 // NewSwappableSpecSearch returns a SwappableSpecSearch initialized to
@@ -71,6 +79,28 @@ func (s *SwappableSpecSearch) Current() search.Backend {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.current
+}
+
+// SetMetrics attaches (or, when m is nil, detaches) the council-scoped
+// SpecSearchMetrics collector. generateSpecWithWorkflow installs a
+// fresh collector at council start and clears it (via SetMetrics(nil))
+// at council end so subsequent CLI verbs that reuse the same swappable
+// don't see stale metrics. Outside a council run, Metrics() returns
+// nil and the spec_search tool handler's recording becomes a no-op.
+func (s *SwappableSpecSearch) SetMetrics(m *SpecSearchMetrics) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.metrics = m
+}
+
+// Metrics returns the wired collector, or nil when none is installed.
+// The spec_search tool handler reads through this on every call;
+// SpecSearchMetrics.Record itself is nil-safe, so the handler can hand
+// the result straight through without an extra guard.
+func (s *SwappableSpecSearch) Metrics() *SpecSearchMetrics {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.metrics
 }
 
 // Compile-time guard that *SwappableSpecSearch satisfies the read-side

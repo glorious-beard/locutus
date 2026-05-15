@@ -748,3 +748,148 @@ func TestGenerateSpecSwapsInFlightIndexForRun(t *testing.T) {
 	require.Same(t, search.Backend(initial), swap.Current(),
 		"postcondition: swappable must be restored to the initial backend on function exit")
 }
+
+// TestInFlightSearchInstrumentationCaptured drives generateSpecWithWorkflow
+// with a one-step custom workflow whose merge fires spec_search calls
+// through the registered tool handler (DJ-123 Phase 5). Asserts that:
+//
+//  1. The council-scoped SpecSearchMetrics collector is installed on
+//     the SwappableSpecSearch for the duration of the run — Metrics()
+//     during the run is the same pointer the handler records into.
+//
+//  2. Each spec_search invocation records one entry carrying (query,
+//     hit_count, took_ms, status). Status is "success" when hits came
+//     back, "empty" when the in-flight corpus had nothing to match.
+//
+//  3. The aggregate (TotalCalls, EmptyCalls, EmptyRate) computes the
+//     fraction the DJ-123 reversal-criteria threshold reads, with
+//     errors excluded from the denominator.
+//
+//  4. After the run, Metrics() is detached (nil), so subsequent CLI
+//     verbs reusing the same swappable don't see stale metrics.
+//
+// The minimal-council shape mirrors TestGenerateSpecSwapsInFlightIndexForRun:
+// a single-step workflow whose Merge does the work, avoiding the full
+// scout→architect→reconciler→critics fanout we don't need to assert
+// on here.
+func TestInFlightSearchInstrumentationCaptured(t *testing.T) {
+	// Initial backend: any concrete search.Backend stands in for the
+	// production on-disk *search.Index here. The metric-recording path
+	// we're testing fires only against the council-installed in-flight
+	// index, so the initial-backend choice doesn't matter beyond
+	// satisfying the swap precondition.
+	initial, err := search.NewInFlightIndex()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = initial.Close() })
+
+	swap := NewSwappableSpecSearch(initial)
+
+	mock := NewMockExecutor(MockResponse{
+		AgentID:  "spec_scout",
+		Response: &AgentOutput{Content: scoutResp, Model: "m"},
+	})
+	mock.SetSpecSearch(swap)
+
+	// Register spec_search against the swap so the wired handler
+	// (with metric recording) is what the merge dispatches through.
+	// fsys is the council fixture; BuildSpecManifest returns an empty
+	// manifest there, which is fine — we're not asserting on
+	// summaries, only on the hit-count signal.
+	fs := setupSpecGenFixture(t)
+	registry := NewToolRegistry()
+	RegisterSpecTools(registry, fs, swap)
+
+	tool, ok := registry.Resolve(ToolNameSpecSearch)
+	require.True(t, ok, "spec_search tool must be registered against the swap")
+
+	// captureMerge runs inside RunCouncil — i.e. after the council's
+	// swap.Swap(inflight) and swap.SetMetrics(collector), before the
+	// deferred teardown. We snapshot the live metrics pointer here so
+	// the post-run assertions can verify the same collector was the
+	// recording target.
+	var duringRun *SpecSearchMetrics
+	captureMerge := func(s *PlanningState, _ []RoundResult) {
+		duringRun = swap.Metrics()
+		require.NotNil(t, duringRun, "metrics collector must be installed during the council run")
+
+		// Seed a raw proposal carrying a distinctive term so the
+		// matching query returns hits and the non-matching queries
+		// return zero. rebuildInFlightIndex re-indexes the in-flight
+		// Bluge store the council swapped in.
+		s.RawProposal = `{
+			"features": [{"id":"feat-storage","title":"Storage platform","summary":"Adopt postgres for OLTP.","description":"Postgres backed transactional storage.","acceptance_criteria":[],"decisions":[{"title":"Use postgres","rationale":"r","confidence":0.8}]}],
+			"strategies": []
+		}`
+		rebuildInFlightIndex(s)
+
+		// Three dispatches: one match, two empties. Empty rate is
+		// 2/3 ≈ 0.667, above the DJ-123 threshold of 0.25, so the
+		// aggregate's above_threshold signal flips on.
+		_, hErr := tool.Handler(context.Background(), json.RawMessage(`{"query":"postgres"}`))
+		require.NoError(t, hErr, "matching query should not error")
+		_, hErr = tool.Handler(context.Background(), json.RawMessage(`{"query":"definitely-no-such-token"}`))
+		require.NoError(t, hErr, "non-matching query should not error (empty result is not an error)")
+		_, hErr = tool.Handler(context.Background(), json.RawMessage(`{"query":"another-absent-term"}`))
+		require.NoError(t, hErr)
+
+		// Write a valid empty ProposedSpec so the integrity gate
+		// short-circuits cleanly on the way out.
+		s.ProposedSpec = `{"features":[],"strategies":[],"decisions":[]}`
+	}
+
+	wf := &Workflow[PlanningState]{
+		Rounds: []WorkflowStep[PlanningState]{
+			{ID: "capture", Agents: []string{"spec_scout"}, Project: projectDefault, Merge: captureMerge},
+		},
+		MaxRounds: 1,
+	}
+
+	// Precondition: no metrics installed yet — the council teardown
+	// from a prior run hasn't fired (this is a fresh swap).
+	require.Nil(t, swap.Metrics(), "precondition: no metrics collector before the run")
+
+	_, err = generateSpecWithWorkflow(context.Background(), mock, fs, SpecGenRequest{
+		GoalsBody: "Build something useful.",
+	}, wf)
+	require.NoError(t, err)
+
+	// Per-call records: the merge fired three spec_search dispatches;
+	// each must have produced exactly one entry on the collector.
+	calls := duringRun.Snapshot()
+	require.Len(t, calls, 3, "every spec_search invocation must record one call entry")
+
+	var matched, empty int
+	for _, c := range calls {
+		assert.NotEmpty(t, c.Query, "each record must carry the originating query")
+		assert.GreaterOrEqual(t, c.TookMs, int64(0), "TookMs is non-negative wall-clock duration")
+		switch c.Status {
+		case "success":
+			matched++
+			assert.Greater(t, c.HitCount, 0, "success status implies non-empty hit set")
+		case "empty":
+			empty++
+			assert.Equal(t, 0, c.HitCount, "empty status implies zero hits")
+		default:
+			t.Fatalf("unexpected status %q for query %q (expected success or empty)", c.Status, c.Query)
+		}
+	}
+	assert.Equal(t, 1, matched, "exactly one query matched the in-flight corpus")
+	assert.Equal(t, 2, empty, "two queries returned no hits")
+
+	// Aggregate: the DJ-123 reversal-criteria input. 2 empty / 3
+	// completed = 0.667, well above the 0.25 threshold so a sentinel
+	// run would trip the criterion.
+	agg := duringRun.Aggregate()
+	assert.Equal(t, 3, agg.TotalCalls)
+	assert.Equal(t, 3, agg.CompletedCalls)
+	assert.Equal(t, 2, agg.EmptyCalls)
+	assert.Equal(t, 0, agg.ErrorCalls)
+	assert.InDelta(t, 2.0/3.0, agg.EmptyRate, 1e-9)
+	assert.Greater(t, agg.EmptyRate, SpecSearchEmptyRateThreshold,
+		"with two of three calls empty, the rate exceeds the DJ-123 reversal threshold")
+
+	// Postcondition: the council teardown detached the collector so
+	// subsequent runs through the same swappable start fresh.
+	assert.Nil(t, swap.Metrics(),
+		"postcondition: SetMetrics(nil) in the council teardown must clear the collector")
+}
