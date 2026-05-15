@@ -1,6 +1,9 @@
 package search
 
 import (
+	"runtime"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/chetan/locutus/internal/spec"
@@ -237,4 +240,72 @@ func TestInFlightIndexHandlesMalformedJSON(t *testing.T) {
 			assert.Equal(t, 0, total)
 		})
 	}
+}
+
+// TestInFlightIndexConcurrentRebuildAndSearch exercises the
+// Rebuild/Search swap race directly. One goroutine repeatedly rebuilds
+// the index from the canonical fixture; another repeatedly runs a query
+// that the fixture is known to match. The regression we guard against:
+// Search captured the writer pointer under RLock and then released the
+// lock BEFORE calling Writer.Reader(). A concurrent Rebuild that closed
+// the previous writer in that window left Reader() returning a *Reader
+// with a nil internal snapshot and no error — nil-deref on use, or a
+// data race the -race detector would flag.
+//
+// Each Search call is required to either succeed (with at least one hit,
+// since the fixture always indexes a node matching the query) or return
+// the "in-flight index is closed" sentinel if Close raced ahead. An NPE
+// or a data race fails the test. Must be run under -race to be
+// meaningful.
+func TestInFlightIndexConcurrentRebuildAndSearch(t *testing.T) {
+	t.Parallel()
+
+	idx, err := NewInFlightIndex()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = idx.Close() })
+
+	// Seed the index so the very first Search has a corpus to hit.
+	require.NoError(t, idx.Rebuild(fixtureInFlightProposal))
+
+	const iterations = 100
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Rebuilder: re-indexes the same fixture in a tight loop so each
+	// iteration forces a writer swap + Close of the previous writer.
+	go func() {
+		defer wg.Done()
+		for n := 0; n < iterations; n++ {
+			if err := idx.Rebuild(fixtureInFlightProposal); err != nil {
+				t.Errorf("rebuild iter %d: %v", n, err)
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+
+	// Searcher: "pgvector" is unique to the strategy in the fixture, so
+	// a clean Search must always return at least one hit. The only other
+	// acceptable outcome is the closed-index sentinel.
+	go func() {
+		defer wg.Done()
+		for n := 0; n < iterations; n++ {
+			hits, _, err := idx.Search("pgvector", Options{})
+			if err != nil {
+				if !strings.Contains(err.Error(), "in-flight index is closed") {
+					t.Errorf("search iter %d: unexpected error: %v", n, err)
+					return
+				}
+				continue
+			}
+			if len(hits) == 0 {
+				t.Errorf("search iter %d: expected pgvector to land at least one hit, got 0", n)
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+
+	wg.Wait()
 }

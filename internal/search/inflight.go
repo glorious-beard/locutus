@@ -95,13 +95,22 @@ func (i *InFlightIndex) Rebuild(rawProposal string) error {
 // shape, same FieldMatch diagnostics. See the package doc on
 // (*Index).Search for the query grammar.
 func (i *InFlightIndex) Search(query string, opts Options) ([]Hit, int, error) {
+	// The Reader() call must happen under the RLock so the captured
+	// snapshot's segment refcount is incremented before Rebuild can
+	// Close the previous writer. Closing a Bluge writer runs
+	// replaceRoot(nil, ...) — a subsequent Reader() on it returns a
+	// *Reader with a nil internal snapshot and no error, which would
+	// nil-deref on use. Once Reader() returns successfully the segments
+	// stay pinned for the reader's lifetime, so dropping the RLock here
+	// is safe.
 	i.mu.RLock()
 	w := i.writer
-	i.mu.RUnlock()
 	if w == nil {
+		i.mu.RUnlock()
 		return nil, 0, fmt.Errorf("search: in-flight index is closed")
 	}
 	r, err := w.Reader()
+	i.mu.RUnlock()
 	if err != nil {
 		return nil, 0, fmt.Errorf("search: open in-flight reader: %w", err)
 	}
@@ -171,6 +180,13 @@ type inFlightDecision struct {
 // are emitted as their own documents so a council agent searching for a
 // rationale term lands directly on the decision rather than only on the
 // enclosing feature.
+//
+// Body-field asymmetry below — featureDoc(..., "") and decisionDoc(..., "")
+// pass empty bodies while strategyDoc(..., s.Body) passes s.Body — is
+// load-bearing: the on-the-wire RawSpecProposal envelope only carries a
+// body field on strategies. Feature and decision prose lives in their
+// typed fields (Description, AcceptanceCriteria, Rationale, Alternatives,
+// Provenance) and is already projected into the shared *Doc builders.
 func decodeInFlightDocs(rawProposal string) ([]*bluge.Document, error) {
 	trimmed := strings.TrimSpace(rawProposal)
 	if trimmed == "" {
