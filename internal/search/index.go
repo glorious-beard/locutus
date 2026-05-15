@@ -238,6 +238,25 @@ func (i *Index) hasUsableIndex() bool {
 // to the ranked list (e.g. discounting a hit whose Score is mostly
 // "alternative" contribution).
 func (i *Index) Search(query string, opts Options) ([]Hit, int, error) {
+	r, err := i.reader()
+	if err != nil {
+		return nil, 0, fmt.Errorf("search: open reader: %w", err)
+	}
+	defer r.Close()
+	return runSearch(r, query, opts)
+}
+
+// runSearch is the query/diagnostic flow shared between the on-disk
+// Index and the in-flight InFlightIndex. Factoring it here keeps query
+// parsing, BM25 scoring, and the per-field diagnostic shape in one
+// place — the two backing stores produce identical results for
+// identical inputs by construction, not by parallel reimplementation.
+//
+// The caller owns the reader and is responsible for closing it; that
+// split lets the on-disk path open a fresh disk reader per call while
+// the in-flight path can hold a live in-memory reader against its
+// retained writer.
+func runSearch(r *bluge.Reader, query string, opts Options) ([]Hit, int, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, 0, ErrEmptyQuery
@@ -266,17 +285,12 @@ func (i *Index) Search(query string, opts Options) ([]Hit, int, error) {
 		req = req.IncludeLocations()
 	}
 
-	r, err := i.reader()
-	if err != nil {
-		return nil, 0, fmt.Errorf("search: open reader: %w", err)
-	}
-	defer r.Close()
-
 	// Run per-field score scans before the main query so the same
 	// Reader serves both — saves a second OpenReader and keeps the
 	// "snapshot of the index at this instant" property consistent
 	// across the diagnostics and the ranking.
 	var perField perFieldContributions
+	var err error
 	if opts.Explain {
 		perField, err = scanPerFieldContributions(r, query, opts.Kind)
 		if err != nil {
