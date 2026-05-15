@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -173,6 +174,126 @@ func TestProjectFindingClusterRendersAddMode(t *testing.T) {
 		assert.NotContains(t, body, "## Prior content", "no prior content in add mode")
 		assert.NotContains(t, body, "Targeted node", "no targeted-node section in add mode")
 	})
+}
+
+// TestProjectFindingClusterRendersCurrentCommitmentQuoted verifies the
+// DJ-122 follow-up plumbing: when a FindingCluster carries the gate's
+// quoted "present-but-insufficient" passage, the projection renders it
+// as a blockquote that the elaborator sees BEFORE the findings list,
+// so the elaborator strengthens the named text rather than rewriting
+// the strategy from scratch.
+func TestProjectFindingClusterRendersCurrentCommitmentQuoted(t *testing.T) {
+	original := RawSpecProposal{
+		Strategies: []RawStrategyProposal{
+			{ID: "strat-observability", Title: "Observability", Kind: "quality", Body: "prose"},
+		},
+	}
+	raw, _ := json.Marshal(original)
+
+	t.Run("gate-fed cluster surfaces the quoted commitment", func(t *testing.T) {
+		cluster := FindingCluster{
+			Topic:                   "WinPlan platform: on-call rotation owner",
+			NodeID:                  "strat-observability",
+			AgentID:                 "spec_strategy_elaborator",
+			Findings:                []string{"The proposal commits PagerDuty but not who carries it."},
+			CurrentCommitmentQuoted: "WinPlan adopts a developer-led on-call rotation backed by PagerDuty.",
+		}
+		clusterRaw, _ := json.Marshal(cluster)
+		snap := StateSnapshot[PlanningState]{
+			State: PlanningState{
+				Prompt:              "Build it.",
+				OriginalRawProposal: string(raw),
+				RawProposal:         string(raw),
+			},
+			FanoutItem: string(clusterRaw),
+		}
+		msgs := projectFindingCluster(snap)
+		require.Len(t, msgs, 1)
+		body := msgs[0].Content
+
+		assert.Contains(t, body, "## Current commitment to strengthen",
+			"projection includes the quoted-commitment section header")
+		assert.Contains(t, body, "> WinPlan adopts a developer-led on-call rotation backed by PagerDuty.",
+			"quoted commitment rendered as a markdown blockquote so the elaborator sees the exact text")
+		assert.Contains(t, body, "The proposal commits PagerDuty but not who carries it.",
+			"the gate's per-dimension reasoning still appears in the findings list")
+
+		// The quoted commitment section should appear BEFORE the
+		// findings list so the elaborator anchors on the existing
+		// text first, then reads what needs strengthening.
+		assert.Less(t,
+			strings.Index(body, "Current commitment to strengthen"),
+			strings.Index(body, "Findings to address"),
+			"quoted commitment must appear before the findings list")
+	})
+
+	t.Run("critic-routed cluster (empty CurrentCommitmentQuoted) skips the section", func(t *testing.T) {
+		cluster := FindingCluster{
+			Topic:                   "strat-observability",
+			NodeID:                  "strat-observability",
+			AgentID:                 "spec_strategy_elaborator",
+			Findings:                []string{"no SLO is named"},
+			CurrentCommitmentQuoted: "",
+		}
+		clusterRaw, _ := json.Marshal(cluster)
+		snap := StateSnapshot[PlanningState]{
+			State: PlanningState{
+				Prompt:              "Build it.",
+				OriginalRawProposal: string(raw),
+				RawProposal:         string(raw),
+			},
+			FanoutItem: string(clusterRaw),
+		}
+		msgs := projectFindingCluster(snap)
+		body := msgs[0].Content
+
+		assert.NotContains(t, body, "## Current commitment to strengthen",
+			"projection omits the quoted-commitment section when the cluster carries no quoted text")
+	})
+}
+
+// TestProjectFindingClusterReadsCurrentRawProposal verifies the DJ-122
+// follow-up Fix 1: the elaborator's "Prior content" block reads from
+// the CURRENT RawProposal, not the pre-iter-0 OriginalRawProposal.
+// Without this; the iter-N elaborator rewrites from a blank slate
+// every iteration with no awareness of what iter-(N-1) wrote.
+func TestProjectFindingClusterReadsCurrentRawProposal(t *testing.T) {
+	originalRaw, _ := json.Marshal(RawSpecProposal{
+		Strategies: []RawStrategyProposal{
+			{ID: "strat-obs", Title: "Observability", Kind: "quality", Body: "initial prose"},
+		},
+	})
+	// RawProposal carries an iter-1 revision: the body has grown to
+	// include PagerDuty + an Election Critical Window protocol — the
+	// elaborator must see THIS, not the pre-iter-0 baseline above.
+	currentRaw, _ := json.Marshal(RawSpecProposal{
+		Strategies: []RawStrategyProposal{
+			{ID: "strat-obs", Title: "Observability", Kind: "quality", Body: "WinPlan adopts a developer-led on-call rotation backed by PagerDuty; an Election Critical Window protocol coordinates incidents during the 72 hours preceding poll close."},
+		},
+	})
+
+	cluster := FindingCluster{
+		Topic:    "WinPlan platform: on-call rotation owner",
+		NodeID:   "strat-obs",
+		AgentID:  "spec_strategy_elaborator",
+		Findings: []string{"name the specific team carrying the pager"},
+	}
+	clusterRaw, _ := json.Marshal(cluster)
+	snap := StateSnapshot[PlanningState]{
+		State: PlanningState{
+			Prompt:              "Build it.",
+			OriginalRawProposal: string(originalRaw),
+			RawProposal:         string(currentRaw),
+		},
+		FanoutItem: string(clusterRaw),
+	}
+	msgs := projectFindingCluster(snap)
+	body := msgs[0].Content
+
+	assert.Contains(t, body, "Election Critical Window protocol",
+		"projection reads from current RawProposal so the iter-1 commitment is visible to the iter-2 elaborator")
+	assert.NotContains(t, body, "initial prose",
+		"projection does NOT fall back to the pre-iter-0 OriginalRawProposal body")
 }
 
 // TestClusterStepProjectionsRenderTheirData — cluster_findings and

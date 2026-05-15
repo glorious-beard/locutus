@@ -222,8 +222,12 @@ func projectFindingCluster(snap StateSnapshot[PlanningState]) []Message {
 
 	// Always show the existing-nodes list. For revise mode this is
 	// situational awareness; for add mode it's the id-collision-
-	// avoidance reference.
-	features, strategies := proposalNodeIDs(snap.State.OriginalRawProposal)
+	// avoidance reference. Read from the CURRENT RawProposal (not the
+	// pre-iter-0 OriginalRawProposal) so new nodes added in earlier
+	// iterations also appear — otherwise an iter-N addition can pick
+	// a slug-derived id that collides with one already minted in iter-K
+	// (K<N).
+	features, strategies := proposalNodeIDs(snap.State.RawProposal)
 	b.WriteString("\n\n## Existing nodes\n\n")
 	if len(features) == 0 && len(strategies) == 0 {
 		b.WriteString("(none)\n")
@@ -293,10 +297,10 @@ func projectFindingCluster(snap StateSnapshot[PlanningState]) []Message {
 	// critic-routed clusters; populated only by mergeGateVerdict from
 	// a SpecGateVerdict OpenDimension.
 	if strings.TrimSpace(cluster.CurrentCommitmentQuoted) != "" {
-		b.WriteString("## Current commitment that the gate judged insufficient\n\n")
+		b.WriteString("## Current commitment to strengthen\n\n")
 		b.WriteString("> ")
 		b.WriteString(strings.ReplaceAll(strings.TrimSpace(cluster.CurrentCommitmentQuoted), "\n", "\n> "))
-		b.WriteString("\n\nStrengthen this text — don't replace it with substantively similar language. If you re-emit a commitment that says the same thing in different words; the gate will flag the same gap on the next iteration and the loop will not converge.\n\n")
+		b.WriteString("\n\nUse this passage as your starting point. The next iteration's gate compares your output against this text; a materially stronger commitment moves the loop forward.\n\n")
 	}
 
 	b.WriteString("## Findings to address (verbatim)\n\n")
