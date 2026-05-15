@@ -10,6 +10,7 @@ import (
 
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/agent/adapters"
+	"github.com/chetan/locutus/internal/search"
 	"github.com/chetan/locutus/internal/specio"
 )
 
@@ -59,7 +60,9 @@ func recordingLLM(fsys specio.FS, root, command string) (agent.AgentExecutor, *a
 	if err != nil {
 		return nil, nil, err
 	}
-	registerSpecToolsOnce(inner, fsys, root)
+	if err := registerSpecToolsOnce(inner, fsys, root); err != nil {
+		return nil, nil, fmt.Errorf("register spec tools: %w", err)
+	}
 	rec, err := agent.NewSessionRecorder(fsys, command, root)
 	if err != nil {
 		return nil, nil, err
@@ -170,20 +173,42 @@ func newExecutor() (*agent.Executor, error) {
 // specToolsOnce gates spec-tool registration so multiple
 // recordingLLM callers share a single registration against the
 // process-wide executor.
-var specToolsOnce sync.Once
+//
+// specToolsErr captures any error from search.Open inside the
+// sync.Once body so subsequent recordingLLM calls in the same
+// process see the same failure rather than racing past a missing
+// index. The error path is propagated up through registerSpecToolsOnce
+// so the CLI subcommand can surface a clean message instead of every
+// spec_search call failing later with an opaque "open index" error.
+var (
+	specToolsOnce sync.Once
+	specToolsErr  error
+)
 
-func registerSpecToolsOnce(inner agent.AgentExecutor, fsys specio.FS, projectRoot string) {
+func registerSpecToolsOnce(inner agent.AgentExecutor, fsys specio.FS, projectRoot string) error {
 	exec, ok := inner.(*agent.Executor)
 	if !ok {
 		// Mock executors in tests don't have a tool registry; nothing
 		// to register against. Agents that reference tools by name
 		// will simply not have the dispatch path engaged — the
 		// mocked response returns the verdict directly.
-		return
+		return nil
 	}
 	specToolsOnce.Do(func() {
-		agent.RegisterSpecTools(exec.Tools(), fsys, projectRoot)
+		// Open the on-disk Bluge index once at registration time per
+		// DJ-123 Phase 2: spec_search now dispatches against a wired
+		// search.Backend instead of opening + closing the index on
+		// every call. The handle's Close is a no-op for the on-disk
+		// path (memWriter is nil); we let the process retain it for
+		// its lifetime.
+		idx, err := search.Open(fsys, projectRoot)
+		if err != nil {
+			specToolsErr = fmt.Errorf("open spec search index: %w", err)
+			return
+		}
+		agent.RegisterSpecTools(exec.Tools(), fsys, idx)
 	})
+	return specToolsErr
 }
 
 // heartbeatEnabledForMode reports whether the LoggingExecutor

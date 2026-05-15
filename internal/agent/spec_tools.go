@@ -582,15 +582,22 @@ var specSearchKinds = map[string]struct{}{
 //
 // Validation: empty query is rejected; unknown Kind is rejected;
 // Limit is clamped (0 / negative → specSearchAgentDefaultLimit, >max
-// → specSearchAgentMaxLimit). Validation runs before any index
+// → specSearchAgentMaxLimit). Validation runs before any backend
 // access so misuse fails fast.
+//
+// backend is the read-side seam (DJ-123 Phase 2): production wires in
+// the on-disk *search.Index, council runs wire in a *search.InFlightIndex.
+// Both share identical Hit / Options / FieldMatch shapes, so the rest
+// of this function is backend-agnostic.
 //
 // Summary derivation: each Bluge hit carries id/kind/title but not
 // the authored Summary. We build the manifest once per call and look
 // each id up in an id→entry map — cheaper than calling LookupSpecNode
 // per hit (which re-reads the file from disk) and small at the
-// target scale (<100KB for 3000 nodes).
-func SearchSpecNodes(fsys specio.FS, projectRoot string, in SpecSearchInput) (SpecSearchResult, error) {
+// target scale (<100KB for 3000 nodes). In-flight inline-decision
+// hits (synthesised ids absent from the on-disk manifest) get empty
+// summary; that's acceptable until Phase 3 wires a richer source.
+func SearchSpecNodes(fsys specio.FS, backend search.Backend, in SpecSearchInput) (SpecSearchResult, error) {
 	q := strings.TrimSpace(in.Query)
 	if q == "" {
 		return SpecSearchResult{}, fmt.Errorf("spec_search: empty query")
@@ -600,6 +607,9 @@ func SearchSpecNodes(fsys specio.FS, projectRoot string, in SpecSearchInput) (Sp
 			return SpecSearchResult{}, fmt.Errorf("spec_search: unknown kind %q (accepted: feature, strategy, decision, bug, approach)", in.Kind)
 		}
 	}
+	if backend == nil {
+		return SpecSearchResult{}, fmt.Errorf("spec_search: no backend wired")
+	}
 	limit := in.Limit
 	switch {
 	case limit <= 0:
@@ -608,18 +618,12 @@ func SearchSpecNodes(fsys specio.FS, projectRoot string, in SpecSearchInput) (Sp
 		limit = specSearchAgentMaxLimit
 	}
 
-	idx, err := search.Open(fsys, projectRoot)
-	if err != nil {
-		return SpecSearchResult{}, fmt.Errorf("spec_search: open index: %w", err)
-	}
-	defer idx.Close()
-
 	// Explain: yes. The whole point of the agent-facing tool is that
 	// the LLM can reason about per-field contributions — e.g. discount
 	// a hit whose Score is dominated by an alternative's prose when
 	// the question is about the chosen direction. The cost (one
 	// per-field scan per Search call) is fine at our scale.
-	hits, total, err := idx.Search(q, search.Options{
+	hits, total, err := backend.Search(q, search.Options{
 		Kind:    in.Kind,
 		Limit:   limit,
 		Explain: true,
@@ -678,18 +682,22 @@ func summaryByID(m SpecManifest) map[string]string {
 }
 
 // RegisterSpecTools registers spec_list_manifest, spec_get, and
-// spec_search against the given tool registry. fsys is captured by
-// closure so tool calls read from the same filesystem the rest of
-// Locutus operates on (OSFS in production, MemFS in tests).
-// projectRoot is the absolute OS path the on-disk search index lives
-// under; tests using MemFS pass "" to disable the spec_search tool
-// (BM25 storage is OS-bound).
+// (optionally) spec_search against the given tool registry. fsys is
+// captured by closure so spec_list_manifest and spec_get read from the
+// same filesystem the rest of Locutus operates on (OSFS in production,
+// MemFS in tests).
+//
+// backend is the read-side seam for spec_search (DJ-123 Phase 2): pass
+// a *search.Index opened against the project root for the on-disk
+// production path, a *search.InFlightIndex for in-flight council
+// searches, or nil to skip the spec_search registration entirely
+// (MemFS / pure-manifest test contexts where no Bluge backend exists).
 //
 // The registration is idempotent at the registry level —
 // re-registering the same name overrides the prior entry. Callers
 // gate on a sync.Once so the production path runs exactly once per
 // process.
-func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, projectRoot string) {
+func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, backend search.Backend) {
 	if registry == nil || fsys == nil {
 		return
 	}
@@ -724,10 +732,11 @@ func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, projectRoot strin
 			return LookupSpecNode(fsys, in.ID)
 		}),
 	})
-	if projectRoot == "" {
-		// MemFS / test contexts can't host the on-disk BM25 index; skip
-		// the spec_search registration rather than register a handler
-		// that errors on every call.
+	if backend == nil {
+		// No spec-search backend wired (MemFS test contexts, or a CLI
+		// path that couldn't open the on-disk index): skip the
+		// spec_search registration rather than register a handler that
+		// errors on every call.
 		return
 	}
 	registry.Register(adapters.ToolDef{
@@ -754,7 +763,7 @@ func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, projectRoot strin
 			"additionalProperties": false,
 		},
 		Handler: TypedHandler(func(ctx context.Context, in SpecSearchInput) (SpecSearchResult, error) {
-			return SearchSpecNodes(fsys, projectRoot, in)
+			return SearchSpecNodes(fsys, backend, in)
 		}),
 	})
 }

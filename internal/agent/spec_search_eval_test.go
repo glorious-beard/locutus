@@ -33,6 +33,7 @@ import (
 
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/agent/adapters"
+	"github.com/chetan/locutus/internal/search"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/joho/godotenv"
@@ -388,7 +389,10 @@ func TestSpecSearchInterpretation(t *testing.T) {
 	// Run a real spec_search call against the fixture corpus so the
 	// JSON the model sees is byte-identical to what would land in a
 	// real conversation.
-	result, err := agent.SearchSpecNodes(fsys, root, agent.SpecSearchInput{
+	idx, err := search.Open(fsys, root)
+	require.NoError(t, err)
+	defer idx.Close()
+	result, err := agent.SearchSpecNodes(fsys, idx, agent.SpecSearchInput{
 		Query: "auth*",
 		Limit: 50,
 	})

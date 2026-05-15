@@ -1,17 +1,31 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/chetan/locutus/internal/search"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// openSearchBackend opens an on-disk *search.Index against the fixture
+// root, registering Close as a test cleanup. Used by the validation /
+// end-to-end tests that need the real on-disk path; the stub-backend
+// dispatch tests below construct a fakeBackend directly instead.
+func openSearchBackend(t *testing.T, fsys specio.FS, root string) search.Backend {
+	t.Helper()
+	idx, err := search.Open(fsys, root)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = idx.Close() })
+	return idx
+}
 
 // specSearchFixture mirrors the fixture helper in internal/search/search_test.go:
 // a tempdir-rooted project on disk with .borg/manifest.json plus per-kind spec
@@ -66,9 +80,10 @@ func writeSearchFeature(t *testing.T, fsys specio.FS, id, title, summary, descri
 
 func TestSearchSpecNodes_RejectsEmptyQuery(t *testing.T) {
 	root, fsys := specSearchFixture(t)
+	backend := openSearchBackend(t, fsys, root)
 
 	for _, q := range []string{"", "   ", "\t\n"} {
-		_, err := SearchSpecNodes(fsys, root, SpecSearchInput{Query: q})
+		_, err := SearchSpecNodes(fsys, backend, SpecSearchInput{Query: q})
 		require.Error(t, err, "query %q must be rejected", q)
 		assert.Contains(t, err.Error(), "empty query")
 	}
@@ -76,8 +91,9 @@ func TestSearchSpecNodes_RejectsEmptyQuery(t *testing.T) {
 
 func TestSearchSpecNodes_RejectsUnknownKind(t *testing.T) {
 	root, fsys := specSearchFixture(t)
+	backend := openSearchBackend(t, fsys, root)
 
-	_, err := SearchSpecNodes(fsys, root, SpecSearchInput{Query: "anything", Kind: "not-a-kind"})
+	_, err := SearchSpecNodes(fsys, backend, SpecSearchInput{Query: "anything", Kind: "not-a-kind"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kind")
 	assert.Contains(t, err.Error(), "not-a-kind")
@@ -94,20 +110,21 @@ func TestSearchSpecNodes_LimitClamping(t *testing.T) {
 		id := "dec-common-node-" + string(rune('a'+(i/10))) + string(rune('0'+(i%10)))
 		writeSearchDecision(t, fsys, id, "Common subject", "Common authored summary.", "Long rationale referencing common subject.")
 	}
+	backend := openSearchBackend(t, fsys, root)
 
 	// Limit 0 → default 20.
-	res, err := SearchSpecNodes(fsys, root, SpecSearchInput{Query: "common", Limit: 0})
+	res, err := SearchSpecNodes(fsys, backend, SpecSearchInput{Query: "common", Limit: 0})
 	require.NoError(t, err)
 	assert.Len(t, res.Hits, 20, "limit=0 must clamp to the agent-surface default (20)")
 	assert.Equal(t, 40, res.TotalMatches, "TotalMatches reflects the full match set, not the slice")
 
 	// Limit 200 → clamp to 100.
-	res, err = SearchSpecNodes(fsys, root, SpecSearchInput{Query: "common", Limit: 200})
+	res, err = SearchSpecNodes(fsys, backend, SpecSearchInput{Query: "common", Limit: 200})
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(res.Hits), 100, "limit>max must clamp to 100")
 
 	// Negative limit → default.
-	res, err = SearchSpecNodes(fsys, root, SpecSearchInput{Query: "common", Limit: -1})
+	res, err = SearchSpecNodes(fsys, backend, SpecSearchInput{Query: "common", Limit: -1})
 	require.NoError(t, err)
 	assert.Len(t, res.Hits, 20, "negative limit must fall back to the default")
 }
@@ -128,8 +145,9 @@ func TestSearchSpecNodes_EndToEnd(t *testing.T) {
 		"Adopt row level security",
 		"Enable Postgres RLS on tenant tables.",
 		"Defense in depth.")
+	backend := openSearchBackend(t, fsys, root)
 
-	res, err := SearchSpecNodes(fsys, root, SpecSearchInput{Query: "pgvector"})
+	res, err := SearchSpecNodes(fsys, backend, SpecSearchInput{Query: "pgvector"})
 	require.NoError(t, err)
 	require.NotEmpty(t, res.Hits)
 	assert.Equal(t, "dec-postgres-with-pgvector", res.Hits[0].ID)
@@ -150,14 +168,15 @@ func TestSearchSpecNodes_KindFilter(t *testing.T) {
 		"Adopt Postgres for OLTP.", "Mature, well-known.")
 	writeSearchFeature(t, fsys, "feat-postgres-migrations", "Postgres migrations",
 		"Run Postgres migrations on deploy.", "Migrate schema on each deploy.")
+	backend := openSearchBackend(t, fsys, root)
 
 	// Unscoped: both nodes match.
-	all, err := SearchSpecNodes(fsys, root, SpecSearchInput{Query: "postgres"})
+	all, err := SearchSpecNodes(fsys, backend, SpecSearchInput{Query: "postgres"})
 	require.NoError(t, err)
 	require.Len(t, all.Hits, 2)
 
 	// Scoped to decisions only.
-	scoped, err := SearchSpecNodes(fsys, root, SpecSearchInput{Query: "postgres", Kind: string(spec.KindDecision)})
+	scoped, err := SearchSpecNodes(fsys, backend, SpecSearchInput{Query: "postgres", Kind: string(spec.KindDecision)})
 	require.NoError(t, err)
 	require.Len(t, scoped.Hits, 1)
 	assert.Equal(t, "dec-postgres", scoped.Hits[0].ID)
@@ -168,11 +187,160 @@ func TestSearchSpecNodes_KindFilter(t *testing.T) {
 // the registry alongside the existing two.
 func TestRegisterSpecTools_RegistersSpecSearch(t *testing.T) {
 	root, fsys := specSearchFixture(t)
+	backend := openSearchBackend(t, fsys, root)
 	registry := NewToolRegistry()
-	RegisterSpecTools(registry, fsys, root)
+	RegisterSpecTools(registry, fsys, backend)
 
 	for _, name := range []string{ToolNameSpecListManifest, ToolNameSpecGet, ToolNameSpecSearch} {
 		_, ok := registry.Resolve(name)
 		assert.True(t, ok, "registry should expose %s", name)
 	}
+}
+
+// TestRegisterSpecTools_NilBackendSkipsSpecSearch confirms the MemFS /
+// test path: a nil backend leaves spec_list_manifest and spec_get
+// registered but omits spec_search rather than registering a handler
+// that errors on every call.
+func TestRegisterSpecTools_NilBackendSkipsSpecSearch(t *testing.T) {
+	_, fsys := specSearchFixture(t)
+	registry := NewToolRegistry()
+	RegisterSpecTools(registry, fsys, nil)
+
+	_, ok := registry.Resolve(ToolNameSpecListManifest)
+	assert.True(t, ok, "spec_list_manifest must register without a backend")
+	_, ok = registry.Resolve(ToolNameSpecGet)
+	assert.True(t, ok, "spec_get must register without a backend")
+	_, ok = registry.Resolve(ToolNameSpecSearch)
+	assert.False(t, ok, "spec_search must be omitted when backend is nil")
+}
+
+// fakeBackend is a programmable search.Backend used to confirm that
+// the spec_search tool dispatches against whichever backend was wired
+// at registration time (not a hardcoded on-disk path). Records the
+// last (query, opts) it received so the test can assert handoff.
+type fakeBackend struct {
+	hits  []search.Hit
+	total int
+	err   error
+
+	lastQuery string
+	lastOpts  search.Options
+	calls     int
+}
+
+func (f *fakeBackend) Search(query string, opts search.Options) ([]search.Hit, int, error) {
+	f.calls++
+	f.lastQuery = query
+	f.lastOpts = opts
+	return f.hits, f.total, f.err
+}
+
+// TestSpecSearchToolUsesProvidedBackend confirms the agent-facing
+// spec_search tool dispatches to the search.Backend supplied at
+// registration time. The fake records the call shape; the test
+// asserts every value the tool forwards (query, kind, limit, Explain).
+// This is the seam DJ-123 Phase 2 introduces — the on-disk Index and
+// the in-flight InFlightIndex both satisfy Backend and are
+// interchangeable at this surface.
+func TestSpecSearchToolUsesProvidedBackend(t *testing.T) {
+	root, fsys := specSearchFixture(t)
+	// Plant one decision so summaryByID has something to attach to
+	// the synthetic hit; the backend itself is a fake, so this is just
+	// for the summary-lookup join.
+	writeSearchDecision(t, fsys, "dec-stub-target",
+		"Stub target", "Authored summary for the stub target.",
+		"Rationale for the stub target.")
+
+	backend := &fakeBackend{
+		hits: []search.Hit{{
+			ID:    "dec-stub-target",
+			Kind:  string(spec.KindDecision),
+			Title: "Stub target",
+			Score: 1.5,
+		}},
+		total: 1,
+	}
+
+	registry := NewToolRegistry()
+	RegisterSpecTools(registry, fsys, backend)
+
+	def, ok := registry.Resolve(ToolNameSpecSearch)
+	require.True(t, ok, "spec_search must register when a backend is wired")
+
+	args, err := json.Marshal(SpecSearchInput{Query: "alpha", Kind: "decision", Limit: 7})
+	require.NoError(t, err)
+	resultJSON, err := def.Handler(context.Background(), args)
+	require.NoError(t, err)
+	_ = root
+
+	var result SpecSearchResult
+	require.NoError(t, json.Unmarshal(resultJSON, &result))
+
+	require.Equal(t, 1, backend.calls, "tool must invoke the wired backend exactly once")
+	assert.Equal(t, "alpha", backend.lastQuery, "query must pass through verbatim")
+	assert.Equal(t, "decision", backend.lastOpts.Kind, "kind filter must pass through")
+	assert.Equal(t, 7, backend.lastOpts.Limit, "limit must pass through after clamp")
+	assert.True(t, backend.lastOpts.Explain, "Explain must be set so per-field diagnostics surface to the agent")
+
+	require.Len(t, result.Hits, 1)
+	assert.Equal(t, "dec-stub-target", result.Hits[0].ID)
+	assert.Equal(t, "Authored summary for the stub target.", result.Hits[0].Summary,
+		"summary must come from BuildSpecManifest(fsys), not the backend")
+	assert.Equal(t, 1, result.TotalMatches)
+}
+
+// TestSpecSearchToolUsesInFlightBackend exercises the in-memory
+// InFlightIndex through the agent-facing tool surface end-to-end.
+// First end-to-end test of the in-flight tool path (DJ-123 Phase 2):
+// the same registry call site, the same tool descriptor, the same
+// SpecSearchInput / SpecSearchResult JSON shape — only the backend
+// differs from the on-disk integration tests above.
+func TestSpecSearchToolUsesInFlightBackend(t *testing.T) {
+	_, fsys := specSearchFixture(t)
+
+	backend, err := search.NewInFlightIndex()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = backend.Close() })
+
+	raw := `{
+		"features": [
+			{
+				"id": "feat-inflight-auth",
+				"title": "In-flight authentication feature",
+				"summary": "Council-stage feature for authentication redesign.",
+				"description": "Re-platform onto WorkOS so authentication is delegated to a managed provider.",
+				"acceptance_criteria": ["users sign in via WorkOS"],
+				"decisions": []
+			}
+		],
+		"strategies": []
+	}`
+	require.NoError(t, backend.Rebuild(raw))
+
+	registry := NewToolRegistry()
+	RegisterSpecTools(registry, fsys, backend)
+
+	def, ok := registry.Resolve(ToolNameSpecSearch)
+	require.True(t, ok, "spec_search must register when an in-flight backend is wired")
+
+	args, err := json.Marshal(SpecSearchInput{Query: "authentication"})
+	require.NoError(t, err)
+	resultJSON, err := def.Handler(context.Background(), args)
+	require.NoError(t, err)
+
+	var result SpecSearchResult
+	require.NoError(t, json.Unmarshal(resultJSON, &result))
+
+	require.NotEmpty(t, result.Hits, "in-flight index must surface the planted feature")
+	assert.Equal(t, "feat-inflight-auth", result.Hits[0].ID)
+	assert.Equal(t, "In-flight authentication feature", result.Hits[0].Title)
+	assert.Equal(t, string(spec.KindFeature), result.Hits[0].Kind)
+	// Summary lookup is currently joined against the on-disk manifest
+	// (Phase 3 will revisit). The in-flight-only id is absent there,
+	// so the summary string is empty — that's the documented Phase 2
+	// shape, not a bug. Asserted explicitly so a future Phase 3
+	// behaviour change shows up as a failing test rather than a
+	// silent improvement.
+	assert.Equal(t, "", result.Hits[0].Summary,
+		"in-flight ids absent from .borg/spec/ get empty summary in Phase 2")
 }
