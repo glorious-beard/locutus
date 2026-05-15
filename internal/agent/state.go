@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/chetan/locutus/internal/executor"
+	"github.com/chetan/locutus/internal/search"
 )
 
 // Concern is a challenge raised by the critic or stakeholder.
@@ -121,6 +122,20 @@ type PlanningState struct {
 	// "winplan platform: on-call rotation owner" coalesce to the same
 	// bucket even when the gate's casing drifts iteration-over-iteration.
 	GateAxisRecurrence map[string]int `json:"gate_axis_recurrence,omitempty"`
+
+	// InFlightIndex is the council-scoped Bluge index over the current
+	// RawProposal (DJ-123 Phase 3). Set by GenerateSpec at council
+	// start and torn down at council end; nil on non-council
+	// PlanningState consumers (assimilation, refine, etc.). The merge
+	// functions that mutate RawProposal call rebuildInFlightIndex(s)
+	// after the write so the next agent that fires spec_search sees
+	// the latest proposal.
+	//
+	// Pointer is shared across the deep-copied snapshots — Snapshot
+	// copies the slices on PlanningState but the index handle itself
+	// is concurrent-safe (Rebuild serialises against in-flight Search
+	// under an RWMutex inside search.InFlightIndex).
+	InFlightIndex *search.InFlightIndex `json:"-"`
 }
 
 // StateSnapshot wraps a verb's state value with fanout context. Projections

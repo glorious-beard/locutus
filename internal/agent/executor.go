@@ -145,6 +145,14 @@ type Executor struct {
 	adapters    map[ProviderName]adapters.Adapter
 	concurrency *ConcurrencyManager
 	tools       *ToolRegistry
+	// specSearch is the swappable spec_search backend wired by cmd/llm.go
+	// at registration time. GenerateSpec reaches for it (via a type
+	// assertion on AgentExecutor) to push a *search.InFlightIndex in at
+	// council start and restore the disk backend at council end. Nil
+	// when no spec_search backend was wired — mock executors in tests
+	// never need this, and the council path falls back to running
+	// without in-flight swap when nil.
+	specSearch *SwappableSpecSearch
 }
 
 // NewExecutor wires up an Executor with the given adapter set, model
@@ -181,6 +189,21 @@ func NewExecutor(cfg *ModelConfig, providers DetectedProviders, adapterSet []ada
 // by setup code (cmd/llm.go) to register spec-lookup tools after
 // construction without a circular dependency.
 func (e *Executor) Tools() *ToolRegistry { return e.tools }
+
+// SetSpecSearch captures the swappable spec_search backend wired by
+// cmd/llm.go after the on-disk index is opened. GenerateSpec reads it
+// back via SpecSearch() and pushes a council-scoped in-flight index in
+// for the duration of a run. Safe to call exactly once at startup;
+// re-setting at runtime is supported but not used (the swap path uses
+// SwappableSpecSearch.Swap directly).
+func (e *Executor) SetSpecSearch(s *SwappableSpecSearch) { e.specSearch = s }
+
+// SpecSearch returns the wired spec_search swappable, or nil when
+// nothing was wired (mock executor in tests; CLI path that failed to
+// open the on-disk index). GenerateSpec checks for nil before swapping
+// — a missing swappable degrades the council gracefully to "no
+// in-flight spec_search" rather than crashing.
+func (e *Executor) SpecSearch() *SwappableSpecSearch { return e.specSearch }
 
 // FormatPreferences returns the model-preference list the dispatcher
 // uses for the structured-output format pass — each entry resolves

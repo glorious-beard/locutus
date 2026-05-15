@@ -811,6 +811,7 @@ func mergeElaboratedFeatures(s *PlanningState, results []RoundResult) {
 		s.RawProposal = assembled
 		s.OriginalRawProposal = assembled
 	}
+	rebuildInFlightIndex(s)
 }
 
 // mergeElaboratedStrategies is the strategy counterpart.
@@ -825,6 +826,7 @@ func mergeElaboratedStrategies(s *PlanningState, results []RoundResult) {
 		s.RawProposal = assembled
 		s.OriginalRawProposal = assembled
 	}
+	rebuildInFlightIndex(s)
 }
 
 // mergeReconciledProposal turns the reconciler's verdict into the
@@ -854,6 +856,7 @@ func mergeReconciledProposal(s *PlanningState, results []RoundResult) {
 	}
 	s.ProposedSpec = canonical
 	s.ConflictActions = appendConflictActions(s.ConflictActions, applied)
+	rebuildInFlightIndex(s)
 }
 
 // mergeCriticIssues parses each critic's CriticIssues output into
@@ -913,5 +916,29 @@ func mergeRevisedNodes(s *PlanningState, results []RoundResult) {
 	}
 	if merged, ok := assembleRevisedRawProposal(s); ok {
 		s.RawProposal = merged
+	}
+	rebuildInFlightIndex(s)
+}
+
+// rebuildInFlightIndex re-indexes the council's in-flight Bluge store
+// from the current RawProposal. Called by each merge function that
+// mutates RawProposal so the next agent that fires spec_search sees the
+// freshest proposal. No-op when the index pointer is nil (the merge
+// helpers are reused outside the council, e.g. tests, where the
+// in-flight store is not wired) or when RawProposal is empty.
+//
+// Rebuild failures are logged and swallowed — a stale or empty in-flight
+// index is strictly better than aborting the merge: the council can
+// still proceed; the worst case is that one spec_search call returns
+// no hits until the next merge succeeds. The disk index is not the
+// fallback during the council (per DJ-123 resolved design question 3:
+// agents see ONLY the in-flight proposal, never the persisted graph).
+func rebuildInFlightIndex(s *PlanningState) {
+	if s == nil || s.InFlightIndex == nil || s.RawProposal == "" {
+		return
+	}
+	if err := s.InFlightIndex.Rebuild(s.RawProposal); err != nil {
+		slog.Warn("in-flight spec_search: rebuild failed; council continues with stale index",
+			"error", err)
 	}
 }

@@ -206,7 +206,15 @@ func registerSpecToolsOnce(inner agent.AgentExecutor, fsys specio.FS, projectRoo
 			specToolsErr = fmt.Errorf("open spec search index: %w", err)
 			return
 		}
-		agent.RegisterSpecTools(exec.Tools(), fsys, idx)
+		// DJ-123 Phase 3: wrap the on-disk index in a swappable so
+		// GenerateSpec can push a council-scoped *search.InFlightIndex
+		// in for the duration of a run and restore the disk backend
+		// at the end. The tool registration sees the swappable as its
+		// search.Backend, so every spec_search call routes through
+		// whichever delegate is current.
+		swap := agent.NewSwappableSpecSearch(idx)
+		exec.SetSpecSearch(swap)
+		agent.RegisterSpecTools(exec.Tools(), fsys, swap)
 	})
 	return specToolsErr
 }

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/chetan/locutus/internal/history"
+	"github.com/chetan/locutus/internal/search"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 )
@@ -162,6 +164,20 @@ func GenerateSpec(ctx context.Context, exec AgentExecutor, fsys specio.FS, req S
 	return generateSpecWithWorkflow(ctx, exec, fsys, req, wf)
 }
 
+// specSearchSwap returns the SwappableSpecSearch wired on the
+// production *Executor, or nil when the underlying AgentExecutor is a
+// mock (tests) or no swappable was wired (CLI path that failed to open
+// the on-disk index). Returning nil keeps the council path additive —
+// when the production wiring is absent, GenerateSpec runs without the
+// in-flight index, identical to the pre-DJ-123 behaviour.
+func specSearchSwap(exec AgentExecutor) *SwappableSpecSearch {
+	prod, ok := exec.(*Executor)
+	if !ok || prod == nil {
+		return nil
+	}
+	return prod.SpecSearch()
+}
+
 // readSpecGateBudget returns the iteration cap for the spec-council
 // convergence gate. LOCUTUS_SPEC_GEN_MAX_ITERATIONS overrides the
 // default when set to a positive integer. Invalid or zero values are
@@ -238,6 +254,35 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 	prompt := buildSpecGenPrompt(req)
 
 	state := &PlanningState{Prompt: prompt, Round: 1, Existing: req.Existing}
+
+	// DJ-123 Phase 3: wire a council-scoped in-flight Bluge index over
+	// RawProposal so spec_search calls from council agents return hits
+	// against the emerging proposal (not the persisted .borg/spec/
+	// graph). The on-disk index is restored on completion via the
+	// deferred Swap below. Swappable comes from the production
+	// *Executor; mock executors in tests don't provide it, and the
+	// council degrades gracefully to no in-flight search (existing
+	// behaviour).
+	if swap := specSearchSwap(exec); swap != nil {
+		inflight, err := search.NewInFlightIndex()
+		if err != nil {
+			slog.Warn("in-flight spec_search: index init failed; council proceeds without it",
+				"error", err)
+		} else {
+			prev := swap.Swap(inflight)
+			state.InFlightIndex = inflight
+			defer func() {
+				// Restore the disk backend before tearing down the
+				// council's index so any post-council spec_search call
+				// (e.g. inside the integrity-revise loop's architect
+				// retries) sees the production corpus, not a half-
+				// dismantled in-flight one.
+				swap.Swap(prev)
+				_ = inflight.Close()
+			}()
+		}
+	}
+
 	if _, err := RunCouncil(ctx, executor, state); err != nil {
 		return nil, fmt.Errorf("spec-generation council: %w", err)
 	}
