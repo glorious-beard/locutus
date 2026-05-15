@@ -165,17 +165,24 @@ func GenerateSpec(ctx context.Context, exec AgentExecutor, fsys specio.FS, req S
 }
 
 // specSearchSwap returns the SwappableSpecSearch wired on the
-// production *Executor, or nil when the underlying AgentExecutor is a
-// mock (tests) or no swappable was wired (CLI path that failed to open
-// the on-disk index). Returning nil keeps the council path additive —
-// when the production wiring is absent, GenerateSpec runs without the
-// in-flight index, identical to the pre-DJ-123 behaviour.
+// underlying AgentExecutor, or nil when none was wired (CLI path that
+// failed to open the on-disk index; mocks that don't opt into the swap
+// surface). Returning nil keeps the council path additive — when the
+// wiring is absent, GenerateSpec runs without the in-flight index,
+// identical to the pre-DJ-123 behaviour.
+//
+// Detection is via a small structural interface rather than a concrete
+// *Executor assertion: both production *Executor and a test-extended
+// MockExecutor satisfy it, so the swap-and-restore path can be driven
+// end-to-end from tests without spinning up real adapters.
 func specSearchSwap(exec AgentExecutor) *SwappableSpecSearch {
-	prod, ok := exec.(*Executor)
-	if !ok || prod == nil {
+	p, ok := exec.(interface {
+		SpecSearch() *SwappableSpecSearch
+	})
+	if !ok || p == nil {
 		return nil
 	}
-	return prod.SpecSearch()
+	return p.SpecSearch()
 }
 
 // readSpecGateBudget returns the iteration cap for the spec-council
@@ -272,11 +279,13 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 			prev := swap.Swap(inflight)
 			state.InFlightIndex = inflight
 			defer func() {
-				// Restore the disk backend before tearing down the
-				// council's index so any post-council spec_search call
-				// (e.g. inside the integrity-revise loop's architect
-				// retries) sees the production corpus, not a half-
-				// dismantled in-flight one.
+				// Restore the disk backend at function exit so
+				// subsequent CLI verbs (and any caller that reuses this
+				// Executor) get the production corpus back. The
+				// integrity-revise loop below runs BEFORE this defer
+				// fires, so the architect's repair retries still see the
+				// in-flight index — intentional, since the repair
+				// operates on the proposal that's still in flight.
 				swap.Swap(prev)
 				_ = inflight.Close()
 			}()

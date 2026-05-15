@@ -51,6 +51,14 @@ type MockExecutor struct {
 	// the split path. Never accessed under the mutex — set once at
 	// construction and treated as read-only.
 	FormatPrefs []ModelPreference
+
+	// specSearch is the optional SwappableSpecSearch the mock exposes
+	// to specSearchSwap so tests can drive GenerateSpec end-to-end and
+	// observe the council-scoped swap-and-restore behaviour without
+	// constructing a real *Executor + adapter set. Nil by default; set
+	// via SetSpecSearch only in tests that exercise the in-flight
+	// spec_search wiring (DJ-123).
+	specSearch *SwappableSpecSearch
 }
 
 // NewMockExecutor creates a MockExecutor with the given scripted
@@ -145,3 +153,14 @@ func (m *MockExecutor) Reset(responses ...MockResponse) {
 func (m *MockExecutor) FormatPreferences() []ModelPreference {
 	return m.FormatPrefs
 }
+
+// SetSpecSearch wires the swappable spec_search backend the council
+// path swaps in and out via specSearchSwap. Test-only; production wires
+// the swappable through *Executor.SetSpecSearch.
+func (m *MockExecutor) SetSpecSearch(s *SwappableSpecSearch) { m.specSearch = s }
+
+// SpecSearch returns the wired swappable, or nil when none was set.
+// Satisfies the structural interface specSearchSwap looks for so a
+// MockExecutor can exercise the in-flight swap-and-restore path without
+// a real *Executor.
+func (m *MockExecutor) SpecSearch() *SwappableSpecSearch { return m.specSearch }

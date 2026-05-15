@@ -666,67 +666,85 @@ func TestInFlightIndexNilIsNoop(t *testing.T) {
 	})
 }
 
-// TestGenerateSpecWiresInFlightIndex is the Phase 3 integration smoke:
-// a minimal council run reaches one of the merges that should touch
-// the InFlightIndex; once the merge has fired, a spec_search call
-// through the registered tool surface returns hits derived from the
-// RawProposal — not from the production on-disk corpus. Asserts the
-// full wiring end-to-end:
+// TestGenerateSpecSwapsInFlightIndexForRun drives generateSpecWithWorkflow
+// end-to-end with a MockExecutor that exposes a SwappableSpecSearch, and
+// asserts the council-scoped swap-and-restore behaviour:
 //
-//  1. cmd-style setup creates a swappable spec_search backing a
-//     fake disk index.
-//  2. GenerateSpec swaps the in-flight index in.
-//  3. A merge runs (the testSpecGenWorkflow's propose step writes
-//     RawProposal directly via testMergeRawProposal; that merge does
-//     NOT call rebuildInFlightIndex — that's by design for the test
-//     workflow, which is a simplified pre-DJ-098 shape).
+//  1. Before the run, swap.Current() is the caller-supplied initial
+//     backend (what RegisterSpecTools wires at process start).
+//  2. During the run, the council pushes a *search.InFlightIndex in
+//     via Swap — captured here from inside a custom merge that fires
+//     while RunCouncil is still on the stack.
+//  3. After the run returns, swap.Current() is back to the initial
+//     backend (the deferred Swap restored it on function exit), so
+//     subsequent CLI verbs that reuse the same Executor see the
+//     production corpus, not a half-dismantled in-flight one.
 //
-// Because the test workflow doesn't go through the four merge
-// functions under test, we exercise the wiring by calling
-// rebuildInFlightIndex(state) directly after RunCouncil's merge has
-// populated state.RawProposal — surfacing the swap + Rebuild path
-// end-to-end without depending on the production fanout merges.
-//
-// The production wiring is covered structurally by the per-merge
-// subtests above; this test confirms the swap + restore path itself
-// works.
-func TestGenerateSpecWiresInFlightIndex(t *testing.T) {
-	// Build an *Executor with no real adapters — we never call Run on
-	// it; we only need its SwappableSpecSearch wiring and the
-	// AgentExecutor interface satisfied by something we can poke.
-	prod := &Executor{}
-	swap := NewSwappableSpecSearch(nil)
-	prod.SetSpecSearch(swap)
-
-	// Construct an in-flight index and Swap it in manually so we can
-	// confirm a spec_search query through the swappable returns hits.
-	idx, err := search.NewInFlightIndex()
+// Drives through a one-step custom workflow (injected via the
+// generateSpecWithWorkflow seam) whose merge both captures swap.Current()
+// and writes a complete ProposedSpec — that keeps the assertion surface
+// tight to the wiring under test and avoids depending on the full
+// scout→architect→reconciler→critics fanout.
+func TestGenerateSpecSwapsInFlightIndexForRun(t *testing.T) {
+	// Initial backend — a concrete *search.InFlightIndex stands in for
+	// the production *search.Index here. We compare by pointer identity
+	// rather than type so the during-run capture can prove a *new*
+	// backend was swapped in (not just "an InFlightIndex").
+	initial, err := search.NewInFlightIndex()
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = idx.Close() })
+	t.Cleanup(func() { _ = initial.Close() })
 
-	prev := swap.Swap(idx)
-	t.Cleanup(func() { swap.Swap(prev) })
+	swap := NewSwappableSpecSearch(initial)
 
-	// Rebuild the index against a sample RawProposal.
-	raw := `{
-		"features": [{"id":"feat-end-to-end","title":"End-to-end","summary":"Integration smoke.","description":"Confirms the in-flight search wiring end-to-end through the agent layer.","acceptance_criteria":[],"decisions":[]}],
-		"strategies": []
-	}`
-	require.NoError(t, idx.Rebuild(raw))
+	// MockExecutor opts into the swap surface via SetSpecSearch — the
+	// structural interface specSearchSwap looks for. Without this the
+	// council path silently degrades to "no in-flight wiring" and the
+	// test would never observe a swap.
+	mock := NewMockExecutor(MockResponse{
+		AgentID:  "spec_scout",
+		Response: &AgentOutput{Content: scoutResp, Model: "m"},
+	})
+	mock.SetSpecSearch(swap)
 
-	// A search through the swappable (which is what RegisterSpecTools
-	// wires) must dispatch into the in-flight index and return the
-	// planted hit.
-	hits, _, err := swap.Search("end-to-end", search.Options{})
+	// captureMerge fires inside RunCouncil — i.e. between the council's
+	// swap.Swap(inflight) and the deferred restore. swap.Current() at
+	// this point must be the freshly-swapped-in InFlightIndex, distinct
+	// from the initial sentinel. The merge also writes a valid empty
+	// ProposedSpec so generateSpecWithWorkflow's integrity gate
+	// short-circuits cleanly.
+	var duringRun search.Backend
+	captureMerge := func(s *PlanningState, _ []RoundResult) {
+		duringRun = swap.Current()
+		s.ProposedSpec = `{"features":[],"strategies":[],"decisions":[]}`
+	}
+
+	wf := &Workflow[PlanningState]{
+		Rounds: []WorkflowStep[PlanningState]{
+			{ID: "capture", Agents: []string{"spec_scout"}, Project: projectDefault, Merge: captureMerge},
+		},
+		MaxRounds: 1,
+	}
+
+	fs := setupSpecGenFixture(t)
+
+	require.Same(t, search.Backend(initial), swap.Current(),
+		"precondition: swappable starts pointing at the initial backend")
+
+	proposal, err := generateSpecWithWorkflow(context.Background(), mock, fs, SpecGenRequest{
+		GoalsBody: "Build something useful.",
+	}, wf)
 	require.NoError(t, err)
-	require.NotEmpty(t, hits, "spec_search through the swappable must surface in-flight hits")
-	assert.Equal(t, "feat-end-to-end", hits[0].ID)
+	require.NotNil(t, proposal)
 
-	// And the agent-facing helper resolving on top of the swappable
-	// must surface the same hit (Phase 2 contract preserved with the
-	// swappable wrapper in front).
-	res, err := SearchSpecNodes(specio.NewMemFS(), swap, SpecSearchInput{Query: "end-to-end"})
-	require.NoError(t, err)
-	require.NotEmpty(t, res.Hits)
-	assert.Equal(t, "feat-end-to-end", res.Hits[0].ID)
+	// During-run capture: a *search.InFlightIndex, NOT the sentinel.
+	require.NotNil(t, duringRun, "captureMerge must have run inside RunCouncil")
+	_, isInFlight := duringRun.(*search.InFlightIndex)
+	assert.True(t, isInFlight, "during the council, swap.Current() must be a *search.InFlightIndex")
+	assert.NotSame(t, search.Backend(initial), duringRun,
+		"the council must swap in a fresh in-flight index, not reuse the initial backend")
+
+	// Post-run: the defer in generateSpecWithWorkflow restored the
+	// initial backend so subsequent callers see the production corpus.
+	require.Same(t, search.Backend(initial), swap.Current(),
+		"postcondition: swappable must be restored to the initial backend on function exit")
 }
