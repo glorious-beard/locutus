@@ -118,6 +118,12 @@ func (i *InFlightIndex) Search(query string, opts Options) ([]Hit, int, error) {
 	return runSearch(r, query, opts)
 }
 
+// Compile-time guard that *InFlightIndex satisfies the read-side
+// Backend interface declared in search.go — the agent-facing
+// spec_search tool can be wired to either backing store at
+// registration time (DJ-123 Phase 2).
+var _ Backend = (*InFlightIndex)(nil)
+
 // Close releases the in-memory writer's segment buffers. Safe to call
 // multiple times; subsequent calls are no-ops.
 func (i *InFlightIndex) Close() error {

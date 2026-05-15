@@ -645,3 +645,8 @@ func buildMatchDiagnostics(match *search.DocumentMatch, docID string, perField p
 // the public API and want callers to be able to defer it like any
 // other resource handle.
 var _ io.Closer = (*Index)(nil)
+
+// Compile-time guard that *Index satisfies the read-side Backend
+// interface declared in search.go — the agent-facing spec_search tool
+// dispatches against this contract.
+var _ Backend = (*Index)(nil)

@@ -133,3 +133,18 @@ var ErrEmptyQuery = errors.New("search: query is empty")
 // ErrUnknownKind is returned by Search when Options.Kind names a
 // value outside the accepted set.
 var ErrUnknownKind = errors.New("search: unknown kind filter")
+
+// Backend is the read-side seam over the spec FTS index. The on-disk
+// *Index and the in-memory *InFlightIndex both satisfy it — same
+// query parser, same Hit/Options shape, same per-field diagnostics
+// — so agent-facing tooling can be wired to either at construction
+// time without branching on storage type.
+//
+// Deliberately Search-only: Rebuild lives on *InFlightIndex
+// specifically because disk rebuild is gated by fingerprint
+// invalidation (not pushed in by callers). Per DJ-123 there is no
+// caller that needs to treat the two backends uniformly for the
+// write path.
+type Backend interface {
+	Search(query string, opts Options) ([]Hit, int, error)
+}
