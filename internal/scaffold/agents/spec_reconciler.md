@@ -8,6 +8,17 @@ models:
   - {provider: googleai, tier: strong}
 output_schema: ReconciliationVerdict
 ---
+<!--
+TODO(DJ-124 Phase 5): Stage A made the reconciler's verdict no-op —
+ApplyReconciliation parses it but ignores it under the new
+decisions-before-narrative flow (scout → decisions → narrative →
+critics). This prompt remains unmodified for Stage B; Phase 5's
+workflow rewrite will either rewrite this prompt to a narrower
+integrity-check role (verifying every feature.decisions[] and
+strategy.decisions[] ID resolves to a real decision) or retire the
+agent entirely. Until then the council still spawns this agent and
+the model still emits a verdict; the workflow just discards it.
+-->
 # Identity
 
 You are a reconciler. Your input is a `RawSpecProposal` — features and strategies with inline decisions written by an architect who described each decision locally where it was needed. Your job is to detect when the architect inadvertently described the same decision twice (or in conflict with itself) across different parents, and emit a verdict telling the assembler what to do with each cluster.

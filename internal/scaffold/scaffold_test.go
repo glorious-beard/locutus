@@ -13,13 +13,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestElaboratorPromptsAllowScoutBriefCitations locks in DJ-104:
-// the feature and strategy elaborator scaffolds must list
-// `scout_brief` as an allowed citation kind alongside the original
-// four, and must not retain the legacy "do not fabricate a citation
-// kind for it" instruction that severed grounded provenance from
-// elaborator decisions.
-func TestElaboratorPromptsAllowScoutBriefCitations(t *testing.T) {
+// TestDecisionElaboratorPromptAllowsScoutBriefAndWebCitations locks
+// in DJ-104 (re-scoped under DJ-124 Stage B): now that the per-axis
+// decision-elaborator owns decision authoring — and therefore owns
+// citations — the scout_brief allowance moves to that prompt. Phase
+// 1 also extended the citation enum with `web` for grounded-research
+// evidence, so the decision-elaborator must name both kinds. The
+// narrative-elaborators no longer author citations at all; the test
+// scope follows the responsibility.
+func TestDecisionElaboratorPromptAllowsScoutBriefAndWebCitations(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	text := string(body)
+
+	assert.Contains(t, text, "scout_brief",
+		"spec_decision_elaborator.md must list scout_brief as an allowed citation kind (DJ-104 preserved on the agent that now authors citations)")
+	assert.Contains(t, text, "web",
+		"spec_decision_elaborator.md must list web as an allowed citation kind (DJ-124 Phase 1 extended the enum for grounded-research evidence)")
+	assert.NotContains(t, text, "do not fabricate a citation kind for it",
+		"spec_decision_elaborator.md must not retain the legacy anti-grounding rule that forced scout-derived facts into best_practice citations")
+}
+
+// TestNarrativeElaboratorPromptsConsumeDecisionsAsReferences locks in
+// DJ-124 Stage B: the rewritten spec_feature_elaborator.md and
+// spec_strategy_elaborator.md must describe the new
+// decisions-by-reference role — the elaborators consume a
+// pre-populated decision-ID list rather than authoring decisions
+// inline. Without explicit prompt coverage of this responsibility
+// the model can fall back to the pre-DJ-124 inline-authoring shape
+// and emit decision objects the new schema rejects.
+func TestNarrativeElaboratorPromptsConsumeDecisionsAsReferences(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
@@ -31,10 +57,14 @@ func TestElaboratorPromptsAllowScoutBriefCitations(t *testing.T) {
 		require.NoError(t, err, "read %s", file)
 		text := string(body)
 
-		assert.Contains(t, text, "scout_brief",
-			"%s should list scout_brief as an allowed citation kind", file)
-		assert.NotContains(t, text, "do not fabricate a citation kind for it",
-			"%s should not retain the legacy anti-grounding rule that forced scout-derived facts into best_practice citations", file)
+		assert.Contains(t, text, "decision-ID list",
+			"%s must describe the input as a decision-ID list — the narrative-elaborator consumes IDs rather than authoring decision objects", file)
+		assert.Contains(t, text, "pre-populated",
+			"%s must describe the decision-ID list as pre-populated by the scout + workflow — the elaborator does not author the list", file)
+		assert.Contains(t, text, "verbatim",
+			"%s must say the pre-populated list is copied verbatim — invented or omitted IDs are the failure mode the new architecture eliminates", file)
+		assert.Contains(t, text, "do not author",
+			"%s must state the narrative-elaborator does not author decisions — the per-axis decision-elaborator owns that role under DJ-124", file)
 	}
 }
 
