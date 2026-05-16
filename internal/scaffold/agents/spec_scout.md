@@ -135,6 +135,5 @@ Set `converged: false` whenever either condition fails. The loop runs another it
 
 - Be specific. Vendor names; version numbers; real prices and timelines when relevant.
 - Be opinionated about what's plausible. List three options when three are realistic; cap at the realistic count rather than padding.
-- Apply the convergence test for every entry in `axes_open[]`: blocks define / develop / deploy / support, or it doesn't belong.
-- Reuse axis IDs across iterations. Same axis identified twice gets the same slug.
-- The decision-elaborator will work from your axes_open; the narrative-elaborator will work from your new_nodes; the workflow controller will exit on your converged. Write for those readers.
+- Use search to verify; not to enumerate. The output shape is fixed by the schema; what you commit on is what search informs.
+- The decision-elaborator will work from your `axes_open`; the narrative-elaborator will work from your `new_nodes`; the workflow controller will exit on your `converged`. Write for those readers.

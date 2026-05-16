@@ -29,6 +29,25 @@ func TestScoutBriefSchemaCarriesNewFields(t *testing.T) {
 			assert.NotEmptyf(t, desc, "ScoutBrief.%s must declare a description so the model has inline guidance on what to populate", field)
 		})
 	}
+
+	// Lock the top-level required list so a future refactor that
+	// silences a linter by sprinkling `,omitempty` on these fields
+	// doesn't quietly drop them from the strict-mode schema. The
+	// workflow controller drives off all three; an absent field is
+	// indistinguishable from a model that decided not to emit it.
+	required, _ := schema["required"].([]any)
+	requiredStrs := make([]string, 0, len(required))
+	for _, r := range required {
+		if s, ok := r.(string); ok {
+			requiredStrs = append(requiredStrs, s)
+		}
+	}
+	assert.Contains(t, requiredStrs, "axes_open",
+		"axes_open must be required (no omitempty) — the dispatcher reads it every iteration")
+	assert.Contains(t, requiredStrs, "new_nodes",
+		"new_nodes must be required — the narrative-elaborator reads it every iteration")
+	assert.Contains(t, requiredStrs, "converged",
+		"converged must be required — the workflow controller's loop-exit gate reads it every iteration")
 }
 
 // TestScoutBriefOpenAxisRequiresSlugAndEvidence locks in the
