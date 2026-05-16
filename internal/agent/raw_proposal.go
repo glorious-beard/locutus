@@ -55,6 +55,33 @@ type RawStrategyProposal struct {
 	Decisions []InlineDecisionProposal `json:"decisions" jsonschema:"minItems=1,description=The inline architectural decisions this strategy makes concrete. Required; must contain at least one entry. The reconciler dedupes against sibling features/strategies at apply time."`
 }
 
+// RawDecisionProposal is the per-axis output shape of DJ-124's Phase 1
+// decision-elaborator. Each invocation of the elaborator takes one axis
+// (plus its surfacing-node context) and produces one RawDecisionProposal
+// with the full Decision content: title, summary, rationale, alternatives
+// (each grounded with citations on the rejection reasoning), provenance
+// citations on the chosen path, the axis IDs it answers, and the back-
+// references to the spec nodes that surfaced those axes.
+//
+// Unlike the soon-to-be-retired InlineDecisionProposal, this struct
+// carries an ID (the elaborator picks the slug from the title) and the
+// DJ-124 back-reference set. Phase 5 wires it through the workflow as
+// the load-bearing output of the new decisions-before-narrative phase
+// split; Phase 1 only ships the schema shape so downstream phases have
+// a stable contract to author against.
+type RawDecisionProposal struct {
+	ID                 string             `json:"id" jsonschema:"description=Stable slug for the decision — starts with 'dec-' / lowercase / hyphen-separated / three to five words derived from the title (e.g. 'dec-postgres-oltp-store'). The reconciler may suffix with -2/-3 if collisions occur; the elaborator picks the slug from the title."`
+	Summary            string             `json:"summary,omitempty" jsonschema:"description=One-sentence what-was-decided ending with a period (e.g. 'Adopt Postgres over MySQL for the OLTP store.'). Distinct from Rationale (the why) and Title (the noun phrase)."`
+	Title              string             `json:"title" jsonschema:"description=Concise human-readable title naming the decision (e.g. 'Database engine choice'). A noun phrase rather than a sentence — the persistence layer uses this as the decision's heading."`
+	Rationale          string             `json:"rationale" jsonschema:"description=The reasoning behind the choice. Multi-sentence prose. Cites trade-offs accepted and constraints satisfied. Distinct from ArchitectRationale (which is one-sentence) and Summary (which is the what)."`
+	ArchitectRationale string             `json:"architect_rationale,omitempty" jsonschema:"description=One-sentence summary of why this choice fits the architecture — distinct from the longer Rationale. Read by downstream consumers (renderer; refiner; supervisor) for a quick why-glance without expanding the full rationale."`
+	Confidence         float64            `json:"confidence" jsonschema:"description=Confidence in the decision on a 0.0 to 1.0 scale. 1.0 means fully committed with no reservation; 0.5 means leaning but reversible; 0.0 means forced choice under uncertainty. Used by reviewers to spot decisions that warrant deeper deliberation."`
+	Alternatives       []spec.Alternative `json:"alternatives" jsonschema:"description=The other options considered with their rationale and rejection reasons. Required because per DJ-124 every decision must show the alternatives that were weighed; absence is a tell that the elaborator hit fiat rather than deliberation. Every entry must carry citations on its rejected_because reasoning so the rejection is grounded evidence rather than fabricated trade-off prose.,minItems=1"`
+	Citations          []spec.Citation    `json:"citations" jsonschema:"description=Sources backing the chosen path — GOALS.md clauses; vendor docs; web-fetched research results; prior decisions. minItems=1 because per DJ-124 decisions must be grounded; an uncited decision is the failure mode the new architecture exists to eliminate.,minItems=1"`
+	Axes               []string           `json:"axes" jsonschema:"description=Slug-IDs of the foundational axes this decision answers — mirrors the axis IDs the scout dispatched on. Multiple entries when one decision spans multiple axes (e.g. choosing managed Postgres covers both 'oltp-store' and 'backup-strategy').,minItems=1"`
+	SurfacedBy         []string           `json:"surfaced_by" jsonschema:"description=Spec node IDs (goal / feature / strategy) that surfaced the axis this decision answers. Mirrors the input surfacing-node set from the scout's dispatch — preserved so the persistence layer carries the back-reference without a separate scout round-trip.,minItems=1"`
+}
+
 // InlineDecisionProposal is a DecisionProposal without an ID and without
 // InfluencedBy. The reconciler assigns canonical IDs at apply time.
 //

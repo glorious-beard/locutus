@@ -57,3 +57,48 @@ func TestRawProposalSchemasRequireDecisions(t *testing.T) {
 		})
 	}
 }
+
+// TestDecisionSchemaCarriesAxesAndSurfacedBy locks in the DJ-124
+// Phase 1 contract on RawDecisionProposal: the per-axis decision-
+// elaborator output MUST surface both the axes the decision answers
+// and the surfacing-node back-references in its strict-mode JSON
+// schema, with minItems=1 and a non-empty description on each.
+//
+// Without minItems on these fields, a flaky model could emit a
+// structurally-valid response with empty arrays — the workflow
+// controller would then fail to thread the decision into the affected
+// feature/strategy nodes (axes never close; back-references stay
+// hollow). The strict-mode schema rejects the response at the API
+// layer instead, kicking the retry loop.
+//
+// Without descriptions, the model has no inline guidance on what
+// these fields mean; the schema-skeleton failure mode (axes=["axis"]
+// or surfaced_by=["node"]) becomes proportionally more likely.
+func TestDecisionSchemaCarriesAxesAndSurfacedBy(t *testing.T) {
+	schema, err := SchemaFor("RawDecisionProposal")
+	require.NoError(t, err, "RawDecisionProposal must be registered for the DJ-124 Phase 1 decision-elaborator")
+
+	props, _ := schema["properties"].(map[string]any)
+	require.NotNil(t, props, "RawDecisionProposal schema missing properties map")
+
+	for _, field := range []string{"axes", "surfaced_by"} {
+		t.Run(field, func(t *testing.T) {
+			node, _ := props[field].(map[string]any)
+			require.NotNil(t, node, "RawDecisionProposal schema missing %s property", field)
+
+			minItems, ok := node["minItems"]
+			require.True(t, ok, "RawDecisionProposal.%s must declare minItems to forbid empty arrays at the API layer", field)
+			switch v := minItems.(type) {
+			case int:
+				assert.GreaterOrEqual(t, v, 1, "RawDecisionProposal.%s.minItems must be >= 1", field)
+			case float64:
+				assert.GreaterOrEqual(t, v, float64(1), "RawDecisionProposal.%s.minItems must be >= 1", field)
+			default:
+				t.Fatalf("RawDecisionProposal.%s.minItems has unexpected type %T", field, minItems)
+			}
+
+			desc, _ := node["description"].(string)
+			assert.NotEmpty(t, desc, "RawDecisionProposal.%s must declare a description so the model has inline guidance on what to populate", field)
+		})
+	}
+}

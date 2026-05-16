@@ -28,8 +28,22 @@ type Decision struct {
 	Rationale    string              `json:"rationale" yaml:"rationale"`
 	Provenance   *DecisionProvenance `json:"provenance,omitempty" yaml:"provenance,omitempty"`
 	InfluencedBy []string            `json:"influenced_by,omitempty" yaml:"influenced_by,omitempty"`
-	CreatedAt    time.Time           `json:"created_at" yaml:"created_at"`
-	UpdatedAt    time.Time           `json:"updated_at" yaml:"updated_at"`
+	// Axes are the foundational axis IDs this decision answers (DJ-124).
+	// Set by the scout-controlled dispatch at decision-creation time;
+	// legacy decisions authored before DJ-124 load with an empty slice
+	// (the yaml/json loader does not validate against the registered
+	// jsonschema, so the `,omitempty` keeps legacy on-disk decisions
+	// loadable while the minItems=1 tag enforces non-empty for newly
+	// authored decisions traveling through an output schema).
+	Axes []string `json:"axes,omitempty" yaml:"axes,omitempty" jsonschema:"description=Stable slug-IDs of the foundational axes this decision answers. Examples: [\"auth-provider\"], [\"compute-platform\",\"deployment-target\"]. Multiple axes mean the decision spans them. Names match what the scout enumerated.,minItems=1"`
+	// SurfacedBy back-references the spec nodes whose axis this
+	// decision answers (DJ-124). Populated at decision-creation time
+	// by the scout's dispatch; legacy decisions load with an empty
+	// slice. Supports future explain/justify verbs walking the graph
+	// in both directions.
+	SurfacedBy   []string  `json:"surfaced_by,omitempty" yaml:"surfaced_by,omitempty" jsonschema:"description=Spec node IDs (goal / feature / strategy) that surfaced the axis this decision answers. Populated by the scout's dispatch at decision-creation time. Empty for legacy decisions authored before DJ-124."`
+	CreatedAt    time.Time `json:"created_at" yaml:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
 // Alternative represents a considered but not chosen option for a decision.
@@ -37,6 +51,13 @@ type Alternative struct {
 	Name            string `json:"name" yaml:"name" jsonschema:"description=The alternative's name — a concrete product or approach (e.g. 'MySQL' or 'Server-rendered React'). A noun phrase rather than a sentence; do not paraphrase the decision."`
 	Rationale       string `json:"rationale" yaml:"rationale" jsonschema:"description=Why this alternative was considered seriously. A complete sentence naming the real advantages it offered over the chosen path. Empty / 'no reason' indicates the alternative wasn't worth listing."`
 	RejectedBecause string `json:"rejected_because" yaml:"rejected_because" jsonschema:"description=The specific reason this alternative lost to the chosen option. A complete sentence pointing at a goal clause / constraint / trade-off. 'Not as good' is not a rejection reason — name the constraint."`
+	// Citations back the rejected_because reasoning so the rejection
+	// is grounded evidence rather than fabricated trade-off prose
+	// (DJ-124). Legacy alternatives without citations continue to
+	// load — the loader uses yaml/json tags, not jsonschema — but
+	// any alternative authored through an output schema must carry
+	// at least one citation.
+	Citations []Citation `json:"citations,omitempty" yaml:"citations,omitempty" jsonschema:"description=Citations backing the rejected_because reasoning for this alternative — evidence that this option was considered seriously and the reason it lost is grounded.,minItems=1"`
 }
 
 // Citation is one durable reference backing a decision: a span of
@@ -47,11 +68,14 @@ type Alternative struct {
 // file being moved or rewritten.
 type Citation struct {
 	// Kind is one of "goals", "doc", "best_practice", "spec_node",
-	// "scout_brief". The scout_brief variant requires Excerpt — the
-	// scout's grounded output is the load-bearing source for that
+	// "scout_brief", "web". The scout_brief variant requires Excerpt —
+	// the scout's grounded output is the load-bearing source for that
 	// citation, and the verbatim copy keeps the provenance durable
-	// even after the survey artifact is gone.
-	Kind string `json:"kind" yaml:"kind" jsonschema:"enum=goals,enum=doc,enum=best_practice,enum=spec_node,enum=scout_brief,description=The source category. goals=GOALS.md clause; doc=user-imported feature document; best_practice=named engineering principle; spec_node=another node in the spec graph; scout_brief=fact from the spec_scout's output (this variant requires Excerpt to keep provenance durable)."`
+	// even after the survey artifact is gone. The web variant (DJ-124)
+	// captures grounded-research evidence fetched by the decision-
+	// elaborator: Reference holds the URL, Excerpt holds the verbatim
+	// quote so the citation survives the page changing.
+	Kind string `json:"kind" yaml:"kind" jsonschema:"enum=goals,enum=doc,enum=best_practice,enum=spec_node,enum=scout_brief,enum=web,description=The source category. goals=GOALS.md clause; doc=user-imported feature document; best_practice=named engineering principle; spec_node=another node in the spec graph; scout_brief=fact from the spec_scout's output (this variant requires Excerpt to keep provenance durable); web=URL fetched as grounded research evidence (Reference is the URL; Excerpt carries the verbatim quote)."`
 	// Reference identifies the source: a path ("GOALS.md",
 	// "docs/dashboard.md"), a named principle ("12-factor app: stateless
 	// processes"), or a spec node id ("strat-frontend").
@@ -92,7 +116,7 @@ type Strategy struct {
 	Summary       string            `json:"summary,omitempty" yaml:"summary,omitempty"`
 	Title         string            `json:"title" yaml:"title"`
 	Kind          StrategyKind      `json:"kind" yaml:"kind"`
-	Decisions     []string          `json:"decisions,omitempty" yaml:"decisions,omitempty"`
+	Decisions     []string          `json:"decisions,omitempty" yaml:"decisions,omitempty" jsonschema:"description=Decision IDs this strategy depends on. The scout determines membership during gap analysis; every entry must reference a decision present in the graph at integrity-check time.,minItems=1"`
 	Approaches    []string          `json:"approaches,omitempty" yaml:"approaches,omitempty"`
 	Status        string            `json:"status" yaml:"status"`
 	Prerequisites []string          `json:"prerequisites,omitempty" yaml:"prerequisites,omitempty"`
@@ -141,7 +165,7 @@ type Feature struct {
 	Status             FeatureStatus `json:"status" yaml:"status"`
 	Description        string        `json:"description,omitempty" yaml:"description,omitempty"`
 	AcceptanceCriteria []string      `json:"acceptance_criteria,omitempty" yaml:"acceptance_criteria,omitempty"`
-	Decisions          []string      `json:"decisions,omitempty" yaml:"decisions,omitempty"`
+	Decisions          []string      `json:"decisions,omitempty" yaml:"decisions,omitempty" jsonschema:"description=Decision IDs this feature depends on. The scout determines membership during gap analysis; every entry must reference a decision present in the graph at integrity-check time.,minItems=1"`
 	Approaches         []string      `json:"approaches,omitempty" yaml:"approaches,omitempty"`
 	CreatedAt          time.Time     `json:"created_at" yaml:"created_at"`
 	UpdatedAt          time.Time     `json:"updated_at" yaml:"updated_at"`

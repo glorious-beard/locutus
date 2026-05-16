@@ -160,6 +160,39 @@ func init() {
 		Decisions: []InlineDecisionProposal{exampleInlineDecision},
 	})
 
+	// RawDecisionProposal is the per-axis output shape of DJ-124's
+	// Phase 1 decision-elaborator. The example payload uses descriptive
+	// domain vocabulary (a database-engine choice grounded in a
+	// GOALS.md clause and a vendor doc) so the schema-skeleton
+	// failure mode the prompt-doc renderer can prime does not trigger
+	// on placeholder tokens.
+	RegisterSchema("RawDecisionProposal", RawDecisionProposal{
+		ID:                 "dec-postgres-oltp-store",
+		Summary:            "Adopt Postgres over MySQL for the OLTP store.",
+		Title:              "OLTP store engine",
+		Rationale:          "Postgres offers richer transactional guarantees and the JSONB column type the analytics workload depends on, while MySQL's storage-engine pluralism is irrelevant to the project's single-node deployment posture.",
+		ArchitectRationale: "Postgres aligns with the JSONB-leaning analytics queries and the single-engine simplification.",
+		Confidence:         0.8,
+		Alternatives: []spec.Alternative{{
+			Name:            "MySQL",
+			Rationale:       "Familiar to the team and a common default at this scale.",
+			RejectedBecause: "JSONB-equivalent storage is bolted on rather than first-class, which fights the analytics roadmap in GOALS.md.",
+			Citations: []spec.Citation{{
+				Kind:      "doc",
+				Reference: "https://dev.mysql.com/doc/refman/8.0/en/json.html",
+				Excerpt:   "JSON values are stored as native JSON, but indexing requires generated columns.",
+			}},
+		}},
+		Citations: []spec.Citation{{
+			Kind:      "goals",
+			Reference: "GOALS.md",
+			Span:      "## Analytics workload",
+			Excerpt:   "The store must support ad-hoc JSON queries against the events table.",
+		}},
+		Axes:       []string{"oltp-store"},
+		SurfacedBy: []string{"feat-realtime-dashboard"},
+	})
+
 	RegisterSchema("ReconciliationVerdict", ReconciliationVerdict{
 		Actions: []ReconciliationAction{{
 			Kind: "dedupe",
