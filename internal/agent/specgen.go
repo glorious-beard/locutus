@@ -110,16 +110,52 @@ type SpecGenRequest struct {
 	Sink EventSink
 }
 
-// ScoutBrief is the structured output of the spec_scout agent. The
-// proposer reads this alongside GOALS.md and reacts to it — picking
-// among the listed options and committing to specific values for each
-// implicit assumption. Schema is registered in schemas.go so Genkit's
-// structured-output path enforces it at the API layer.
+// ScoutBrief is the structured output of the spec_scout agent under
+// DJ-124. The scout has three coupled responsibilities: domain survey
+// (the original four fields), gap analysis (axes_open[] surfaces
+// foundational axes no decision in the current graph covers), and
+// decision-mapping (new_nodes[].decisions[] references existing
+// decisions that already cover the new node's axes). The Converged
+// flag drives the spec-council exit condition: true exactly when
+// axes_open is empty AND the iteration carries no outstanding critic
+// findings. Schema is registered in schemas.go so the structured-
+// output path enforces it at the API layer.
 type ScoutBrief struct {
-	DomainRead          string   `json:"domain_read" jsonschema:"description=A paragraph or two describing what the scout believes the project is about based on GOALS.md and the (optional) feature/design document. Names the domain (e.g. 'campaign software for political organizing'); the user(s); and the central capability. Concrete; not generic — 'real-time collaboration on geospatial data' beats 'a web app'."`
-	TechnologyOptions   []string `json:"technology_options" jsonschema:"description=Specific candidate technology choices the proposer should pick from for foundational decisions (compute platform; data store; frontend framework; etc.). Each entry names a real product/library ('Postgres with PostGIS'; 'Next.js App Router'); not a category ('a database'; 'a frontend')."`
-	ImplicitAssumptions []string `json:"implicit_assumptions" jsonschema:"description=Assumptions GOALS.md makes implicitly that need explicit commitment (e.g. 'expected concurrent-user count'; 'data sensitivity classification'; 'team size and tenure'). Each entry names the assumption clearly enough that the proposer can either commit to a value or flag it."`
-	WatchOuts           []string `json:"watch_outs" jsonschema:"description=Risks; gotchas; or non-obvious constraints the proposer should be aware of (e.g. 'election-cycle traffic seasonality: months of near-zero load followed by 6-week sprint'; 'PII handling regulations vary by state'). Each entry actionable; not generic."`
+	DomainRead          string        `json:"domain_read" jsonschema:"description=A paragraph or two describing what the scout believes the project is about based on GOALS.md and the (optional) feature/design document. Names the domain (e.g. 'campaign software for political organizing'); the user(s); and the central capability. Concrete; not generic — 'real-time collaboration on geospatial data' beats 'a web app'."`
+	TechnologyOptions   []string      `json:"technology_options" jsonschema:"description=Specific candidate technology choices the decision-elaborator should weigh on a per-axis basis (compute platform; data store; frontend framework; etc.). Each entry names a real product/library ('Postgres with PostGIS'; 'Next.js App Router'); not a category ('a database'; 'a frontend'). Supporting content the scout surfaces during axis identification — the decision-elaborator picks among these per axis."`
+	ImplicitAssumptions []string      `json:"implicit_assumptions" jsonschema:"description=Assumptions GOALS.md makes implicitly that the scout has surfaced for the decision-elaborator (e.g. 'expected concurrent-user count'; 'data sensitivity classification'; 'team size and tenure'). Each entry names the assumption clearly enough that the elaborator can commit to a value when it picks per axis. Supporting context for axis identification; the load-bearing gap output is axes_open."`
+	WatchOuts           []string      `json:"watch_outs" jsonschema:"description=Risks; gotchas; or non-obvious constraints the decision-elaborator should be aware of (e.g. 'election-cycle traffic seasonality: months of near-zero load followed by 6-week sprint'; 'PII handling regulations vary by state'). Each entry actionable; not generic."`
+	AxesOpen            []OpenAxis    `json:"axes_open" jsonschema:"description=Foundational axes the scout identified that no decision in the current graph covers. Each entry is one axis the loop must resolve before convergence. Empty array exactly when Converged is true. The dispatcher in Phase 5 spawns one decision-elaborator per entry.,minItems=0"`
+	NewNodes            []NewSpecNode `json:"new_nodes" jsonschema:"description=New feature or strategy nodes the scout identified from imported content or goal-shape analysis. Each entry pre-populates its decisions[] with existing-decision IDs that cover the node's axes; new decisions get appended at decision-creation time. Empty when no new nodes surface this iteration.,minItems=0"`
+	Converged           bool          `json:"converged" jsonschema:"description=True only when AxesOpen is empty AND the iteration's critic findings are empty. Loop exits as the queue drains. False otherwise; the loop continues with another iteration."`
+}
+
+// OpenAxis names one foundational axis the current graph does not
+// cover. The scout emits one entry per gap in ScoutBrief.AxesOpen;
+// the Phase 5 dispatcher spawns one decision-elaborator per entry to
+// research the option set and commit to a choice. Axis IDs are stable
+// across iterations so the workflow can detect a cycle (the same axis
+// re-opening after a decision was made).
+type OpenAxis struct {
+	ID             string   `json:"id" jsonschema:"description=Stable slug identifying the axis — lowercase / hyphen-separated / three to five words derived from what's being decided (e.g. 'auth-provider'; 'compute-platform'; 'rollout-cadence'). Stable across iterations so the loop can detect cycle behaviour (axis reopened after being decided)."`
+	Description    string   `json:"description" jsonschema:"description=One-sentence statement of what needs to be decided on this axis — a noun phrase plus the deciding question (e.g. 'Auth provider: who owns the user identity store and how do clients authenticate against it?'). Concrete enough that the decision-elaborator knows what to research and pick."`
+	SourceEvidence []string `json:"source_evidence" jsonschema:"description=Verbatim text excerpts from goals / features / strategies / imported content that surfaced this axis. Each entry is a span the elaborator can cite back to. At least one entry; empty means the axis was invented and the integrity check rejects it.,minItems=1"`
+	SurfacedBy     []string `json:"surfaced_by" jsonschema:"description=Spec node IDs (goal / feature / strategy) whose content surfaced this axis. Mirrors Decision.SurfacedBy on the eventual decision. At least one entry.,minItems=1"`
+}
+
+// NewSpecNode names a new feature or strategy the scout identified
+// from imported content or goal-shape analysis. The Decisions slice
+// is the scout's decision-mapper output: every entry is an existing
+// decision ID that already covers an axis this node references.
+// Newly-decided axes get appended to Decisions by the Phase 5
+// workflow controller once their decision-elaborators land their
+// outputs.
+type NewSpecNode struct {
+	Kind      string   `json:"kind" jsonschema:"enum=feature,enum=strategy,description=Whether this is a new feature (user-visible capability) or strategy (cross-cutting commitment)."`
+	ID        string   `json:"id" jsonschema:"description=Stable slug for the node — starts with 'feat-' (features) or 'strat-' (strategies); lowercase; hyphen-separated; three to five words derived from the title."`
+	Title     string   `json:"title" jsonschema:"description=Concise human-readable title in sentence case naming the node — a noun phrase rather than a sentence (e.g. 'Real-time dashboard'; 'Compute platform')."`
+	Summary   string   `json:"summary" jsonschema:"description=One-sentence what-the-node-does (features) or what-the-node-adopts (strategies); ending with a period. The narrative-elaborator in Phase 4 picks this up as the seed for the full description/body."`
+	Decisions []string `json:"decisions" jsonschema:"description=Decision IDs from the existing graph that already cover axes this node references. The scout pre-populates this list from its decision-mapper pass; the workflow appends newly-created decision IDs for axes that were in AxesOpen and got decided this iteration. Empty array is valid when no existing decision covers any axis this node references — in that case every axis the node depends on must appear in AxesOpen.,minItems=0"`
 }
 
 // CriticIssues is the structured output of every critic on the council

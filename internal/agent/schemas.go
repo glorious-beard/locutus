@@ -48,11 +48,52 @@ func init() {
 
 	// Spec-generation council outputs (agents in
 	// internal/scaffold/agents/spec_*.md and *_critic.md).
+	//
+	// ScoutBrief example payload (DJ-124 Phase 2): a coherent
+	// political-organizing campaign-software domain that exercises
+	// every field. AxesOpen carries one uncovered axis (the auth
+	// provider), NewNodes carries a new feature surfaced from an
+	// imagined PRD with its decisions[] pre-populated from an existing
+	// 'dec-postgres-oltp-store' covering the data-store axis, and
+	// Converged is false because the loop still has the auth-provider
+	// axis to close. The descriptive prose throughout keeps the
+	// schema-skeleton failure mode (the prompt-doc renderer leaking
+	// example values into the model's output) from triggering on
+	// placeholder tokens.
 	RegisterSchema("ScoutBrief", ScoutBrief{
-		DomainRead:          "two-or-three-sentence read of the domain",
-		TechnologyOptions:   []string{"frontend: A vs B vs C"},
-		ImplicitAssumptions: []string{"scale: how many users? Default: 100k registered, 1k concurrent."},
-		WatchOuts:           []string{"vendor lock-in to platform X"},
+		DomainRead:        "Campaign software for political organizing at the state-house and federal levels. The primary users are field organizers running voter-contact programs (turf cutting, canvasser scheduling, lit-drop tracking) and the campaign managers reading their reporting. The central capability is real-time visibility into voter-contact attempts plotted against the win number for each district.",
+		TechnologyOptions: []string{
+			"frontend framework: Next.js App Router (server-component-first; vendor-coupled to Vercel) vs Remix (similar ergonomics; more portable) vs SvelteKit (smaller community; lighter bundle)",
+			"data store: Postgres with PostGIS (mature geospatial; team familiarity) vs Postgres + Tile38 (richer realtime geofencing; second store to operate)",
+			"auth provider: Auth0 (managed; per-MAU pricing) vs Clerk (managed; turnkey React components) vs self-hosted Keycloak (no per-user fee; ops burden)",
+		},
+		ImplicitAssumptions: []string{
+			"scale: peak concurrent organizers during the final 72-hour GOTV push (working assumption: 2,000 concurrent on a 50,000-volunteer roster)",
+			"data sensitivity: voter file fields fall under per-state privacy regimes (CA SB-1121; VA Consumer Data Protection Act) the team must classify before storing",
+			"team size and tenure: small in-house team plus contracted vendors during election cycle (working assumption: 4 engineers full-time)",
+		},
+		WatchOuts: []string{
+			"election-cycle traffic seasonality: months of near-zero load followed by a 6-week sprint to election day where outages are unrecoverable",
+			"voter-file licensing: NGP VAN and PDI both license the file with restrictive redistribution terms — derived-data storage policy needs explicit decisions",
+			"vendor lock-in to Vercel kicks in once a second engineer joins the team (the $20/seat tier surfaces once you cross one seat)",
+		},
+		AxesOpen: []OpenAxis{{
+			ID:          "auth-provider",
+			Description: "Auth provider: who owns the user identity store and how do organizers and campaign managers authenticate against the application?",
+			SourceEvidence: []string{
+				"GOALS.md §Users: field organizers and campaign managers each need scoped access to the voter file with audit trails on every read",
+				"GOALS.md §Compliance: state-level privacy regimes require named-account auditing, not shared logins",
+			},
+			SurfacedBy: []string{"feat-voter-file-access"},
+		}},
+		NewNodes: []NewSpecNode{{
+			Kind:      "feature",
+			ID:        "feat-realtime-turf-dashboard",
+			Title:     "Real-time turf dashboard",
+			Summary:   "Campaign managers see live progress against the per-district win number with voter-contact attempts plotted on a turf map.",
+			Decisions: []string{"dec-postgres-oltp-store"},
+		}},
+		Converged: false,
 	})
 
 	// RawSpecProposal is the architect's pre-reconcile output: features and

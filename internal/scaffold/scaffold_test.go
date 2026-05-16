@@ -66,6 +66,29 @@ func TestElaboratorPromptsForbidDecisionsOmission(t *testing.T) {
 	}
 }
 
+// TestScoutPromptDescribesAxesAndConvergence locks in DJ-124 Phase 2:
+// the rewritten spec_scout.md must walk the new ScoutBrief shape —
+// axes_open[] as the gap output, the decision-mapper pass, and the
+// convergence judge. Without explicit prompt coverage of these
+// responsibilities the model can fall back to the pre-DJ-124
+// senior-engineer-brief framing and ignore the structural fields the
+// workflow controller drives off.
+func TestScoutPromptDescribesAxesAndConvergence(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	body, err := fsys.ReadFile(".borg/agents/spec_scout.md")
+	require.NoError(t, err, "read .borg/agents/spec_scout.md")
+	text := string(body)
+
+	assert.Contains(t, text, "axes_open",
+		"spec_scout.md must mention the axes_open field by name — it's the structural gap output the workflow dispatches on")
+	assert.Contains(t, text, "decision-mapper",
+		"spec_scout.md must describe the decision-mapper pass that pre-populates new_nodes[].decisions[] from existing covered axes")
+	assert.Contains(t, text, "converged",
+		"spec_scout.md must describe the convergence judge — the converged flag drives the loop's exit condition")
+}
+
 func TestScaffoldCreatesDirectories(t *testing.T) {
 	fsys := specio.NewMemFS()
 	err := scaffold.Scaffold(fsys, "test-project")
