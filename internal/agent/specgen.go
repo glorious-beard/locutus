@@ -389,8 +389,17 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 	// holds the raw agent text (verdict JSON for reconcile, raw proposal
 	// JSON for propose/revise), neither of which is the canonical shape
 	// downstream callers expect.
+	//
+	// DJ-124: a converged-at-iter-0 scout produces no RawProposal /
+	// ProposedSpec because no downstream steps fired. That's a valid
+	// "spec is already complete relative to GOALS.md" outcome — return
+	// an empty SpecProposal rather than erroring out, so the caller can
+	// treat it as a successful no-op refine.
 	proposalJSON := state.ProposedSpec
 	if proposalJSON == "" {
+		if state.RawProposal == "" {
+			return &SpecProposal{}, nil
+		}
 		return nil, fmt.Errorf("spec-generation council produced no proposer output")
 	}
 

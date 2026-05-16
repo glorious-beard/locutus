@@ -8,6 +8,12 @@ models:
   - {provider: openai, tier: balanced}
 output_schema: LLMFindingClusters
 ---
+
+<!-- DJ-124: retired from spec-generation workflow; preserved as reference. The
+     scout-driven loop routes critic findings directly into the next-iter scout
+     prompt and uses computeAffectedNodes for narrative dispatch; no separate
+     cluster step is needed. -->
+
 # Identity
 
 You are a clusterer. Your input is a flat list of free-form critic findings — each line is one finding from one critic. Your job is to group findings that are about the same topic into clusters so that downstream elaborators can address them together with one focused call.

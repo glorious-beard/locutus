@@ -199,67 +199,97 @@ func TestRefineGoalsRequiresNonEmptyGOALS(t *testing.T) {
 }
 
 func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
-	// TODO DJ-124 Stage C: this end-to-end refine test exercises the
-	// pre-DJ-124 council where the narrative elaborators emitted inline
-	// decisions and the reconciler clustered them. Under Stage A the
-	// RawFeatureProposal schema flips to []string decision references
-	// and the reconciler shrinks to field-mapping, but the workflow
-	// itself (outline → elaborate → reconcile → critics → gate) does
-	// not yet dispatch the per-axis decision-elaborator that produces
-	// the top-level RawDecisionProposal entries. Stage C re-architects
-	// the workflow and re-enables this test.
-	t.Skip("DJ-124 Phase 5 (Stage C) workflow re-architecture in progress")
-
+	// DJ-124 Stage C: end-to-end refine exercising the new scout-driven
+	// workflow. The round shape is now:
+	//
+	//   iter 0: scout (axes_open + new_nodes; converged=false)
+	//   iter 1: decisions (one per open axis)
+	//           → narrative (one per affected node)
+	//           → reconcile → critique (x4 empty)
+	//           → scout (converged=true)
+	//
 	// Use scaffold.Scaffold to bootstrap a project FS — this writes the
 	// council agents the workflow executor needs to load. The workflow
-	// shape itself lives in code (agent.SpecGenerationWorkflow);
+	// shape itself lives in code (agent.NewSpecGenerationWorkflow);
 	// RunRefineGoals goes through GenerateSpec which loads
 	// .borg/agents/ and binds them to the in-code workflow.
 	fs := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fs, "test-project"))
 	require.NoError(t, fs.WriteFile("GOALS.md", []byte("# WinPlan\nHelp candidates win elections.\n"), 0o644))
 	// Drop the convergence agent so the workflow executor's convergence
-	// check (which runs once after a max_rounds=1 pass) doesn't try a
-	// 7th LLM call. Production users keep the agent — it's harmless when
-	// the loop won't iterate again, just a small extra call.
+	// check (which runs once after a max_rounds=1 pass) doesn't try an
+	// extra LLM call. Production users keep the agent — it's harmless
+	// when the loop won't iterate again.
 	require.NoError(t, fs.Remove(".borg/agents/convergence.md"))
 
-	// DJ-122 council flow: scout → outline → 1 elaborate_features +
-	// 1 elaborate_strategies (fanout) → reconcile → 4 critics (empty)
-	// → no cluster_findings (conditional, skipped when no unmatched
-	// findings) → gate (Converged:true terminates the loop) = 10 calls.
-	scoutResp := `{"domain_read":"electoral campaign","technology_options":["x: a vs b"],"implicit_assumptions":["scale: 100k. Default: 1k concurrent"],"watch_outs":[]}`
-	outlineResp := `{
-		"features": [{"id":"feat-dashboard","title":"Candidate dashboard","summary":"At-a-glance campaign view"}],
-		"strategies": [{"id":"strat-frontend","title":"React + TypeScript","kind":"foundational","summary":"frontend stack"}]
+	scout0 := `{
+		"domain_read":"electoral campaign tooling",
+		"technology_options":["frontend: TanStack Start vs Next.js"],
+		"implicit_assumptions":["scale: 100k registered, 1k concurrent"],
+		"watch_outs":[],
+		"axes_open":[{
+			"id":"frontend-framework",
+			"description":"Which framework backs the candidate dashboard?",
+			"source_evidence":["Help candidates win elections."],
+			"surfaced_by":["feat-dashboard"]
+		}],
+		"new_nodes":[
+			{"kind":"feature","id":"feat-dashboard","title":"Candidate dashboard","summary":"At-a-glance campaign view","decisions":[]},
+			{"kind":"strategy","id":"strat-frontend","title":"React + TypeScript","summary":"frontend stack","decisions":[]}
+		],
+		"converged":false
 	}`
-	featureElaborateResp := `{
-		"id":"feat-dashboard","title":"Candidate dashboard","description":"At-a-glance campaign view.",
-		"decisions":[
-			{"title":"Use TanStack Start","rationale":"Best balance of SSR and DX","confidence":0.9,"alternatives":[{"name":"Next.js","rationale":"Mature","rejected_because":"Heavier than needed"}],"citations":[{"kind":"goals","reference":"GOALS.md","span":"lines 6-8","excerpt":"Help candidates win elections."}],"architect_rationale":"GOALS.md framing motivates a low-friction frontend."}
-		]
+	decisionForFrontend := `{
+		"id":"dec-use-tanstack-start",
+		"title":"Use TanStack Start",
+		"rationale":"Best balance of SSR and DX for the team's stack.",
+		"architect_rationale":"GOALS.md framing motivates a low-friction frontend.",
+		"confidence":0.9,
+		"alternatives":[{
+			"name":"Next.js",
+			"rationale":"Mature framework with broad ecosystem",
+			"rejected_because":"Heavier than needed for the dashboard scope",
+			"citations":[{"kind":"web","reference":"https://nextjs.org","excerpt":"Next.js is the React Framework for the Web."}]
+		}],
+		"citations":[{"kind":"goals","reference":"GOALS.md","span":"lines 6-8","excerpt":"Help candidates win elections."}],
+		"axes":["frontend-framework"],
+		"surfaced_by":["feat-dashboard"]
 	}`
-	strategyElaborateResp := `{
-		"id":"strat-frontend","title":"React + TypeScript","kind":"foundational","body":"Frontend prose",
-		"decisions":[]
+	featureNarrative := `{
+		"id":"feat-dashboard",
+		"title":"Candidate dashboard",
+		"description":"At-a-glance campaign view rendered by TanStack Start.",
+		"decisions":["dec-use-tanstack-start"]
+	}`
+	strategyNarrative := `{
+		"id":"strat-frontend",
+		"title":"React + TypeScript",
+		"kind":"foundational",
+		"body":"Frontend prose",
+		"decisions":["dec-use-tanstack-start"]
 	}`
 	reconcileEmpty := `{"actions":[]}`
-	// elaborate_features and elaborate_strategies run in parallel
-	// (workflow YAML has parallel: true); the mock would race on
-	// positional consumption otherwise. Agent-tagged responses match
-	// the source agent regardless of arrival order at the mock.
-	gateConvergedResp := `{"converged":true,"reasoning":"All four lifecycle phases addressed for both deliverables."}`
+	scoutConverged := `{
+		"domain_read":"electoral campaign tooling",
+		"technology_options":[],
+		"implicit_assumptions":[],
+		"watch_outs":[],
+		"axes_open":[],
+		"new_nodes":[],
+		"converged":true
+	}`
+
 	mock := agent.NewMockExecutor(
-		agent.MockResponse{Response: &agent.AgentOutput{Content: scoutResp, Model: "m"}},
-		agent.MockResponse{Response: &agent.AgentOutput{Content: outlineResp, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_feature_elaborator", Response: &agent.AgentOutput{Content: featureElaborateResp, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_strategy_elaborator", Response: &agent.AgentOutput{Content: strategyElaborateResp, Model: "m"}},
-		agent.MockResponse{Response: &agent.AgentOutput{Content: reconcileEmpty, Model: "m"}},
-		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		agent.MockResponse{Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_gate", Response: &agent.AgentOutput{Content: gateConvergedResp, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_scout", Response: &agent.AgentOutput{Content: scout0, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_decision_elaborator", Response: &agent.AgentOutput{Content: decisionForFrontend, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_feature_elaborator", Response: &agent.AgentOutput{Content: featureNarrative, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_strategy_elaborator", Response: &agent.AgentOutput{Content: strategyNarrative, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_reconciler", Response: &agent.AgentOutput{Content: reconcileEmpty, Model: "m"}},
+		agent.MockResponse{AgentID: "architect_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{AgentID: "devops_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{AgentID: "sre_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{AgentID: "cost_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_scout", Response: &agent.AgentOutput{Content: scoutConverged, Model: "m"}},
 	)
 
 	result, err := RunRefineGoals(context.Background(), mock, fs, nil)
@@ -267,20 +297,21 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 	require.NotNil(t, result.Generated)
 	assert.Equal(t, 1, result.Generated.Features)
 	assert.Equal(t, 1, result.Generated.Decisions,
-		"reconciler with empty verdict mints one canonical decision per inline decision")
+		"per-axis decision-elaborator minted one decision for the open axis")
 	assert.Equal(t, 1, result.Generated.Strategies,
-		"outline named one strategy; fanout produced one elaborate_strategies output")
+		"scout surfaced one new strategy node; narrative elaborator produced its body")
 	assert.Equal(t, 0, result.Generated.Approaches,
 		"refine no longer emits approaches — they're synthesized at adopt time")
 	assert.Equal(t, spec.KindGoals, result.NodeKind)
 	assert.Equal(t, spec.RootID, result.NodeID)
 
-	// Verify nodes landed on disk. Decision ID is slug-derived from the
-	// inline decision's title ("Use TanStack Start" → "dec-use-tanstack-start").
+	// Verify nodes landed on disk. The decision ID is the slug the
+	// decision-elaborator emitted directly (no reconciler dedupe under
+	// DJ-124; the field-map preserves the ID verbatim when set).
 	_, err = fs.ReadFile(".borg/spec/features/feat-dashboard.json")
 	assert.NoError(t, err, "feature JSON should be persisted")
 	_, err = fs.ReadFile(".borg/spec/decisions/dec-use-tanstack-start.json")
-	assert.NoError(t, err, "decision JSON should be persisted under reconciler-assigned slug id")
+	assert.NoError(t, err, "decision JSON should be persisted under the elaborator-assigned slug id")
 	_, err = fs.ReadFile(".borg/spec/strategies/strat-frontend.json")
 	assert.NoError(t, err, "strategy JSON should be persisted")
 	// Approaches directory should be untouched — adopt populates it.

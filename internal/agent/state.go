@@ -121,7 +121,56 @@ type PlanningState struct {
 	// "WinPlan platform: On-call rotation owner" and
 	// "winplan platform: on-call rotation owner" coalesce to the same
 	// bucket even when the gate's casing drifts iteration-over-iteration.
+	//
+	// DJ-124 retires the gate role in favour of the scout-driven loop;
+	// the field stays on the struct because the legacy gate test workflow
+	// (runSpecGateTestWorkflow) still drives it and because removing it
+	// would force a Stage C-only rewrite of a working test surface.
 	GateAxisRecurrence map[string]int `json:"gate_axis_recurrence,omitempty"`
+
+	// DJ-124: scout-driven convergence loop state.
+	//
+	// PriorScoutBrief carries the previous iteration's ScoutBrief output.
+	// Captured by mergeScoutBrief BEFORE overwriting ScoutBrief; consumed
+	// by the scout's own projection on the next iteration so the model
+	// can detect stable vs reopened axes. Not persisted (json:"-").
+	PriorScoutBrief string `json:"-"`
+
+	// Imported carries content from `locutus import` admitted into the
+	// workflow's input set. The scout reads these alongside GOALS.md and
+	// the existing graph; the convergence loop handles the rest. Empty
+	// for `locutus refine` runs. Populated by Phase 6.
+	Imported []ImportedContent `json:"-"`
+
+	// AxesOpen tracks the current iteration's open axes. Populated by
+	// mergeScoutBrief from ScoutBrief.AxesOpen; consumed by the
+	// decision-elaborator fanout's Fanout closure to spawn one call per
+	// axis. Replaced on each scout call (axes that get closed drop off
+	// naturally; new axes get added).
+	AxesOpen []OpenAxis `json:"-"`
+
+	// NewNodesFromScout tracks the current iteration's new feature /
+	// strategy nodes from ScoutBrief.NewNodes. Consumed by the
+	// narrative-elaborator fanout's Fanout closure. Replaced on each
+	// scout call. mergeDecisions appends newly-minted decision IDs to
+	// the relevant entries' Decisions[] before narrative dispatch fires.
+	NewNodesFromScout []NewSpecNode `json:"-"`
+
+	// DecidedAxesByIter tracks which axis IDs were decided in each
+	// iteration. Used by the scout spawner's cycle-detection logic:
+	// when the next scout call emits an axis that appears in
+	// DecidedAxesByIter for a prior iteration, the loop is reopening a
+	// decided axis — force-terminate with a cycle signal.
+	//
+	// Key format: axis ID. Value: iteration index when the axis was
+	// first decided.
+	DecidedAxesByIter map[string]int `json:"-"`
+
+	// DanglingReferences accumulates integrity-violation findings from
+	// ApplyReconciliation. Surfaced to the scout's next-iteration input
+	// as concerns so the loop can self-correct (e.g. the scout iterates
+	// the dispatch with a corrected new_nodes[].decisions[]).
+	DanglingReferences []string `json:"-"`
 
 	// InFlightIndex is the council-scoped Bluge index over the current
 	// RawProposal (DJ-123 Phase 3). Set by GenerateSpec at council
@@ -136,6 +185,15 @@ type PlanningState struct {
 	// is concurrent-safe (Rebuild serialises against in-flight Search
 	// under an RWMutex inside search.InFlightIndex).
 	InFlightIndex *search.InFlightIndex `json:"-"`
+}
+
+// ImportedContent is one external document admitted into the spec
+// generation workflow via `locutus import`. Populated by Phase 6
+// (DJ-124); empty for refine runs. The scout reads these alongside
+// GOALS.md and the existing spec graph.
+type ImportedContent struct {
+	Path string // filesystem path or label
+	Body string // verbatim content
 }
 
 // StateSnapshot wraps a verb's state value with fanout context. Projections
@@ -180,6 +238,23 @@ func snapshotPlanningState(s *PlanningState) PlanningState {
 	if len(s.OpenConcerns) > 0 {
 		out.OpenConcerns = make([]string, len(s.OpenConcerns))
 		copy(out.OpenConcerns, s.OpenConcerns)
+	}
+	// DJ-124 scout-driven loop state.
+	if len(s.AxesOpen) > 0 {
+		out.AxesOpen = make([]OpenAxis, len(s.AxesOpen))
+		copy(out.AxesOpen, s.AxesOpen)
+	}
+	if len(s.NewNodesFromScout) > 0 {
+		out.NewNodesFromScout = make([]NewSpecNode, len(s.NewNodesFromScout))
+		copy(out.NewNodesFromScout, s.NewNodesFromScout)
+	}
+	if len(s.Imported) > 0 {
+		out.Imported = make([]ImportedContent, len(s.Imported))
+		copy(out.Imported, s.Imported)
+	}
+	if len(s.DanglingReferences) > 0 {
+		out.DanglingReferences = make([]string, len(s.DanglingReferences))
+		copy(out.DanglingReferences, s.DanglingReferences)
 	}
 	return out
 }

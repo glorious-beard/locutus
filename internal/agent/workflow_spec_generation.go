@@ -108,123 +108,68 @@ type OpenDimension struct {
 }
 
 // SpecGenerationWorkflow drives `locutus refine goals` and `locutus
-// import <doc>`'s post-admission planning pass.
+// import <doc>`'s post-admission planning pass under DJ-124.
 //
-// DJ-098 unified per-cluster revise. Critic findings route through:
+// The DJ-124 round shape is:
 //
-//  1. survey      — senior-engineer scout brief.
-//  2. outline     — feature/strategy titles + summaries.
-//  3. elaborate_features  — fanout: one elaborator per outlined feature.
-//  4. elaborate_strategies — fanout: one elaborator per outlined strategy.
-//  5. reconcile   — clusters inline decisions across the assembled
-//     proposal; emits canonical SpecProposal.
-//  6. critique    — four LLM critics + the in-workflow integrity
-//     critic, parallel.
-//  7. cluster_findings — LLM clusterer groups any critic findings the
-//     mechanical pre-pass couldn't id-match. Conditional on
-//     hasUnmatchedFindings.
-//  8. revise      — fanout (one call per FindingCluster). Each cluster
-//     carries its own agent_id (set by the mechanical pre-pass from
-//     id prefix or by the LLM clusterer's kind). Conditional on
-//     hasFindingClusters.
-//  9. reconcile_revise — same reconciler against the merged raw proposal
-//     (original + revised + added). Conditional on hasFindingClusters.
+//	scout → decisions(per-axis fanout)
+//	      → narrative(per-affected-node fanout)
+//	      → reconcile → critique → scout(next iter)
 //
-// The mechanical pre-pass that populates state.FindingClusters from
-// state.Concerns runs inside mergeCriticIssues — no explicit step. It
-// groups findings that name an existing node id; the LLM clusterer
-// step processes the rest.
+// Concretely the initial graph is just the iter-0 scout. Its Spawn
+// closure parses the ScoutBrief and either:
 //
-// MaxRounds=1 because the DJ-122 spawner-driven convergence loop owns
-// iteration; the executor's outer convergence pass is unused.
+//   - exits (Converged: true);
+//   - expands the iteration template at iter 1; or
+//   - terminates with a convergence_failed history event (budget == 0
+//     edge case where no iterations are allowed).
+//
+// Each iteration template adds five steps (decisions → narrative →
+// reconcile → critique → scout). The scout at the tail of every
+// iteration uses the same Spawn pattern as the initial scout, so the
+// loop drives itself one iteration at a time.
+//
+// Decisions are dispatched once per ScoutBrief.AxesOpen entry; the
+// scout's gap analyzer surfaces only uncovered axes so the loop
+// converges by closing them. Narrative dispatch is conditional: it
+// fires only for affected nodes (features / strategies referencing any
+// just-minted decision, nodes named in critic findings, and new nodes
+// the scout introduced this iteration). Unchanged nodes keep their
+// prior body across iterations.
+//
+// MaxRounds=1 because the spawner-driven loop owns iteration; the
+// executor's outer convergence pass is unused.
 //
 // Per-model concurrency caps live in models.yaml's `concurrent_requests`
 // field. Even with Parallel=true on fanout steps, the actual
 // concurrency is bounded so fanout never floods a model past its
 // configured slot count.
 //
-// DJ-122: the static cluster_findings → revise → reconcile_revise tail
-// is gone. A single `gate` step replaces it, running the spec_gate
-// agent and using its WorkflowStep.Spawn to either terminate the
-// workflow (verdict.Converged), spawn another revise/reconcile/critique/
-// gate iteration (verdict.Converged == false; iter < Budget), or spawn
-// a terminal convergence_failed step (budget exhausted) that writes a
-// DJ-103 history event and fails the run.
-//
-// cluster_findings stays in the initial graph — it runs once before the
-// first gate; subsequent iterations re-use the existing FindingClusters
-// plus any new entries that mergeGateVerdict appends from the gate's
-// OpenDimensions.
+// Cycle detection: when scout's axes_open contains an axis ID already
+// recorded in DecidedAxesByIter (i.e. the same axis was decided in a
+// prior iteration and is being re-opened), the workflow terminates
+// with a convergence_stuck DJ-103 history event naming the recurring
+// axes. Budget exhaustion produces a convergence_failed event.
 func NewSpecGenerationWorkflow(historian *history.Historian, budget int) *Workflow[PlanningState] {
 	if budget <= 0 {
 		budget = defaultSpecGateBudget
 	}
 	loopTemplate := convergenceLoopTemplate(historian, budget)
 	return &Workflow[PlanningState]{
-		Snapshot:          snapshotPlanningState,
-		DefaultProject:    projectDefault,
-		MaxRounds:         1,
-		DefaultGateBudget: budget,
+		Snapshot:           snapshotPlanningState,
+		DefaultProject:     projectDefault,
+		MaxRounds:          1,
+		DefaultGateBudget:  budget,
+		MaxGraphMultiplier: 100,
 		Rounds: []WorkflowStep[PlanningState]{
 			{
-				ID:      "survey",
+				ID:      "scout",
 				Agents:  []string{"spec_scout"},
-				Project: projectDefault,
+				Project: projectScout,
 				Merge:   mergeScoutBrief,
+				Budget:  budget,
+				Spawn:   scoutSpawnFor(0, budget, loopTemplate, historian),
 			},
-			{
-				ID:        "outline",
-				Agents:    []string{"spec_outliner"},
-				DependsOn: []string{"survey"},
-				Project:   projectOutline,
-				Merge:     mergeOutline,
-			},
-			{
-				ID:        "elaborate_features",
-				Agents:    []string{"spec_feature_elaborator"},
-				Parallel:  true,
-				DependsOn: []string{"outline"},
-				Fanout:    fanoutOutlineFeatures,
-				Project:   projectElaborateFeature,
-				Merge:     mergeElaboratedFeatures,
-			},
-			{
-				ID:        "elaborate_strategies",
-				Agents:    []string{"spec_strategy_elaborator"},
-				Parallel:  true,
-				DependsOn: []string{"outline"},
-				Fanout:    fanoutOutlineStrategies,
-				Project:   projectElaborateStrategy,
-				Merge:     mergeElaboratedStrategies,
-			},
-			{
-				ID:        "reconcile",
-				Agents:    []string{"spec_reconciler"},
-				DependsOn: []string{"elaborate_features", "elaborate_strategies"},
-				Project:   projectReconcile,
-				Merge:     mergeReconciledProposal,
-			},
-			{
-				ID:        "critique",
-				Agents:    []string{"architect_critic", "devops_critic", "sre_critic", "cost_critic"},
-				Parallel:  true,
-				DependsOn: []string{"reconcile"},
-				Project:   projectChallenge,
-				Merge:     mergeCriticIssues,
-			},
-			{
-				ID:          "cluster_findings",
-				Agents:      []string{"spec_finding_clusterer"},
-				DependsOn:   []string{"critique"},
-				Conditional: hasUnmatchedFindings,
-				Project:     projectClusterFindings,
-				Merge:       mergeFindingClusters,
-			},
-			// DJ-122 gate: iteration 0 of the convergence loop. Its
-			// Spawn either terminates (Converged), spawns the next
-			// iteration (revise → reconcile → critique → gate), or
-			// spawns the terminal convergence_failed step.
-			newSpecGateStep("gate", 0, budget, loopTemplate, historian),
 		},
 	}
 }
@@ -409,48 +354,77 @@ func buildConvergenceStuckEvent(verdict *SpecGateVerdict, iter int, snapshotSpec
 	}
 }
 
-// convergenceLoopTemplate returns the template closure used by
-// AppendSubgraph to expand one iteration of the spec-council
-// convergence loop. Each iteration is a five-step chain:
+// convergenceLoopTemplate (DJ-124) returns the template closure
+// AppendSubgraph uses to expand one iteration of the new scout-driven
+// spec-council loop. Each iteration is a five-step chain:
 //
-//	revise → reconcile → critique → cluster_findings → gate
+//	decisions → narrative → reconcile → critique → scout
 //
-// cluster_findings runs in every iteration (not just the initial
-// graph) so per-iteration critic free-text findings that don't name a
-// specific spec-node id get LLM-clustered into the same FindingCluster
-// shape mechanically-routed findings produce. Without it, iter-N's
-// critic concerns leak into state.UnmatchedFindings and never reach
-// iter-(N+1)'s revise — observed during the first DJ-122 smoke run.
+// Decisions fanout dispatches one spec_decision_elaborator per axis in
+// state.AxesOpen. Narrative fanout dispatches one elaborator
+// (feature or strategy, routed via the per-item agent_id) per affected
+// node — the set computed by computeAffectedNodes from changed
+// decisions, critic-named nodes, and scout-introduced new nodes.
+// Reconcile field-maps the assembled RawSpecProposal into the canonical
+// SpecProposal via ApplyReconciliation; the reconciler agent's verdict
+// is parsed-but-ignored under DJ-124 Stage A. Critique runs the four
+// LLM critics plus the mechanical integrity critic. The tail scout
+// re-judges convergence; its Spawn closure either terminates the loop
+// or expands the next iteration template.
 //
 // Internal DependsOn entries name siblings by their base id and are
 // rewritten by AppendSubgraph to the prefixed form. The template's
-// gate carries the same Spawn closure pattern as the initial gate, so
-// the loop drives itself one iteration at a time.
+// scout carries the same Spawn closure pattern as the initial-graph
+// scout, so the loop drives itself one iteration at a time.
 func convergenceLoopTemplate(historian *history.Historian, budget int) func(executor.IterationContext) []WorkflowStep[PlanningState] {
 	var template func(executor.IterationContext) []WorkflowStep[PlanningState]
 	template = func(ic executor.IterationContext) []WorkflowStep[PlanningState] {
 		thisIter := ic.IterationIndex
 		return []WorkflowStep[PlanningState]{
 			{
-				// revise: fanout per FindingCluster (existing clusters
-				// plus those mergeGateVerdict added from the prior
-				// gate's OpenDimensions). Step-level Agents is the
-				// fallback; per-cluster AgentID overrides at dispatch.
-				ID:          "revise",
-				Agents:      []string{"spec_strategy_elaborator"},
+				// decisions: fanout per OpenAxis. The decision-elaborator
+				// researches and commits one decision per axis; the
+				// merge appends to state.RawProposal.Decisions[],
+				// records DecidedAxesByIter for cycle detection, and
+				// appends newly-minted decision IDs to NewNodesFromScout
+				// entries that surfaced the axis.
+				ID:          "decisions",
+				Agents:      []string{"spec_decision_elaborator"},
 				Parallel:    true,
-				Conditional: hasFindingClusters,
-				Fanout:      fanoutFindingClusters,
-				Project:     projectFindingCluster,
-				Merge:       mergeRevisedNodes,
+				Conditional: hasOpenAxes,
+				Fanout:      fanoutOpenAxes,
+				Project:     projectOpenAxis,
+				Merge:       mergeDecisions,
 			},
 			{
-				ID:          "reconcile",
-				Agents:      []string{"spec_reconciler"},
-				DependsOn:   []string{"revise"},
-				Conditional: hasFindingClusters,
-				Project:     projectReconcile,
-				Merge:       mergeReconciledProposal,
+				// narrative: fanout per affected node. The per-item
+				// agent_id discriminator routes each item to either
+				// spec_feature_elaborator or spec_strategy_elaborator;
+				// the merge replaces (or appends) the matching entry in
+				// state.RawProposal.Features / Strategies.
+				ID:          "narrative",
+				Agents:      []string{"spec_feature_elaborator"},
+				Parallel:    true,
+				DependsOn:   []string{"decisions"},
+				Conditional: hasAffectedNodes,
+				Fanout:      fanoutAffectedNodes,
+				Project:     projectAffectedNode,
+				Merge:       mergeNarrative,
+			},
+			{
+				// reconcile: spec_reconciler runs for API-layer schema
+				// stability (the agent is still on disk and its strict-
+				// mode verdict must be a valid ReconciliationVerdict),
+				// but ApplyReconciliation ignores the verdict content
+				// under DJ-124. The merge field-maps RawSpecProposal →
+				// SpecProposal and surfaces dangling decision references
+				// onto state.DanglingReferences so the next scout pass
+				// can address them.
+				ID:        "reconcile",
+				Agents:    []string{"spec_reconciler"},
+				DependsOn: []string{"narrative"},
+				Project:   projectReconcile,
+				Merge:     mergeReconciledProposal,
 			},
 			{
 				ID:        "critique",
@@ -461,27 +435,18 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				Merge:     mergeCriticIssues,
 			},
 			{
-				// cluster_findings: LLM-cluster any unmatched
-				// free-text findings from this iteration's critics so
-				// they reach the next iteration's revise as
-				// FindingClusters. Skips when no unmatched findings
-				// exist (the conditional matches the initial graph's
-				// instance).
-				ID:          "cluster_findings",
-				Agents:      []string{"spec_finding_clusterer"},
-				DependsOn:   []string{"critique"},
-				Conditional: hasUnmatchedFindings,
-				Project:     projectClusterFindings,
-				Merge:       mergeFindingClusters,
-			},
-			{
-				ID:        "gate",
-				Agents:    []string{"spec_gate"},
-				DependsOn: []string{"cluster_findings"},
-				Project:   projectSpecGate,
-				Merge:     mergeGateVerdict,
+				// scout (tail of iteration): re-judges convergence. The
+				// Spawn closure parses ScoutBrief.Converged, checks for
+				// cycle (axes_open re-emitting a decided axis), and
+				// either expands the next iteration template or spawns
+				// a terminal step.
+				ID:        "scout",
+				Agents:    []string{"spec_scout"},
+				DependsOn: []string{"critique"},
+				Project:   projectScout,
+				Merge:     mergeScoutBrief,
 				Budget:    budget,
-				Spawn:     gateSpawnFor(thisIter, budget, template, historian),
+				Spawn:     scoutSpawnFor(thisIter, budget, template, historian),
 			},
 		}
 	}
@@ -780,10 +745,53 @@ func fanoutFindingClusters(state *PlanningState) ([]string, error) {
 	return marshalFanoutItems(items)
 }
 
-// mergeScoutBrief stores the spec_scout's structured ScoutBrief output.
+// mergeScoutBrief stores the spec_scout's structured ScoutBrief output
+// and (DJ-124) projects the gap-analyzer fields (AxesOpen, NewNodes)
+// onto state for the dispatch closures the next iteration template
+// consumes.
+//
+// Cross-iteration chaining: the prior ScoutBrief is captured into
+// state.PriorScoutBrief BEFORE the new brief overwrites state.ScoutBrief,
+// so the scout's own projection on the next iteration can compare what
+// it said last time against the current state.
+//
+// Robust to non-DJ-124 input: when the result JSON lacks AxesOpen /
+// NewNodes (e.g. tests that hand the merge a pre-DJ-124 brief), the
+// fields parse as zero values and the dispatcher fanout closures
+// behave as no-ops. The legacy ScoutBrief storage (state.ScoutBrief =
+// raw JSON for projection.formatScoutBrief) is preserved verbatim.
 func mergeScoutBrief(s *PlanningState, results []RoundResult) {
-	if v := firstNonEmpty(results); v != "" {
-		s.ScoutBrief = v
+	v := firstNonEmpty(results)
+	if v == "" {
+		return
+	}
+	// Capture prior brief before overwriting so the scout's next-iter
+	// projection can render the previous output as context.
+	s.PriorScoutBrief = s.ScoutBrief
+	s.ScoutBrief = v
+
+	var brief ScoutBrief
+	if err := json.Unmarshal([]byte(v), &brief); err != nil {
+		// Brief is unparseable as a ScoutBrief — leave AxesOpen /
+		// NewNodesFromScout cleared so the dispatcher fanouts fire no
+		// items. The scout spawner will surface the parse failure when
+		// it tries to read Converged.
+		s.AxesOpen = nil
+		s.NewNodesFromScout = nil
+		return
+	}
+	// Replace (not append) the per-iteration slices. Axes closed in the
+	// prior iteration naturally drop off because the scout only emits
+	// uncovered axes; new axes get added. Same shape for NewNodes.
+	if len(brief.AxesOpen) > 0 {
+		s.AxesOpen = append([]OpenAxis(nil), brief.AxesOpen...)
+	} else {
+		s.AxesOpen = nil
+	}
+	if len(brief.NewNodes) > 0 {
+		s.NewNodesFromScout = append([]NewSpecNode(nil), brief.NewNodes...)
+	} else {
+		s.NewNodesFromScout = nil
 	}
 }
 
@@ -833,6 +841,13 @@ func mergeElaboratedStrategies(s *PlanningState, results []RoundResult) {
 // canonical SpecProposal via ApplyReconciliation. Errors are recorded as
 // integrity-kind Concerns so revise can surface them; the workflow
 // itself does not fail.
+//
+// DJ-124: integrity-violation entries from ApplyReconciliation (one per
+// dangling decision reference) are also surfaced onto
+// state.DanglingReferences so the next scout iteration sees them. The
+// scout's projection threads them into the next-iter prompt as
+// concerns; the model corrects new_nodes[].decisions[] to drop or
+// replace the bad ref.
 func mergeReconciledProposal(s *PlanningState, results []RoundResult) {
 	verdict := firstNonEmpty(results)
 	if verdict == "" {
@@ -856,7 +871,33 @@ func mergeReconciledProposal(s *PlanningState, results []RoundResult) {
 	}
 	s.ProposedSpec = canonical
 	s.ConflictActions = appendConflictActions(s.ConflictActions, applied)
+	// DJ-124: dangling decision references flagged by ApplyReconciliation
+	// flow onto state.DanglingReferences so the next scout iteration's
+	// projection renders them. Replace (not append) on each reconcile
+	// pass so stale references from prior iterations don't accumulate.
+	s.DanglingReferences = collectDanglingReferences(applied)
 	rebuildInFlightIndex(s)
+}
+
+// collectDanglingReferences returns one human-readable line per
+// integrity_violation AppliedAction. Format: "feature feat-x.decisions
+// references unknown id 'dec-missing'". Consumed by projectScout to
+// surface dangling refs to the next-iter scout.
+func collectDanglingReferences(applied []AppliedAction) []string {
+	var out []string
+	for _, a := range applied {
+		if a.Kind != "integrity_violation" {
+			continue
+		}
+		if len(a.AffectedNodes) == 0 {
+			out = append(out, fmt.Sprintf("decision reference %q is dangling (no source node recorded)", a.CanonicalID))
+			continue
+		}
+		for _, ref := range a.AffectedNodes {
+			out = append(out, fmt.Sprintf("%s %s.decisions references unknown decision %q", ref.ParentKind, ref.ParentID, a.CanonicalID))
+		}
+	}
+	return out
 }
 
 // mergeCriticIssues parses each critic's CriticIssues output into
