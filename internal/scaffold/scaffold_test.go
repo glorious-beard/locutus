@@ -2,6 +2,7 @@ package scaffold_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/chetan/locutus/internal/agent"
@@ -64,6 +65,88 @@ func TestElaboratorPromptsForbidDecisionsOmission(t *testing.T) {
 		assert.NotContains(t, text, "omit `decisions` entirely",
 			"%s must not carry any phrasing of the decisions-omission escape hatch", file)
 	}
+}
+
+// TestDecisionElaboratorPromptDescribesGroundedCitations locks in
+// DJ-124 Phase 3: the new spec_decision_elaborator.md must describe
+// the grounded-research workflow — the `web` citation kind, the
+// presence of search as the input the agent uses, and the literal-
+// sentinel phrasing ported from justify_researcher.md for the two
+// search-failure modes. Without this coverage the prompt could drift
+// back to ungrounded training-data-recall and the per-call tool_calls
+// audit would catch fabricated citations only after they reached
+// downstream consumers.
+func TestDecisionElaboratorPromptDescribesGroundedCitations(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	text := string(body)
+
+	assert.Contains(t, text, "web",
+		"spec_decision_elaborator.md must name the `web` citation kind — DJ-124 Phase 1 extended Citation.Kind to include it for grounded research evidence")
+	assert.Contains(t, text, "search",
+		"spec_decision_elaborator.md must describe search as the grounded-research input the agent uses to verify version numbers / pricing / rejection-reason claims")
+	assert.Contains(t, text, "finding ungrounded",
+		"spec_decision_elaborator.md must carry the literal-sentinel phrasing ported from justify_researcher.md so the audit tooling that greps for ungrounded findings continues to work")
+}
+
+// TestDecisionElaboratorPromptDescribesAxesAndSurfacedBy locks in
+// DJ-124 Phase 3: the new spec_decision_elaborator.md must describe
+// the per-axis scope of the agent and the back-reference fields on
+// the output schema. The agent is dispatched once per OpenAxis; the
+// axes[] and surfaced_by[] output fields mirror the input. Without
+// prompt coverage the model can fall back to authoring sweep-of-the-
+// project decisions ignoring the structural back-references the
+// explain/justify verbs depend on.
+func TestDecisionElaboratorPromptDescribesAxesAndSurfacedBy(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	text := string(body)
+
+	assert.Contains(t, text, "axes",
+		"spec_decision_elaborator.md must name the `axes` output field — it's the structural link from decision back to the foundational axis the scout dispatched on")
+	assert.Contains(t, text, "surfaced_by",
+		"spec_decision_elaborator.md must name the `surfaced_by` back-reference field — it mirrors the input surfacing-node IDs so explain/justify verbs can walk the graph in both directions")
+	containsScope := strings.Contains(text, "one axis") ||
+		strings.Contains(text, "per axis") ||
+		strings.Contains(text, "the axis") ||
+		strings.Contains(text, "ONE foundational axis")
+	assert.True(t, containsScope,
+		"spec_decision_elaborator.md must describe the agent's per-axis scope (the agent is dispatched once per OpenAxis; one decision per axis)")
+}
+
+// TestDecisionElaboratorPromptForbidsFabricatedRejection locks in
+// DJ-124 Phase 3: the new spec_decision_elaborator.md must carry the
+// structural-guardrail wording on alternative-rejection citations
+// and must explicitly name the fabricated-rejection failure mode.
+// Fabricated rejection reasoning (claims like "Auth0 was rejected
+// because [made-up cost claim]") is the dominant failure surface
+// this agent guards against; the prompt naming the failure mode
+// alongside the schema's minItems=1 enforcement on alternative
+// citations is the documented mitigation.
+func TestDecisionElaboratorPromptForbidsFabricatedRejection(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	text := string(body)
+
+	assert.Contains(t, text, "citations",
+		"spec_decision_elaborator.md must mention citations as the structural guardrail on alternative rejection reasoning")
+	// The prompt must use the alternatives-mandate framing to tie
+	// citations to alternative rejection reasoning specifically.
+	assert.Contains(t, text, "alternative",
+		"spec_decision_elaborator.md must name alternatives in the mandate so the citation-on-rejection guardrail is anchored to the right field")
+	containsFabricationLabel := strings.Contains(text, "fabricat") ||
+		strings.Contains(text, "made-up")
+	assert.True(t, containsFabricationLabel,
+		"spec_decision_elaborator.md must explicitly name the fabricated-rejection failure mode so the model has direct guidance on what the alternative-citations guardrail exists to prevent")
 }
 
 // TestScoutPromptDescribesAxesAndConvergence locks in DJ-124 Phase 2:
