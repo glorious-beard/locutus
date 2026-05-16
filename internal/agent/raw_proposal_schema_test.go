@@ -58,30 +58,33 @@ func TestRawProposalSchemasRequireDecisions(t *testing.T) {
 	}
 }
 
-// TestDecisionSchemaCarriesAxesAndSurfacedBy locks in the DJ-124
-// Phase 1 contract on RawDecisionProposal: the per-axis decision-
-// elaborator output MUST surface both the axes the decision answers
-// and the surfacing-node back-references in its strict-mode JSON
-// schema, with minItems=1 and a non-empty description on each.
+// TestRawDecisionProposalSchemaRequiresGroundedFields locks in the
+// DJ-124 Phase 1 contract on RawDecisionProposal: the per-axis
+// decision-elaborator output MUST surface (a) the axes the decision
+// answers, (b) the surfacing-node back-references, (c) the alternatives
+// weighed, and (d) the citations backing the chosen path — all with
+// minItems=1 and a non-empty description in the strict-mode JSON
+// schema.
 //
-// Without minItems on these fields, a flaky model could emit a
+// Without minItems on the array fields, a flaky model could emit a
 // structurally-valid response with empty arrays — the workflow
 // controller would then fail to thread the decision into the affected
 // feature/strategy nodes (axes never close; back-references stay
-// hollow). The strict-mode schema rejects the response at the API
-// layer instead, kicking the retry loop.
+// hollow), or persist an ungrounded decision (the failure mode DJ-124
+// exists to eliminate). The strict-mode schema rejects the response at
+// the API layer instead, kicking the retry loop.
 //
-// Without descriptions, the model has no inline guidance on what
-// these fields mean; the schema-skeleton failure mode (axes=["axis"]
-// or surfaced_by=["node"]) becomes proportionally more likely.
-func TestDecisionSchemaCarriesAxesAndSurfacedBy(t *testing.T) {
+// Without descriptions, the model has no inline guidance on what these
+// fields mean; the schema-skeleton failure mode (axes=["axis"] or
+// alternatives=[{name:"alt"}]) becomes proportionally more likely.
+func TestRawDecisionProposalSchemaRequiresGroundedFields(t *testing.T) {
 	schema, err := SchemaFor("RawDecisionProposal")
 	require.NoError(t, err, "RawDecisionProposal must be registered for the DJ-124 Phase 1 decision-elaborator")
 
 	props, _ := schema["properties"].(map[string]any)
 	require.NotNil(t, props, "RawDecisionProposal schema missing properties map")
 
-	for _, field := range []string{"axes", "surfaced_by"} {
+	for _, field := range []string{"axes", "surfaced_by", "alternatives", "citations"} {
 		t.Run(field, func(t *testing.T) {
 			node, _ := props[field].(map[string]any)
 			require.NotNil(t, node, "RawDecisionProposal schema missing %s property", field)

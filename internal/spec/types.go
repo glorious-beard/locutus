@@ -41,7 +41,7 @@ type Decision struct {
 	// by the scout's dispatch; legacy decisions load with an empty
 	// slice. Supports future explain/justify verbs walking the graph
 	// in both directions.
-	SurfacedBy   []string  `json:"surfaced_by,omitempty" yaml:"surfaced_by,omitempty" jsonschema:"description=Spec node IDs (goal / feature / strategy) that surfaced the axis this decision answers. Populated by the scout's dispatch at decision-creation time. Empty for legacy decisions authored before DJ-124."`
+	SurfacedBy   []string  `json:"surfaced_by,omitempty" yaml:"surfaced_by,omitempty" jsonschema:"description=Spec node IDs (goal / feature / strategy) that surfaced the axis this decision answers. Examples: [\"feat-realtime-dashboard\"], [\"strat-storage-platform\",\"goal-multi-tenancy\"]. Populated by the scout's dispatch at decision-creation time. Empty for legacy decisions authored before DJ-124."`
 	CreatedAt    time.Time `json:"created_at" yaml:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at" yaml:"updated_at"`
 }
@@ -53,11 +53,12 @@ type Alternative struct {
 	RejectedBecause string `json:"rejected_because" yaml:"rejected_because" jsonschema:"description=The specific reason this alternative lost to the chosen option. A complete sentence pointing at a goal clause / constraint / trade-off. 'Not as good' is not a rejection reason — name the constraint."`
 	// Citations back the rejected_because reasoning so the rejection
 	// is grounded evidence rather than fabricated trade-off prose
-	// (DJ-124). Legacy alternatives without citations continue to
-	// load — the loader uses yaml/json tags, not jsonschema — but
-	// any alternative authored through an output schema must carry
-	// at least one citation.
-	Citations []Citation `json:"citations,omitempty" yaml:"citations,omitempty" jsonschema:"description=Citations backing the rejected_because reasoning for this alternative — evidence that this option was considered seriously and the reason it lost is grounded.,minItems=1"`
+	// (DJ-124). The field is required at the schema layer (no
+	// `,omitempty`) so strict-mode providers reject alternatives
+	// authored without citations; Go's encoding/json does not enforce
+	// `required` during unmarshal, so legacy on-disk alternatives
+	// without citations continue to deserialize cleanly.
+	Citations []Citation `json:"citations" yaml:"citations" jsonschema:"description=Citations backing the rejected_because reasoning for this alternative — evidence that this option was considered seriously and the reason it lost is grounded.,minItems=1"`
 }
 
 // Citation is one durable reference backing a decision: a span of
@@ -79,7 +80,7 @@ type Citation struct {
 	// Reference identifies the source: a path ("GOALS.md",
 	// "docs/dashboard.md"), a named principle ("12-factor app: stateless
 	// processes"), or a spec node id ("strat-frontend").
-	Reference string `json:"reference" yaml:"reference" jsonschema:"description=Identifier of the source — a filesystem path like 'GOALS.md' or 'docs/dashboard.md'; a named principle like '12-factor app: stateless processes'; or a spec node id like 'strat-frontend'. Matches the Kind: paths for goals/doc; principle names for best_practice; ids for spec_node; an agent label for scout_brief."`
+	Reference string `json:"reference" yaml:"reference" jsonschema:"description=Identifier of the source — a filesystem path like 'GOALS.md' or 'docs/dashboard.md'; a named principle like '12-factor app: stateless processes'; a spec node id like 'strat-frontend'; or a URL for web kind (e.g., 'https://www.postgresql.org/docs/16/datatype-json.html'). Matches the Kind: paths for goals/doc; principle names for best_practice; ids for spec_node; an agent label for scout_brief; URLs for web."`
 	// Span localises within Reference when applicable: a line range
 	// ("lines 12-18"), a section heading ("## In Scope"), a factor name
 	// ("factor VI"), or empty for whole-document references.
@@ -87,7 +88,7 @@ type Citation struct {
 	// Excerpt is the verbatim quote being cited. Persisted so a
 	// citation survives the source moving — durable evidence, not a
 	// pointer.
-	Excerpt string `json:"excerpt,omitempty" yaml:"excerpt,omitempty" jsonschema:"description=Verbatim quote from the source being cited. Required for Kind=scout_brief since the scout's output is the load-bearing artifact. Strongly recommended for goals/doc kinds; the excerpt survives the source being moved or rewritten."`
+	Excerpt string `json:"excerpt,omitempty" yaml:"excerpt,omitempty" jsonschema:"description=Verbatim quote from the source being cited. Required for Kind=scout_brief and Kind=web — both sources are ephemeral relative to the citation (scout briefs are session-scoped; web pages change after the citation is captured). Strongly recommended for goals/doc; the excerpt survives the source being moved or rewritten."`
 }
 
 // DecisionProvenance captures the durable subset of the council

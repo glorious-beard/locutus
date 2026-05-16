@@ -178,9 +178,14 @@ func init() {
 			Rationale:       "Familiar to the team and a common default at this scale.",
 			RejectedBecause: "JSONB-equivalent storage is bolted on rather than first-class, which fights the analytics roadmap in GOALS.md.",
 			Citations: []spec.Citation{{
-				Kind:      "doc",
+				Kind:      "web",
 				Reference: "https://dev.mysql.com/doc/refman/8.0/en/json.html",
 				Excerpt:   "JSON values are stored as native JSON, but indexing requires generated columns.",
+			}, {
+				Kind:      "goals",
+				Reference: "GOALS.md",
+				Span:      "## Analytics workload",
+				Excerpt:   "Ad-hoc JSON queries against the events table must run without a separate analytics pipeline.",
 			}},
 		}},
 		Citations: []spec.Citation{{
