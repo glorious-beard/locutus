@@ -130,6 +130,21 @@ func (g *GeminiAdapter) runInner(ctx context.Context, req Request) (*Response, e
 	}
 	cfg.Tools = tools
 
+	// When custom function declarations combine with a built-in tool
+	// (GoogleSearch), Gemini's API requires
+	// tool_config.include_server_side_tool_invocations to be set
+	// explicitly — otherwise the API returns 400 INVALID_ARGUMENT
+	// "Please enable tool_config.include_server_side_tool_invocations
+	// to use Built-in tools with Function calling." Setting the flag
+	// asks the server to include its own GoogleSearch invocations in
+	// response content; the client doesn't have to act on those
+	// records, but the server-side guard demands the flag's presence
+	// as proof the caller is aware of mixed-tool mode.
+	if len(req.Tools) > 0 && req.Grounding {
+		trueVal := true
+		cfg.ToolConfig = &genai.ToolConfig{IncludeServerSideToolInvocations: &trueVal}
+	}
+
 	contents := buildGeminiContents(req.Messages)
 	return g.dispatch(ctx, req, contents, cfg)
 }
