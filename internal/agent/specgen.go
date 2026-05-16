@@ -100,6 +100,13 @@ type SpecGenRequest struct {
 	DocumentID   string
 	Existing     *ExistingSpec
 
+	// Imported is external content admitted into this generation pass
+	// via `locutus import`. Empty for `locutus refine` runs. The scout
+	// reads these alongside GOALS.md and the existing graph so its
+	// gap analysis covers the new content's axes; the workflow handles
+	// dispatch from there (DJ-124 Phase 6).
+	Imported []ImportedContent
+
 	// CritiqueRounds — advisory; see type comment.
 	CritiqueRounds int
 
@@ -337,6 +344,14 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 	prompt := buildSpecGenPrompt(req)
 
 	state := &PlanningState{Prompt: prompt, Round: 1, Existing: req.Existing}
+	// DJ-124 Phase 6: thread imported content through to PlanningState
+	// so the scout's projection (projectScout) can render it as scoping
+	// input for gap analysis. Empty for refine runs; populated by
+	// `locutus import`'s post-admission planning pass.
+	if len(req.Imported) > 0 {
+		state.Imported = make([]ImportedContent, len(req.Imported))
+		copy(state.Imported, req.Imported)
+	}
 
 	// DJ-123 Phase 3: wire a council-scoped in-flight Bluge index over
 	// RawProposal so spec_search calls from council agents return hits

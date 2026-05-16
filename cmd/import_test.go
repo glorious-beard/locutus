@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/chetan/locutus/internal/agent"
+	"github.com/chetan/locutus/internal/scaffold"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
@@ -321,6 +323,118 @@ Build a native iOS/Android app.
 	// No file should have been written.
 	_, err = fs.ReadFile(".borg/spec/features/feat-mobile-app.json")
 	assert.Error(t, err, "rejected admission should not persist a feature")
+}
+
+// TestRunImportThreadsImportedContentToScout locks the DJ-124 Phase 6
+// contract from the cmd-layer side: when `locutus import` runs the
+// post-admission planning pass, the admitted document body is threaded
+// through SpecGenRequest.Imported and reaches the scout's user message
+// via projectScout. End-to-end via RunImport with a fully scripted
+// workflow, asserting the scout receives an `## Imported content`
+// section containing the document body.
+func TestRunImportThreadsImportedContentToScout(t *testing.T) {
+	fs := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fs, "test-project"))
+	require.NoError(t, fs.WriteFile("GOALS.md", []byte("# Goals\nBuild collaboration tooling.\n"), 0o644))
+	// Drop the convergence agent so the workflow executor doesn't burn an
+	// extra LLM call after the council exits — mirrors TestRefineGoals*.
+	require.NoError(t, fs.Remove(".borg/agents/convergence.md"))
+
+	importedBody := "Admins need a live dashboard showing project health updates as work progresses."
+	input := []byte("# Real-time dashboard\n\n" + importedBody + "\n")
+
+	intakeJSON := `{"id":"feat-realtime-dashboard","title":"Realtime dashboard","accepted":true,"reason":"aligns with goals"}`
+	scout0 := `{
+		"domain_read":"team-collaboration tooling",
+		"technology_options":["transport: WebSocket vs SSE"],
+		"implicit_assumptions":["scale: 1k concurrent admins"],
+		"watch_outs":[],
+		"axes_open":[{
+			"id":"live-update-transport",
+			"description":"How do dashboard tiles receive live updates?",
+			"source_evidence":["Imported PRD requests real-time updates."],
+			"surfaced_by":["feat-realtime-dashboard"]
+		}],
+		"new_nodes":[
+			{"kind":"feature","id":"feat-realtime-dashboard","title":"Real-time dashboard","summary":"Admins see live updates.","decisions":[]}
+		],
+		"converged":false
+	}`
+	decisionJSON := `{
+		"id":"dec-websocket-transport",
+		"title":"Adopt WebSocket transport",
+		"rationale":"Bidirectional; low-latency; widely supported.",
+		"architect_rationale":"Imported PRD requires real-time updates.",
+		"confidence":0.9,
+		"alternatives":[{
+			"name":"Server-Sent Events",
+			"rationale":"Simpler unidirectional fit",
+			"rejected_because":"no client-to-server channel",
+			"citations":[{"kind":"web","reference":"https://html.spec.whatwg.org/sse","excerpt":"one-way only"}]
+		}],
+		"citations":[{"kind":"imported","reference":"dashboard","excerpt":"real-time updates"}],
+		"axes":["live-update-transport"],
+		"surfaced_by":["feat-realtime-dashboard"]
+	}`
+	featureJSON := `{
+		"id":"feat-realtime-dashboard",
+		"title":"Real-time dashboard",
+		"description":"Admins see live updates as events arrive over the WebSocket channel.",
+		"decisions":["dec-websocket-transport"]
+	}`
+	scoutConverged := `{
+		"domain_read":"team-collaboration tooling",
+		"technology_options":[],
+		"implicit_assumptions":[],
+		"watch_outs":[],
+		"axes_open":[],
+		"new_nodes":[],
+		"converged":true
+	}`
+
+	mock := agent.NewMockExecutor(
+		// Intake call (skipTriage=false drives this first).
+		agent.MockResponse{Response: &agent.AgentOutput{Content: intakeJSON, Model: "test-model"}},
+		// Planning pass — full DJ-124 council scripted.
+		agent.MockResponse{AgentID: "spec_scout", Response: &agent.AgentOutput{Content: scout0, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_decision_elaborator", Response: &agent.AgentOutput{Content: decisionJSON, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_feature_elaborator", Response: &agent.AgentOutput{Content: featureJSON, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_reconciler", Response: &agent.AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		agent.MockResponse{AgentID: "architect_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{AgentID: "devops_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{AgentID: "sre_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{AgentID: "cost_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		agent.MockResponse{AgentID: "spec_scout", Response: &agent.AgentOutput{Content: scoutConverged, Model: "m"}},
+	)
+
+	// skipTriage=false (run intake), noPlan=false (run planning pass).
+	result, err := RunImport(context.Background(), mock, fs, input, "docs/dashboard.md", "feature", false, false, false, nil)
+	require.NoError(t, err)
+	require.True(t, result.Accepted)
+	require.NotNil(t, result.Generated, "planning pass should fire and report a GenerationSummary")
+	assert.Equal(t, "feat-realtime-dashboard", result.FeatureID)
+
+	// The scout must have received the imported document body in an
+	// `## Imported content` section — proof that runFeatureGeneration
+	// threaded the admitted document through SpecGenRequest.Imported and
+	// the unified workflow projected it onto the scout's user message.
+	var scoutSawImport bool
+	for _, c := range mock.Calls() {
+		if c.Def.ID != "spec_scout" {
+			continue
+		}
+		for _, m := range c.Input.Messages {
+			if strings.Contains(m.Content, "## Imported content") && strings.Contains(m.Content, importedBody) {
+				scoutSawImport = true
+				break
+			}
+		}
+		if scoutSawImport {
+			break
+		}
+	}
+	assert.True(t, scoutSawImport,
+		"the scout's user message must include the imported document body — DJ-124 Phase 6 wires SpecGenRequest.Imported from cmd through to projectScout")
 }
 
 // TestRunImportWorkflowDryRunNoSideEffects verifies the workflow-

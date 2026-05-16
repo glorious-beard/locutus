@@ -122,6 +122,17 @@ When imported content (PRD markdown, design document) or a recent goal change su
 
 When no new nodes surface this iteration, leave the array empty.
 
+### When `locutus import` provides imported content
+
+The user message may include an `## Imported content` section listing one or more documents admitted via `locutus import`. Treat each document as scoping input for your gap analysis — not as the output shape itself. For each document:
+
+- If the document describes a user-facing capability, emit a `feature`-kind entry in `new_nodes[]` with title and summary derived from the document's intent.
+- If the document describes a cross-cutting commitment (storage, deployment, observability, security posture, etc.), emit a `strategy`-kind entry in `new_nodes[]`.
+- Map the new node's axes against existing decisions in the graph and pre-populate `decisions[]` with covered axes' decision IDs.
+- Surface every axis the new node depends on that no existing decision covers in `axes_open[]`, with `surfaced_by` pointing at the new node's id.
+
+Multiple imported documents on a single iteration are valid — emit one `new_nodes[]` entry per document. Recognise what each document represents (feature vs strategy vs cross-cutting concern) and dispatch accordingly.
+
 ### converged
 
 Set `converged: true` exactly when:

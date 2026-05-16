@@ -502,6 +502,119 @@ func TestMergeDecisionsAppendsAndTracksAxes(t *testing.T) {
 		"AxesOpen should drop the axis once a decision closes it")
 }
 
+// TestImportFlowUnifiedWithRefineWorkflow locks the DJ-124 Phase 6
+// contract: `locutus import`'s post-admission planning pass routes
+// through the same SpecGenerationWorkflow as `locutus refine`, with
+// the admitted document threaded through SpecGenRequest.Imported.
+//
+// The mock script mirrors TestGenerateSpecExercisesNewWorkflow but with
+// Imported populated. The scout sees the imported content (asserted by
+// inspecting the user message it receives), emits a NewSpecNode +
+// AxesOpen, the decisions fanout fires, the narrative fanout fires for
+// the new feature, critics pass, and the iter-1 scout returns
+// Converged:true. The resulting SpecProposal carries the feature with
+// resolved decision references.
+func TestImportFlowUnifiedWithRefineWorkflow(t *testing.T) {
+	fs := setupSpecGenFixtureDJ124(t)
+
+	scout0 := scoutBriefJSON(t, ScoutBrief{
+		DomainRead: "team-collaboration tooling",
+		AxesOpen: []OpenAxis{{
+			ID:             "live-update-transport",
+			Description:    "How do dashboard tiles receive live updates?",
+			SourceEvidence: []string{"imported PRD requests real-time updates"},
+			SurfacedBy:     []string{"feat-realtime-dashboard"},
+		}},
+		NewNodes: []NewSpecNode{{
+			Kind:      "feature",
+			ID:        "feat-realtime-dashboard",
+			Title:     "Real-time dashboard",
+			Summary:   "Admins see live updates of project health as work progresses.",
+			Decisions: []string{},
+		}},
+		Converged: false,
+	})
+	dec := decisionProposalJSON(t, RawDecisionProposal{
+		ID:        "dec-websocket-transport",
+		Title:     "Adopt WebSocket transport",
+		Rationale: "Bidirectional; low-latency; widely supported.",
+		Alternatives: []spec.Alternative{{
+			Name: "Server-Sent Events", Rationale: "Simpler unidirectional fit", RejectedBecause: "no client-to-server channel",
+			Citations: []spec.Citation{{Kind: "web", Reference: "https://html.spec.whatwg.org/sse", Excerpt: "one-way only"}},
+		}},
+		Citations:  []spec.Citation{{Kind: "imported", Reference: "dashboard.md", Excerpt: "real-time updates"}},
+		Axes:       []string{"live-update-transport"},
+		SurfacedBy: []string{"feat-realtime-dashboard"},
+	})
+	feat := featureProposalJSON(t, RawFeatureProposal{
+		ID:          "feat-realtime-dashboard",
+		Title:       "Real-time dashboard",
+		Description: "Admins see live updates of project health; tiles re-render over the WebSocket channel as events arrive.",
+		Decisions:   []string{"dec-websocket-transport"},
+	})
+	scout1 := scoutBriefJSON(t, ScoutBrief{
+		DomainRead: "team-collaboration tooling",
+		AxesOpen:   []OpenAxis{},
+		NewNodes:   []NewSpecNode{},
+		Converged:  true,
+	})
+
+	mock := NewMockExecutor(
+		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
+		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: dec, Model: "m"}},
+		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: feat, Model: "m"}},
+		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout1, Model: "m"}},
+	)
+
+	importedDocBody := "# Real-time dashboard\n\nAdmins see live updates of project health as work progresses; tiles re-render as events arrive."
+	wf := NewSpecGenerationWorkflow(nil, 5)
+	proposal, err := generateSpecWithWorkflow(context.Background(), mock, fs, SpecGenRequest{
+		GoalsBody: "Build collaboration tooling.",
+		Imported: []ImportedContent{{
+			Path: "dashboard.md",
+			Body: importedDocBody,
+		}},
+	}, wf)
+	require.NoError(t, err)
+	require.NotNil(t, proposal, "the unified workflow must produce a SpecProposal for import-driven runs")
+
+	// The imported document must have reached the scout's user message —
+	// the projection's projectScout emits an `## Imported content` section
+	// when state.Imported is non-empty.
+	calls := mock.Calls()
+	require.NotEmpty(t, calls, "at least one scout call should fire")
+	var scoutSawImport bool
+	for _, c := range calls {
+		if c.Def.ID != "spec_scout" {
+			continue
+		}
+		for _, m := range c.Input.Messages {
+			if strings.Contains(m.Content, "## Imported content") && strings.Contains(m.Content, "dashboard.md") && strings.Contains(m.Content, importedDocBody) {
+				scoutSawImport = true
+				break
+			}
+		}
+		if scoutSawImport {
+			break
+		}
+	}
+	assert.True(t, scoutSawImport,
+		"the scout's user message must include the imported document body so its gap analysis covers it")
+
+	require.Len(t, proposal.Features, 1, "one feature should land from the imported document")
+	assert.Equal(t, "feat-realtime-dashboard", proposal.Features[0].ID)
+	assert.Equal(t, []string{"dec-websocket-transport"}, proposal.Features[0].Decisions,
+		"feature should reference the decision minted for the imported document's open axis")
+
+	require.Len(t, proposal.Decisions, 1, "one decision should land")
+	assert.Equal(t, "dec-websocket-transport", proposal.Decisions[0].ID)
+}
+
 // TestMergeNarrativeUpdatesFeatureBody confirms the merge replaces a
 // matching feature entry's body and appends new entries that didn't
 // exist in the prior RawProposal.

@@ -342,11 +342,16 @@ func runFeatureGeneration(ctx context.Context, llm agent.AgentExecutor, fsys spe
 		return nil, nil
 	}
 	existing := loadExistingSpec(fsys)
+	// DJ-124 Phase 6: thread the admitted document through SpecGenRequest.Imported
+	// so the scout sees it as scoping input alongside GOALS.md. DocumentBody /
+	// DocumentID stay populated for any legacy projection path that still reads
+	// them; the DJ-124 workflow reads from Imported.
 	gen, err := runSpecGeneration(ctx, llm, fsys, agent.SpecGenRequest{
 		GoalsBody:    goalsBody,
 		DocumentBody: meta.body,
 		DocumentID:   meta.id,
 		Existing:     existing,
+		Imported:     []agent.ImportedContent{{Path: meta.id, Body: meta.body}},
 		Sink:         sink,
 	})
 	if err != nil || gen == nil {
