@@ -139,37 +139,42 @@ func (i *InFlightIndex) Close() error {
 
 // inFlightProposal mirrors the on-the-wire RawSpecProposal shape that
 // assembleRawProposal / assembleRevisedRawProposal emit into
-// PlanningState.RawProposal. Defined locally because internal/agent
-// imports internal/search — the reverse import would cycle. JSON tags
-// only; this struct never travels into an LLM-facing OutputSchema (see
-// CLAUDE.md on jsonschema tagging).
+// PlanningState.RawProposal. Under DJ-124 decisions are top-level
+// RawDecisionProposal entries (with id + axes + surfaced_by); features
+// and strategies reference them by id. Defined locally because
+// internal/agent imports internal/search — the reverse import would
+// cycle. JSON tags only; this struct never travels into an LLM-facing
+// OutputSchema (see CLAUDE.md on jsonschema tagging).
 type inFlightProposal struct {
 	Features   []inFlightFeature  `json:"features"`
 	Strategies []inFlightStrategy `json:"strategies"`
+	Decisions  []inFlightDecision `json:"decisions"`
 }
 
 type inFlightFeature struct {
-	ID                 string             `json:"id"`
-	Summary            string             `json:"summary"`
-	Title              string             `json:"title"`
-	Description        string             `json:"description"`
-	AcceptanceCriteria []string           `json:"acceptance_criteria"`
-	Decisions          []inFlightDecision `json:"decisions"`
+	ID                 string   `json:"id"`
+	Summary            string   `json:"summary"`
+	Title              string   `json:"title"`
+	Description        string   `json:"description"`
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+	Decisions          []string `json:"decisions"`
 }
 
 type inFlightStrategy struct {
-	ID        string             `json:"id"`
-	Summary   string             `json:"summary"`
-	Title     string             `json:"title"`
-	Kind      string             `json:"kind"`
-	Body      string             `json:"body"`
-	Decisions []inFlightDecision `json:"decisions"`
+	ID        string   `json:"id"`
+	Summary   string   `json:"summary"`
+	Title     string   `json:"title"`
+	Kind      string   `json:"kind"`
+	Body      string   `json:"body"`
+	Decisions []string `json:"decisions"`
 }
 
-// inFlightDecision is the inline-decision shape: no ID (the reconciler
-// assigns canonical IDs later; the index synthesises a per-parent slug
-// so the document identifier is unique), no InfluencedBy.
+// inFlightDecision is the post-DJ-124 top-level decision shape: id
+// authored by the per-axis elaborator (the index uses it directly
+// rather than synthesising a per-parent slug), plus axes and
+// surfaced_by back-references the elaborator emits.
 type inFlightDecision struct {
+	ID                 string             `json:"id"`
 	Summary            string             `json:"summary"`
 	Title              string             `json:"title"`
 	Rationale          string             `json:"rationale"`
@@ -177,6 +182,8 @@ type inFlightDecision struct {
 	Alternatives       []spec.Alternative `json:"alternatives"`
 	Citations          []spec.Citation    `json:"citations"`
 	ArchitectRationale string             `json:"architect_rationale"`
+	Axes               []string           `json:"axes"`
+	SurfacedBy         []string           `json:"surfaced_by"`
 }
 
 // decodeInFlightDocs parses the RawProposal JSON and returns the Bluge
@@ -215,7 +222,6 @@ func decodeInFlightDocs(rawProposal string) ([]*bluge.Document, error) {
 			Description:        f.Description,
 			AcceptanceCriteria: f.AcceptanceCriteria,
 		}, ""))
-		docs = append(docs, inlineDecisionDocs(f.ID, f.Decisions)...)
 	}
 	for _, s := range prop.Strategies {
 		if s.ID == "" {
@@ -227,25 +233,16 @@ func decodeInFlightDocs(rawProposal string) ([]*bluge.Document, error) {
 			Summary: s.Summary,
 			Kind:    spec.StrategyKind(s.Kind),
 		}, s.Body))
-		docs = append(docs, inlineDecisionDocs(s.ID, s.Decisions)...)
 	}
-	return docs, nil
-}
-
-// inlineDecisionDocs turns the inline-decision array on a feature or
-// strategy into standalone Bluge documents. Inline decisions have no
-// canonical ID at this council stage (the reconciler assigns those
-// later), so the index synthesises a stable per-parent slug. The "dec-"
-// prefix means slugTokens emits a meaningful body — "inline parent id
-// idx" — which is what the slug-body field would otherwise carry.
-func inlineDecisionDocs(parentID string, decisions []inFlightDecision) []*bluge.Document {
-	if len(decisions) == 0 {
-		return nil
-	}
-	docs := make([]*bluge.Document, 0, len(decisions))
-	for idx, d := range decisions {
+	// Top-level decisions under DJ-124 — each becomes its own Bluge
+	// document keyed by the elaborator-authored id (no per-parent slug
+	// synthesis is needed; the id is already canonical).
+	for _, d := range prop.Decisions {
+		if d.ID == "" {
+			continue
+		}
 		dec := spec.Decision{
-			ID:           fmt.Sprintf("dec-inline-%s-%d", parentID, idx),
+			ID:           d.ID,
 			Title:        d.Title,
 			Summary:      d.Summary,
 			Rationale:    d.Rationale,
@@ -260,5 +257,5 @@ func inlineDecisionDocs(parentID string, decisions []inFlightDecision) []*bluge.
 		}
 		docs = append(docs, decisionDoc(dec, ""))
 	}
-	return docs
+	return docs, nil
 }

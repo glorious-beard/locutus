@@ -111,16 +111,19 @@ const (
 	scoutResp     = `{"domain_read":"a project","technology_options":["x: a vs b"],"implicit_assumptions":["scale: 100k. Default: 1k concurrent"],"watch_outs":["x"]}`
 	criticEmpty   = `{"issues":[]}`
 	criticDangler = `{"issues":["feature feat-x references dec-missing but it is not generated"]}`
-	// rawProposalCanonical is a RawSpecProposal with one feature + one
-	// strategy, each with one inline decision. After ApplyReconciliation
-	// (with an empty verdict), each inline decision becomes its own
-	// canonical Decision via a slug-derived ID.
+	// rawProposalCanonical is a RawSpecProposal under DJ-124: one feature
+	// + one strategy referencing a top-level Decision by id. After
+	// ApplyReconciliation (with an empty verdict), the top-level
+	// RawDecisionProposal is field-mapped to a canonical Decision and
+	// the feature / strategy references are preserved.
 	rawProposalCanonical = `{
-		"features": [{"id":"feat-x","title":"X","description":"a feature","decisions":[{"title":"Use D","rationale":"r","confidence":0.8,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]}]}],
-		"strategies": [{"id":"strat-x","title":"S","kind":"foundational","body":"prose"}]
+		"features": [{"id":"feat-x","title":"X","description":"a feature","decisions":["dec-use-d"]}],
+		"strategies": [{"id":"strat-x","title":"S","kind":"foundational","body":"prose","decisions":["dec-use-d"]}],
+		"decisions": [{"id":"dec-use-d","title":"Use D","rationale":"r","confidence":0.8,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]}]
 	}`
 	// reconcileEmpty is the reconciler's "no merging needed" verdict.
-	// Every inline decision becomes its own canonical Decision.
+	// Verdict content is no-op under DJ-124; the value is preserved
+	// for compatibility with the unchanged reconciler agent prompt.
 	reconcileEmpty = `{"actions":[]}`
 )
 
@@ -265,8 +268,9 @@ func TestGenerateSpecCritiqueRevisesProposal(t *testing.T) {
 	// scout → propose (raw) → reconcile → 4 critics (1 flags, 3 empty)
 	// → revise → reconcile_revise = 9 calls.
 	rawRevised := `{
-		"features": [{"id":"feat-x","title":"X","description":"a feature","decisions":[{"title":"Use D","rationale":"r","confidence":0.8,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]},{"title":"Cache reads","rationale":"r","confidence":0.7,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]}]}],
-		"strategies": [{"id":"strat-x","title":"S","kind":"foundational","body":"prose"}]
+		"features": [{"id":"feat-x","title":"X","description":"a feature","decisions":["dec-use-d","dec-cache-reads"]}],
+		"strategies": [{"id":"strat-x","title":"S","kind":"foundational","body":"prose","decisions":["dec-use-d"]}],
+		"decisions": [{"id":"dec-use-d","title":"Use D","rationale":"r","confidence":0.8,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]},{"id":"dec-cache-reads","title":"Cache reads","rationale":"r","confidence":0.7,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why"}]}]
 	}`
 	mock := NewMockExecutor(
 		MockResponse{Response: &AgentOutput{Content: scoutResp, Model: "m"}},

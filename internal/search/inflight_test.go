@@ -25,31 +25,14 @@ const fixtureInFlightProposal = `{
       "summary": "Live metric tiles updated every five seconds.",
       "description": "Operators see latency error and throughput tiles that refresh without page reload.",
       "acceptance_criteria": ["When a metric value changes then the tile updates within five seconds."],
-      "decisions": [
-        {
-          "title": "WebSocket transport",
-          "summary": "Push updates over WebSocket rather than polling.",
-          "rationale": "WebSocket bidirectional channel keeps the wire cost per tile bounded.",
-          "confidence": 0.8
-        }
-      ]
+      "decisions": ["dec-websocket-transport"]
     },
     {
       "id": "feat-operator-login",
       "title": "Operator login",
       "summary": "Authenticate operators via SSO.",
       "description": "Operators sign in through the corporate identity provider; no local password store.",
-      "decisions": [
-        {
-          "title": "Adopt WorkOS for SSO",
-          "summary": "Use WorkOS as the identity provider.",
-          "rationale": "WorkOS bundles OIDC and directory sync in one vendor.",
-          "alternatives": [
-            {"name": "Auth0", "rationale": "Broader feature set.", "rejected_because": "Higher operational cost without matching value."}
-          ],
-          "architect_rationale": "Centralises identity at the SSO layer."
-        }
-      ]
+      "decisions": ["dec-adopt-workos"]
     }
   ],
   "strategies": [
@@ -59,13 +42,32 @@ const fixtureInFlightProposal = `{
       "summary": "Adopt Postgres with pgvector for OLTP and embeddings.",
       "kind": "data",
       "body": "Postgres with pgvector keeps embeddings co-located with OLTP rows so transactional and similarity queries share one session.",
-      "decisions": [
-        {
-          "title": "Postgres with pgvector",
-          "summary": "Use the pgvector extension on Postgres for embeddings.",
-          "rationale": "Single-store property dominates over the marginal performance gap a dedicated vector store would offer."
-        }
-      ]
+      "decisions": ["dec-postgres-pgvector"]
+    }
+  ],
+  "decisions": [
+    {
+      "id": "dec-websocket-transport",
+      "title": "WebSocket transport",
+      "summary": "Push updates over WebSocket rather than polling.",
+      "rationale": "WebSocket bidirectional channel keeps the wire cost per tile bounded.",
+      "confidence": 0.8
+    },
+    {
+      "id": "dec-adopt-workos",
+      "title": "Adopt WorkOS for SSO",
+      "summary": "Use WorkOS as the identity provider.",
+      "rationale": "WorkOS bundles OIDC and directory sync in one vendor.",
+      "alternatives": [
+        {"name": "Auth0", "rationale": "Broader feature set.", "rejected_because": "Higher operational cost without matching value."}
+      ],
+      "architect_rationale": "Centralises identity at the SSO layer."
+    },
+    {
+      "id": "dec-postgres-pgvector",
+      "title": "Postgres with pgvector",
+      "summary": "Use the pgvector extension on Postgres for embeddings.",
+      "rationale": "Single-store property dominates over the marginal performance gap a dedicated vector store would offer."
     }
   ]
 }`
@@ -93,7 +95,7 @@ func TestInFlightIndexBuildsFromRawProposal(t *testing.T) {
 	}{
 		{"feature title hit", "dashboard", string(spec.KindFeature), "feat-realtime-dashboard"},
 		{"strategy summary hit", "pgvector", string(spec.KindStrategy), "strat-storage-platform"},
-		{"inline decision hit", "workos", string(spec.KindDecision), "dec-inline-feat-operator-login-0"},
+		{"top-level decision hit", "workos", string(spec.KindDecision), "dec-adopt-workos"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -137,13 +139,15 @@ func TestInFlightIndexRebuildReplacesPriorState(t *testing.T) {
           "title": "Billing console",
           "summary": "Operators see ledger entries grouped by tenant.",
           "description": "Tenant-scoped ledger view with monthly rollups.",
-          "decisions": [
-            {
-              "title": "Stripe as billing provider",
-              "summary": "Use Stripe for ledger and invoicing.",
-              "rationale": "Stripe handles the ledger primitives we would otherwise build."
-            }
-          ]
+          "decisions": ["dec-stripe-billing"]
+        }
+      ],
+      "decisions": [
+        {
+          "id": "dec-stripe-billing",
+          "title": "Stripe as billing provider",
+          "summary": "Use Stripe for ledger and invoicing.",
+          "rationale": "Stripe handles the ledger primitives we would otherwise build."
         }
       ]
     }`
@@ -156,13 +160,13 @@ func TestInFlightIndexRebuildReplacesPriorState(t *testing.T) {
 	fresh, _, err := idx.Search("stripe", Options{})
 	require.NoError(t, err)
 	require.NotEmpty(t, fresh, "stripe should land against the replacement proposal")
-	// "stripe" appears only in the inline decision; the feature itself
-	// doesn't mention the vendor. Assert the decision under feat-billing
-	// is among the hits — exact ranking against the feature is not the
+	// "stripe" appears only in the decision content; the feature itself
+	// doesn't mention the vendor. Assert the canonical decision id is
+	// among the hits — exact ranking against the feature is not the
 	// invariant under test here (Rebuild atomicity is).
 	var sawBillingDecision bool
 	for _, h := range fresh {
-		if h.ID == "dec-inline-feat-billing-0" {
+		if h.ID == "dec-stripe-billing" {
 			sawBillingDecision = true
 		}
 	}

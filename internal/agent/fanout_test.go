@@ -86,9 +86,9 @@ func TestExecuteRoundFanoutSpawnsOnePerItem(t *testing.T) {
 	}
 
 	mock := NewMockExecutor(
-		MockResponse{Response: &AgentOutput{Content: `{"id":"feat-a","title":"A","decisions":[]}`, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: `{"id":"feat-b","title":"B","decisions":[]}`, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: `{"id":"feat-c","title":"C","decisions":[]}`, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: `{"id":"feat-a","title":"A","decisions":["dec-a"]}`, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: `{"id":"feat-b","title":"B","decisions":["dec-b"]}`, Model: "m"}},
+		MockResponse{Response: &AgentOutput{Content: `{"id":"feat-c","title":"C","decisions":["dec-c"]}`, Model: "m"}},
 	)
 
 	ex := &WorkflowExecutor[PlanningState]{
@@ -162,7 +162,7 @@ func TestExecuteRoundFanoutEmptyOutlineNoOps(t *testing.T) {
 func TestAssembleRawProposal(t *testing.T) {
 	state := &PlanningState{
 		ElaboratedFeatures: []string{
-			`{"id":"feat-a","title":"A","decisions":[{"title":"X"}]}`,
+			`{"id":"feat-a","title":"A","decisions":["dec-x"]}`,
 			`{"id":"feat-b","title":"B","decisions":[]}`,
 		},
 		ElaboratedStrategies: []string{

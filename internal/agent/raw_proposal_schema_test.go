@@ -7,15 +7,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRawProposalSchemasRequireDecisions locks in Bug C's fix
-// (DJ-105): both RawFeatureProposal and RawStrategyProposal MUST
-// require a non-empty Decisions array in their strict-mode JSON
-// schema. Prior to DJ-105, `Decisions []InlineDecisionProposal
-// json:"decisions,omitempty"` made the field optional in strict
-// mode, so providers like gemini-3.1-pro-preview could emit
-// structurally-valid responses without any decisions and the
-// elaborator dispatch path would accept them — leading to dangling-
-// reference validation failures downstream.
+// TestRawProposalSchemasRequireDecisions locks in DJ-105's fix as
+// preserved under DJ-124: both RawFeatureProposal and
+// RawStrategyProposal MUST require a non-empty Decisions array in
+// their strict-mode JSON schema. Under DJ-124 the field type flipped
+// from `[]InlineDecisionProposal` to `[]string` (decision id
+// references rather than inline objects); the minItems=1 constraint
+// applies to arrays regardless of element type, so the strict-mode
+// rejection of decision-less responses at the API layer still holds.
 //
 // Strict-mode enforcement at the API layer is tighter than any
 // post-receive validation we could add: the model cannot return a

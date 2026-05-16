@@ -51,10 +51,14 @@ func TestProjectClusterFindingsIncludesUnmatchedAndExisting(t *testing.T) {
 func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 	original := RawSpecProposal{
 		Features: []RawFeatureProposal{
-			{ID: "feat-a", Title: "A", Description: "first", Decisions: []InlineDecisionProposal{{Title: "use foo"}}},
+			{ID: "feat-a", Title: "A", Description: "first", Decisions: []string{"dec-use-foo"}},
 		},
 		Strategies: []RawStrategyProposal{
-			{ID: "strat-x", Title: "Stack", Kind: "foundational", Body: "prose", Decisions: []InlineDecisionProposal{{Title: "Next.js"}}},
+			{ID: "strat-x", Title: "Stack", Kind: "foundational", Body: "prose", Decisions: []string{"dec-nextjs"}},
+		},
+		Decisions: []RawDecisionProposal{
+			{ID: "dec-use-foo", Title: "use foo"},
+			{ID: "dec-nextjs", Title: "Next.js"},
 		},
 	}
 	raw, _ := json.Marshal(original)
@@ -81,7 +85,7 @@ func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 
 		assert.Contains(t, body, "feat-a")
 		assert.Contains(t, body, "## Prior content", "header signals revise mode")
-		assert.Contains(t, body, "use foo", "prior decision title surfaced")
+		assert.Contains(t, body, "dec-use-foo", "prior decision id reference surfaced under DJ-124")
 		assert.Contains(t, body, "add PII encryption", "verbatim cluster finding")
 		assert.Contains(t, body, "clarify scale")
 		// Revise/add discrimination directive lives in the elaborator
@@ -109,7 +113,7 @@ func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 		body := msgs[0].Content
 
 		assert.Contains(t, body, "strat-x")
-		assert.Contains(t, body, "Next.js", "prior strategy decision title surfaced")
+		assert.Contains(t, body, "dec-nextjs", "prior strategy decision id reference surfaced under DJ-124")
 		assert.Contains(t, body, "name the IaC tool")
 	})
 

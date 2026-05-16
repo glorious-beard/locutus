@@ -1,24 +1,33 @@
-// Package agent — reconciliation surgery for the Phase 2 council.
+// Package agent — reconciliation surgery for the post-DJ-124 council.
 //
-// The architect emits inline decisions under each feature and strategy
-// (RawSpecProposal). The reconciler agent clusters those inline decisions
-// across the proposal and emits a ReconciliationVerdict describing what
-// to do with each cluster: dedupe, resolve_conflict, or reuse_existing.
-// Clusters not mentioned in the verdict are implicitly kept_separate —
-// each unmentioned inline decision becomes its own canonical Decision.
+// Under DJ-124, decisions are no longer inlined under each feature or
+// strategy. The per-axis decision-elaborator produces canonical
+// RawDecisionProposal entries (top-level RawSpecProposal.Decisions[]),
+// and the narrative-elaborators reference those by id under each
+// feature / strategy's Decisions[] field. The reconciler's job is now
+// limited to:
 //
-// ApplyReconciliation is the deterministic Go function that consumes the
-// verdict + raw proposal + existing-spec snapshot and produces a clean
-// SpecProposal with shared decisions and assigned IDs. All judgment is
-// in the LLM (the verdict); all surgery is in code (this file).
+//   - field-mapping each RawDecisionProposal into a canonical
+//     DecisionProposal (id minting on the rare entry without an id;
+//     suffixing on slug collisions);
+//   - validating that every Feature.Decisions / Strategy.Decisions id
+//     resolves to either a new decision in the output or an existing
+//     decision in ExistingSpec — dangling references are surfaced as
+//     integrity_violation AppliedAction entries so the council's
+//     critic loop can address them.
+//
+// The reconciler agent's verdict (ReconciliationVerdict) is still parsed
+// for compatibility with the unchanged spec_reconciler.md prompt and
+// schema, but its content is ignored by ApplyReconciliation. Phase 5's
+// workflow rewrite will remove the reconciler agent step entirely; this
+// stage keeps the schema-level types stable so the agent's strict-mode
+// output continues to validate at the API layer.
 
 package agent
 
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -29,25 +38,25 @@ import (
 // It parses the upstream RawSpecProposal and the reconciler agent's
 // verdict, runs ApplyReconciliation, and returns the canonical
 // SpecProposal as JSON (for state.ProposedSpec) plus the applied actions
-// (so callers can fire cascade rewrites for conflict resolutions).
+// (so callers can surface integrity violations downstream).
 //
-// The verdict JSON is stripped of any markdown code fences before
-// parsing — a defensive measure for the post-DJ-094 reconciler. When
-// tools are attached on Gemini routes, the API silently disables JSON
-// mode (plugins/googlegenai/gemini.go:311), so the model may wrap its
-// output in ```json ... ``` despite the schema being injected as
-// prompt documentation. Stripping fences keeps the parse strict
-// downstream without forcing the model to comply with a constraint
-// the API isn't enforcing.
+// Verdict JSON is parsed (with fence-stripping) but its content is
+// ignored; the canonical proposal is derived purely from the raw
+// proposal. TODO Phase 5: remove the verdict step entirely once the
+// workflow no longer dispatches spec_reconciler.
 func mergeReconcile(rawProposalJSON, verdictJSON string, existing *ExistingSpec) (string, []AppliedAction, error) {
 	var raw RawSpecProposal
 	if err := json.Unmarshal([]byte(rawProposalJSON), &raw); err != nil {
 		return "", nil, fmt.Errorf("parse raw proposal: %w", err)
 	}
+	// Best-effort: the verdict is no-op for the new path but we still
+	// parse it so a malformed reconciler agent output surfaces as a
+	// workflow concern rather than silently passing through. A parse
+	// error here is not fatal — we proceed with an empty verdict and
+	// let the field-mapping path produce the canonical proposal.
 	var verdict ReconciliationVerdict
-	if err := json.Unmarshal([]byte(stripJSONFences(verdictJSON)), &verdict); err != nil {
-		return "", nil, fmt.Errorf("parse verdict: %w", err)
-	}
+	_ = json.Unmarshal([]byte(stripJSONFences(verdictJSON)), &verdict)
+
 	canonical, applied, err := ApplyReconciliation(&raw, verdict, existing)
 	if err != nil {
 		return "", nil, err
@@ -89,8 +98,10 @@ func stripJSONFences(s string) string {
 
 // appendConflictActions filters the applied actions for conflict
 // resolutions (the only kind that triggers cascade rewrites) and appends
-// them to the running list on PlanningState. Dedupe and reuse_existing
-// don't change a parent's prose intent — only resolve_conflict does.
+// them to the running list on PlanningState. Under DJ-124 the reconciler
+// no longer emits resolve_conflict actions; the filter is preserved for
+// telemetry consumers that may inspect the slice but the typical result
+// is an empty list.
 func appendConflictActions(existing []AppliedAction, applied []AppliedAction) []AppliedAction {
 	for _, a := range applied {
 		if a.Kind == "resolve_conflict" {
@@ -101,109 +112,72 @@ func appendConflictActions(existing []AppliedAction, applied []AppliedAction) []
 }
 
 // ReconciliationVerdict is the spec_reconciler agent's structured output.
-// It describes what to do with each cluster of inline decisions across
-// the raw proposal.
+// Under DJ-124 its content is ignored by ApplyReconciliation — the
+// reconciler agent's prompt and schema are preserved only so the agent's
+// strict-mode output continues to validate at the API layer pending
+// Phase 5's workflow rewrite.
 type ReconciliationVerdict struct {
-	Actions []ReconciliationAction `json:"actions,omitempty" jsonschema:"description=Cluster resolutions across the raw proposal. Each action names a kind (dedupe / resolve_conflict / reuse_existing) and the source inline decisions it operates on. Inline decisions not referenced by any action are implicitly kept separate (one canonical decision minted per leftover)."`
+	Actions []ReconciliationAction `json:"actions,omitempty" jsonschema:"description=Cluster resolutions across the raw proposal. Each action names a kind (dedupe / resolve_conflict / reuse_existing) and the source inline decisions it operates on. Under DJ-124 the workflow ignores verdict content; the field is retained for compatibility with the unchanged reconciler agent prompt."`
 }
 
-// ReconciliationAction is one cluster's resolution. Sources point at
-// specific (parent, decision-index) tuples in the RawSpecProposal so
-// ApplyReconciliation can mechanically rewrite parents to reference
-// the canonical decision.
-//
-// Action kinds:
-//   - "dedupe":           identical decisions → one canonical.
-//   - "resolve_conflict": incompatible decisions on the same question →
-//                         canonical survives; loser + rejected_because →
-//                         canonical.alternatives[]; caller fires cascade
-//                         rewrite for affected nodes.
-//   - "reuse_existing":   cluster maps to an existing-spec decision; reuse
-//                         that ID via existing_id instead of minting a new
-//                         one. Canonical field is unused.
-//
-// keep_separate is implicit: any inline decision not referenced by an
-// action becomes its own canonical Decision with a slug-derived ID.
+// ReconciliationAction is one cluster's resolution. Canonical and Loser
+// are opaque json.RawMessage values — the reconciler agent's prompt
+// (unchanged in this stage) still describes them as inline decisions,
+// but ApplyReconciliation never reads them. TODO Phase 5: remove the
+// reconciler step and these types.
 type ReconciliationAction struct {
-	Kind            string                  `json:"kind" jsonschema:"enum=dedupe,enum=resolve_conflict,enum=reuse_existing,description=The cluster's resolution kind. dedupe = identical decisions across sources collapsed onto one canonical; resolve_conflict = incompatible decisions on the same question; canonical survives and loser is recorded as an alternative; reuse_existing = cluster maps to an existing spec decision (use existing_id instead of minting)."`
-	Sources         []DecisionSourceRef     `json:"sources" jsonschema:"minItems=1,description=The inline decisions this action operates on; identified by (parent_kind; parent_id; index) tuples within the input RawSpecProposal."`
-	Canonical       *InlineDecisionProposal `json:"canonical,omitempty" jsonschema:"description=The canonical decision content for this cluster. Required for kind=dedupe and kind=resolve_conflict; unused for kind=reuse_existing."`
-	Loser           *InlineDecisionProposal `json:"loser,omitempty" jsonschema:"description=For kind=resolve_conflict only: the losing decision content. Folded into Canonical.Alternatives with RejectedBecause as the rejection reason."`
-	RejectedBecause string                  `json:"rejected_because,omitempty" jsonschema:"description=For kind=resolve_conflict only: one to two sentences explaining why Loser was rejected in favor of Canonical."`
-	ExistingID      string                  `json:"existing_id,omitempty" jsonschema:"description=For kind=reuse_existing only: the id (starting 'dec-') of the existing decision the cluster maps to. Must be a real id from the existing spec."`
+	Kind            string              `json:"kind" jsonschema:"enum=dedupe,enum=resolve_conflict,enum=reuse_existing,description=The cluster's resolution kind. Retained for compatibility with the unchanged reconciler agent prompt; verdict content is ignored under DJ-124."`
+	Sources         []DecisionSourceRef `json:"sources" jsonschema:"minItems=1,description=The inline decisions this action operates on; identified by (parent_kind; parent_id; index) tuples within the input RawSpecProposal. Ignored downstream under DJ-124."`
+	Canonical       json.RawMessage     `json:"canonical,omitempty" jsonschema:"description=Opaque object the reconciler agent emits for dedupe / resolve_conflict actions. Ignored by ApplyReconciliation under DJ-124."`
+	Loser           json.RawMessage     `json:"loser,omitempty" jsonschema:"description=Opaque object the reconciler agent emits for resolve_conflict actions. Ignored under DJ-124."`
+	RejectedBecause string              `json:"rejected_because,omitempty" jsonschema:"description=For kind=resolve_conflict only: one to two sentences explaining why Loser was rejected in favor of Canonical. Ignored under DJ-124."`
+	ExistingID      string              `json:"existing_id,omitempty" jsonschema:"description=For kind=reuse_existing only: the id (starting 'dec-') of the existing decision the cluster maps to. Ignored under DJ-124."`
 }
 
 // DecisionSourceRef pinpoints one inline decision in a RawSpecProposal.
-// Parent kind is "feature" or "strategy"; ParentID is the feature/strategy
-// ID; Index is the position in that parent's decisions[] slice.
+// Retained for verdict-shape compatibility under DJ-124; ApplyReconciliation
+// uses it only when recording AffectedNodes on integrity_violation entries.
 type DecisionSourceRef struct {
 	ParentKind string `json:"parent_kind"`
 	ParentID   string `json:"parent_id"`
 	Index      int    `json:"index"`
 }
 
-// AppliedAction records what ApplyReconciliation did with one verdict
-// action. Returned to callers so they know which canonical IDs landed
-// where, and which conflicts fired (so the caller can trigger cascade
-// rewrites for affected feature/strategy nodes).
+// AppliedAction records what ApplyReconciliation did. Under DJ-124 the
+// primary use is recording integrity_violation entries for feature /
+// strategy decision references that don't resolve against the new +
+// existing decision set; the workflow's critic loop surfaces these.
 type AppliedAction struct {
-	Kind          string              // mirrors ReconciliationAction.Kind
-	CanonicalID   string              // ID assigned (or reused) for the cluster
-	AffectedNodes []DecisionSourceRef // sources in the cluster — feature/strategy IDs whose prose may need cascade-rewrite
+	Kind          string              // "integrity_violation" under DJ-124; reserved for future categories
+	CanonicalID   string              // the dangling decision id for integrity_violation
+	AffectedNodes []DecisionSourceRef // parent feature/strategy whose Decisions[] carried the bad ref
 }
 
-// ApplyReconciliation transforms a RawSpecProposal + verdict into a
-// canonical SpecProposal with shared, ID'd decisions. Pure function:
-// same inputs → same outputs.
+// ApplyReconciliation field-maps a RawSpecProposal into a SpecProposal.
+// Pure function: same inputs → same outputs. Under DJ-124 the verdict is
+// ignored.
 //
 // Algorithm:
-//  1. Walk verdict.Actions and apply each. For each action, mark its
-//     source inline decisions as "claimed" so they don't get duplicated
-//     in step 2. Mint or reuse the canonical decision's ID.
-//  2. Walk every parent's inline decisions. For each unclaimed decision,
-//     mint a canonical decision with a slug-derived ID and record the
-//     reference on the parent.
-//  3. Emit FeatureProposal / StrategyProposal with decision-id references
-//     and a shared top-level decisions[] array.
-//
-// IDs are deterministic: dec-<slug-of-canonical-title>. Collisions (two
-// distinct canonical titles slugifying to the same string) get -2, -3
-// suffixes appended.
-//
-// existing, when non-nil, supplies decisions whose IDs may be reused
-// via the "reuse_existing" action; ApplyReconciliation does not mutate
-// or re-emit existing decisions, just references them.
+//  1. For each raw.Decisions[i], mint a canonical DecisionProposal:
+//     preserve raw.ID when set (suffix on collision against existing or
+//     prior new decisions); else mint via mintDecisionID.
+//  2. For each raw.Features[i] and raw.Strategies[i], emit the matching
+//     proposal preserving Decisions[] ids verbatim.
+//  3. Validate every Decisions[] id resolves to a new decision in the
+//     output or an existing decision in ExistingSpec; surface dangling
+//     references as integrity_violation AppliedAction entries.
 func ApplyReconciliation(raw *RawSpecProposal, verdict ReconciliationVerdict, existing *ExistingSpec) (*SpecProposal, []AppliedAction, error) {
+	_ = verdict // verdict content is no-op pending Phase 5 workflow rewrite
 	if raw == nil {
 		return &SpecProposal{}, nil, nil
 	}
 
 	out := &SpecProposal{}
-	applied := make([]AppliedAction, 0, len(verdict.Actions))
+	var applied []AppliedAction
 
-	// Track which (parent_kind, parent_id, index) tuples have been
-	// claimed by an action so the implicit-keep-separate pass doesn't
-	// emit them twice.
-	claimed := make(map[string]struct{})
-	claimKey := func(s DecisionSourceRef) string {
-		return fmt.Sprintf("%s/%s/%d", s.ParentKind, s.ParentID, s.Index)
-	}
-
-	// per-parent map of inline-decision-index → canonical-id, used to
-	// rewrite each parent's decisions[] into a list of IDs at the end.
-	type parentDecisionRefs struct {
-		ids []string
-	}
-	featureRefs := make(map[string]*parentDecisionRefs, len(raw.Features))
-	for _, f := range raw.Features {
-		featureRefs[f.ID] = &parentDecisionRefs{}
-	}
-	strategyRefs := make(map[string]*parentDecisionRefs, len(raw.Strategies))
-	for _, s := range raw.Strategies {
-		strategyRefs[s.ID] = &parentDecisionRefs{}
-	}
-
-	// Existing decision IDs (for ID-collision avoidance during minting).
+	// usedIDs tracks ids already taken across the existing spec and the
+	// new decisions emitted so far, so mintDecisionID can suffix on
+	// collision deterministically.
 	usedIDs := make(map[string]struct{})
 	if existing != nil {
 		for _, d := range existing.Decisions {
@@ -211,162 +185,33 @@ func ApplyReconciliation(raw *RawSpecProposal, verdict ReconciliationVerdict, ex
 		}
 	}
 
-	addDecisionRef := func(s DecisionSourceRef, id string) error {
-		switch s.ParentKind {
-		case "feature":
-			refs, ok := featureRefs[s.ParentID]
-			if !ok {
-				return fmt.Errorf("reconcile: source feature %q not in proposal", s.ParentID)
-			}
-			refs.ids = append(refs.ids, id)
-		case "strategy":
-			refs, ok := strategyRefs[s.ParentID]
-			if !ok {
-				return fmt.Errorf("reconcile: source strategy %q not in proposal", s.ParentID)
-			}
-			refs.ids = append(refs.ids, id)
-		default:
-			return fmt.Errorf("reconcile: source parent_kind %q not recognized (want feature|strategy)", s.ParentKind)
+	// Track new-decision ids for downstream reference resolution.
+	newDecisionIDs := make(map[string]struct{}, len(raw.Decisions))
+
+	for _, d := range raw.Decisions {
+		id := strings.TrimSpace(d.ID)
+		if id == "" {
+			id = mintDecisionID(d.Title, usedIDs)
+		} else if _, taken := usedIDs[id]; taken {
+			// Collision against existing or prior new decision —
+			// suffix via the same minting helper so the result is
+			// deterministic and never overwrites an existing entry.
+			id = mintDecisionID(d.Title, usedIDs)
 		}
-		return nil
+		usedIDs[id] = struct{}{}
+		newDecisionIDs[id] = struct{}{}
+		out.Decisions = append(out.Decisions, DecisionProposal{
+			ID:                 id,
+			Summary:            d.Summary,
+			Title:              d.Title,
+			Rationale:          d.Rationale,
+			ArchitectRationale: d.ArchitectRationale,
+			Confidence:         d.Confidence,
+			Alternatives:       d.Alternatives,
+			Citations:          d.Citations,
+		})
 	}
 
-	// Action-shape errors are bad LLM output, not programming bugs.
-	// Degrade gracefully: skip the malformed action and let the
-	// implicit-keep-separate pass below mint canonicals from the
-	// unclaimed source decisions. The workflow proceeds with a valid
-	// (un-deduped) SpecProposal instead of failing the council and
-	// losing every elaborator's output. slog.Warn surfaces the
-	// degradation so an operator scanning logs can see which actions
-	// the model botched and consider tightening the schema.
-	for i, action := range verdict.Actions {
-		switch action.Kind {
-		case "dedupe", "resolve_conflict":
-			if action.Canonical == nil {
-				slog.Warn("reconcile: action missing canonical; sources kept separate",
-					"index", i, "kind", action.Kind, "sources", len(action.Sources))
-				continue
-			}
-			if isEmptyInlineDecision(*action.Canonical) {
-				slog.Warn("reconcile: action canonical has empty title; sources kept separate",
-					"index", i, "kind", action.Kind, "sources", len(action.Sources))
-				continue
-			}
-			id := mintDecisionID(action.Canonical.Title, usedIDs)
-			usedIDs[id] = struct{}{}
-			canonical := canonicalDecisionFromInline(*action.Canonical, id)
-			if action.Kind == "resolve_conflict" && action.Loser != nil {
-				canonical.Alternatives = append(canonical.Alternatives, spec.Alternative{
-					Name:            action.Loser.Title,
-					Rationale:       action.Loser.Rationale,
-					RejectedBecause: action.RejectedBecause,
-				})
-			}
-			// Apply the action to the parent refs. If a source ref
-			// is bogus (unknown parent), skip just that source —
-			// other valid sources still claim their slot, and the
-			// bogus one stays unclaimed (becomes its own canonical
-			// in the keep-separate pass).
-			actionApplied := false
-			for _, s := range action.Sources {
-				if err := addDecisionRef(s, id); err != nil {
-					slog.Warn("reconcile: action source rejected; keeping that source separate",
-						"index", i, "kind", action.Kind, "source", s, "error", err)
-					continue
-				}
-				claimed[claimKey(s)] = struct{}{}
-				actionApplied = true
-			}
-			if actionApplied {
-				out.Decisions = append(out.Decisions, canonical)
-				applied = append(applied, AppliedAction{
-					Kind:          action.Kind,
-					CanonicalID:   id,
-					AffectedNodes: action.Sources,
-				})
-			} else {
-				// All sources rejected — drop the canonical we minted
-				// since it would dangle with no parent referring to
-				// it. Roll back the ID reservation too.
-				delete(usedIDs, id)
-			}
-		case "reuse_existing":
-			if action.ExistingID == "" {
-				slog.Warn("reconcile: reuse_existing missing existing_id; sources kept separate",
-					"index", i, "sources", len(action.Sources))
-				continue
-			}
-			if existing == nil || !existingHasDecision(existing, action.ExistingID) {
-				slog.Warn("reconcile: reuse_existing references unknown id; sources kept separate",
-					"index", i, "existing_id", action.ExistingID)
-				continue
-			}
-			actionApplied := false
-			for _, s := range action.Sources {
-				if err := addDecisionRef(s, action.ExistingID); err != nil {
-					slog.Warn("reconcile: reuse_existing source rejected; keeping that source separate",
-						"index", i, "source", s, "error", err)
-					continue
-				}
-				claimed[claimKey(s)] = struct{}{}
-				actionApplied = true
-			}
-			if actionApplied {
-				applied = append(applied, AppliedAction{
-					Kind:          action.Kind,
-					CanonicalID:   action.ExistingID,
-					AffectedNodes: action.Sources,
-				})
-			}
-		default:
-			slog.Warn("reconcile: unknown action kind; sources kept separate",
-				"index", i, "kind", action.Kind, "sources", len(action.Sources))
-		}
-	}
-
-	// Implicit keep-separate pass: every inline decision not claimed
-	// by an action becomes its own canonical Decision with a fresh ID.
-	//
-	// Inline decisions whose Title is empty are treated as architect
-	// placeholder noise (Gemini Flash has been observed emitting
-	// `decisions: [{}]` on strategies — empty objects that satisfy
-	// schema shape but carry no content). Drop them rather than minting
-	// `dec-untitled` IDs that pollute the spec graph. The integrity
-	// critic flags downstream impact (a feature that ends up with zero
-	// decisions because its inline entries were all empty) so revise
-	// can re-emit real content.
-	for _, f := range raw.Features {
-		for idx, d := range f.Decisions {
-			ref := DecisionSourceRef{ParentKind: "feature", ParentID: f.ID, Index: idx}
-			if _, ok := claimed[claimKey(ref)]; ok {
-				continue
-			}
-			if isEmptyInlineDecision(d) {
-				continue
-			}
-			id := mintDecisionID(d.Title, usedIDs)
-			usedIDs[id] = struct{}{}
-			out.Decisions = append(out.Decisions, canonicalDecisionFromInline(d, id))
-			featureRefs[f.ID].ids = append(featureRefs[f.ID].ids, id)
-		}
-	}
-	for _, s := range raw.Strategies {
-		for idx, d := range s.Decisions {
-			ref := DecisionSourceRef{ParentKind: "strategy", ParentID: s.ID, Index: idx}
-			if _, ok := claimed[claimKey(ref)]; ok {
-				continue
-			}
-			if isEmptyInlineDecision(d) {
-				continue
-			}
-			id := mintDecisionID(d.Title, usedIDs)
-			usedIDs[id] = struct{}{}
-			out.Decisions = append(out.Decisions, canonicalDecisionFromInline(d, id))
-			strategyRefs[s.ID].ids = append(strategyRefs[s.ID].ids, id)
-		}
-	}
-
-	// Build canonical features and strategies with id-only decision refs.
 	for _, f := range raw.Features {
 		out.Features = append(out.Features, FeatureProposal{
 			ID:                 f.ID,
@@ -374,9 +219,25 @@ func ApplyReconciliation(raw *RawSpecProposal, verdict ReconciliationVerdict, ex
 			Title:              f.Title,
 			Description:        f.Description,
 			AcceptanceCriteria: f.AcceptanceCriteria,
-			Decisions:          dedupeRefs(featureRefs[f.ID].ids),
+			Decisions:          append([]string(nil), f.Decisions...),
 		})
+		for _, ref := range f.Decisions {
+			if _, ok := newDecisionIDs[ref]; ok {
+				continue
+			}
+			if existingHasDecision(existing, ref) {
+				continue
+			}
+			applied = append(applied, AppliedAction{
+				Kind:        "integrity_violation",
+				CanonicalID: ref,
+				AffectedNodes: []DecisionSourceRef{
+					{ParentKind: "feature", ParentID: f.ID},
+				},
+			})
+		}
 	}
+
 	for _, s := range raw.Strategies {
 		out.Strategies = append(out.Strategies, StrategyProposal{
 			ID:        s.ID,
@@ -384,40 +245,34 @@ func ApplyReconciliation(raw *RawSpecProposal, verdict ReconciliationVerdict, ex
 			Title:     s.Title,
 			Kind:      s.Kind,
 			Body:      s.Body,
-			Decisions: dedupeRefs(strategyRefs[s.ID].ids),
+			Decisions: append([]string(nil), s.Decisions...),
 		})
+		for _, ref := range s.Decisions {
+			if _, ok := newDecisionIDs[ref]; ok {
+				continue
+			}
+			if existingHasDecision(existing, ref) {
+				continue
+			}
+			applied = append(applied, AppliedAction{
+				Kind:        "integrity_violation",
+				CanonicalID: ref,
+				AffectedNodes: []DecisionSourceRef{
+					{ParentKind: "strategy", ParentID: s.ID},
+				},
+			})
+		}
 	}
 
 	return out, applied, nil
 }
 
-// canonicalDecisionFromInline lifts an InlineDecisionProposal into the
-// id-bearing DecisionProposal shape the persistence layer expects.
-func canonicalDecisionFromInline(d InlineDecisionProposal, id string) DecisionProposal {
-	return DecisionProposal{
-		ID:                 id,
-		Summary:            d.Summary,
-		Title:              d.Title,
-		Rationale:          d.Rationale,
-		Confidence:         d.Confidence,
-		Alternatives:       d.Alternatives,
-		Citations:          d.Citations,
-		ArchitectRationale: d.ArchitectRationale,
-	}
-}
-
 // mintDecisionID derives a stable id from a decision title. Collisions
-// against `used` get a numeric suffix appended. Caller MUST guard
-// against empty titles via isEmptyInlineDecision; minting from an empty
-// title would produce a `dec-` slug that pollutes the spec graph.
+// against `used` get a numeric suffix appended.
 //
 // Slug derivation goes through spec.SlugID, which caps the slug at
-// 50 chars — the cap is load-bearing. A model going off-rails into
-// the title field (observed: 5000-char self-narrating ramble that
-// pushed past the OS filename length limit when used to derive a
-// path) would otherwise produce filenames the filesystem rejects,
-// failing the save and leaving the spec graph in an inconsistent
-// half-saved state.
+// 50 chars — the cap is load-bearing for filesystem safety even when
+// the model goes off-rails into a pathologically-long title.
 func mintDecisionID(title string, used map[string]struct{}) string {
 	base := "dec-" + spec.SlugID(title)
 	if _, taken := used[base]; !taken {
@@ -431,84 +286,6 @@ func mintDecisionID(title string, used map[string]struct{}) string {
 	}
 }
 
-// maxInlineDecisionTitleChars is the upper bound on title length the
-// reconciler will accept. A normal decision title is a clear, short
-// commitment (5-15 words; 30-100 chars). Anything past this limit is
-// model-pathology: observed in winplan after a model went off-rails
-// in the title field, producing a 5000+ char self-narrating ramble
-// that the slug cap (spec.SlugID) protected against at the filename
-// layer but that would otherwise pollute the spec graph with a
-// title field longer than the rationale it was supposed to summarize.
-// 256 chars is a generous cap; legitimate titles are well under it.
-const maxInlineDecisionTitleChars = 256
-
-// titleDenylist matches titles that are syntactically non-empty but
-// semantically meaningless to a coding agent or auditor. The
-// elaborator prompt forbids these per DJ-105's "NO PLACEHOLDER
-// DECISIONS" mandate; the apply-time check is the structural
-// backstop for cases where the model emits one anyway. Comparison
-// is case-insensitive and trims whitespace.
-var titleDenylist = map[string]struct{}{
-	"placeholder": {},
-	"tbd":         {},
-	"todo":        {},
-	"untitled":    {},
-	"n/a":         {},
-	"none":        {},
-	"fixme":       {},
-}
-
-// titleStructuralNoise matches a quote followed by one or more JSON
-// structural tokens (close-bracket, close-brace, comma, semicolon)
-// followed by another quote OR another structural token. The pattern
-// catches the family of artifacts a model produces when it loses
-// track of which field it's emitting into and bleeds raw JSON syntax
-// into the title string — observed in winplan as a title ending with
-// `'],'alternatives` (close-array, comma, key-quote) and the
-// kissing-cousin shapes (`",},`, `","`, etc.). Real prose titles
-// never legitimately contain these consecutive-structural-token
-// sequences, so the regex is a high-precision signal of model drift.
-var titleStructuralNoise = regexp.MustCompile(`['"]\s*[,;\]\}]\s*['",;\]\}]`)
-
-// isEmptyInlineDecision reports whether the inline decision is a
-// placeholder with no usable content. The architect's contract requires
-// title + rationale + at least one alternative + at least one citation;
-// empty objects (`{}`), title-only stubs, pathologically-long titles
-// (a model spiraling into the title field), placeholder-class titles
-// (literal "placeholder", "TBD", etc.), and titles containing
-// structural JSON noise (the model wandering out of the title field)
-// are all dropped at apply time rather than persisted as noise. Title
-// is the load-bearing field — the slug ID derives from it, and a
-// decision with no title (or a degenerate title) is meaningless to a
-// coding agent or auditor.
-func isEmptyInlineDecision(d InlineDecisionProposal) bool {
-	title := strings.TrimSpace(d.Title)
-	if title == "" {
-		return true
-	}
-	if len(title) > maxInlineDecisionTitleChars {
-		slog.Warn("dropping decision with pathological title length",
-			"title_chars", len(title),
-			"title_excerpt", title[:64]+"...",
-			"reason", "model output appears to have spiraled into the title field; treating as empty")
-		return true
-	}
-	if _, deny := titleDenylist[strings.ToLower(title)]; deny {
-		slog.Warn("dropping decision with placeholder-class title",
-			"title", title,
-			"reason", "title is a known meaningless placeholder; the model produced a stub the elaborator prompt explicitly forbids")
-		return true
-	}
-	if match := titleStructuralNoise.FindString(title); match != "" {
-		slog.Warn("dropping decision with structural JSON noise in title",
-			"title", title,
-			"match", match,
-			"reason", "model output appears to have bled JSON syntax into the title field; treating as empty")
-		return true
-	}
-	return false
-}
-
 func existingHasDecision(e *ExistingSpec, id string) bool {
 	if e == nil {
 		return false
@@ -519,27 +296,6 @@ func existingHasDecision(e *ExistingSpec, id string) bool {
 		}
 	}
 	return false
-}
-
-// dedupeRefs removes duplicate decision IDs from a parent's decisions[]
-// while preserving first-seen order. A reconciler verdict that points
-// the same parent at the same canonical via two different inline-source
-// indexes (legitimate when the architect inadvertently described the
-// same decision twice on the same parent) collapses to one reference.
-func dedupeRefs(ids []string) []string {
-	if len(ids) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(ids))
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if _, dup := seen[id]; dup {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	return out
 }
 
 // SortDecisions sorts a SpecProposal's top-level decisions[] alphabetically

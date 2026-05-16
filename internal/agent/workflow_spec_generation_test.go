@@ -521,7 +521,7 @@ func TestInFlightIndexRebuiltOnRawProposalMerge(t *testing.T) {
 			"summary": "Adopt Postgres with pgvector for OLTP.",
 			"description": "Operators store embeddings beside transactional rows in Postgres.",
 			"acceptance_criteria": [],
-			"decisions": [{"title":"Use pgvector","rationale":"r","confidence":0.8}]
+			"decisions": ["dec-use-pgvector"]
 		}`
 		mergeElaboratedFeatures(state, []RoundResult{{AgentID: "spec_feature_elaborator", Output: featureJSON}})
 
@@ -546,7 +546,7 @@ func TestInFlightIndexRebuiltOnRawProposalMerge(t *testing.T) {
 			"summary": "Adopt WorkOS for SSO.",
 			"kind": "foundational",
 			"body": "WorkOS bundles OIDC and directory sync.",
-			"decisions": [{"title":"Adopt WorkOS","rationale":"r","confidence":0.8}]
+			"decisions": ["dec-adopt-workos"]
 		}`
 		mergeElaboratedStrategies(state, []RoundResult{{AgentID: "spec_strategy_elaborator", Output: strategyJSON}})
 
@@ -583,7 +583,7 @@ func TestInFlightIndexRebuiltOnRawProposalMerge(t *testing.T) {
 			"summary": "Adopt redis for hot read paths.",
 			"kind": "foundational",
 			"body": "Redis fronts the OLTP store for hot reads.",
-			"decisions": [{"title":"Use redis","rationale":"r","confidence":0.8}]
+			"decisions": ["dec-use-redis"]
 		}`
 		mergeRevisedNodes(state, []RoundResult{{AgentID: "spec_strategy_elaborator", Output: revisedJSON}})
 
@@ -612,8 +612,9 @@ func TestInFlightIndexRebuiltOnRawProposalMerge(t *testing.T) {
 		t.Cleanup(func() { _ = idx.Close() })
 
 		raw := `{
-			"features": [{"id":"feat-realtime","title":"Realtime tiles","summary":"WebSocket push.","description":"Push metric tiles over WebSocket.","acceptance_criteria":[],"decisions":[{"title":"Use websockets","rationale":"r","confidence":0.8}]}],
-			"strategies": []
+			"features": [{"id":"feat-realtime","title":"Realtime tiles","summary":"WebSocket push.","description":"Push metric tiles over WebSocket.","acceptance_criteria":[],"decisions":["dec-use-websockets"]}],
+			"strategies": [],
+			"decisions": [{"id":"dec-use-websockets","title":"Use websockets","rationale":"r","confidence":0.8}]
 		}`
 		state := &PlanningState{
 			InFlightIndex: idx,
@@ -656,7 +657,7 @@ func TestInFlightIndexNilIsNoop(t *testing.T) {
 		"id": "feat-x",
 		"title": "X",
 		"description": "a feature",
-		"decisions": [{"title":"d","rationale":"r","confidence":0.8}]
+		"decisions": ["dec-d"]
 	}`
 	assert.NotPanics(t, func() {
 		mergeElaboratedFeatures(state, []RoundResult{{Output: featureJSON}})
@@ -817,8 +818,9 @@ func TestInFlightSearchInstrumentationCaptured(t *testing.T) {
 		// return zero. rebuildInFlightIndex re-indexes the in-flight
 		// Bluge store the council swapped in.
 		s.RawProposal = `{
-			"features": [{"id":"feat-storage","title":"Storage platform","summary":"Adopt postgres for OLTP.","description":"Postgres backed transactional storage.","acceptance_criteria":[],"decisions":[{"title":"Use postgres","rationale":"r","confidence":0.8}]}],
-			"strategies": []
+			"features": [{"id":"feat-storage","title":"Storage platform","summary":"Adopt postgres for OLTP.","description":"Postgres backed transactional storage.","acceptance_criteria":[],"decisions":["dec-use-postgres"]}],
+			"strategies": [],
+			"decisions": [{"id":"dec-use-postgres","title":"Use postgres","rationale":"r","confidence":0.8}]
 		}`
 		rebuildInFlightIndex(s)
 

@@ -193,18 +193,18 @@ func TestClusterConditionals(t *testing.T) {
 func TestAssembleRevisedRawProposalReplacesByID(t *testing.T) {
 	original := RawSpecProposal{
 		Features: []RawFeatureProposal{
-			{ID: "feat-a", Title: "A", Decisions: []InlineDecisionProposal{{Title: "use foo"}}},
-			{ID: "feat-b", Title: "B", Decisions: []InlineDecisionProposal{{Title: "use bar"}}},
+			{ID: "feat-a", Title: "A", Decisions: []string{"dec-use-foo"}},
+			{ID: "feat-b", Title: "B", Decisions: []string{"dec-use-bar"}},
 		},
 		Strategies: []RawStrategyProposal{
-			{ID: "strat-x", Title: "Stack", Decisions: []InlineDecisionProposal{{Title: "Next.js + Vercel"}}},
-			{ID: "strat-y", Title: "DB", Decisions: []InlineDecisionProposal{{Title: "Postgres"}}},
+			{ID: "strat-x", Title: "Stack", Decisions: []string{"dec-nextjs-vercel"}},
+			{ID: "strat-y", Title: "DB", Decisions: []string{"dec-postgres"}},
 		},
 	}
 	originalJSON, _ := json.Marshal(original)
 
-	revisedFeatA := `{"id":"feat-a","title":"A revised","decisions":[{"title":"use foo+pii"}]}`
-	revisedStratX := `{"id":"strat-x","title":"Stack","decisions":[{"title":"Next.js + Vercel + IaC"}]}`
+	revisedFeatA := `{"id":"feat-a","title":"A revised","decisions":["dec-use-foo-pii"]}`
+	revisedStratX := `{"id":"strat-x","title":"Stack","decisions":["dec-nextjs-vercel-iac"]}`
 
 	state := &PlanningState{
 		OriginalRawProposal: string(originalJSON),
@@ -221,16 +221,16 @@ func TestAssembleRevisedRawProposalReplacesByID(t *testing.T) {
 	assert.Equal(t, "feat-a", out.Features[0].ID)
 	assert.Equal(t, "A revised", out.Features[0].Title)
 	require.Len(t, out.Features[0].Decisions, 1)
-	assert.Equal(t, "use foo+pii", out.Features[0].Decisions[0].Title)
+	assert.Equal(t, "dec-use-foo-pii", out.Features[0].Decisions[0])
 
 	// feat-b untouched → carry through verbatim.
 	assert.Equal(t, "feat-b", out.Features[1].ID)
 	require.Len(t, out.Features[1].Decisions, 1)
-	assert.Equal(t, "use bar", out.Features[1].Decisions[0].Title,
+	assert.Equal(t, "dec-use-bar", out.Features[1].Decisions[0],
 		"untouched feature must carry its original decisions through revise")
 
-	assert.Equal(t, "Next.js + Vercel + IaC", out.Strategies[0].Decisions[0].Title)
-	assert.Equal(t, "Postgres", out.Strategies[1].Decisions[0].Title)
+	assert.Equal(t, "dec-nextjs-vercel-iac", out.Strategies[0].Decisions[0])
+	assert.Equal(t, "dec-postgres", out.Strategies[1].Decisions[0])
 }
 
 // TestAssembleRevisedRawProposalAppendsAdditions — additions (entries

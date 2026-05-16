@@ -96,43 +96,55 @@ func init() {
 		Converged: false,
 	})
 
-	// RawSpecProposal is the architect's pre-reconcile output: features and
-	// strategies with inline decisions, no IDs, no cross-array references.
-	// The reconciler agent's verdict + ApplyReconciliation produce the
-	// canonical SpecProposal that downstream agents and persistence consume.
-	exampleInlineDecision := InlineDecisionProposal{
-		Summary:    "Adopt X over Y for the OLTP store.",
-		Title:      "Example decision",
-		Rationale:  "why this choice",
-		Confidence: 0.8,
+	// RawSpecProposal is the architect's pre-reconcile output under
+	// DJ-124: features and strategies reference decisions by id;
+	// top-level Decisions[] carries the canonical content authored by
+	// the per-axis decision-elaborator. ApplyReconciliation field-maps
+	// this into the SpecProposal downstream agents and persistence
+	// consume.
+	exampleRawDecision := RawDecisionProposal{
+		ID:                 "dec-postgres-oltp-store",
+		Summary:            "Adopt Postgres over MySQL for the OLTP store.",
+		Title:              "OLTP store engine",
+		Rationale:          "Postgres offers richer transactional guarantees and the JSONB column type the analytics workload depends on, while MySQL's storage-engine pluralism is irrelevant to the project's single-node deployment posture.",
+		ArchitectRationale: "Postgres aligns with the JSONB-leaning analytics queries and the single-engine simplification.",
+		Confidence:         0.8,
 		Alternatives: []spec.Alternative{{
-			Name:            "alternative",
-			Rationale:       "why it was considered",
-			RejectedBecause: "why it was rejected",
+			Name:            "MySQL",
+			Rationale:       "Familiar to the team and a common default at this scale.",
+			RejectedBecause: "JSONB-equivalent storage is bolted on rather than first-class, which fights the analytics roadmap in GOALS.md.",
+			Citations: []spec.Citation{{
+				Kind:      "web",
+				Reference: "https://dev.mysql.com/doc/refman/8.0/en/json.html",
+				Excerpt:   "JSON values are stored as native JSON, but indexing requires generated columns.",
+			}},
 		}},
 		Citations: []spec.Citation{{
 			Kind:      "goals",
 			Reference: "GOALS.md",
-			Excerpt:   "verbatim quoted text from the source",
+			Span:      "## Analytics workload",
+			Excerpt:   "The store must support ad-hoc JSON queries against the events table.",
 		}},
-		ArchitectRationale: "one-sentence summary distinct from the longer rationale",
+		Axes:       []string{"oltp-store"},
+		SurfacedBy: []string{"feat-realtime-dashboard"},
 	}
 	RegisterSchema("RawSpecProposal", RawSpecProposal{
 		Features: []RawFeatureProposal{{
-			ID:          "feat-example",
+			ID:          "feat-realtime-dashboard",
 			Summary:     "One-sentence what-the-feature-does, ending with a period.",
-			Title:       "Example feature",
+			Title:       "Real-time dashboard",
 			Description: "What the feature does in one paragraph.",
-			Decisions:   []InlineDecisionProposal{exampleInlineDecision},
+			Decisions:   []string{"dec-postgres-oltp-store"},
 		}},
 		Strategies: []RawStrategyProposal{{
-			ID:        "strat-example",
+			ID:        "strat-data-platform",
 			Summary:   "One-sentence what-the-strategy-adopts, ending with a period.",
-			Title:     "Example strategy",
+			Title:     "Data platform",
 			Kind:      "foundational",
-			Body:      "prose body of the strategy",
-			Decisions: []InlineDecisionProposal{exampleInlineDecision},
+			Body:      "Prose body of the strategy.",
+			Decisions: []string{"dec-postgres-oltp-store"},
 		}},
+		Decisions: []RawDecisionProposal{exampleRawDecision},
 	})
 
 	RegisterSchema("SpecProposal", SpecProposal{
@@ -185,20 +197,20 @@ func init() {
 	})
 
 	RegisterSchema("RawFeatureProposal", RawFeatureProposal{
-		ID:          "feat-example",
+		ID:          "feat-realtime-dashboard",
 		Summary:     "One-sentence what-the-feature-does, ending with a period.",
-		Title:       "Example feature",
+		Title:       "Real-time dashboard",
 		Description: "What the feature does in one paragraph.",
-		Decisions:   []InlineDecisionProposal{exampleInlineDecision},
+		Decisions:   []string{"dec-postgres-oltp-store"},
 	})
 
 	RegisterSchema("RawStrategyProposal", RawStrategyProposal{
-		ID:        "strat-example",
+		ID:        "strat-data-platform",
 		Summary:   "One-sentence what-the-strategy-adopts, ending with a period.",
-		Title:     "Example strategy",
+		Title:     "Data platform",
 		Kind:      "foundational",
-		Body:      "prose body of the strategy",
-		Decisions: []InlineDecisionProposal{exampleInlineDecision},
+		Body:      "Prose body of the strategy.",
+		Decisions: []string{"dec-postgres-oltp-store"},
 	})
 
 	// RawDecisionProposal is the per-axis output shape of DJ-124's
@@ -239,14 +251,20 @@ func init() {
 		SurfacedBy: []string{"feat-realtime-dashboard"},
 	})
 
+	// ReconciliationVerdict example. Under DJ-124 the verdict's
+	// content is no-op (ApplyReconciliation ignores it pending Phase
+	// 5's workflow rewrite). Canonical / Loser are opaque
+	// json.RawMessage values; the example below uses a minimal but
+	// shape-valid object so the rendered example payload is
+	// self-consistent.
 	RegisterSchema("ReconciliationVerdict", ReconciliationVerdict{
 		Actions: []ReconciliationAction{{
 			Kind: "dedupe",
 			Sources: []DecisionSourceRef{
-				{ParentKind: "feature", ParentID: "feat-example", Index: 0},
-				{ParentKind: "strategy", ParentID: "strat-example", Index: 0},
+				{ParentKind: "feature", ParentID: "feat-realtime-dashboard", Index: 0},
+				{ParentKind: "strategy", ParentID: "strat-data-platform", Index: 0},
 			},
-			Canonical: &exampleInlineDecision,
+			Canonical: json.RawMessage(`{"title":"OLTP store engine","rationale":"Postgres aligns with the JSONB-leaning analytics queries.","confidence":0.8}`),
 		}},
 	})
 
@@ -389,7 +407,12 @@ func init() {
 // known enum values; everything else gets validated on apply.
 func buildReconciliationVerdictSchema() map[string]any {
 	sourceSchema := reflectStrictSchema(DecisionSourceRef{})
-	inlineSchema := reflectStrictSchema(InlineDecisionProposal{})
+	// Under DJ-124 the reconciler agent's prompt still describes
+	// canonical / loser as inline decision objects, but
+	// ApplyReconciliation ignores the verdict's content. A permissive
+	// {type: object} keeps the strict-mode schema valid across
+	// providers without coupling to a Go type that no longer exists.
+	inlineSchema := map[string]any{"type": "object"}
 
 	actionItem := map[string]any{
 		"type":                 "object",
