@@ -3403,3 +3403,191 @@ Import collapses identically: imported PRD joins the scout's input set; scout id
 - (f) `locutus import` unified through the workflow becomes too slow for the "single feature admission" UX — surfaces as users complaining that `locutus import dashboard.md` takes minutes when today's import takes seconds. Mitigation: short-circuit the scout when the imported content surfaces no new axes (skip Phase 1 entirely); only convergence-cost when decisions are actually needed.
 
 **Reference.** Refines [DJ-068](#dj-068-manifeststate-separation--kubernetes-inspired-reconciliation-model) by clarifying the spec graph topology (decisions are upstream of features/strategies; the chain is linear). Replaces [DJ-105](#dj-105-elaborator-decisions-is-api-layer-required-not-prompt-layer-required) by changing the inline-decisions schema from `[]InlineDecisionProposal` to `[]string` references and retiring the "Defer architectural commitment" escape pattern. Re-scopes [DJ-123](#dj-123-in-flight-spec-search-for-council-agents-extends-dj-094--dj-116-to-mid-council-state) — the in-flight search infrastructure remains as defense-in-depth in Phase 2 narrative elaborators but is no longer the convergence mechanism. Builds on [DJ-122](#dj-122-graph-mutation-workflow-executor-with-spawner-nodes-supersedes-dj-112-on-control-flow-topology)'s graph-mutation executor; uses the spawner-node pattern for both Phase 1 (per-axis decision dispatch) and Phase 2 (per-affected-node narrative dispatch). Honors [DJ-085](#dj-085-decisions-denormalize-their-justification-session-transcripts-are-debug-only) (decisions denormalize their justification on the persisted node) and extends it to alternatives. Unifies the `locutus import` admission flow into the same workflow, retiring its separate triage logic. Motivated by the DJ-123 winplan re-run trace at [`/Users/chetan/projects/winplan/.locutus/sessions/20260515/0006/29-5135bd/`](file:///Users/chetan/projects/winplan/.locutus/sessions/20260515/0006/29-5135bd/).
+
+## DJ-125: In-Flight Manifest + Enriched Concern Model (Refines DJ-094 / DJ-123 In-Flight Surface; Closes DJ-124's Concern-Disposition Gap)
+
+**Status:** proposed
+
+**Context.** DJ-124's scout-driven convergence loop exposed two coupled limitations in the council's state model that the incremental architecture from DJ-098 → DJ-122 → DJ-124 assumed away:
+
+1. **`state.Concerns` is append-only.** `mergeCriticIssues` appends to the slice; nothing ever clears it. Under DJ-122 the gate was the convergence judge and didn't gate on `len(Concerns)==0` — it judged the assembled proposal directly. DJ-124 made the scout the judge and the rule became `axes_open == [] AND len(Concerns) == 0`. With concerns accumulating monotonically, the "no concerns" gate never holds, and the loop never converges even when the council is making real progress.
+
+2. **Projection-by-blob.** `projectChallenge`, `projectScout`, `projectReconcile`, and the per-fanout projections dump the entire `state.RawProposal` or `state.ProposedSpec` into every agent's prompt. The first winplan re-run with DJ-124 failed because `compactContext`'s 8K cap truncated the critic's view to ~17% of the assembled decisions, producing spurious "missing X" findings against decisions that existed past the cliff. The cap was bumped to 200K chars as an immediate unblock (commit `be883a0`); that's a tactical fix on an architectural problem. As spec graphs grow past 200K chars on real-world projects (the goal of dogfooding Locutus), the same regression returns at the new cap.
+
+The deeper structural inconsistency: the persisted spec graph already uses a manifest-detail RAG pattern via `spec_list_manifest` / `spec_get` / `spec_search` (DJ-094, DJ-116, DJ-117), and the in-flight `spec_search` was redirected to council-time state by DJ-123. But `spec_list_manifest` and `spec_get` still target only the on-disk spec, and the projections still blob-dump in-flight state. Agents have RAG tools available to them but the projections pre-load everything anyway. The primary axis stays blob-first with search as a supplementary tool; the architecturally honest pattern is manifest-first with detail-fetch on demand, the way the on-disk graph already works.
+
+The second winplan re-run with the truncation fix in place (trace at [`/Users/chetan/projects/winplan/.locutus/sessions/20260518/1258/30-ae0157/`](file:///Users/chetan/projects/winplan/.locutus/sessions/20260518/1258/30-ae0157/)) made the failure modes legible:
+
+- Iter-3 critics produced 6 substantive findings — cross-decision contradictions, factual errors, hallucinated citations, financial incoherence, integration gaps. These are real issues a critic loop should surface.
+- Iter-3's `convergence_failed` event listed 30+ "unresolved concerns" — most of which were iter-0 / iter-1 spurious "missing X" findings that no longer reflected the current proposal. The scout correctly stopped re-surfacing those axes in `axes_open` (it saw the decisions in `state.RawProposal`), but the old concerns persisted in `state.Concerns` and blocked `Converged: true`.
+
+**Why this surfaced now.** DJ-124 is the first architecture to make the scout responsible for convergence judgment. The append-only Concerns model was inherited from DJ-122 where it served as a per-iteration record consumed by the revise step — that step re-processed concerns each iteration and didn't gate on their absence. DJ-124 changed the consumer's contract without changing the producer's: `mergeCriticIssues` still appends, but now the scout reads cumulatively-accumulated state. The bug is a coupling break the workflow rewrite didn't notice.
+
+The projection-blob issue surfaced concurrently. DJ-124's scout-driven flow accumulates decisions monotonically across iterations (where DJ-122's flow re-assembled the proposal per iteration), so the assembled proposal grows much faster, exceeding any fixed truncation cap within 2-3 iterations on a real project.
+
+**Decision.** Two coupled changes shipped together as DJ-125:
+
+1. **Promote concerns to a first-class state model.** `Concern` gains:
+    - `IterationRaised int` — when the critic first surfaced this finding. Lets the scout reason about staleness.
+    - `Status` enum (`open`, `addressed`, `stale`, `wontfix`) — the scout's grade of whether the concern still blocks convergence given the current proposal.
+    - `RelatedDecisionIDs []string` — decision IDs the concern references. Parsed mechanically from the text via `idRefRegex`; optionally surfaced by the critic in a structured `referenced_decisions` field. Powers DJ-126's decision-revision dispatch.
+    - `RelatedAxisIDs []string` — axis IDs the concern references. Powers the scout's "is this axis still open?" judgment.
+
+    State transitions: created `open` by `mergeCriticIssues`; transitioned to `stale` mechanically when a related axis is settled or a related decision exists; transitioned to `addressed` by the scout when judgment is required (contradictions, factual claims); never deleted (durable for forensics).
+
+2. **In-flight manifest as the primary projection surface.** Add `InFlightManifest` — a structured view over `state.RawProposal` carrying:
+    - `axes` — every axis the loop has seen, with state (`settled-by-dec-X` / `open` / `under-evaluation`) and surfacing-node references.
+    - `decisions` — id, title, summary, state (`settled-prior` / `settled-this-iter` / `flagged`), axes covered, surfaced-by references.
+    - `features` / `strategies` — id, title, summary, decision-reference set.
+    - `concerns` — id, iteration_raised, status, related decisions and axes (cross-links into the rest of the manifest).
+
+    `spec_list_manifest` and `spec_get` are redirected to the in-flight manifest during council runs (mirror DJ-123's `spec_search` pattern via the existing `SwappableSpecSearch` adapter). Projections replace blob dumps with the manifest plus the agent's specific working item in full (the axis being decided, the feature being elaborated, the critic's lens). Each agent sees the structural shape of the graph plus its own focus; details are fetched on demand via the tools.
+
+3. **Mechanical concern-disposition pre-pass.** Before the scout sees concerns, a Go pre-pass walks each concern's `RelatedAxisIDs` / `RelatedDecisionIDs` against the manifest. Concerns whose named axis is `settled` or whose named decision exists in the graph are marked `Status: stale`. The mechanical pass handles ~80% of "missing X" false positives automatically; the scout grades the remaining 20% (judgment calls about contradictions, factual claims, integration gaps).
+
+4. **Scout grades remaining open concerns.** `ScoutBrief` extends with `concern_dispositions: [{concern_id, disposition, justification}]`. `mergeScoutBrief` applies the dispositions onto `state.Concerns`. The scout's convergence rule becomes:
+
+    `Converged: true ⟺ axes_open == [] AND no concerns with Status == open`
+
+    `addressed`, `stale`, and `wontfix` concerns don't gate convergence but stay in the manifest for `locutus history` / `locutus explain` and the eventual operator surfaces. The disposition's `justification` field gives the scout authority to explain its grading — load-bearing for `wontfix` ("real concern but acceptable tradeoff given goals X") so the user can audit the scout's judgment.
+
+**Alternatives considered.**
+
+- **Just bump `defaultMaxChars` higher.** The 8K → 200K bump worked tactically for the second winplan run. Specs grow to millions of characters on real projects (the goal of Locutus); bumping the cap perpetually is whack-a-mole; manifests are the architecturally honest answer. The bump becomes obsolete once DJ-125 ships.
+
+- **Clear `state.Concerns` at iteration boundaries.** The "Fix 1" candidate from chat (2026-05-18). Loses history (no way to ask "when did this issue first surface?"), forces critics to re-discover every issue every iteration, and leaves no path to "concern was `wontfix`-marked because it's a real-but-acceptable tradeoff." Rejected as a tactical patch on a structural problem; disposition is the right primitive.
+
+- **Per-iteration concern stamps without disposition.** Stamp each concern with `IterationRaised`; scout's convergence rule reads only current-iteration concerns. Simpler than full disposition tracking but loses the explicit `wontfix` / `addressed` distinction the scout needs to communicate. The single-bit "current-iter or not" doesn't carry enough state for the architecture DJ-126 builds on.
+
+- **ACP-style coding-agent concern review.** Spawn an ACP reviewer agent that grades each concern. Rejected per the "don't unify ACP with structured-output council" decision (chat 2026-05-18) — grading is structured output; the scout already produces structured output; making the scout the grader keeps the role unified and the schema enforcement intact.
+
+- **Manifest-only without enriched concerns.** Promote the proposal to a manifest but leave concerns as-is. Doesn't solve the stale-concerns blocker; convergence still fails. The two changes are coupled — the manifest provides the substrate the concern grading queries against, and the concern enrichment is what makes the convergence rule reliable.
+
+- **Use the LLM clusterer (DJ-098) for staleness grading.** The existing `spec_finding_clusterer` agent could be repurposed to grade concerns. Rejected: clusterer is for grouping unrelated findings into topical clusters before revise dispatch; staleness grading is a different shape of judgment (per-concern, against current state, with structured disposition output). Two different agents serving two different needs.
+
+**Consequences.**
+
+- **Code:**
+    - `internal/agent/state.go` — `Concern` gains `IterationRaised`, `Status`, `RelatedDecisionIDs`, `RelatedAxisIDs`; `ConcernStatus` enum.
+    - `internal/agent/manifest.go` (new) — `InFlightManifest` data type + `BuildManifest(state)` builder. Includes axes, decisions, features, strategies, concerns with cross-references and per-item state markers.
+    - `internal/search/inflight.go` — extend the in-flight Bluge index path with manifest-shaped accessors used by `spec_list_manifest` and `spec_get`.
+    - `internal/agent/spec_tools.go` — tool backing stores swap from "on-disk only" to "in-flight during council; on-disk otherwise" (same pattern DJ-123 used for `spec_search`).
+    - `internal/agent/projection.go` and `internal/agent/workflow_spec_generation_dj124.go` — `projectChallenge`, `projectScout`, `projectReconcile`, `projectOpenAxis`, `projectAffectedNode` all replace blob dumps with `RenderManifest(state)` + the per-agent working item.
+    - `internal/agent/workflow_spec_generation_dj124.go` — `mergeCriticIssues` extracts `RelatedDecisionIDs` / `RelatedAxisIDs` mechanically from finding text (regex match against the current manifest); a new `mechanicalDisposeConcerns(state)` pass runs after the critic merge; `mergeScoutBrief` applies the scout's `concern_dispositions` array.
+    - `internal/agent/specgen.go` — `ScoutBrief` schema gains `concern_dispositions []ConcernDisposition` with `jsonschema` tags per CLAUDE.md (enum for `disposition`, description on `justification`).
+    - `internal/scaffold/agents/spec_scout.md` — section added describing concern grading. Walk `docs/agent-conventions.md` end-to-end before drafting per `feedback_agent_conventions_checklist_first`.
+    - `internal/agent/compact.go` — `defaultMaxChars` revisited; manifest-rendered projections are bounded by structural shape rather than character count, so the cap can drop back closer to a sane working size or stay at 200K as defense-in-depth.
+    - Tests across `internal/agent/`, `internal/search/`, `internal/scaffold/`, `cmd/` covering manifest building, concern enrichment, mechanical disposition, scout grading, manifest-based projections. Existing workflow tests update to assert manifest-rendered prompts and concern-status reasoning.
+
+- **Documentation:**
+    - CLAUDE.md gets a short note on the manifest-detail pattern for in-flight state, paralleling the existing persisted-graph paragraph.
+
+- **User-visible:**
+    - Session traces carry richer concern history — operators see when a concern was first raised, its current status, what (if anything) addressed it.
+    - The `convergence_failed` terminal's rationale becomes legible: instead of dumping 30+ concerns from across all iterations, it shows only `Status: open` concerns at exhaustion with iteration-raised metadata; `stale` / `addressed` / `wontfix` concerns appear in an appendix for forensic context.
+    - `locutus history` and the future `locutus explain` benefit transparently — they walk concern→decision references to show "this decision was the response to that critic finding."
+    - Per-call prompts shrink substantially (manifest is ~10% the size of the blob proposal at iter-3 scale), so wall-clock per iteration drops.
+
+- **Performance:**
+    - Manifest build per merge: O(N) over decision/feature/strategy count. Sub-millisecond for ~50-node graphs; scales linearly to thousands.
+    - Mechanical disposition pre-pass: O(M × K) where M is concern count and K is per-concern regex matches against axis/decision IDs. Negligible.
+    - Prompt token counts drop substantially for critic / reconciler / per-fanout projections — the manifest is a fraction of the full proposal JSON.
+
+- **Migration:** per the no-back-compat-until-self-hosting posture, no shim. `Concern` gains fields; old persisted state loads with zero-value defaults (`IterationRaised: 0`, `Status: open`, empty related-id slices) and the mechanical disposition pass handles them on first re-iteration. The manifest infrastructure is council-internal; the persisted spec graph's schema doesn't change.
+
+**Reversal criteria.** Revert if:
+
+- (a) the mechanical disposition pre-pass marks concerns `stale` too aggressively, causing the loop to converge with unresolved real issues. Surfaces as users complaining `refine goals` declared convergence on a proposal with obvious gaps. Mitigation: tighten the regex matching (require exact id match, not substring); fall back to "always require scout grading" if matching is too loose.
+- (b) the scout's concern grading is unreliable — marks `open` concerns `addressed` without real justification, or `addressed` concerns `open` (loop never converges). Surfaces as either premature convergence or budget exhaustion despite manifest correctness. Mitigation: tighten the scout's prompt around grading discipline; add a critic-style "did the scout grade correctly?" agent in a follow-up.
+- (c) the manifest-rendered projection loses information the agents need. Surfaces as critic findings about subtle issues that the manifest's per-item summary doesn't capture but the full proposal would. Mitigation: extend the manifest's per-item summary fields; in the worst case, agents can `spec_get(id)` to fetch full detail — that's the RAG escape valve.
+
+**Reference.** Extends [DJ-094](#dj-094-spec-lookup-tools-spec_list_manifest--spec_get-are-agent-facing-mcp-tools) by redirecting `spec_list_manifest` / `spec_get` to in-flight state during council runs. Extends [DJ-123](#dj-123-in-flight-spec-search-for-council-agents-extends-dj-094--dj-116-to-mid-council-state) by generalizing the in-flight-redirection pattern from search to the full RAG tool surface. Closes a structural gap in [DJ-124](#dj-124-spec-generation-re-architecture--decisions-before-narrative-scout-as-judge-convergence-unified-import-flow-refines-dj-068-spec-graph-topology-replaces-dj-105-inline-decisions-schema-re-scopes-dj-123-in-flight-search) (the scout's `len(Concerns)==0` convergence rule). Motivated by the second winplan re-run trace at [`/Users/chetan/projects/winplan/.locutus/sessions/20260518/1258/30-ae0157/`](file:///Users/chetan/projects/winplan/.locutus/sessions/20260518/1258/30-ae0157/) which exposed the stale-concerns failure mode and the projection-blob scaling limit. Powers [DJ-126](#dj-126-decision-re-elaboration-for-cross-decision-contradictions-extends-dj-124-with-existing-decision-revision-depends-on-dj-125-concern-model) by providing the `Concern.RelatedDecisionIDs` substrate the decision-revision dispatch reads.
+
+## DJ-126: Decision Re-Elaboration for Cross-Decision Contradictions (Extends DJ-124 With Existing-Decision Revision; Depends on DJ-125 Concern Model)
+
+**Status:** proposed
+
+**Context.** DJ-124's workflow dispatches four kinds of work: scout (surfaces new axes and judges convergence), decision-elaborator (commits a new decision per axis in `axes_open`), narrative-elaborator (updates feature/strategy bodies referencing decisions), critics (produce findings). It does not dispatch a fifth kind that the second winplan re-run made indispensable: **re-elaborating an existing decision when the critics find it contradicts another decision, carries a factual error, or cites a hallucinated source.**
+
+The second winplan trace ([`/Users/chetan/projects/winplan/.locutus/sessions/20260518/1258/30-ae0157/`](file:///Users/chetan/projects/winplan/.locutus/sessions/20260518/1258/30-ae0157/)) produced 6 substantive iter-3 critic findings:
+
+1. `dec-datadog-observability-stack` adopts Datadog; `dec-aws-cloudwatch-logging` rejects Datadog as too expensive — cross-decision contradiction.
+2. `dec-aurora-serverless-database-vendor` claims Aurora can scale to 0 ACU; actual minimum is 0.5 ACU — factual error.
+3. `dec-150-dollar-off-cycle-ceiling` and `dec-tiered-seasonal-slo` cite GOALS.md excerpts that don't exist — hallucinated citations.
+4. `dec-aws-ecs-fargate-deployment` (no EC2) contradicts `dec-fck-nat-egress` (commits to t4g.nano ARM EC2 instances) — cross-decision inconsistency.
+5. Sum of decided baseline costs (Aurora storage + min ACU + NAT + Datadog) exceeds `dec-150-dollar-off-cycle-ceiling` — financial incoherence.
+6. Missing axis: shared schema location between Next.js frontend and Go ingestion runtime.
+
+Only finding #6 is something DJ-124's workflow can resolve: the scout surfaces it as `axes_open`, the decision-elaborator commits a new decision. The other five require modifying existing decisions. The workflow has no path for that. The scout's only available move is to surface a workaround axis ("observability-tool-coherence", "cost-runaway-protections", "peak-cost-ceiling") hoping the new decision papers over the contradiction, but the original contradictory decisions stay in the graph — observed in the iter-4 `axes_open` of the same trace, which fired three synthetic budget axes that never actually invalidated `dec-150-dollar-off-cycle-ceiling`'s commitment. Convergence never holds.
+
+Under the pre-DJ-124 architecture (DJ-122), the revise step re-elaborated affected nodes; affected nodes were features and strategies with inline decisions; revising the node revised its decisions. DJ-124 separated decision-authoring from narrative-authoring; the loss of inline-decision-revision was unintentional — the workflow rewrite focused on "decisions first, narrative second" without preserving the "decisions can also be revised when wrong" path.
+
+**Why this surfaced now.** DJ-124's flagship validation case (winplan re-run) is the first time critics flagged real contradictions between settled decisions on a non-trivial spec graph. The smoke-run-during-DJ-124-development used `MockExecutor` scripts that never produced contradictions, so the gap didn't appear in tests. [DJ-125](#dj-125-in-flight-manifest--enriched-concern-model-refines-dj-094--dj-123-in-flight-surface-closes-dj-124s-concern-disposition-gap) closes the projection and concern-tracking gaps that obscured this issue; with DJ-125 in place, the residual failure is the missing decision-revision dispatch. Depending on DJ-125's `Concern.RelatedDecisionIDs` substrate makes the dispatch tractable — without it, the workflow has no structural way to know which decisions the critic wants revised.
+
+**Decision.** Add a `revise-decisions` step to the DJ-124 convergence loop, dispatched per concern with `Status: open` AND `len(RelatedDecisionIDs) > 0`. For each such concern, dispatch one `spec_decision_elaborator` call in **revise mode** with input:
+
+- The full prior `RawDecisionProposal` for each related decision.
+- The critic finding text and severity.
+- The relevant slice of the in-flight manifest (the contradicting decisions, the cited GOALS.md, the surrounding strategy bodies).
+
+Output: a corrected `RawDecisionProposal` for the same axis ID(s). `mergeDecisions` matches by axis-ID + decision-ID and replaces the entry in `state.RawProposal.Decisions` (rather than appending a new one).
+
+The new iteration template:
+
+```
+scout → decisions(per axes_open fanout)
+      → narrative(per affected_node fanout)
+      → revise-decisions(per open concern with related decisions, fanout) ← NEW
+      → critique
+      → scout (next iter)
+```
+
+Three design commitments:
+
+1. **`spec_decision_elaborator` handles both first-author and revise modes.** The agent's prompt receives a "Prior decision" block when in revise mode; absent in first-author mode. The agent's `RawDecisionProposal` output schema is unchanged — it always emits a complete decision. The mode-switch is at the projection layer (per-fanout-item) not the agent surface. Same agent, two prompts that share a body and diverge in the "context to react to" section.
+
+2. **Replace-by-axis-ID, not append.** When `mergeDecisions` sees a `RawDecisionProposal` whose `Axes` intersect with an existing decision's `Axes`, it REPLACES rather than appending. Preserves the "one decision per axis at a time" invariant. The old decision's ID is preserved; rationale, alternatives, citations are all overwritten by the revision. History of revisions is captured in DJ-103 events (one event per revision).
+
+3. **Cycle detection adapts.** Today's `DecidedAxesByIter` map flags re-opened axes as cycles. After DJ-126, an axis can be legitimately "re-decided" (the revise path), but the dispatch is concern-driven (a critic flagged it) not scout-driven (no axis appears in `axes_open` twice). Cycle detection stays the safety net for the scout-side path; the revise path is exempt. A new per-axis revision-count cap (default 3) prevents the alternate failure mode of "revise dec-X → critic flags revised dec-X → revise again → ..." infinite loops.
+
+**Alternatives considered.**
+
+- **Force user intervention.** Surface the contradiction to the user; require explicit `locutus refine dec-X --against "the critic finding"`. Defensible for a non-autonomous tool; defeats the whole point of an autonomous spec council that converges within budget. Held only as the fallback verb behind the autonomous path.
+
+- **Scout surfaces a "resolution axis" for cross-decision contradictions.** Instead of revising, the scout emits a synthetic axis like "observability-tool-coherence" with `surfaced_by: [dec-datadog, dec-cloudwatch]`. The decision-elaborator picks one. This is exactly what the iter-3 scout actually did in the failing winplan run — emitted `peak-cost-ceiling` and `cost-runaway-protections` to paper over the financial incoherence. Two structural problems: (a) the original contradictory decisions stay in the graph (no way to remove `dec-Y` when `dec-X` resolves the axis); (b) the synthetic axis is rarely well-formed — the model invents an ill-defined axis rather than admitting the contradiction directly. Rejected.
+
+- **Reconciler-level contradiction supersede actions.** Today's `ReconciliationVerdict` carries a no-op `actions` array (Stage A simplified the verdict). Extending it to allow "supersede dec-X with dec-Y" actions would let the reconciler resolve contradictions mechanically. Two problems: (a) the reconciler is sequential after the elaborators; under DJ-124's flow it can't introspect "which decision is right" — that's the decision-elaborator's job; (b) the reconciler is mid-retirement (DJ-125 makes its role mostly empty); building new capability into a step that's going away is bad scope. Rejected.
+
+- **Re-elaborate every decision every iteration.** Naive: have the workflow re-fire `spec_decision_elaborator` for every existing decision every iteration. Token cost balloons (O(N × iterations) decisions of grounded research per session); most iterations don't need most decisions revised. Rejected as obvious over-cost.
+
+- **Critic-driven dispatch with a separate `decision_reviser` agent.** Have the critic emit `decision_revision_requests[]` alongside `issues[]`, dispatching a new agent type to handle the revision. Adds a new agent surface and a new prompt to maintain; the decision-elaborator's revise mode is the simpler shape (one agent, two contexts). Rejected on surface-area grounds.
+
+**Consequences.**
+
+- **Code:**
+    - `internal/agent/workflow_spec_generation_dj124.go` — new step in the iteration template: `revise-decisions` between `narrative` and `critique`. Fanout closure walks `state.Concerns` with `Status: open` and `len(RelatedDecisionIDs) > 0`. Conditional: skip when no such concerns exist.
+    - `internal/agent/workflow_spec_generation_dj124.go` — `mergeDecisions` extended to detect "replacement vs append" by intersecting `RawDecisionProposal.Axes` with existing decisions' `Axes`. Replacement preserves the existing ID; the prior decision body is overwritten with the revised one.
+    - New per-fanout projection `projectReviseDecision(snap)` that renders the manifest + the prior decision (full body) + the critic finding text + severity.
+    - `internal/scaffold/agents/spec_decision_elaborator.md` — gains a "Revise mode" section: when the user message includes a "Prior decision" block AND a "Critic finding to address" block, emit a corrected `RawDecisionProposal` for the same axis (preserve `axes` verbatim). Walk `docs/agent-conventions.md` before drafting per the memory checklist; the literal-sentinel pattern (from `justify_researcher.md`) applies when grounded research disagrees with the prior decision's claim.
+    - Cycle detection in `scoutSpawnFor` adjusts: only count axis appearances in `axes_open` toward the cycle threshold; the revise-decisions path doesn't count. A new per-axis revision-count cap (env var `LOCUTUS_DECISION_REVISION_CAP`, default 3) prevents revise-loop infinite recursion.
+    - DJ-103 history events: `decision_revised` event kind, recording prior body + revised body + driving concern text. Surfaces in `locutus history`.
+    - Tests: `TestReviseDecisionsDispatchPerOpenConcern`, `TestMergeDecisionsReplacesByAxisID`, `TestReviseDecisionsPreservesIDs`, `TestRevisionCapTerminatesRevolvingDoor`, end-to-end smoke test where the loop converges after a forced critic contradiction.
+
+- **User-visible:**
+    - Session traces show `spec_decision_elaborator-<axis-id>:revise` fanout items distinct from first-author calls.
+    - `locutus history` records both the original decision and each revision (via DJ-103 events); the future `locutus explain` can show "this decision was revised in iter-N because of finding-X" with the full lineage.
+    - Convergence on real projects with contradictions becomes achievable within the default 5-iteration budget.
+
+- **Performance:**
+    - Per-revision call: same wall-clock as a first-author decision-elaborator call (~30-90s with grounded research). Adds 1-3 calls per iteration on average (one per `open` concern with related decisions).
+    - Net session latency: roughly +15-30% per session on contradiction-heavy projects; -50%+ vs current budget-exhaustion behavior because the loop actually terminates.
+
+- **Migration:** per the no-back-compat-until-self-hosting posture, no shim. Existing sessions terminated under `convergence_failed` before DJ-126 had no `revise-decisions` step; new sessions get the step. No persisted-state schema change beyond DJ-125's `Concern.RelatedDecisionIDs`.
+
+**Reversal criteria.** Revert if:
+
+- (a) the decision-elaborator's revise mode produces unstable decisions — each revision contradicts the prior, the loop never converges. Surfaces as the same axis being revised every iteration through budget exhaustion. Mitigation: tighten the revise-mode prompt to require the elaborator to acknowledge what the prior decision committed AND why it's wrong, not emit a fresh take. The revision-count cap is the safety net.
+- (b) the revise dispatch fires too liberally — every iteration produces 10+ revisions, churning the graph. Mitigation: rank concerns by severity; revise only `severity: high`; lower-severity concerns get the scout's `wontfix` disposition.
+- (c) revisions cycle through different decision IDs for the same axis ad infinitum (revise `dec-X` → axis appears in `axes_open` via scout → new decision `dec-Y` → critic flags `dec-Y` → revise `dec-Y` → ...). The per-axis revision-count cap catches this; if the cap fires frequently in real usage, the cap's threshold needs lowering or the dispatch logic needs to distinguish "revision of same decision id" from "new decision for same axis."
+
+**Reference.** Extends [DJ-124](#dj-124-spec-generation-re-architecture--decisions-before-narrative-scout-as-judge-convergence-unified-import-flow-refines-dj-068-spec-graph-topology-replaces-dj-105-inline-decisions-schema-re-scopes-dj-123-in-flight-search) with the missing decision-revision dispatch. Depends on [DJ-125](#dj-125-in-flight-manifest--enriched-concern-model-refines-dj-094--dj-123-in-flight-surface-closes-dj-124s-concern-disposition-gap) — specifically `Concern.RelatedDecisionIDs` is the dispatch key. Restores the decision-revision capability that pre-DJ-124's revise step provided implicitly (by revising features that carried inline decisions); makes the revision path explicit at the decisions layer where DJ-124 located decision-authoring. Honors [DJ-103](#dj-103-history-events-are-the-narrative-source-recorded-events-plus-llm-summary) by recording each revision as a structured event. Motivated by the second winplan re-run trace at [`/Users/chetan/projects/winplan/.locutus/sessions/20260518/1258/30-ae0157/`](file:///Users/chetan/projects/winplan/.locutus/sessions/20260518/1258/30-ae0157/) which exposed the structural gap.
