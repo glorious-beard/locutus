@@ -179,6 +179,55 @@ func TestDecisionElaboratorPromptForbidsFabricatedRejection(t *testing.T) {
 		"spec_decision_elaborator.md must explicitly name the fabricated-rejection failure mode so the model has direct guidance on what the alternative-citations guardrail exists to prevent")
 }
 
+// TestDecisionElaboratorReviseModeSectionPresent locks in DJ-126
+// Phase 1: spec_decision_elaborator.md gains a second mode — revise an
+// existing decision in response to a critic finding. The prompt must
+// name the revise-mode section and the two input blocks (Prior
+// decision; Critic finding) the workflow projects when dispatching
+// the agent for revision. Without explicit prompt coverage the model
+// falls back to first-author behaviour and authors a fresh decision
+// ignoring the prior commitment.
+func TestDecisionElaboratorReviseModeSectionPresent(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	text := string(body)
+
+	assert.Contains(t, text, "Revise mode",
+		"spec_decision_elaborator.md must carry a Revise mode section heading — DJ-126 Phase 1 adds the second mode to handle critic-driven decision revision")
+	assert.Contains(t, text, "Prior decision",
+		"spec_decision_elaborator.md must describe the Prior decision input block the revise projection injects (the existing decision being revised)")
+	assert.Contains(t, text, "Critic finding",
+		"spec_decision_elaborator.md must describe the Critic finding input block the revise projection injects (the concern driving the revision)")
+}
+
+// TestDecisionElaboratorPromptPreservesAxesInRevise locks in DJ-126
+// Phase 1: the revise-mode section must mandate axis-ID preservation
+// because axes are the dispatch key mergeDecisions's replace-by-axis-ID
+// logic uses to recognize the output as a revision of the prior
+// decision. A revise output that changes the axes is treated as a
+// first-author decision on a new axis, leaving the prior unrevised
+// and the critic finding unresolved.
+func TestDecisionElaboratorPromptPreservesAxesInRevise(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	text := string(body)
+
+	reviseIdx := strings.Index(text, "Revise mode")
+	require.Positive(t, reviseIdx, "Revise mode section heading must be present (TestDecisionElaboratorReviseModeSectionPresent guards this; this test sequences on it)")
+	after := text[reviseIdx:]
+
+	assert.Contains(t, after, "verbatim",
+		"Revise mode section must say the axes are preserved verbatim from the prior decision — anything else would break mergeDecisions's replace-by-axis-ID match")
+	assert.Contains(t, after, "axes",
+		"Revise mode section must name the `axes` field as the field whose IDs the agent preserves")
+}
+
 // TestScoutPromptDescribesAxesAndConvergence locks in DJ-124 Phase 2:
 // the rewritten spec_scout.md must walk the new ScoutBrief shape —
 // axes_open[] as the gap output, the decision-mapper pass, and the

@@ -323,6 +323,30 @@ func readSpecGateBudget() int {
 	return n
 }
 
+// defaultDecisionRevisionCap is the per-axis cap on revise replacements
+// when LOCUTUS_DECISION_REVISION_CAP is unset or invalid. Three is the
+// plan-validated threshold: a revision dispatch that gets revised
+// itself a third time is oscillating, not converging, and the loop
+// should force-terminate so the operator can intervene rather than
+// burning budget against a moving target.
+const defaultDecisionRevisionCap = 3
+
+// readDecisionRevisionCap returns the per-axis revision-count cap.
+// LOCUTUS_DECISION_REVISION_CAP overrides defaultDecisionRevisionCap
+// when set to a positive integer; invalid / zero / negative values
+// fall back to the default. Mirrors readSpecGateBudget's pattern.
+func readDecisionRevisionCap() int {
+	raw := strings.TrimSpace(os.Getenv("LOCUTUS_DECISION_REVISION_CAP"))
+	if raw == "" {
+		return defaultDecisionRevisionCap
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return defaultDecisionRevisionCap
+	}
+	return n
+}
+
 // generateSpecWithWorkflow runs the spec-generation council with the
 // given workflow. Production callers go through GenerateSpec, which
 // wires SpecGenerationWorkflow. Tests use this entry point to inject a

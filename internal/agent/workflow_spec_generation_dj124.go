@@ -24,6 +24,7 @@ import (
 
 	"github.com/chetan/locutus/internal/executor"
 	"github.com/chetan/locutus/internal/history"
+	"github.com/chetan/locutus/internal/spec"
 )
 
 // scoutSpawnFor builds the Spawn closure for a scout step at iteration
@@ -79,6 +80,18 @@ func scoutSpawnFor(myIter, budget int, loopTemplate func(executor.IterationConte
 		// diagnosis, not budget exhaustion.
 		if reopened := reopenedAxes(&snap.State, brief.AxesOpen); len(reopened) > 0 {
 			terminal := scoutConvergenceStuckTerminal(historian, &snap.State, brief, myIter, reopened)
+			return []WorkflowStep[PlanningState]{terminal}, nil, nil
+		}
+
+		// DJ-126 Phase 4: per-axis revision-count cap. When any axis
+		// has been revised at or above the cap (default 3; env override
+		// LOCUTUS_DECISION_REVISION_CAP), the revise dispatch is
+		// oscillating on that axis rather than converging.
+		// Force-terminate with convergence_revision_capped — distinct
+		// from convergence_stuck (which flags scout-side reopens) so
+		// the two failure modes stay diagnosable.
+		if capped := axesExceedingRevisionCap(&snap.State, readDecisionRevisionCap()); len(capped) > 0 {
+			terminal := scoutConvergenceRevisionCappedTerminal(historian, &snap.State, brief, myIter, capped)
 			return []WorkflowStep[PlanningState]{terminal}, nil, nil
 		}
 
@@ -201,6 +214,70 @@ func scoutConvergenceFailedTerminal(historian *history.Historian, snapState *Pla
 				iter+1, len(brief.AxesOpen),
 			)
 		},
+	}
+}
+
+// scoutConvergenceRevisionCappedTerminal is the per-axis-revision-cap
+// terminal for the scout-driven loop. Mirrors scoutConvergenceStuckTerminal
+// but is keyed off AxisRevisionCount rather than DecidedAxesByIter — a
+// different failure mode (revise-side oscillation rather than scout-
+// side reopen) that warrants its own DJ-103 event kind.
+//
+// Writes a convergence_revision_capped DJ-103 event naming the capped
+// axes and the cap that fired; returns a non-nil error so the executor
+// propagates the failure through GenerateSpec.
+func scoutConvergenceRevisionCappedTerminal(historian *history.Historian, snapState *PlanningState, brief *ScoutBrief, iter int, capped []string) WorkflowStep[PlanningState] {
+	terminalID := fmt.Sprintf("convergence_revision_capped_iter:%d", iter)
+	snapshotSpec := snapState.ProposedSpec
+	concerns := append([]Concern(nil), snapState.Concerns...)
+	cappedCopy := append([]string(nil), capped...)
+	cap := readDecisionRevisionCap()
+	return WorkflowStep[PlanningState]{
+		ID:     terminalID,
+		Agents: []string{"spec_scout"},
+		RunItem: func(_ context.Context, _ StateSnapshot[PlanningState]) (string, error) {
+			if historian != nil {
+				evt := buildScoutConvergenceRevisionCappedEvent(brief, iter, cap, snapshotSpec, concerns, cappedCopy)
+				if err := historian.Record(evt); err != nil {
+					slog.Warn("convergence_revision_capped: failed to record DJ-103 event", "err", err)
+				}
+			}
+			return "", fmt.Errorf(
+				"spec-generation council revision-capped at iter %d: %d axis/axes hit the per-axis revision cap of %d. Capped axes: %s",
+				iter+1, len(cappedCopy), cap, strings.Join(cappedCopy, "; "),
+			)
+		},
+	}
+}
+
+func buildScoutConvergenceRevisionCappedEvent(brief *ScoutBrief, iter, cap int, snapshotSpec string, concerns []Concern, capped []string) history.Event {
+	now := time.Now()
+	var rationale strings.Builder
+	fmt.Fprintf(&rationale, "spec-council revision cap of %d hit at iter %d on %d axis/axes.", cap, iter+1, len(capped))
+	if len(capped) > 0 {
+		rationale.WriteString("\n\nCapped axes:")
+		for _, c := range capped {
+			fmt.Fprintf(&rationale, "\n- %s", c)
+		}
+	}
+	if brief != nil && len(brief.AxesOpen) > 0 {
+		rationale.WriteString("\n\nAxes still open at termination:")
+		for _, a := range brief.AxesOpen {
+			fmt.Fprintf(&rationale, "\n- %s: %s", a.ID, a.Description)
+		}
+	}
+	if len(concerns) > 0 {
+		rationale.WriteString("\n\nUnresolved concerns at termination:")
+		for _, c := range concerns {
+			fmt.Fprintf(&rationale, "\n- [%s/%s/%s] %s", c.AgentID, c.Severity, c.Status, c.Text)
+		}
+	}
+	return history.Event{
+		ID:        history.EventID("convergence_revision_capped", "", now),
+		Timestamp: now,
+		Kind:      "convergence_revision_capped",
+		Rationale: rationale.String(),
+		NewValue:  snapshotSpec,
 	}
 }
 
@@ -710,14 +787,29 @@ func computeAffectedNodes(state *PlanningState, newDecisionIDs []string) []strin
 }
 
 // mergeDecisions parses each decision-elaborator output as a
-// RawDecisionProposal, mints / preserves the decision ID, appends it
-// to state.RawProposal.Decisions[], updates state.NewNodesFromScout
-// entries that surfaced the decided axis to include the new ID, and
-// records DecidedAxesByIter for cycle detection.
+// RawDecisionProposal and either appends it (first-author dispatch
+// path) or replaces an existing decision in-place by axis-ID
+// intersection (DJ-126 revise dispatch path).
+//
+// Axis-intersection match semantics:
+//   - Zero existing decisions intersect the incoming axes → append.
+//     This is the first-author path; the scout dispatched on an open
+//     axis and the elaborator committed the first decision on it.
+//   - Exactly one existing decision intersects → REPLACE in-place.
+//     The existing decision's ID is preserved (so feature/strategy
+//     references don't break); body, rationale, alternatives, and
+//     citations are overwritten by the revision. The replacement also
+//     marks every open concern whose RelatedDecisionIDs contains the
+//     preserved ID as Status=addressed (with a justification noting
+//     the revision).
+//   - More than one existing decision intersects → ambiguous. The
+//     workflow records an integrity-violation concern naming the
+//     ambiguous axis set and skips the replacement; the scout's next
+//     pass surfaces it for operator review.
 //
 // Idempotent — calling twice with the same results produces the same
-// final state (duplicate IDs are skipped; duplicate axis records
-// preserve the earliest iter index).
+// final state (duplicate IDs after axis-replace are no-ops; duplicate
+// axis records preserve the earliest iter index).
 func mergeDecisions(s *PlanningState, results []RoundResult) {
 	if s == nil || len(results) == 0 {
 		return
@@ -758,6 +850,7 @@ func mergeDecisions(s *PlanningState, results []RoundResult) {
 	}
 
 	var mintedThisCall []string
+	var replacedThisCall []string
 	for _, r := range results {
 		if r.Err != nil || strings.TrimSpace(r.Output) == "" {
 			continue
@@ -767,6 +860,90 @@ func mergeDecisions(s *PlanningState, results []RoundResult) {
 			slog.Warn("mergeDecisions: skipping malformed decision-elaborator output", "error", err)
 			continue
 		}
+
+		// DJ-126: axis-intersection match. matches is the list of
+		// in-flight decision indices whose Axes intersect with the
+		// incoming axes; existingMatches is the parallel list of
+		// existing-graph ids.
+		matches, existingMatches := axisIntersectionMatches(raw.Decisions, s.Existing, d.Axes)
+		totalMatches := len(matches) + len(existingMatches)
+
+		switch {
+		case totalMatches > 1:
+			// Ambiguous: incoming axes intersect multiple existing
+			// decisions. Record an integrity-violation concern naming
+			// the axes; skip the replacement so the scout's next
+			// pass can surface the ambiguity for operator review.
+			recordAmbiguousRevisionConcern(s, &d, matches, existingMatches, raw.Decisions)
+			continue
+
+		case len(matches) == 1:
+			// Replace an in-flight decision in place.
+			idx := matches[0]
+			prior := raw.Decisions[idx]
+			priorID := prior.ID
+			d.ID = priorID
+			raw.Decisions[idx] = d
+			replacedThisCall = append(replacedThisCall, priorID)
+			// Record axes for cycle/iteration tracking. earliest-wins
+			// preserves the iter index of the original first-author
+			// decision rather than the revise iteration.
+			for _, axisID := range d.Axes {
+				axisID = strings.TrimSpace(axisID)
+				if axisID == "" {
+					continue
+				}
+				if _, existed := s.DecidedAxesByIter[axisID]; !existed {
+					s.DecidedAxesByIter[axisID] = currentIter
+				}
+			}
+			incrementAxisRevisionCounts(s, d.Axes)
+			appendDecisionIDToMatchingNewNodes(s, priorID, d)
+			// DJ-126 Phase 5: queue a decision_revised history event
+			// BEFORE markConcernsAddressedByRevision flips statuses, so
+			// the event's rationale carries the as-flagged concern text.
+			queueDecisionRevisedEvent(s, prior, d, priorID, currentIter)
+			markConcernsAddressedByRevision(s, priorID, &d, currentIter)
+			continue
+
+		case len(existingMatches) == 1:
+			// The intersecting decision lives in the persisted graph
+			// (state.Existing) — append the revision under the existing
+			// id rather than appending a duplicate. The persisted node
+			// itself is replaced at GenerateSpec persist time when the
+			// raw proposal carries the revised version under the same id.
+			priorID := existingMatches[0]
+			var prior RawDecisionProposal
+			if s.Existing != nil {
+				for _, ed := range s.Existing.Decisions {
+					if ed.ID == priorID {
+						prior = decisionToRawProposal(ed)
+						break
+					}
+				}
+			}
+			d.ID = priorID
+			raw.Decisions = append(raw.Decisions, d)
+			usedIDs[priorID] = struct{}{}
+			replacedThisCall = append(replacedThisCall, priorID)
+			for _, axisID := range d.Axes {
+				axisID = strings.TrimSpace(axisID)
+				if axisID == "" {
+					continue
+				}
+				if _, existed := s.DecidedAxesByIter[axisID]; !existed {
+					s.DecidedAxesByIter[axisID] = currentIter
+				}
+			}
+			incrementAxisRevisionCounts(s, d.Axes)
+			appendDecisionIDToMatchingNewNodes(s, priorID, d)
+			queueDecisionRevisedEvent(s, prior, d, priorID, currentIter)
+			markConcernsAddressedByRevision(s, priorID, &d, currentIter)
+			continue
+		}
+
+		// First-author path: no axis intersection. Mint or preserve the
+		// incoming id, then append.
 		id := strings.TrimSpace(d.ID)
 		if id == "" {
 			id = mintDecisionID(d.Title, usedIDs)
@@ -801,7 +978,7 @@ func mergeDecisions(s *PlanningState, results []RoundResult) {
 		appendDecisionIDToMatchingNewNodes(s, id, d)
 	}
 
-	if len(mintedThisCall) == 0 {
+	if len(mintedThisCall) == 0 && len(replacedThisCall) == 0 {
 		return
 	}
 
@@ -833,6 +1010,200 @@ func mergeDecisions(s *PlanningState, results []RoundResult) {
 	// concerns flagged. Re-run the mechanical dispose pass so the
 	// scout's next pass sees those concerns as stale rather than open.
 	mechanicalDisposeConcerns(s)
+}
+
+// axisIntersectionMatches finds existing decisions whose Axes intersect
+// the incoming axes set. Returns parallel slices: in-flight matches
+// (indices into inFlight) and existing-graph matches (decision IDs from
+// existing). DJ-126 replace-by-axis-ID merge logic dispatches on the
+// total match count returned here.
+//
+// An empty incomingAxes returns no matches (a decision with no axes is
+// degenerate and is handled by the first-author append path).
+func axisIntersectionMatches(inFlight []RawDecisionProposal, existing *ExistingSpec, incomingAxes []string) (inFlightIdx []int, existingIDs []string) {
+	if len(incomingAxes) == 0 {
+		return nil, nil
+	}
+	incomingSet := make(map[string]struct{}, len(incomingAxes))
+	for _, a := range incomingAxes {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		incomingSet[a] = struct{}{}
+	}
+	if len(incomingSet) == 0 {
+		return nil, nil
+	}
+	for i, d := range inFlight {
+		for _, a := range d.Axes {
+			if _, ok := incomingSet[strings.TrimSpace(a)]; ok {
+				inFlightIdx = append(inFlightIdx, i)
+				break
+			}
+		}
+	}
+	if existing != nil {
+		for _, d := range existing.Decisions {
+			for _, a := range d.Axes {
+				if _, ok := incomingSet[strings.TrimSpace(a)]; ok {
+					existingIDs = append(existingIDs, d.ID)
+					break
+				}
+			}
+		}
+	}
+	return inFlightIdx, existingIDs
+}
+
+// recordAmbiguousRevisionConcern appends an integrity-violation concern
+// when a revise dispatch's incoming axes intersect more than one
+// existing decision. This is rare in practice (a well-formed graph has
+// non-overlapping axes per decision) but signals a real architectural
+// issue when it happens — two prior decisions claim coverage of the
+// same axis. The scout's next pass surfaces it for operator review.
+//
+// The recorded concern carries RelatedDecisionIDs naming every
+// intersecting prior so the operator can see the ambiguous set
+// without re-running the merge.
+func recordAmbiguousRevisionConcern(s *PlanningState, d *RawDecisionProposal, inFlightIdx []int, existingIDs []string, inFlight []RawDecisionProposal) {
+	if s == nil {
+		return
+	}
+	relatedIDs := make([]string, 0, len(inFlightIdx)+len(existingIDs))
+	for _, i := range inFlightIdx {
+		if i >= 0 && i < len(inFlight) {
+			relatedIDs = append(relatedIDs, inFlight[i].ID)
+		}
+	}
+	relatedIDs = append(relatedIDs, existingIDs...)
+	axesLabel := strings.Join(d.Axes, ", ")
+	s.Concerns = append(s.Concerns, Concern{
+		AgentID:            "integrity_critic",
+		Severity:           "high",
+		Kind:               "integrity",
+		Status:             ConcernStatusOpen,
+		Text:               fmt.Sprintf("Revision of axis set [%s] is ambiguous: %d existing decisions intersect these axes (%s). Operator review required to identify the canonical decision before the revision can replace anything.", axesLabel, len(relatedIDs), strings.Join(relatedIDs, ", ")),
+		RelatedDecisionIDs: relatedIDs,
+		RelatedAxisIDs:     append([]string(nil), d.Axes...),
+	})
+	slog.Warn("mergeDecisions: ambiguous revision skipped",
+		"axes", d.Axes,
+		"intersecting_decisions", relatedIDs,
+		"incoming_id", d.ID)
+}
+
+// incrementAxisRevisionCounts bumps state.AxisRevisionCount for each
+// axis in axes by 1. Lazily initialises the map. Called by
+// mergeDecisions after a replace-by-axis-ID match fires so the per-
+// axis cap detector (axesExceedingRevisionCap) can flag runaway
+// revision oscillation.
+func incrementAxisRevisionCounts(s *PlanningState, axes []string) {
+	if s == nil || len(axes) == 0 {
+		return
+	}
+	if s.AxisRevisionCount == nil {
+		s.AxisRevisionCount = make(map[string]int)
+	}
+	for _, a := range axes {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		s.AxisRevisionCount[a]++
+	}
+}
+
+// axesExceedingRevisionCap returns the axis IDs whose revision count
+// is at or above cap. Used by the scout spawner's per-axis cap check
+// (DJ-126 Phase 4) — when any axis hits the cap, the loop force-
+// terminates with a convergence_revision_capped event.
+//
+// Returns a stable sorted list so error messages and history events
+// are reproducible across runs.
+func axesExceedingRevisionCap(s *PlanningState, cap int) []string {
+	if s == nil || cap <= 0 || len(s.AxisRevisionCount) == 0 {
+		return nil
+	}
+	var over []string
+	for axisID, count := range s.AxisRevisionCount {
+		if count >= cap {
+			over = append(over, fmt.Sprintf("%s (revised %d×)", axisID, count))
+		}
+	}
+	sort.Strings(over)
+	return over
+}
+
+// queueDecisionRevisedEvent appends a PendingDecisionRevisedEvent
+// entry to state for every replace-by-axis-ID match in
+// mergeDecisions. The wrapper Merge closure drains the queue through
+// the historian after each merge call. Driving concerns are captured
+// here (before markConcernsAddressedByRevision flips statuses) so the
+// emitted event records the concern in its open form.
+func queueDecisionRevisedEvent(s *PlanningState, prior, revised RawDecisionProposal, priorID string, iter int) {
+	if s == nil {
+		return
+	}
+	var driving []Concern
+	for i := range s.Concerns {
+		c := s.Concerns[i]
+		if effectiveConcernStatus(&c) != ConcernStatusOpen {
+			continue
+		}
+		if !stringSliceContains(c.RelatedDecisionIDs, priorID) {
+			continue
+		}
+		// Deep-copy slice fields so the queued snapshot stays
+		// independent of the post-merge address mutation.
+		copy := c
+		if len(c.RelatedDecisionIDs) > 0 {
+			copy.RelatedDecisionIDs = append([]string(nil), c.RelatedDecisionIDs...)
+		}
+		if len(c.RelatedAxisIDs) > 0 {
+			copy.RelatedAxisIDs = append([]string(nil), c.RelatedAxisIDs...)
+		}
+		driving = append(driving, copy)
+	}
+	s.PendingDecisionRevisedEvents = append(s.PendingDecisionRevisedEvents, PendingDecisionRevisedEvent{
+		Prior:           prior,
+		Revised:         revised,
+		DrivingConcerns: driving,
+		Iter:            iter,
+	})
+}
+
+// markConcernsAddressedByRevision walks state.Concerns and marks any
+// open concern whose RelatedDecisionIDs contains the revised decision
+// id as Status=addressed with a one-sentence justification naming the
+// revision iteration. The signal is implicit: a successful axis-
+// intersection replace addresses every concern that pointed at the
+// replaced decision. The scout's next-iteration grading pass (DJ-125
+// Phase 7) sees the disposition and treats the concerns as resolved
+// for convergence purposes.
+//
+// When a concern names multiple decisions and only some are revised,
+// it stays open — the concern is addressed only once every named
+// decision has been revised in the iteration.
+func markConcernsAddressedByRevision(s *PlanningState, revisedID string, d *RawDecisionProposal, iter int) {
+	if s == nil || revisedID == "" {
+		return
+	}
+	for i := range s.Concerns {
+		c := &s.Concerns[i]
+		if effectiveConcernStatus(c) != ConcernStatusOpen {
+			continue
+		}
+		if !stringSliceContains(c.RelatedDecisionIDs, revisedID) {
+			continue
+		}
+		c.Status = ConcernStatusAddressed
+		title := strings.TrimSpace(d.Title)
+		if title == "" {
+			title = revisedID
+		}
+		c.Justification = fmt.Sprintf("Decision %s (%s) was revised at iter %d in response to this concern.", revisedID, title, iter+1)
+	}
 }
 
 // appendDecisionIDToMatchingNewNodes adds `id` to the Decisions[]
@@ -1138,6 +1509,295 @@ func projectAffectedNode(snap StateSnapshot[PlanningState]) []Message {
 		for _, d := range item.Decisions {
 			fmt.Fprintf(&suffix, "- `%s`\n", d)
 		}
+	}
+
+	return []Message{
+		{Role: "user", Content: prefix.String(), Cacheable: true},
+		{Role: "user", Content: suffix.String()},
+	}
+}
+
+// reviseableConcernItem is the per-item shape the revise-decisions
+// fanout dispatches against. Each item targets ONE prior decision and
+// carries every open concern whose RelatedDecisionIDs name that
+// decision. Multiple concerns about the same decision are aggregated
+// into a single fanout item — one revision dispatch handles them
+// jointly rather than spawning per-concern parallel dispatches that
+// pile redundant replacements onto the same axis (and inflate the
+// per-axis revision-count cap artificially).
+//
+// AgentID is always spec_decision_elaborator (the revise mode lives
+// in that prompt). ID is "rev:<dec-id>" so fanoutItemID returns a
+// unique label per dispatch slot and the per-call YAML traces are
+// diagnosable.
+type reviseableConcernItem struct {
+	AgentID       string              `json:"agent_id"`
+	ID            string              `json:"id"`
+	PriorDecision RawDecisionProposal `json:"prior_decision"`
+	Concerns      []Concern           `json:"concerns"`
+}
+
+// hasReviseableConcerns gates the revise-decisions step. Returns true
+// when at least one concern has Status==open AND names at least one
+// decision ID present in the in-flight proposal or the existing graph.
+// DJ-126: the revise dispatch only fires for concerns the workflow
+// can act on — a concern whose RelatedDecisionIDs are empty or name
+// no known decisions is left for the scout to grade in the next pass.
+func hasReviseableConcerns(s *PlanningState) bool {
+	if s == nil || len(s.Concerns) == 0 {
+		return false
+	}
+	known := collectKnownDecisionIDs(s)
+	if len(known) == 0 {
+		return false
+	}
+	for _, c := range s.Concerns {
+		if effectiveConcernStatus(&c) != ConcernStatusOpen {
+			continue
+		}
+		if len(c.RelatedDecisionIDs) == 0 {
+			continue
+		}
+		for _, did := range c.RelatedDecisionIDs {
+			if _, ok := known[strings.TrimSpace(did)]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// effectiveConcernStatus returns the Status field of c, defaulting to
+// ConcernStatusOpen for legacy pre-DJ-125 entries that omitted Status.
+// Mirrors the same defaulting used by countOpenConcerns.
+func effectiveConcernStatus(c *Concern) ConcernStatus {
+	if c == nil || c.Status == "" {
+		return ConcernStatusOpen
+	}
+	return c.Status
+}
+
+// fanoutReviseableConcerns walks state.Concerns and emits one fanout
+// item per unique reviseable decision (dedup-by-decision-ID), with
+// every open concern naming that decision aggregated into the item's
+// Concerns slice. A single concern naming N related decisions still
+// produces N items (one per decision); N concerns naming the same
+// decision produce ONE item (with all N concerns rendered jointly).
+//
+// The dedup-by-decision shape avoids per-call inflation of the
+// per-axis revision-count cap (DJ-126 Phase 4). With per-(concern,
+// decision)-pair dispatch, 5 concerns flagging the same decision in
+// one iteration would produce 5 parallel revisions piling on top of
+// each other, bumping AxisRevisionCount by 5 in a single phase —
+// guaranteed to trip the cap=3 even on the very first iteration of
+// revisions. Joint dispatch increments by 1 per decision per
+// iteration, restoring the cap's intended semantics ("cross-iteration
+// oscillation" rather than "per-concern fanout").
+//
+// Each item carries the full prior decision body (rendered as a
+// RawDecisionProposal) so the projection has the inputs the revise
+// prompt expects (the "Prior decision" block). Decisions in the
+// in-flight proposal take precedence over the existing-graph snapshot
+// when the same id appears in both — the in-flight version reflects
+// any same-iteration first-author or revision updates.
+//
+// Iteration order is preserved: decisions appear in the order their
+// first naming concern appears in state.Concerns, and concerns within
+// each item appear in state.Concerns order. Deterministic dispatch
+// makes per-call traces reproducible.
+func fanoutReviseableConcerns(s *PlanningState) ([]string, error) {
+	if s == nil || len(s.Concerns) == 0 {
+		return nil, nil
+	}
+
+	priorByID := make(map[string]RawDecisionProposal)
+	if s.Existing != nil {
+		for _, d := range s.Existing.Decisions {
+			id := strings.TrimSpace(d.ID)
+			if id == "" {
+				continue
+			}
+			priorByID[id] = decisionToRawProposal(d)
+		}
+	}
+	if strings.TrimSpace(s.RawProposal) != "" {
+		var raw RawSpecProposal
+		if err := json.Unmarshal([]byte(s.RawProposal), &raw); err == nil {
+			for _, d := range raw.Decisions {
+				id := strings.TrimSpace(d.ID)
+				if id == "" {
+					continue
+				}
+				priorByID[id] = d
+			}
+		}
+	}
+	if len(priorByID) == 0 {
+		return nil, nil
+	}
+
+	// Group open concerns by decision ID, preserving first-occurrence
+	// order for deterministic dispatch.
+	type concernGroup struct {
+		decisionID string
+		concerns   []Concern
+	}
+	groups := make(map[string]*concernGroup)
+	var order []string
+	for _, c := range s.Concerns {
+		if effectiveConcernStatus(&c) != ConcernStatusOpen {
+			continue
+		}
+		for _, didRaw := range c.RelatedDecisionIDs {
+			did := strings.TrimSpace(didRaw)
+			if _, ok := priorByID[did]; !ok {
+				continue
+			}
+			g, ok := groups[did]
+			if !ok {
+				g = &concernGroup{decisionID: did}
+				groups[did] = g
+				order = append(order, did)
+			}
+			g.concerns = append(g.concerns, c)
+		}
+	}
+
+	if len(order) == 0 {
+		return nil, nil
+	}
+	items := make([]any, 0, len(order))
+	for _, did := range order {
+		g := groups[did]
+		items = append(items, reviseableConcernItem{
+			AgentID:       "spec_decision_elaborator",
+			ID:            fmt.Sprintf("rev:%s", did),
+			PriorDecision: priorByID[did],
+			Concerns:      g.concerns,
+		})
+	}
+	return marshalFanoutItems(items)
+}
+
+// decisionToRawProposal converts a persisted spec.Decision into a
+// RawDecisionProposal for the revise projection's "Prior decision"
+// block. Provenance (citations + architect_rationale) is denormalized
+// onto the raw shape so the prompt sees the same fields the revise
+// output will carry. SourceSession + GeneratedAt are dropped — they
+// don't travel through the raw proposal shape.
+func decisionToRawProposal(d spec.Decision) RawDecisionProposal {
+	var citations []spec.Citation
+	var arch string
+	if d.Provenance != nil {
+		citations = append([]spec.Citation(nil), d.Provenance.Citations...)
+		arch = d.Provenance.ArchitectRationale
+	}
+	return RawDecisionProposal{
+		ID:                 d.ID,
+		Summary:            d.Summary,
+		Title:              d.Title,
+		Rationale:          d.Rationale,
+		ArchitectRationale: arch,
+		Confidence:         d.Confidence,
+		Alternatives:       append([]spec.Alternative(nil), d.Alternatives...),
+		Citations:          citations,
+		Axes:               append([]string(nil), d.Axes...),
+		SurfacedBy:         append([]string(nil), d.SurfacedBy...),
+	}
+}
+
+// projectReviseDecision builds the spec_decision_elaborator's user
+// message for a revise-decisions fanout call. Per-call inputs:
+// GOALS.md + scout brief + the in-flight manifest + the "Prior
+// decision" block (the full body of the decision being revised) +
+// the "Critic finding to address" block (the concern text, severity,
+// and related decision IDs). The prompt's Revise mode section keys
+// on the two block headings.
+func projectReviseDecision(snap StateSnapshot[PlanningState]) []Message {
+	st := snap.State
+	var prefix strings.Builder
+	prefix.WriteString(st.Prompt)
+	if st.ScoutBrief != "" {
+		if formatted := formatScoutBrief(st.ScoutBrief); formatted != "" {
+			prefix.WriteString("\n\n## Scout brief\n\n")
+			prefix.WriteString(formatted)
+		}
+	}
+	if rendered := renderManifestForProjection(&st); rendered != "" {
+		prefix.WriteString("\n\n## In-flight spec manifest (use spec_get to fetch full content of any node)\n\n")
+		prefix.WriteString(rendered)
+	}
+
+	var suffix strings.Builder
+	var item reviseableConcernItem
+	if snap.FanoutItem != "" {
+		_ = json.Unmarshal([]byte(snap.FanoutItem), &item)
+	}
+
+	suffix.WriteString("## Revise mode\n\n")
+	suffix.WriteString("You are revising an existing decision in response to one or more critic findings. Preserve the prior decision's `id`, `axes`, and `surfaced_by` verbatim; the revised body replaces the prior decision in the graph at the same id. A single revision addresses every finding listed below — your new rationale and alternatives reflect the union of the corrections those findings ask for.\n\n")
+
+	suffix.WriteString("### Prior decision (the version being revised)\n\n")
+	suffix.WriteString("```json\n")
+	if data, err := json.MarshalIndent(item.PriorDecision, "", "  "); err == nil {
+		suffix.Write(data)
+	} else {
+		suffix.WriteString("(unable to render — fanout item payload was malformed)")
+	}
+	suffix.WriteString("\n```\n\n")
+
+	if n := len(item.Concerns); n > 0 {
+		if n == 1 {
+			suffix.WriteString("### Critic finding to address\n\n")
+		} else {
+			fmt.Fprintf(&suffix, "### Critic findings to address (%d concerns; address every one in this single revision)\n\n", n)
+		}
+		// Collect related axis IDs across all concerns for the trailing
+		// summary line; dedup by appearance.
+		axisSet := make(map[string]struct{})
+		var axisOrder []string
+		for i, c := range item.Concerns {
+			fmt.Fprintf(&suffix, "**Finding %d.** %s\n", i+1, c.Text)
+			var meta []string
+			if c.Severity != "" {
+				meta = append(meta, fmt.Sprintf("severity %s", c.Severity))
+			}
+			if c.AgentID != "" {
+				meta = append(meta, fmt.Sprintf("raised by %s", c.AgentID))
+			}
+			if c.Kind != "" {
+				meta = append(meta, fmt.Sprintf("kind %s", c.Kind))
+			}
+			if len(meta) > 0 {
+				fmt.Fprintf(&suffix, "  - (%s)\n", strings.Join(meta, "; "))
+			}
+			if len(c.RelatedDecisionIDs) > 0 {
+				suffix.WriteString("  - Related decision IDs:")
+				for _, did := range c.RelatedDecisionIDs {
+					fmt.Fprintf(&suffix, " `%s`", did)
+				}
+				suffix.WriteString("\n")
+			}
+			for _, a := range c.RelatedAxisIDs {
+				a = strings.TrimSpace(a)
+				if a == "" {
+					continue
+				}
+				if _, ok := axisSet[a]; !ok {
+					axisSet[a] = struct{}{}
+					axisOrder = append(axisOrder, a)
+				}
+			}
+			suffix.WriteString("\n")
+		}
+		if len(axisOrder) > 0 {
+			suffix.WriteString("Related axis IDs across findings:")
+			for _, a := range axisOrder {
+				fmt.Fprintf(&suffix, " `%s`", a)
+			}
+			suffix.WriteString("\n")
+		}
+		suffix.WriteString("\nRead full bodies of any sibling decisions named above with `spec_get` before authoring the revision; the revision must be coherent with whichever direction those siblings are committing.\n")
 	}
 
 	return []Message{

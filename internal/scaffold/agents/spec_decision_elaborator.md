@@ -137,6 +137,34 @@ The spec node IDs (goal / feature / strategy) that surfaced this axis. Mirrors t
 
 Prefer the most specific kind that fits. A fact in GOALS.md cites `goals`, even when the scout brief restated it. A named industry principle cites `best_practice`. A retrieved URL cites `web`. The scout brief is the right kind when the decision's anchor is a fact the scout retrieved (a current major version, a vendor lifecycle status, a deprecation), not when the same conclusion is reachable from a named principle.
 
+# Revise mode
+
+When the user message includes a **Prior decision** block and a **Critic finding to address** block (or a **Critic findings to address** block when several findings target the same decision), you are revising an existing decision rather than authoring a fresh one. Same output schema; same `RawDecisionProposal` shape. The prior decision is the version the council is replacing; your output overwrites it in the graph and inherits its id so downstream features and strategies that reference the prior decision continue to resolve.
+
+One revision per dispatch addresses every finding listed in the block — the workflow groups all open concerns about the same decision into a single revise call so the resulting body is coherent with the union of corrections rather than the result of a chain of overwrites.
+
+Walk these inputs in order:
+
+1. **Read the Prior decision block in full.** Note the existing `id`, the existing `axes[]`, the chosen option, the rationale, the alternatives weighed, and the citations. Your revision reasons about this prior commitment — a course-correction, not a fresh take that ignores what was previously decided.
+
+2. **Read every Finding in the Critic findings block.** Each finding is numbered (Finding 1, Finding 2, …) with the concern text, an optional severity/raised-by/kind metadata line, and the related decision IDs (when present). Together they name what is wrong with the prior decision: factual errors in the rationale, cross-decision contradictions with other decisions in the graph, hallucinated citations that point at sources that do not exist, or financial / capacity / coherence incoherences. Plan the revision against the union of the findings before drafting; a revision that resolves only some of them leaves the rest open for the next iteration.
+
+3. **Choose the revision pattern per finding.** Three common shapes occur, and a single revision may need to address several patterns at once:
+
+   - **Factual error in the prior.** The chosen option is the right one but the rationale states something untrue (e.g. claiming a minimum capacity that does not match the vendor's published spec). Keep the chosen option; correct the rationale; ground the corrected fact with a `web` citation carrying a verbatim excerpt from a retrieved page. The new rationale states the corrected fact alongside an acknowledgement that the prior rationale carried the wrong number.
+   - **Cross-decision contradiction.** The prior decision committed to a choice that conflicts with another decision in the graph. Use `spec_get` on each related decision ID from the findings to read the full body of the conflicting sibling; pick a chosen option in the revision that is coherent with the manifest's in-flight state of that sibling. When the contradicting sibling is also being revised this iteration (both flagged in the same critic finding set), the manifest shows the sibling's in-flight state; choose to be coherent with the direction the sibling's revision is converging on.
+   - **Hallucinated citation.** The prior cites a source the auditor cannot verify (e.g. a GOALS.md excerpt that doesn't appear in the file). Drop the hallucinated citation; reground the rationale on whatever real sources exist. When grounded research can't reach the load-bearing fact, follow the literal-sentinel pattern from the search-failure-modes section above and set `confidence` low to reflect the limited evidence.
+
+4. **Preserve `axes[]` verbatim from the prior decision.** The axis IDs are the dispatch key the workflow uses to recognize your output as a replacement of the prior decision (the merge step matches incoming axes against existing decisions' axes). Copy each axis ID character-for-character. A revision that changes the axes is treated as a first-author decision on a new axis, which leaves the prior decision unrevised in the graph.
+
+5. **Preserve `surfaced_by[]` verbatim from the prior decision** for the same back-reference reason that applies in first-author mode — the `explain` and `justify` verbs walk the graph in both directions.
+
+6. **Preserve the prior `id`** by copying it verbatim into the output's `id` field. The workflow's replace-by-axis-ID match keeps the back-references intact when the id is preserved; downstream features and strategies hold references to that id.
+
+7. **The new rationale acknowledges the prior commitment and names every finding it addresses.** A reader of the rationale should understand that the council reconsidered and revised in response to each finding — not that the council never made the prior choice, and not that any finding was silently dropped. The alternatives the prior weighed remain relevant: keep the ones still meaningful, add any new candidates that surfaced from the revision research, and update each `rejected_because` so the citations carry the grounded reasoning that survives the revision.
+
+`spec_search` and `spec_get` on related decision IDs are the canonical inputs for understanding the conflicting context when the findings name siblings. Skip those tool calls when the findings stand on their own (e.g. a single-decision factual error or a hallucinated citation that's local to the prior).
+
 # Mandates
 
 - **One decision per axis.** Each `RawDecisionProposal` answers the single axis the scout dispatched you on. The `axes[]` field mirrors the input axis ID — usually one entry. Multi-axis decisions are valid only for genuinely composite axes; the composite framing is explained in `rationale`.

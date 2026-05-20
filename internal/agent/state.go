@@ -214,6 +214,30 @@ type PlanningState struct {
 	// first decided.
 	DecidedAxesByIter map[string]int `json:"-"`
 
+	// AxisRevisionCount tracks how many times each axis has been
+	// revised across iterations. Incremented by mergeDecisions every
+	// time a replace-by-axis-ID match fires on the axis. Consumed by
+	// the scout spawner's per-axis revision-count cap: when any axis
+	// reaches the cap (default 3; env override
+	// LOCUTUS_DECISION_REVISION_CAP), the loop force-terminates with a
+	// convergence_revision_capped DJ-103 event naming the capped axes.
+	// Per-axis counting means revising dec-X three times and dec-Y
+	// once doesn't terminate at cap=3 — the revisions are independent.
+	//
+	// Distinct from DecidedAxesByIter (which records first-author
+	// commits): this map records revise-side activity. The two
+	// failure modes (scout-side reopens vs revise-side oscillation)
+	// are flagged by two separate mechanisms.
+	AxisRevisionCount map[string]int `json:"-"`
+
+	// PendingDecisionRevisedEvents accumulates one entry per
+	// replace-by-axis-ID match within a single mergeDecisions call.
+	// The wrapper Merge closure in convergenceLoopTemplate drains the
+	// slice through the historian and clears it; mergeDecisions itself
+	// stays historian-agnostic so its 2-arg signature works for both
+	// production (wrapped) and unit-test (direct) callers.
+	PendingDecisionRevisedEvents []PendingDecisionRevisedEvent `json:"-"`
+
 	// DanglingReferences accumulates integrity-violation findings from
 	// ApplyReconciliation. Surfaced to the scout's next-iteration input
 	// as concerns so the loop can self-correct (e.g. the scout iterates
@@ -252,6 +276,27 @@ type PlanningState struct {
 type ImportedContent struct {
 	Path string // filesystem path or label
 	Body string // verbatim content
+}
+
+// PendingDecisionRevisedEvent captures the inputs the
+// decision_revised DJ-103 history event needs (DJ-126 Phase 5). One
+// entry is appended per replace-by-axis-ID match inside
+// mergeDecisions; the wrapper Merge closure in convergenceLoopTemplate
+// drains them through the historian and clears the slice so the
+// state stays clean for the next iteration's merge.
+//
+// Prior is a copy of the existing decision body BEFORE the replace;
+// Revised is the incoming RawDecisionProposal that overwrote it.
+// DrivingConcerns snapshots every open concern whose
+// RelatedDecisionIDs contained the prior id at the time the merge
+// fired — captured BEFORE markConcernsAddressedByRevision so the
+// event's rationale carries the as-flagged finding text rather than
+// the post-merge addressed-status form.
+type PendingDecisionRevisedEvent struct {
+	Prior           RawDecisionProposal
+	Revised         RawDecisionProposal
+	DrivingConcerns []Concern
+	Iter            int
 }
 
 // StateSnapshot wraps a verb's state value with fanout context. Projections
@@ -326,6 +371,18 @@ func snapshotPlanningState(s *PlanningState) PlanningState {
 	if len(s.DanglingReferences) > 0 {
 		out.DanglingReferences = make([]string, len(s.DanglingReferences))
 		copy(out.DanglingReferences, s.DanglingReferences)
+	}
+	if len(s.AxisRevisionCount) > 0 {
+		out.AxisRevisionCount = make(map[string]int, len(s.AxisRevisionCount))
+		for k, v := range s.AxisRevisionCount {
+			out.AxisRevisionCount[k] = v
+		}
+	}
+	if len(s.DecidedAxesByIter) > 0 {
+		out.DecidedAxesByIter = make(map[string]int, len(s.DecidedAxesByIter))
+		for k, v := range s.DecidedAxesByIter {
+			out.DecidedAxesByIter[k] = v
+		}
 	}
 	return out
 }

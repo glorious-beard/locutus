@@ -355,6 +355,60 @@ func buildConvergenceStuckEvent(verdict *SpecGateVerdict, iter int, snapshotSpec
 	}
 }
 
+// decisionRevisedEvent constructs the DJ-103 history.Event for one
+// replace-by-axis-ID match. TargetID is the decision id (preserved
+// from the prior); OldValue is the prior body as JSON; NewValue is
+// the revised body as JSON; Rationale names every concern that drove
+// the revision with its severity, agent_id, and iteration. Empty
+// prior body (legacy revisions of pre-DJ-124 decisions without a
+// rendered RawDecisionProposal shape) is serialised as null.
+func decisionRevisedEvent(ev PendingDecisionRevisedEvent) history.Event {
+	now := time.Now()
+	priorJSON, _ := json.MarshalIndent(ev.Prior, "", "  ")
+	revisedJSON, _ := json.MarshalIndent(ev.Revised, "", "  ")
+	var rationale strings.Builder
+	fmt.Fprintf(&rationale, "Decision %s revised at iter %d.", ev.Revised.ID, ev.Iter+1)
+	if len(ev.DrivingConcerns) > 0 {
+		rationale.WriteString("\n\nDriving concerns:")
+		for _, c := range ev.DrivingConcerns {
+			fmt.Fprintf(&rationale, "\n- [%s/%s] %s", c.AgentID, c.Severity, c.Text)
+		}
+	}
+	return history.Event{
+		ID:        history.EventID("decision_revised", ev.Revised.ID, now),
+		Timestamp: now,
+		Kind:      "decision_revised",
+		TargetID:  ev.Revised.ID,
+		OldValue:  string(priorJSON),
+		NewValue:  string(revisedJSON),
+		Rationale: rationale.String(),
+	}
+}
+
+// mergeDecisionsRecording wraps mergeDecisions: it performs the merge
+// as usual, then drains state.PendingDecisionRevisedEvents through the
+// historian (nil-safe). Used by convergenceLoopTemplate so the
+// production loop emits decision_revised DJ-103 events for every
+// replace-by-axis-ID match; unit tests that call mergeDecisions
+// directly skip the recording side-effect (the pending slice
+// accumulates on state and stays there harmlessly).
+func mergeDecisionsRecording(historian *history.Historian) func(*PlanningState, []RoundResult) {
+	return func(s *PlanningState, results []RoundResult) {
+		mergeDecisions(s, results)
+		if s == nil || len(s.PendingDecisionRevisedEvents) == 0 {
+			return
+		}
+		if historian != nil {
+			for _, ev := range s.PendingDecisionRevisedEvents {
+				if err := historian.Record(decisionRevisedEvent(ev)); err != nil {
+					slog.Warn("decision_revised: failed to record DJ-103 event", "err", err, "target_id", ev.Revised.ID)
+				}
+			}
+		}
+		s.PendingDecisionRevisedEvents = nil
+	}
+}
+
 // convergenceLoopTemplate (DJ-124) returns the template closure
 // AppendSubgraph uses to expand one iteration of the new scout-driven
 // spec-council loop. Each iteration is a five-step chain:
@@ -378,6 +432,14 @@ func buildConvergenceStuckEvent(verdict *SpecGateVerdict, iter int, snapshotSpec
 // scout carries the same Spawn closure pattern as the initial-graph
 // scout, so the loop drives itself one iteration at a time.
 func convergenceLoopTemplate(historian *history.Historian, budget int) func(executor.IterationContext) []WorkflowStep[PlanningState] {
+	// One recording wrapper shared by both decision-elaborator dispatch
+	// sites — first-author (decisions) and revise (revise-decisions).
+	// The wrapper drains state.PendingDecisionRevisedEvents into the
+	// historian after each merge call, so DJ-103 decision_revised
+	// events fire for every replace-by-axis-ID match. First-author
+	// merges produce no pending events; the drain is a no-op there.
+	decisionMerge := mergeDecisionsRecording(historian)
+
 	var template func(executor.IterationContext) []WorkflowStep[PlanningState]
 	template = func(ic executor.IterationContext) []WorkflowStep[PlanningState] {
 		thisIter := ic.IterationIndex
@@ -395,7 +457,7 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				Conditional: hasOpenAxes,
 				Fanout:      fanoutOpenAxes,
 				Project:     projectOpenAxis,
-				Merge:       mergeDecisions,
+				Merge:       decisionMerge,
 			},
 			{
 				// narrative: fanout per affected node. The per-item
@@ -413,6 +475,27 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				Merge:       mergeNarrative,
 			},
 			{
+				// revise-decisions (DJ-126): fanout per open concern
+				// with RelatedDecisionIDs that name a decision in the
+				// in-flight or existing graph. Each fanout item
+				// dispatches the spec_decision_elaborator in revise
+				// mode against one (concern, prior decision) pair; the
+				// merge function replaces the prior decision in-place
+				// by axis-ID intersection (Phase 3). Fires after
+				// narrative so a feature/strategy body that resolves
+				// the concern naturally can mark it addressed via the
+				// scout's next-iteration grading pass instead of
+				// triggering a revision.
+				ID:          "revise-decisions",
+				Agents:      []string{"spec_decision_elaborator"},
+				Parallel:    true,
+				DependsOn:   []string{"narrative"},
+				Conditional: hasReviseableConcerns,
+				Fanout:      fanoutReviseableConcerns,
+				Project:     projectReviseDecision,
+				Merge:       decisionMerge,
+			},
+			{
 				// reconcile: spec_reconciler runs for API-layer schema
 				// stability (the agent is still on disk and its strict-
 				// mode verdict must be a valid ReconciliationVerdict),
@@ -421,9 +504,15 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				// SpecProposal and surfaces dangling decision references
 				// onto state.DanglingReferences so the next scout pass
 				// can address them.
+				//
+				// DependsOn:revise-decisions so the field-map runs after
+				// any revisions land in state.RawProposal; skipped
+				// revise-decisions still counts as completed in the
+				// executor so this dependency is safe on iterations
+				// with no reviseable concerns.
 				ID:        "reconcile",
 				Agents:    []string{"spec_reconciler"},
-				DependsOn: []string{"narrative"},
+				DependsOn: []string{"revise-decisions"},
 				Project:   projectReconcile,
 				Merge:     mergeReconciledProposal,
 			},
