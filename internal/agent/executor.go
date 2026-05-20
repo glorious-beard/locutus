@@ -153,6 +153,15 @@ type Executor struct {
 	// never need this, and the council path falls back to running
 	// without in-flight swap when nil.
 	specSearch *SwappableSpecSearch
+
+	// specListManifest / specGet are the DJ-125 counterparts to
+	// specSearch — RAG-tool swappables for spec_list_manifest and
+	// spec_get. Same lifecycle: production wires the on-disk
+	// fsSpecProvider at registration time; GenerateSpec pushes an
+	// InFlightSpecStore in for the duration of a council run so all
+	// three RAG tools see the in-flight RawProposal.
+	specListManifest *SwappableSpecListManifest
+	specGet          *SwappableSpecGet
 }
 
 // NewExecutor wires up an Executor with the given adapter set, model
@@ -204,6 +213,18 @@ func (e *Executor) SetSpecSearch(s *SwappableSpecSearch) { e.specSearch = s }
 // — a missing swappable degrades the council gracefully to "no
 // in-flight spec_search" rather than crashing.
 func (e *Executor) SpecSearch() *SwappableSpecSearch { return e.specSearch }
+
+// SetSpecListManifest / SpecListManifest mirror the spec_search wiring
+// for the DJ-125 spec_list_manifest tool. cmd/llm.go installs the
+// swappable at registration time; GenerateSpec swaps the in-flight
+// provider in at council start and restores the on-disk provider at
+// council end.
+func (e *Executor) SetSpecListManifest(s *SwappableSpecListManifest) { e.specListManifest = s }
+func (e *Executor) SpecListManifest() *SwappableSpecListManifest     { return e.specListManifest }
+
+// SetSpecGet / SpecGet do the same for spec_get.
+func (e *Executor) SetSpecGet(s *SwappableSpecGet) { e.specGet = s }
+func (e *Executor) SpecGet() *SwappableSpecGet     { return e.specGet }
 
 // FormatPreferences returns the model-preference list the dispatcher
 // uses for the structured-output format pass — each entry resolves

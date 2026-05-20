@@ -212,9 +212,19 @@ func registerSpecToolsOnce(inner agent.AgentExecutor, fsys specio.FS, projectRoo
 		// at the end. The tool registration sees the swappable as its
 		// search.Backend, so every spec_search call routes through
 		// whichever delegate is current.
+		//
+		// DJ-125 Phase 3: wrap the on-disk manifest/get default in
+		// matching swappables so all three RAG tools share the same
+		// swap-and-restore lifecycle. The council pushes an
+		// InFlightSpecStore in for the run.
 		swap := agent.NewSwappableSpecSearch(idx)
 		exec.SetSpecSearch(swap)
-		agent.RegisterSpecTools(exec.Tools(), fsys, swap)
+		defaultProvider := agent.NewFSSpecProvider(fsys)
+		listSwap := agent.NewSwappableSpecListManifest(defaultProvider)
+		getSwap := agent.NewSwappableSpecGet(defaultProvider)
+		exec.SetSpecListManifest(listSwap)
+		exec.SetSpecGet(getSwap)
+		agent.RegisterSpecTools(exec.Tools(), fsys, swap, listSwap, getSwap)
 	})
 	return specToolsErr
 }

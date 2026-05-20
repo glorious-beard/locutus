@@ -798,7 +798,7 @@ func TestInFlightSearchInstrumentationCaptured(t *testing.T) {
 	// summaries, only on the hit-count signal.
 	fs := setupSpecGenFixture(t)
 	registry := NewToolRegistry()
-	RegisterSpecTools(registry, fs, swap)
+	RegisterSpecTools(registry, fs, swap, nil, nil)
 
 	tool, ok := registry.Resolve(ToolNameSpecSearch)
 	require.True(t, ok, "spec_search tool must be registered against the swap")

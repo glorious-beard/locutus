@@ -50,8 +50,23 @@ func scoutSpawnFor(myIter, budget int, loopTemplate func(executor.IterationConte
 		if err != nil {
 			return nil, nil, fmt.Errorf("spec_scout brief at iter %d: %w", myIter, err)
 		}
-		if brief.Converged {
+		// DJ-125 Phase 7: convergence is brief.Converged AND no
+		// concern is still open after the scout's dispositions land
+		// on state. The mergeScoutBrief step has already applied
+		// ConcernDispositions to state.Concerns by the time this
+		// spawner fires, so countOpenConcerns reads the effective
+		// status. A scout claiming converged=true while open
+		// concerns remain is rejected — the scout must either
+		// dispose every open concern or report converged=false.
+		openCount := countOpenConcerns(&snap.State)
+		if brief.Converged && openCount == 0 {
 			return nil, nil, nil
+		}
+		if brief.Converged && openCount > 0 {
+			return nil, nil, fmt.Errorf(
+				"spec_scout claims converged=true at iter %d but %d concern(s) remain open after dispositions — the scout must dispose every open concern (addressed; wontfix) or report converged=false",
+				myIter+1, openCount,
+			)
 		}
 
 		// Cycle detection: any axis in axes_open whose ID is already in
@@ -250,6 +265,192 @@ func buildScoutConvergenceFailedEvent(brief *ScoutBrief, iter, budget int, snaps
 // only new_nodes (a scout pass that adds a feature whose axes are all
 // already covered by existing decisions).
 func hasOpenAxes(s *PlanningState) bool { return s != nil && len(s.AxesOpen) > 0 }
+
+// countOpenConcerns returns the number of concerns whose effective
+// status is open. Concerns without an explicit Status (legacy
+// pre-DJ-125 entries) count as open. DJ-125 Phase 7: the scout
+// convergence rule reads this to confirm no open concerns remain
+// before accepting brief.Converged.
+func countOpenConcerns(s *PlanningState) int {
+	if s == nil {
+		return 0
+	}
+	n := 0
+	for _, c := range s.Concerns {
+		status := c.Status
+		if status == "" {
+			status = ConcernStatusOpen
+		}
+		if status == ConcernStatusOpen {
+			n++
+		}
+	}
+	return n
+}
+
+// mechanicalDisposeConcerns walks state.Concerns with Status == open
+// and stales those whose related axis has been settled (or whose
+// related decision is now present in the graph for a "missing X" finding).
+// DJ-125 Phase 6: cheap regex/lookup pass; no LLM call. Reduces the
+// scout's grading load to the judgment-call findings (contradictions,
+// factual claims, integration gaps).
+//
+// Rules:
+//   - If any RelatedAxisID is recorded in DecidedAxesByIter →
+//     Status = stale. The axis has been decided; whatever concern
+//     was raised about its absence is now answered.
+//   - Else if any RelatedDecisionID is present in the in-flight
+//     proposal or state.Existing AND the concern's text matches a
+//     "missing X" pattern → Status = stale. The decision now exists.
+//     Conservative on the missing-pattern check: only fires when the
+//     concern text begins with words like "missing", "no", "lacks",
+//     "absent", etc., so contradictions ("dec-a and dec-b conflict")
+//     stay open for the scout to grade.
+//   - Else leave Status = open.
+//
+// Each transition logs at debug level so the forensic trail captures
+// which concerns aged out mechanically vs which the scout disposed.
+// Idempotent: a second call produces the same final state.
+func mechanicalDisposeConcerns(s *PlanningState) {
+	if s == nil || len(s.Concerns) == 0 {
+		return
+	}
+
+	// Build the lookup sets once per call: settled axes and known
+	// decision IDs (in-flight + existing).
+	settledAxes := make(map[string]struct{}, len(s.DecidedAxesByIter))
+	for id := range s.DecidedAxesByIter {
+		settledAxes[id] = struct{}{}
+	}
+	knownDecisions := collectKnownDecisionIDs(s)
+
+	for i := range s.Concerns {
+		c := &s.Concerns[i]
+		if c.Status != ConcernStatusOpen && c.Status != "" {
+			// Leave addressed / stale / wontfix alone — already
+			// disposed by a prior pass or the scout.
+			continue
+		}
+		// Default an empty Status (legacy) to open before any
+		// transition so the post-pass shape is uniform.
+		if c.Status == "" {
+			c.Status = ConcernStatusOpen
+		}
+
+		// (1) Stale on any settled related axis.
+		if anyInSet(c.RelatedAxisIDs, settledAxes) {
+			slog.Debug("concern auto-stale: related axis settled",
+				"concern_text", truncate(c.Text, 80),
+				"related_axes", c.RelatedAxisIDs)
+			c.Status = ConcernStatusStale
+			continue
+		}
+
+		// (2) Stale on a missing-X pattern where every named
+		//     decision is now in the graph.
+		if isMissingPatternConcern(c.Text) && len(c.RelatedDecisionIDs) > 0 && allInSet(c.RelatedDecisionIDs, knownDecisions) {
+			slog.Debug("concern auto-stale: missing-X pattern resolved",
+				"concern_text", truncate(c.Text, 80),
+				"related_decisions", c.RelatedDecisionIDs)
+			c.Status = ConcernStatusStale
+			continue
+		}
+	}
+}
+
+// collectKnownDecisionIDs returns the union of decision IDs in the
+// in-flight proposal and state.Existing. Used by the mechanical
+// dispose pass to detect "decision now exists" transitions.
+func collectKnownDecisionIDs(s *PlanningState) map[string]struct{} {
+	out := make(map[string]struct{})
+	if s == nil {
+		return out
+	}
+	if strings.TrimSpace(s.RawProposal) != "" {
+		var prop RawSpecProposal
+		if err := json.Unmarshal([]byte(s.RawProposal), &prop); err == nil {
+			for _, d := range prop.Decisions {
+				if id := strings.TrimSpace(d.ID); id != "" {
+					out[id] = struct{}{}
+				}
+			}
+		}
+	}
+	if s.Existing != nil {
+		for _, d := range s.Existing.Decisions {
+			if id := strings.TrimSpace(d.ID); id != "" {
+				out[id] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+// anyInSet reports whether any element of ids is in set.
+func anyInSet(ids []string, set map[string]struct{}) bool {
+	for _, id := range ids {
+		if _, ok := set[strings.TrimSpace(id)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// allInSet reports whether every element of ids is in set. Returns
+// false on an empty ids slice (callers gate on len > 0).
+func allInSet(ids []string, set map[string]struct{}) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		if _, ok := set[strings.TrimSpace(id)]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// missingPatternPrefixes are the lowercase leading tokens that mark a
+// concern as a "missing-X" finding. Conservative list — only stale
+// concerns whose text starts with one of these. Contradiction
+// findings ("dec-a and dec-b conflict") don't begin with these and
+// stay open for the scout to grade.
+var missingPatternPrefixes = []string{
+	"missing",
+	"no ",
+	"lacks",
+	"lacking",
+	"absent",
+	"absence",
+	"need",
+	"needs",
+	"should add",
+	"should include",
+	"should commit",
+	"never commits",
+	"never specifies",
+	"never says",
+	"not committed",
+	"not specified",
+	"not addressed",
+	"undefined",
+	"unspecified",
+	"undecided",
+	"untouched",
+	"unstated",
+}
+
+// isMissingPatternConcern reports whether the concern text begins
+// with a "missing X" lead-in. Case-insensitive on the prefix.
+func isMissingPatternConcern(text string) bool {
+	t := strings.TrimSpace(strings.ToLower(text))
+	for _, p := range missingPatternPrefixes {
+		if strings.HasPrefix(t, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // hasAffectedNodes gates the narrative step on computeAffectedNodes
 // returning a non-empty set. Avoids dispatching the narrative fanout
@@ -628,6 +829,10 @@ func mergeDecisions(s *PlanningState, results []RoundResult) {
 	s.RawProposal = string(out)
 	s.OriginalRawProposal = s.RawProposal
 	rebuildInFlightIndex(s)
+	// DJ-125 Phase 6: a fresh decision may settle an axis that prior
+	// concerns flagged. Re-run the mechanical dispose pass so the
+	// scout's next pass sees those concerns as stale rather than open.
+	mechanicalDisposeConcerns(s)
 }
 
 // appendDecisionIDToMatchingNewNodes adds `id` to the Decisions[]
@@ -742,15 +947,23 @@ func mergeNarrative(s *PlanningState, results []RoundResult) {
 }
 
 // projectScout builds the spec_scout's user message. The scout reads
-// GOALS.md + imported content + the in-flight RawProposal + concerns +
-// dangling references + prior brief (on iter > 0) and emits the new
-// ScoutBrief.
+// GOALS.md + imported content + the in-flight manifest (DJ-125
+// Phase 4) + concerns + dangling references + prior brief (on iter > 0)
+// and emits the new ScoutBrief.
+//
+// Pre-DJ-125 the projection dumped state.RawProposal as a JSON blob
+// (~8K-30K chars on the second winplan re-run, blown past the 8K cap
+// before the tactical 200K bump). Post-DJ-125 the scout sees the
+// manifest's structural overview with state markers (axes
+// settled/open, decisions settled_this_iter/flagged, features and
+// strategies authored/pending). Full content for any specific node is
+// available via the spec_get tool the scout already has registered.
 //
 // On iter 0 the message contains only GOALS.md, imported content, and
 // the existing spec flag (greenfield runs omit the latter). On every
 // subsequent iteration the message also contains the prior brief, the
-// in-flight proposal, the iteration's concerns, and the dangling
-// references — the inputs the scout needs to re-judge convergence.
+// manifest, the iteration's concerns, and the dangling references —
+// the inputs the scout needs to re-judge convergence.
 func projectScout(snap StateSnapshot[PlanningState]) []Message {
 	st := snap.State
 	var b strings.Builder
@@ -772,16 +985,24 @@ func projectScout(snap StateSnapshot[PlanningState]) []Message {
 		}
 	}
 
-	if st.RawProposal != "" {
-		b.WriteString("\n\n## In-flight proposal (post-narrative; what the loop has committed so far)\n\n```json\n")
-		b.WriteString(st.RawProposal)
-		b.WriteString("\n```\n")
+	if rendered := renderManifestForProjection(&st); rendered != "" {
+		b.WriteString("\n\n## In-flight spec manifest (use spec_get to fetch any node body)\n\n")
+		b.WriteString(rendered)
+		b.WriteString("\n")
 	}
 
 	if len(st.Concerns) > 0 {
 		b.WriteString("\n## Outstanding critic findings\n")
-		for _, c := range st.Concerns {
-			fmt.Fprintf(&b, "- [%s/%s] %s\n", c.AgentID, c.Severity, c.Text)
+		for i, c := range st.Concerns {
+			status := c.Status
+			if status == "" {
+				status = ConcernStatusOpen
+			}
+			fmt.Fprintf(&b, "- [c-%d/%s/%s/%s] %s", i, status, c.AgentID, c.Severity, c.Text)
+			if c.Justification != "" {
+				fmt.Fprintf(&b, " (justification: %s)", c.Justification)
+			}
+			b.WriteString("\n")
 		}
 	}
 
@@ -802,8 +1023,9 @@ func projectScout(snap StateSnapshot[PlanningState]) []Message {
 
 // projectOpenAxis builds the spec_decision_elaborator's user message.
 // Per-call inputs: GOALS.md + scout brief (for technology_options /
-// watch_outs / implicit_assumptions context) + the OpenAxis being
-// decided.
+// watch_outs / implicit_assumptions context) + the in-flight manifest
+// (DJ-125 Phase 4 — sibling settled decisions, axes in flight, flagged
+// concerns) + the OpenAxis being decided in full.
 func projectOpenAxis(snap StateSnapshot[PlanningState]) []Message {
 	st := snap.State
 	var prefix strings.Builder
@@ -813,6 +1035,10 @@ func projectOpenAxis(snap StateSnapshot[PlanningState]) []Message {
 			prefix.WriteString("\n\n## Scout brief\n\n")
 			prefix.WriteString(formatted)
 		}
+	}
+	if rendered := renderManifestForProjection(&st); rendered != "" {
+		prefix.WriteString("\n\n## In-flight spec manifest (use spec_get to fetch full content of any node)\n\n")
+		prefix.WriteString(rendered)
 	}
 
 	var suffix strings.Builder
@@ -847,10 +1073,12 @@ func projectOpenAxis(snap StateSnapshot[PlanningState]) []Message {
 }
 
 // projectAffectedNode builds the narrative-elaborator's user message.
-// Per-call inputs: GOALS.md + scout brief + the affected node (new or
-// existing) + the authoritative decisions-ID list. The decisions-ID
-// list is the elaborator's sole source of truth for the output's
-// Decisions[] field.
+// Per-call inputs: GOALS.md + scout brief + the in-flight manifest
+// (DJ-125 Phase 4 — replaces the pre-DJ-125 sibling-as-blob
+// projection) + the affected node (new or existing) in full + the
+// authoritative decisions-ID list. The decisions-ID list is the
+// elaborator's sole source of truth for the output's Decisions[]
+// field.
 func projectAffectedNode(snap StateSnapshot[PlanningState]) []Message {
 	st := snap.State
 	var prefix strings.Builder
@@ -861,10 +1089,9 @@ func projectAffectedNode(snap StateSnapshot[PlanningState]) []Message {
 			prefix.WriteString(formatted)
 		}
 	}
-	if st.RawProposal != "" {
-		prefix.WriteString("\n\n## In-flight proposal (sibling features / strategies for situational context)\n\n```json\n")
-		prefix.WriteString(st.RawProposal)
-		prefix.WriteString("\n```\n")
+	if rendered := renderManifestForProjection(&st); rendered != "" {
+		prefix.WriteString("\n\n## In-flight spec manifest (sibling features / strategies and the decisions they reference; use spec_get to fetch full bodies)\n\n")
+		prefix.WriteString(rendered)
 	}
 
 	var suffix strings.Builder

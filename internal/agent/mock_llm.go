@@ -59,6 +59,14 @@ type MockExecutor struct {
 	// via SetSpecSearch only in tests that exercise the in-flight
 	// spec_search wiring (DJ-123).
 	specSearch *SwappableSpecSearch
+
+	// specListManifest / specGet mirror specSearch for the DJ-125
+	// list/get RAG-tool swappables. Tests that drive GenerateSpec
+	// end-to-end and want to observe the in-flight redirection set
+	// these via SetSpecListManifest / SetSpecGet; otherwise the
+	// council's manifest/get swap path no-ops on the mock.
+	specListManifest *SwappableSpecListManifest
+	specGet          *SwappableSpecGet
 }
 
 // NewMockExecutor creates a MockExecutor with the given scripted
@@ -164,3 +172,12 @@ func (m *MockExecutor) SetSpecSearch(s *SwappableSpecSearch) { m.specSearch = s 
 // MockExecutor can exercise the in-flight swap-and-restore path without
 // a real *Executor.
 func (m *MockExecutor) SpecSearch() *SwappableSpecSearch { return m.specSearch }
+
+// SetSpecListManifest / SpecListManifest mirror SetSpecSearch /
+// SpecSearch for the DJ-125 spec_list_manifest swappable.
+func (m *MockExecutor) SetSpecListManifest(s *SwappableSpecListManifest) { m.specListManifest = s }
+func (m *MockExecutor) SpecListManifest() *SwappableSpecListManifest     { return m.specListManifest }
+
+// SetSpecGet / SpecGet do the same for spec_get.
+func (m *MockExecutor) SetSpecGet(s *SwappableSpecGet) { m.specGet = s }
+func (m *MockExecutor) SpecGet() *SwappableSpecGet     { return m.specGet }

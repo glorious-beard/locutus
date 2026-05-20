@@ -166,7 +166,7 @@ func TestRegenerateInvalidatedApproaches_ReActToolPath(t *testing.T) {
 	// MemFS — pass nil backend to skip spec_search registration
 	// (Bluge backing is OS-bound or in-memory but neither belongs
 	// here). This test exercises spec_list_manifest only.
-	agent.RegisterSpecTools(registry, fs, nil)
+	agent.RegisterSpecTools(registry, fs, nil, nil, nil)
 
 	finalBody := "ReAct-pathed body — forward: WorkOS; backward: delete legacy auth"
 	finalPayload, err := json.Marshal(agent.RegenerateApproachResult{

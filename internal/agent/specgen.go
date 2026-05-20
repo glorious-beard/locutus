@@ -128,13 +128,26 @@ type SpecGenRequest struct {
 // findings. Schema is registered in schemas.go so the structured-
 // output path enforces it at the API layer.
 type ScoutBrief struct {
-	DomainRead          string        `json:"domain_read" jsonschema:"description=A paragraph or two describing what the scout believes the project is about based on GOALS.md and the (optional) feature/design document. Names the domain (e.g. 'campaign software for political organizing'); the user(s); and the central capability. Concrete; not generic — 'real-time collaboration on geospatial data' beats 'a web app'."`
-	TechnologyOptions   []string      `json:"technology_options" jsonschema:"description=Specific candidate technology choices the decision-elaborator should weigh on a per-axis basis (compute platform; data store; frontend framework; etc.). Each entry names a real product/library ('Postgres with PostGIS'; 'Next.js App Router'); not a category ('a database'; 'a frontend'). Supporting content the scout surfaces during axis identification — the decision-elaborator picks among these per axis."`
-	ImplicitAssumptions []string      `json:"implicit_assumptions" jsonschema:"description=Assumptions GOALS.md makes implicitly that the scout has surfaced for the decision-elaborator (e.g. 'expected concurrent-user count'; 'data sensitivity classification'; 'team size and tenure'). Each entry names the assumption clearly enough that the elaborator can commit to a value when it picks per axis. Supporting context for axis identification; the load-bearing gap output is axes_open."`
-	WatchOuts           []string      `json:"watch_outs" jsonschema:"description=Risks; gotchas; or non-obvious constraints the decision-elaborator should be aware of (e.g. 'election-cycle traffic seasonality: months of near-zero load followed by 6-week sprint'; 'PII handling regulations vary by state'). Each entry actionable; not generic."`
-	AxesOpen            []OpenAxis    `json:"axes_open" jsonschema:"description=Foundational axes the scout identified that no decision in the current graph covers. Each entry is one axis the loop must resolve before convergence. Empty array exactly when Converged is true. The dispatcher in Phase 5 spawns one decision-elaborator per entry."`
-	NewNodes            []NewSpecNode `json:"new_nodes" jsonschema:"description=New feature or strategy nodes the scout identified from imported content or goal-shape analysis. Each entry pre-populates its decisions[] with existing-decision IDs that cover the node's axes; new decisions get appended at decision-creation time. Empty when no new nodes surface this iteration."`
-	Converged           bool          `json:"converged" jsonschema:"description=True only when AxesOpen is empty AND the iteration's critic findings are empty. Loop exits as the queue drains. False otherwise; the loop continues with another iteration."`
+	DomainRead           string               `json:"domain_read" jsonschema:"description=A paragraph or two describing what the scout believes the project is about based on GOALS.md and the (optional) feature/design document. Names the domain (e.g. 'campaign software for political organizing'); the user(s); and the central capability. Concrete; not generic — 'real-time collaboration on geospatial data' beats 'a web app'."`
+	TechnologyOptions    []string             `json:"technology_options" jsonschema:"description=Specific candidate technology choices the decision-elaborator should weigh on a per-axis basis (compute platform; data store; frontend framework; etc.). Each entry names a real product/library ('Postgres with PostGIS'; 'Next.js App Router'); not a category ('a database'; 'a frontend'). Supporting content the scout surfaces during axis identification — the decision-elaborator picks among these per axis."`
+	ImplicitAssumptions  []string             `json:"implicit_assumptions" jsonschema:"description=Assumptions GOALS.md makes implicitly that the scout has surfaced for the decision-elaborator (e.g. 'expected concurrent-user count'; 'data sensitivity classification'; 'team size and tenure'). Each entry names the assumption clearly enough that the elaborator can commit to a value when it picks per axis. Supporting context for axis identification; the load-bearing gap output is axes_open."`
+	WatchOuts            []string             `json:"watch_outs" jsonschema:"description=Risks; gotchas; or non-obvious constraints the decision-elaborator should be aware of (e.g. 'election-cycle traffic seasonality: months of near-zero load followed by 6-week sprint'; 'PII handling regulations vary by state'). Each entry actionable; not generic."`
+	AxesOpen             []OpenAxis           `json:"axes_open" jsonschema:"description=Foundational axes the scout identified that no decision in the current graph covers. Each entry is one axis the loop must resolve before convergence. Empty array exactly when Converged is true. The dispatcher in Phase 5 spawns one decision-elaborator per entry."`
+	NewNodes             []NewSpecNode        `json:"new_nodes" jsonschema:"description=New feature or strategy nodes the scout identified from imported content or goal-shape analysis. Each entry pre-populates its decisions[] with existing-decision IDs that cover the node's axes; new decisions get appended at decision-creation time. Empty when no new nodes surface this iteration."`
+	ConcernDispositions  []ConcernDisposition `json:"concern_dispositions" jsonschema:"description=DJ-125 Phase 7: one entry per concern the scout grades from the open set this iteration. Concern IDs come from the manifest's c-N positions (the open concerns in the prompt's outstanding-findings section). Empty array when no concerns are open this iteration (the mechanical pre-pass already disposed them). Each entry's disposition tells the workflow whether the concern still blocks convergence; the justification field carries the scout's one-sentence rationale."`
+	Converged            bool                 `json:"converged" jsonschema:"description=True only when AxesOpen is empty AND no concern's effective status is open (after applying the dispositions in ConcernDispositions). Loop exits as the queue drains. False otherwise; the loop continues with another iteration."`
+}
+
+// ConcernDisposition is one scout-graded verdict on an open concern.
+// DJ-125 Phase 7: the scout receives the manifest with concerns
+// marked open (after the mechanical pre-pass stales the easy cases)
+// and grades each as addressed / wontfix / still_open with a
+// one-sentence justification. The mechanical pre-pass owns the stale
+// disposition so the scout never has to emit it.
+type ConcernDisposition struct {
+	ConcernID     string `json:"concern_id" jsonschema:"description=The concern's ID as rendered in the manifest's Concerns section (e.g. 'c-3'). Must match one of the concerns the prompt lists as open this iteration; unknown ids are skipped at merge time and the convergence judgment treats the concern as still open."`
+	Disposition   string `json:"disposition" jsonschema:"enum=addressed,enum=wontfix,enum=still_open,description=addressed: the current proposal resolves the concern (justification names the resolving decision or design choice). wontfix: a real concern but representing a tradeoff that's acceptable (justification names the tradeoff being accepted). still_open: the concern is unaddressed and convergence cannot hold."`
+	Justification string `json:"justification" jsonschema:"description=One-sentence rationale for the disposition. For addressed: name the specific decision or design choice that resolves it. For wontfix: name the tradeoff being accepted in plain terms. For still_open: name the specific gap the proposal still has. A complete sentence; not a one-word label."`
 }
 
 // OpenAxis names one foundational axis the current graph does not
@@ -268,6 +281,32 @@ func specSearchSwap(exec AgentExecutor) *SwappableSpecSearch {
 	return p.SpecSearch()
 }
 
+// specListManifestSwap mirrors specSearchSwap for the DJ-125
+// spec_list_manifest swappable. Returns nil when the executor doesn't
+// expose one (mocks that don't opt in; CLI paths that failed to wire
+// the registry); the council degrades to the on-disk default in that
+// case, identical to pre-DJ-125 behaviour.
+func specListManifestSwap(exec AgentExecutor) *SwappableSpecListManifest {
+	p, ok := exec.(interface {
+		SpecListManifest() *SwappableSpecListManifest
+	})
+	if !ok || p == nil {
+		return nil
+	}
+	return p.SpecListManifest()
+}
+
+// specGetSwap is the spec_get counterpart.
+func specGetSwap(exec AgentExecutor) *SwappableSpecGet {
+	p, ok := exec.(interface {
+		SpecGet() *SwappableSpecGet
+	})
+	if !ok || p == nil {
+		return nil
+	}
+	return p.SpecGet()
+}
+
 // readSpecGateBudget returns the iteration cap for the spec-council
 // convergence gate. LOCUTUS_SPEC_GEN_MAX_ITERATIONS overrides the
 // default when set to a positive integer. Invalid or zero values are
@@ -351,6 +390,35 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 	if len(req.Imported) > 0 {
 		state.Imported = make([]ImportedContent, len(req.Imported))
 		copy(state.Imported, req.Imported)
+	}
+
+	// DJ-125 Phase 3: wire the in-flight overlay for the RAG list/get
+	// tools. The InFlightSpecStore carries the current RawProposal +
+	// the loaded state.Existing snapshot; the council's merge helpers
+	// call inflightStore.Update on every RawProposal mutation so the
+	// next agent's spec_list_manifest / spec_get call sees the freshest
+	// proposal. Outside the council the swappables fall back to the
+	// fsys-backed default provider (wired at registration in cmd/llm.go).
+	//
+	// Swappables come from the same executor the spec_search swap pulls
+	// from; mock executors that don't expose them no-op without breaking
+	// the council.
+	var inflightStore *InFlightSpecStore
+	if listSwap := specListManifestSwap(exec); listSwap != nil {
+		inflightStore = NewInFlightSpecStore()
+		inflightStore.SetState("", req.Existing)
+		prevList := listSwap.Swap(inflightStore)
+		state.InFlightSpecStore = inflightStore
+		defer listSwap.Swap(prevList)
+	}
+	if getSwap := specGetSwap(exec); getSwap != nil {
+		if inflightStore == nil {
+			inflightStore = NewInFlightSpecStore()
+			inflightStore.SetState("", req.Existing)
+			state.InFlightSpecStore = inflightStore
+		}
+		prevGet := getSwap.Swap(inflightStore)
+		defer getSwap.Swap(prevGet)
 	}
 
 	// DJ-123 Phase 3: wire a council-scoped in-flight Bluge index over

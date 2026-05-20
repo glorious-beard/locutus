@@ -2,7 +2,7 @@
 
 > **Governing DJ:** [DJ-125](../../docs/DECISION_JOURNAL.md#dj-125-in-flight-manifest--enriched-concern-model-refines-dj-094--dj-123-in-flight-surface-closes-dj-124s-concern-disposition-gap). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
 >
-> **Status:** designed; implementation not started.
+> **Status:** Phases 1-8 landed 2026-05-20; Phase 9 (winplan re-run validation) pending manual run; Phase 10 (DJ status flip) gated on Phase 9 success.
 > **Predecessor:** [DJ-124](../../docs/DECISION_JOURNAL.md#dj-124) (landed Phases 1-8; Phase 9 validation revealed the gaps this plan closes).
 > **Surface area:** Concern model expansion + new `InFlightManifest` data type + spec-lookup tool redirection + manifest-based projection rewrites + mechanical concern-disposition pre-pass + scout grading.
 > **Discipline (per memory):** tests → design pause in chat → code; mid-impl failures trigger design judgment, not test patching. Each phase verifies independently before moving on. **Prompt edits walk [docs/agent-conventions.md](../../docs/agent-conventions.md) end-to-end before drafting** per [[feedback-agent-conventions-checklist-first]].

@@ -326,6 +326,12 @@ func projectFindingCluster(snap StateSnapshot[PlanningState]) []Message {
 // the spec_list_manifest / spec_get tools (registered against the
 // Genkit runtime in cmd/llm.go). Inlining the snapshot was an
 // O(N)-prompt-size scaling problem that motivated DJ-094.
+//
+// DJ-125 Phase 4 keeps the full RawProposal in this projection — the
+// reconciler's job is to convert the raw structure to the canonical
+// SpecProposal shape, so it needs the proposal verbatim (the
+// manifest's per-item summaries don't carry enough body content). The
+// manifest is appended as context for situational awareness only.
 func projectReconcile(snap StateSnapshot[PlanningState]) []Message {
 	var b strings.Builder
 	b.WriteString("## Raw proposal (inline decisions, no IDs)\n\n")
@@ -337,6 +343,10 @@ func projectReconcile(snap StateSnapshot[PlanningState]) []Message {
 		// gets *something* to work on. This shouldn't happen in
 		// production wiring; kept as a soft fallback for tests.
 		b.WriteString(snap.State.ProposedSpec)
+	}
+	if rendered := renderManifestForProjection(&snap.State); rendered != "" {
+		b.WriteString("\n\n## In-flight spec manifest (structural overview)\n\n")
+		b.WriteString(rendered)
 	}
 	// Data-conditional flag (NOT a directive) — the reconciler's .md
 	// system prompt covers tool usage in general; this tells the
@@ -412,19 +422,26 @@ func formatScoutBrief(raw string) string {
 }
 
 func projectChallenge(snap StateSnapshot[PlanningState]) []Message {
+	// DJ-125 Phase 4: critics see the in-flight manifest (structural
+	// overview with state markers) instead of a blob dump of
+	// ProposedSpec. The full content of any specific node remains
+	// reachable via the spec_get tool — which during a council run
+	// reads the in-flight proposal (DJ-125 Phase 3). The shift cuts
+	// projection size from O(proposal) to O(manifest), which removes
+	// the 200K-cap stop-gap as load-bearing on the critique path.
 	msgs := []Message{
-		{Role: "user", Content: snap.State.Prompt},
+		{Role: "user", Content: snap.State.Prompt, Cacheable: true},
 	}
-	if snap.State.ProposedSpec != "" {
-		msgs = append(msgs, Message{
-			Role:    "assistant",
-			Content: compactContext(snap.State.ProposedSpec, defaultMaxChars),
-		})
-		msgs = append(msgs, Message{
-			Role:    "user",
-			Content: "Review the proposal above.",
-		})
+	if rendered := renderManifestForProjection(&snap.State); rendered != "" {
+		var b strings.Builder
+		b.WriteString("## In-flight spec manifest (use spec_get to fetch full content of any node by id)\n\n")
+		b.WriteString(rendered)
+		msgs = append(msgs, Message{Role: "user", Content: b.String()})
 	}
+	msgs = append(msgs, Message{
+		Role:    "user",
+		Content: "Review the in-flight proposal. Use spec_get for any node body you need to evaluate in detail; do not assume content beyond what the manifest shows.",
+	})
 	return msgs
 }
 

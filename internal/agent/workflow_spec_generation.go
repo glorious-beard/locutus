@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -793,6 +794,71 @@ func mergeScoutBrief(s *PlanningState, results []RoundResult) {
 	} else {
 		s.NewNodesFromScout = nil
 	}
+
+	// DJ-125 Phase 7: apply scout-graded concern dispositions onto
+	// state.Concerns by id-match. The id is the manifest position
+	// (c-<index>); unknown ids are logged and skipped — convergence
+	// treats them as still-open per ConcernDisposition documentation.
+	applyConcernDispositions(s, brief.ConcernDispositions)
+}
+
+// applyConcernDispositions writes scout-graded dispositions onto
+// state.Concerns. Each disposition addresses the concern by its
+// manifest position id (c-<index>). The scout's set of valid
+// dispositions is addressed / wontfix / still_open; stale is owned by
+// the mechanical pre-pass and the scout never emits it (the schema's
+// enum tag forbids it). still_open is a no-op transition (leaves
+// Status as ConcernStatusOpen).
+func applyConcernDispositions(s *PlanningState, dispositions []ConcernDisposition) {
+	if s == nil || len(dispositions) == 0 {
+		return
+	}
+	for _, d := range dispositions {
+		idx, ok := parseConcernIDIndex(d.ConcernID)
+		if !ok || idx < 0 || idx >= len(s.Concerns) {
+			slog.Warn("scout disposition references unknown concern id; skipping",
+				"concern_id", d.ConcernID, "disposition", d.Disposition)
+			continue
+		}
+		target := &s.Concerns[idx]
+		// Do not overwrite an already-disposed concern. The scout sees
+		// the manifest's open concerns; concurrent mechanical staleness
+		// pre-pass dispositions are durable.
+		if target.Status != ConcernStatusOpen && target.Status != "" {
+			continue
+		}
+		switch strings.TrimSpace(strings.ToLower(d.Disposition)) {
+		case "addressed":
+			target.Status = ConcernStatusAddressed
+			target.Justification = d.Justification
+		case "wontfix":
+			target.Status = ConcernStatusWontfix
+			target.Justification = d.Justification
+		case "still_open":
+			// Leave Status as open; record the justification so the
+			// next iteration's scout can read why the prior pass
+			// thought the concern was still open.
+			target.Justification = d.Justification
+		default:
+			slog.Warn("scout disposition has unknown value; skipping",
+				"concern_id", d.ConcernID, "disposition", d.Disposition)
+		}
+	}
+}
+
+// parseConcernIDIndex parses a manifest concern ID ("c-<index>") into
+// the numeric index. Returns ok=false on malformed input so the caller
+// skips the disposition.
+func parseConcernIDIndex(id string) (int, bool) {
+	id = strings.TrimSpace(id)
+	if !strings.HasPrefix(id, "c-") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(id[2:])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // mergeOutline stores the spec_outliner's Outline JSON. Stashed for the
@@ -905,33 +971,164 @@ func collectDanglingReferences(applied []AppliedAction) []string {
 // devops, sre, cost) for grouping in the revise prompt. After the LLM
 // critics merge, runs the mechanical integrity critic and the
 // mechanical cluster pre-pass (DJ-098).
+//
+// DJ-125 Phase 5: every newly-recorded Concern is enriched with
+// iteration metadata (IterationRaised), an initial status
+// (ConcernStatusOpen), and the related-id sets the mechanical
+// disposition pre-pass and DJ-126's decision-revision dispatch will
+// consume. Related decision IDs come from a regex match against the
+// concern text (the long-standing idRefRegex); related axis IDs come
+// from a manifest lookup against the axes currently known to the
+// council (settled + open).
 func mergeCriticIssues(s *PlanningState, results []RoundResult) {
+	knownAxisIDs := collectKnownAxisIDs(s)
 	for _, r := range results {
 		if r.Err != nil || r.Output == "" {
 			continue
 		}
+		iter := r.IterationIndex
 		kind := critiqueKindFor(r.AgentID)
 		var ci CriticIssues
 		if err := json.Unmarshal([]byte(r.Output), &ci); err != nil {
-			s.Concerns = append(s.Concerns, Concern{
-				AgentID:  r.AgentID,
-				Severity: "medium",
-				Kind:     kind,
-				Text:     r.Output,
-			})
+			s.Concerns = append(s.Concerns, newConcernFromCritic(r.AgentID, kind, r.Output, iter, knownAxisIDs))
 			continue
 		}
 		for _, issue := range ci.Issues {
-			s.Concerns = append(s.Concerns, Concern{
-				AgentID:  r.AgentID,
-				Severity: "medium",
-				Kind:     kind,
-				Text:     issue,
-			})
+			s.Concerns = append(s.Concerns, newConcernFromCritic(r.AgentID, kind, issue, iter, knownAxisIDs))
 		}
 	}
 	appendIntegrityFindings(s)
 	runMechanicalCluster(s)
+	// DJ-125 Phase 6: stale concerns that the just-recorded findings
+	// + the in-flight graph already resolve. Cheap regex/lookup pass;
+	// no LLM call. Runs after appendIntegrityFindings so integrity
+	// concerns are eligible for staleness too.
+	mechanicalDisposeConcerns(s)
+}
+
+// newConcernFromCritic constructs a fully-populated Concern from a
+// critic finding. The related-id extraction is mechanical (no LLM call):
+// idRefRegex catches dec-* / feat-* / strat- references; the axis-ID
+// pass walks the supplied known-axis set and adds any axis whose ID
+// appears as a whole-word match in the concern text.
+func newConcernFromCritic(agentID, kind, text string, iter int, knownAxisIDs []string) Concern {
+	return Concern{
+		AgentID:            agentID,
+		Severity:           "medium",
+		Kind:               kind,
+		Text:               text,
+		IterationRaised:    iter,
+		Status:             ConcernStatusOpen,
+		RelatedDecisionIDs: extractDecisionRefsFromText(text),
+		RelatedAxisIDs:     extractAxisRefsFromText(text, knownAxisIDs),
+	}
+}
+
+// collectKnownAxisIDs returns the set of axis IDs currently known to
+// the council — the union of (a) axes recorded in DecidedAxesByIter
+// (settled this run) and (b) axes in state.AxesOpen (open this
+// iteration). Used by mergeCriticIssues to populate
+// Concern.RelatedAxisIDs without needing a separate regex.
+func collectKnownAxisIDs(s *PlanningState) []string {
+	if s == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(s.DecidedAxesByIter)+len(s.AxesOpen))
+	var ids []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, dup := seen[id]; dup {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	for id := range s.DecidedAxesByIter {
+		add(id)
+	}
+	for _, axis := range s.AxesOpen {
+		add(axis.ID)
+	}
+	return ids
+}
+
+// extractDecisionRefsFromText pulls out kebab-case dec-* references
+// from concern text using decRefRegex. Returns nil when no decision
+// refs are present so the omitempty JSON tag drops the field for
+// legacy / no-match cases. The mechanical clusterer's
+// feat-/strat-only contract is preserved by using decRefRegex here
+// rather than the broader idRefRegex.
+func extractDecisionRefsFromText(text string) []string {
+	matches := decRefRegex.FindAllString(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(matches))
+	var out []string
+	for _, m := range matches {
+		if _, dup := seen[m]; dup {
+			continue
+		}
+		seen[m] = struct{}{}
+		out = append(out, m)
+	}
+	return out
+}
+
+// extractAxisRefsFromText scans concern text for any axis ID from the
+// supplied known-axis set and returns the matches. Whole-word match —
+// the axis ID must appear bounded by non-slug characters, so
+// "auth-provider" in concern text matches the "auth-provider" axis
+// but not "authentication-provider".
+//
+// Returns nil when no matches so the omitempty JSON tag drops the
+// field.
+func extractAxisRefsFromText(text string, knownAxisIDs []string) []string {
+	if len(knownAxisIDs) == 0 || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]struct{}, len(knownAxisIDs))
+	for _, axisID := range knownAxisIDs {
+		if _, dup := seen[axisID]; dup {
+			continue
+		}
+		if axisIDInText(text, axisID) {
+			seen[axisID] = struct{}{}
+			out = append(out, axisID)
+		}
+	}
+	return out
+}
+
+// axisIDInText returns true when axisID appears as a whole-word match
+// in text. Whole-word means bounded by non-slug characters on both
+// sides — slug chars are lowercase letters, digits, and hyphens. The
+// boundary check prevents "auth" from matching inside "authentication".
+func axisIDInText(text, axisID string) bool {
+	if axisID == "" {
+		return false
+	}
+	for {
+		idx := strings.Index(text, axisID)
+		if idx < 0 {
+			return false
+		}
+		left := idx == 0 || !isSlugChar(text[idx-1])
+		end := idx + len(axisID)
+		right := end >= len(text) || !isSlugChar(text[end])
+		if left && right {
+			return true
+		}
+		text = text[idx+1:]
+	}
+}
+
+func isSlugChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '-'
 }
 
 // mergeFindingClusters (DJ-098) promotes the LLM clusterer's output into
@@ -975,7 +1172,17 @@ func mergeRevisedNodes(s *PlanningState, results []RoundResult) {
 // fallback during the council (per DJ-123 resolved design question 3:
 // agents see ONLY the in-flight proposal, never the persisted graph).
 func rebuildInFlightIndex(s *PlanningState) {
-	if s == nil || s.InFlightIndex == nil || s.RawProposal == "" {
+	if s == nil {
+		return
+	}
+	// DJ-125: refresh the RAG list/get overlay first — the store keeps
+	// its own copy of RawProposal and serves the manifest/get tools off
+	// it. Update is cheap (just a pointer swap under a write lock); the
+	// parse happens lazily inside the tool handler.
+	if s.InFlightSpecStore != nil {
+		s.InFlightSpecStore.Update(s.RawProposal)
+	}
+	if s.InFlightIndex == nil || s.RawProposal == "" {
 		return
 	}
 	if err := s.InFlightIndex.Rebuild(s.RawProposal); err != nil {

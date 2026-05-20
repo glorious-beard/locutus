@@ -93,6 +93,11 @@ func init() {
 			Summary:   "Campaign managers see live progress against the per-district win number with voter-contact attempts plotted on a turf map.",
 			Decisions: []string{"dec-postgres-oltp-store"},
 		}},
+		ConcernDispositions: []ConcernDisposition{{
+			ConcernID:     "c-2",
+			Disposition:   "addressed",
+			Justification: "The latest dec-postgres-oltp-store rationale now names the JSONB query path that the cost critic flagged as missing.",
+		}},
 		Converged: false,
 	})
 

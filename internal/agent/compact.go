@@ -9,19 +9,27 @@ import "fmt"
 // (runaway model output looping into the next call's context), not to
 // fit a tight 2K-token budget the way the original 8K cap did.
 //
-// Bumped from 8000 after the DJ-124 winplan validation surfaced a
-// cascade: the scout-driven convergence loop accumulates decisions
-// monotonically across iterations, so by iter-3 the assembled
-// ProposedSpec exceeded 8K and projectChallenge truncated the
-// critic's view to the first 8K chars — features and a couple of
-// early decisions only. Critics then correctly reported "auth
-// missing", "db hosting missing", etc. against the view they
-// actually saw, but those decisions existed past the truncation
-// cliff. Spurious findings accumulated; the scout's convergence
-// rule ("axes_open empty AND no findings") never held; the loop
-// budget-exhausted. The right structural fix is manifest-based
-// in-flight projections (DJ-125 candidate); this cap bump is the
-// immediate unblock for Phase 9 validation.
+// DJ-125 Phase 8 update: this cap is no longer load-bearing on the
+// hot spec-generation council paths — projectChallenge,
+// projectReconcile, projectScout, projectOpenAxis, and
+// projectAffectedNode all render the in-flight manifest (compact text
+// rendering) instead of dumping ProposedSpec / RawProposal verbatim.
+// The remaining compactContext callers live in convergence.go's
+// legacy path (DJ-122 superseded for spec-gen; preserved for older
+// non-council convergence flows). The cap stays at 200K as
+// defense-in-depth on those legacy paths and any future projection
+// that renders large bodies; the manifest replaces it as the primary
+// projection-size lever on the council path.
+//
+// History: bumped from 8000 after the DJ-124 winplan validation
+// surfaced a cascade — the scout-driven convergence loop accumulates
+// decisions monotonically across iterations, so by iter-3 the
+// assembled ProposedSpec exceeded 8K and projectChallenge truncated
+// the critic's view to the first 8K chars. Critics then correctly
+// reported "auth missing" against the view they actually saw, but
+// those decisions existed past the truncation cliff. The structural
+// fix was manifest-based in-flight projections (DJ-125 Phase 4); this
+// cap is now a safety net, not a load-bearing constraint.
 const defaultMaxChars = 200000
 
 // compactContext truncates content that exceeds maxChars, appending a

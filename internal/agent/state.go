@@ -7,6 +7,36 @@ import (
 	"github.com/chetan/locutus/internal/search"
 )
 
+// ConcernStatus is the disposition of a Concern across iterations of
+// the spec-generation council. DJ-125 promotes concerns from a flat
+// append-only slice to a durable record carrying iteration metadata
+// and a status that says whether the concern still blocks convergence.
+//
+// Lifecycle:
+//   - ConcernStatusOpen: the default initial state. The critic raised
+//     the concern this iteration (or a prior one) and nothing has
+//     resolved it yet. Blocks convergence.
+//   - ConcernStatusAddressed: the scout judged the current proposal
+//     resolves the concern. Carries a one-sentence justification from
+//     the scout grading pass (DJ-125 Phase 7). Does not block
+//     convergence.
+//   - ConcernStatusStale: the mechanical pre-pass detected that a
+//     related axis is now settled or a related decision is now in the
+//     graph. Does not block convergence. Cheap regex/lookup pass; no
+//     LLM call.
+//   - ConcernStatusWontfix: the scout judged the concern is a real
+//     concern but represents a tradeoff the user accepts (e.g.
+//     deliberate cost-vs-availability tradeoffs). Does not block
+//     convergence.
+type ConcernStatus string
+
+const (
+	ConcernStatusOpen      ConcernStatus = "open"
+	ConcernStatusAddressed ConcernStatus = "addressed"
+	ConcernStatusStale     ConcernStatus = "stale"
+	ConcernStatusWontfix   ConcernStatus = "wontfix"
+)
+
 // Concern is a challenge raised by the critic or stakeholder.
 //
 // Kind groups concerns by the lens that produced them ("integrity",
@@ -14,11 +44,29 @@ import (
 // renders concerns grouped by Kind so the architect can address each
 // category specifically. Defaulted from AgentID at merge time when not
 // set explicitly.
+//
+// DJ-125 fields (Status, IterationRaised, RelatedDecisionIDs,
+// RelatedAxisIDs, Justification): Concerns are durable across
+// iterations rather than cleared. Status communicates whether the
+// concern currently blocks convergence; the related-id fields power
+// mechanical staleness detection and (per DJ-126) decision-revision
+// dispatch. Zero values match pre-DJ-125 persisted state so the
+// council still loads older snapshots cleanly.
 type Concern struct {
 	AgentID  string `json:"agent_id" jsonschema:"description=The id of the agent that raised this concern (architect_critic; devops_critic; etc.). Defaulted from the calling agent at merge time when not set; the renderer groups concerns by agent."`
 	Severity string `json:"severity" jsonschema:"enum=high,enum=medium,enum=low,description=Severity bucket. high blocks the spec from shipping; medium is a real concern worth addressing; low is a polish-pass note."`
 	Kind     string `json:"kind,omitempty" jsonschema:"description=The lens that produced this concern (integrity; architecture; devops; sre; cost). The revise projection groups concerns by Kind so the architect addresses categories specifically. Defaulted from AgentID at merge time when not set."`
 	Text     string `json:"text" jsonschema:"description=The concern itself — a complete sentence naming the specific finding. Cites the spec node id or GOALS.md clause when relevant. Not a generic complaint."`
+
+	IterationRaised int `json:"iteration_raised,omitempty" jsonschema:"description=Iteration index when this concern was first raised. Zero for concerns raised before iteration tracking (legacy concerns from pre-DJ-125 sessions)."`
+
+	Status ConcernStatus `json:"status,omitempty" jsonschema:"enum=open,enum=addressed,enum=stale,enum=wontfix,description=Current disposition. open blocks convergence; addressed/stale/wontfix do not. Mechanical pre-pass sets stale; scout grading sets addressed and wontfix."`
+
+	RelatedDecisionIDs []string `json:"related_decision_ids,omitempty" jsonschema:"description=Decision IDs this concern references. Populated by mergeCriticIssues via regex match against the manifest plus optional structured surfacing by the critic. Powers DJ-126's decision-revision dispatch."`
+
+	RelatedAxisIDs []string `json:"related_axis_ids,omitempty" jsonschema:"description=Axis IDs this concern references. Populated mechanically. Powers staleness checks against the manifest's axis-state field."`
+
+	Justification string `json:"justification,omitempty" jsonschema:"description=One-sentence rationale from the scout's grading pass (DJ-125 Phase 7). Set when Status is addressed or wontfix to explain WHY the scout dispositioned the concern; empty otherwise."`
 }
 
 // Finding is a research result from the researcher.
@@ -185,6 +233,16 @@ type PlanningState struct {
 	// is concurrent-safe (Rebuild serialises against in-flight Search
 	// under an RWMutex inside search.InFlightIndex).
 	InFlightIndex *search.InFlightIndex `json:"-"`
+
+	// InFlightSpecStore is the council-scoped overlay that backs the
+	// DJ-125 spec_list_manifest and spec_get tools while a run is in
+	// flight. Set by GenerateSpec at council start; torn down (via the
+	// deferred swap back) at council end. The same merge helpers that
+	// call rebuildInFlightIndex also call InFlightSpecStore.Update so
+	// every RAG tool sees a consistent view of the in-flight proposal.
+	// Pointer-shared across snapshots like InFlightIndex; its internal
+	// RWMutex serialises tool reads against merge-side writes.
+	InFlightSpecStore *InFlightSpecStore `json:"-"`
 }
 
 // ImportedContent is one external document admitted into the spec
@@ -230,6 +288,19 @@ func snapshotPlanningState(s *PlanningState) PlanningState {
 	if len(s.Concerns) > 0 {
 		out.Concerns = make([]Concern, len(s.Concerns))
 		copy(out.Concerns, s.Concerns)
+		// DJ-125: Concern carries slice fields (RelatedDecisionIDs,
+		// RelatedAxisIDs); the per-element copy above only duplicated
+		// the slice headers, so deep-copy each entry's slice payload to
+		// keep snapshots independent from the orchestrator's mutable
+		// state.
+		for i := range out.Concerns {
+			if len(s.Concerns[i].RelatedDecisionIDs) > 0 {
+				out.Concerns[i].RelatedDecisionIDs = append([]string(nil), s.Concerns[i].RelatedDecisionIDs...)
+			}
+			if len(s.Concerns[i].RelatedAxisIDs) > 0 {
+				out.Concerns[i].RelatedAxisIDs = append([]string(nil), s.Concerns[i].RelatedAxisIDs...)
+			}
+		}
 	}
 	if len(s.ResearchResults) > 0 {
 		out.ResearchResults = make([]Finding, len(s.ResearchResults))

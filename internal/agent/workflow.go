@@ -599,6 +599,12 @@ func critiqueKindFor(agentID string) string {
 // findings. The agent ID "integrity_critic" mirrors the LLM-critic naming
 // convention; the revise prompt groups by Kind so the architect sees
 // these alongside the LLM critics' concerns.
+//
+// DJ-125: integrity-critic concerns default to ConcernStatusOpen so the
+// mechanical disposition pre-pass and scout grading both treat them
+// uniformly with LLM-critic concerns. The text already names the
+// dangling decision ID, so RelatedDecisionIDs is populated via the
+// same extraction helper.
 func appendIntegrityFindings(state *PlanningState) {
 	if state == nil || state.ProposedSpec == "" {
 		return
@@ -610,15 +616,21 @@ func appendIntegrityFindings(state *PlanningState) {
 			Severity: "high",
 			Kind:     "integrity",
 			Text:     fmt.Sprintf("post-reconcile proposal is malformed JSON: %s", err.Error()),
+			Status:   ConcernStatusOpen,
 		})
 		return
 	}
+	knownAxes := collectKnownAxisIDs(state)
 	for _, w := range p.Validate(state.Existing) {
+		text := w.String()
 		state.Concerns = append(state.Concerns, Concern{
-			AgentID:  "integrity_critic",
-			Severity: "high",
-			Kind:     "integrity",
-			Text:     w.String(),
+			AgentID:            "integrity_critic",
+			Severity:           "high",
+			Kind:               "integrity",
+			Text:               text,
+			Status:             ConcernStatusOpen,
+			RelatedDecisionIDs: extractDecisionRefsFromText(text),
+			RelatedAxisIDs:     extractAxisRefsFromText(text, knownAxes),
 		})
 	}
 }

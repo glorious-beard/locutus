@@ -694,17 +694,29 @@ func summaryByID(m SpecManifest) map[string]string {
 // searches, or nil to skip the spec_search registration entirely
 // (MemFS / pure-manifest test contexts where no Bluge backend exists).
 //
+// DJ-125 Phase 3 generalises the swap pattern to all three RAG tools:
+// spec_list_manifest and spec_get also dispatch through a swappable
+// (SwappableSpecListManifest, SwappableSpecGet). cmd/llm.go constructs
+// the swappables once at registration time with on-disk-backed default
+// providers; GenerateSpec pushes an InFlightSpecStore in at council
+// start and restores the disk-backed defaults at council end.
+//
+// listManifest / get may be nil — in that case the registration falls
+// back to the legacy on-disk-only path (BuildSpecManifest / LookupSpecNode
+// invoked directly per call). This preserves the existing test-time
+// behaviour where callers don't construct the swappables.
+//
 // The registration is idempotent at the registry level —
 // re-registering the same name overrides the prior entry. Callers
 // gate on a sync.Once so the production path runs exactly once per
 // process.
-func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, backend search.Backend) {
+func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, backend search.Backend, listManifest *SwappableSpecListManifest, get *SwappableSpecGet) {
 	if registry == nil || fsys == nil {
 		return
 	}
 	registry.Register(adapters.ToolDef{
 		Name:        ToolNameSpecListManifest,
-		Description: "Returns a compact index of every persisted spec node grouped by kind (features, strategies, decisions, bugs, approaches). Each entry carries id, title, optional kind (strategies), and a one-line summary truncated to ~200 chars. Use this to navigate the existing spec without dumping every node's full content.",
+		Description: "Returns a compact index of every spec node grouped by kind (features, strategies, decisions, bugs, approaches). Each entry carries id, title, optional kind (strategies), and a one-line summary truncated to ~200 chars. Use this to navigate the spec graph without dumping every node's full content. During a spec-generation council run, returns the in-flight proposal (plus the loaded existing snapshot); outside a council run, returns the persisted graph at .borg/spec/.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"properties":           map[string]any{},
@@ -712,12 +724,15 @@ func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, backend search.Ba
 			"additionalProperties": false,
 		},
 		Handler: TypedHandler(func(ctx context.Context, _ struct{}) (SpecManifest, error) {
+			if listManifest != nil {
+				return listManifest.ListManifest()
+			}
 			return BuildSpecManifest(fsys), nil
 		}),
 	})
 	registry.Register(adapters.ToolDef{
 		Name:        ToolNameSpecGet,
-		Description: "Returns the full JSON of one spec node by id. The kind is inferred from the id prefix (feat-, strat-, dec-, bug-, app-). Use this AFTER spec_list_manifest narrows you to a candidate id you need to inspect in detail.",
+		Description: "Returns the full JSON of one spec node by id. The kind is inferred from the id prefix (feat-, strat-, dec-, bug-, app-). Use this AFTER spec_list_manifest narrows you to a candidate id you need to inspect in detail. During a spec-generation council run, looks the id up in the in-flight proposal (with fallback to the loaded existing snapshot); outside a council run, reads from .borg/spec/.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -730,6 +745,9 @@ func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, backend search.Ba
 			"additionalProperties": false,
 		},
 		Handler: TypedHandler(func(ctx context.Context, in SpecGetInput) (json.RawMessage, error) {
+			if get != nil {
+				return get.GetSpec(in.ID)
+			}
 			return LookupSpecNode(fsys, in.ID)
 		}),
 	})

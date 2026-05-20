@@ -189,7 +189,7 @@ func TestRegisterSpecTools_RegistersSpecSearch(t *testing.T) {
 	root, fsys := specSearchFixture(t)
 	backend := openSearchBackend(t, fsys, root)
 	registry := NewToolRegistry()
-	RegisterSpecTools(registry, fsys, backend)
+	RegisterSpecTools(registry, fsys, backend, nil, nil)
 
 	for _, name := range []string{ToolNameSpecListManifest, ToolNameSpecGet, ToolNameSpecSearch} {
 		_, ok := registry.Resolve(name)
@@ -204,7 +204,7 @@ func TestRegisterSpecTools_RegistersSpecSearch(t *testing.T) {
 func TestRegisterSpecTools_NilBackendSkipsSpecSearch(t *testing.T) {
 	_, fsys := specSearchFixture(t)
 	registry := NewToolRegistry()
-	RegisterSpecTools(registry, fsys, nil)
+	RegisterSpecTools(registry, fsys, nil, nil, nil)
 
 	_, ok := registry.Resolve(ToolNameSpecListManifest)
 	assert.True(t, ok, "spec_list_manifest must register without a backend")
@@ -262,7 +262,7 @@ func TestSpecSearchToolUsesProvidedBackend(t *testing.T) {
 	}
 
 	registry := NewToolRegistry()
-	RegisterSpecTools(registry, fsys, backend)
+	RegisterSpecTools(registry, fsys, backend, nil, nil)
 
 	def, ok := registry.Resolve(ToolNameSpecSearch)
 	require.True(t, ok, "spec_search must register when a backend is wired")
@@ -318,7 +318,7 @@ func TestSpecSearchToolUsesInFlightBackend(t *testing.T) {
 	require.NoError(t, backend.Rebuild(raw))
 
 	registry := NewToolRegistry()
-	RegisterSpecTools(registry, fsys, backend)
+	RegisterSpecTools(registry, fsys, backend, nil, nil)
 
 	def, ok := registry.Resolve(ToolNameSpecSearch)
 	require.True(t, ok, "spec_search must register when an in-flight backend is wired")

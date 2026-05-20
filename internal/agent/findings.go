@@ -90,6 +90,13 @@ type LLMFindingCluster struct {
 // an existing node directly.
 var idRefRegex = regexp.MustCompile(`\b(feat-[a-z0-9][a-z0-9-]*|strat-[a-z0-9][a-z0-9-]*)\b`)
 
+// decRefRegex matches dec-XXX decision references in finding text.
+// Used by DJ-125's mergeCriticIssues to populate
+// Concern.RelatedDecisionIDs. Distinct from idRefRegex because the
+// mechanical cluster pre-pass (DJ-098) expects feat-/strat- only —
+// merging the patterns would change that contract.
+var decRefRegex = regexp.MustCompile(`\bdec-[a-z0-9][a-z0-9-]*\b`)
+
 // MechanicalCluster groups concerns by id reference. Returns:
 //
 //   - clusters[]: one per existing node mentioned by id in any concern.
