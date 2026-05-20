@@ -11,7 +11,7 @@
 
 DJ-128 reshapes three behaviors the third winplan re-run ([`/Users/chetan/projects/winplan/.locutus/sessions/20260520/1224/39-81eadc/`](file:///Users/chetan/projects/winplan/.locutus/sessions/20260520/1224/39-81eadc/)) exposed as a single coupled failure mode:
 
-1. **Critics emit free-form objections.** No structured counterproposal. The critic can object indefinitely without committing to a specific alternative. The elaborator is left guessing what the critic wants.
+1. **Critics emit free-form objections with no grounded counterproposal menu.** No structured field. The critic can object indefinitely without committing to specific alternatives, and there's no anti-hallucination discipline on the suggestions they do make. The elaborator is left guessing what the critic wants, and re-raises can introduce new "alternatives" with no evidence.
 2. **Revisions replace decisions wholesale.** The prior chosen option and the critic finding that demoted it vanish from the decision body. Next iteration's critic sees only the current snapshot and can re-litigate the same axis with no memory.
 3. **The revision cap errors out.** When critic and elaborator can't agree, the workflow exits non-zero rather than committing the latest revision and shipping. The critic gets unilateral kill-the-loop power.
 
@@ -36,7 +36,7 @@ Recorded in chat 2026-05-20 between the winplan re-run failure and this plan; se
 
 1. **One DJ, three coupled changes.** The deliberation log, structured counterproposals, and cap-as-commit ship together. Shipping any one alone preserves the bullying dynamic (see "Why this plan exists" above). The plan's phases group by surface area but the system isn't useful until all three land.
 
-2. **`Counterproposal` is required, not optional.** Empty / placeholder counterproposals are schema violations. When a critic sees a real problem but has no concrete alternative, the critic emits a `counterproposal: "needs investigation"` sentinel (mirrors the literal-sentinel pattern from `justify_researcher.md`) and the workflow surfaces those as advisory-only concerns rather than dispatching revisions. Sentinel does not drive `hasReviseableConcerns`.
+2. **`Counterproposals []CriticCounterproposal` is the enumeration shape, with grounded citations on each.** Each counterproposal carries `{Option, Argument, Citations}`. `Argument` says positively why the option is superior to the current decision; `Citations` grounds the argument (same kind enum + literal-sentinel discipline as `spec_decision_elaborator`'s citations). Empty / placeholder Option or Argument is a schema violation. Counterproposals on revisable concerns must carry `minItems=1` citations. When a critic sees a real problem but has no concrete alternative, the critic emits a single counterproposal with `Option: "needs investigation"` (sentinel) and empty Citations — these are advisory-only concerns surfaced to the user, not driving `hasReviseableConcerns`. Sentinel concerns are the only path for raising a concern without a grounded counterproposal.
 
 3. **Alternative monotonicity is hard-enforced.** `mergeDecisions` rejects any revision where `len(revised.Alternatives) < len(prior.Alternatives) + 1`. Validator failure logs the rejection, leaves the prior decision in place, records an integrity-violation concern naming the elaborator's error. The elaborator should never shrink the alternatives set; if it tries, that's a prompt failure to catch and surface, not a silent overwrite to allow.
 
@@ -59,10 +59,11 @@ Recorded in chat 2026-05-20 between the winplan re-run failure and this plan; se
   - `Decision` gains `Locked bool` (omitempty) with a jsonschema description naming the cap-as-commit semantics.
 - [internal/agent/specgen.go](../../internal/agent/specgen.go):
   - `CriticIssues.Issues` shape changes from `[]string` to `[]CriticIssue`.
-  - New `CriticIssue` struct: `Weakness`, `Evidence`, `Counterproposal`, `RelatedDecisionIDs` — all with jsonschema tags. `Counterproposal` carries `minLength` (in description prose since invopop doesn't enforce it) and a description naming the literal-sentinel "needs investigation" value as the only acceptable empty case. `Weakness` and `Evidence` mirror `AdversarialConcern`'s field documentation.
-  - New `degenerateCriticIssueValidator` (mirrors `degenerateChallengerBrief`) — rejects `Counterproposal: "dummy"` / empty / one-word / etc. unless the sentinel "needs investigation" is present. Wired into the critic adapter's degenerate-output retry path.
+  - New `CriticIssue` struct: `Weakness`, `Evidence`, `Counterproposals []CriticCounterproposal`, `RelatedDecisionIDs` — all with jsonschema tags. `Counterproposals` carries `minItems=1`. `Weakness` and `Evidence` mirror `AdversarialConcern`'s field documentation.
+  - New `CriticCounterproposal` struct: `Option string`, `Argument string`, `Citations []spec.Citation`. All required (no omitempty on the wire). jsonschema tags: `Option` description names "concrete vendor / config / behavior, not 'use something else'"; `Argument` description names the complete-sentence positive-framing constraint and the relationship to `Alternative.RejectedBecause`; `Citations` carries `minItems=1` and the description names the literal-sentinel exception (Option == "needs investigation" → empty Citations allowed).
+  - New `degenerateCriticIssueValidator` (mirrors `degenerateChallengerBrief` + the alternative-citation discipline). Rejects: empty / one-word Option or Argument; Option in placeholder set ("dummy", "TBD", "X", etc.); Citations empty on non-sentinel Options; citations with empty references; web citations missing excerpts. Wired into the critic adapter's degenerate-output retry path.
 - [internal/agent/state.go](../../internal/agent/state.go):
-  - `Concern` gains `Counterproposal string` (omitempty) carrying the critic's structured counterproposal text. jsonschema description names it as the as-flagged counterproposal driving the revision.
+  - `Concern` gains `Counterproposals []CriticCounterproposal` (omitempty for legacy load compatibility). The full counterproposal slice travels through the merge into the concern so the revise projection can render the whole menu. jsonschema description names it as the critic's as-flagged option menu driving the revision.
 - [internal/agent/raw_proposal.go](../../internal/agent/raw_proposal.go):
   - `RawDecisionProposal` carries the same shape as today; `Alternative`'s new fields flow through because Alternatives is `[]spec.Alternative`.
 
@@ -70,8 +71,10 @@ Recorded in chat 2026-05-20 between the winplan re-run failure and this plan; se
 
 **Tests:**
 
-- `TestCriticIssueSchemaRejectsEmptyCounterproposal` — schema-layer rejection of empty Counterproposal at the structured-output API; the adapter retry path engages.
-- `TestCriticIssueAllowsNeedsInvestigationSentinel` — the literal sentinel value is the one exception to the non-empty rule.
+- `TestCriticIssueSchemaRequiresCounterproposalMenu` — schema-layer rejection of `Counterproposals: []` at the structured-output API; the adapter retry path engages.
+- `TestCriticCounterproposalRequiresOptionArgumentCitations` — each counterproposal validates: Option non-empty + non-placeholder, Argument complete-sentence non-empty, Citations minItems=1 (unless Option is the sentinel).
+- `TestCriticCounterproposalAllowsNeedsInvestigationSentinel` — the literal "needs investigation" Option value is the one exception to the non-empty-citations rule; empty Citations are permitted in that exact case.
+- `TestDegenerateCriticIssueValidatorRejectsUngroundedCounterproposals` — fixture with `Option: "use something else"` / `Argument: "better"` / `Citations: []` (non-sentinel) → rejected; counterexample with grounded prose + a real web citation → accepted.
 - `TestAlternativeCarriesIterationAndConcernText` — a `RejectedAtIteration` + `RejectedByConcernText` round-trip through marshal/unmarshal and pretty-print.
 - `TestDecisionLockedFlagDefaultsFalse` — legacy on-disk decisions without the field load with `Locked: false`.
 
@@ -81,19 +84,21 @@ Recorded in chat 2026-05-20 between the winplan re-run failure and this plan; se
 
 ## Phase 2 — `mergeCriticIssues` consumes the new shape
 
-**Goal:** the merge function reads the structured `CriticIssue` shape, populates the new `Concern.Counterproposal` field, merges critic-provided `RelatedDecisionIDs` with the regex-auto-extracted set (critic-provided wins on conflict).
+**Goal:** the merge function reads the structured `CriticIssue` shape, populates the new `Concern.Counterproposals []CriticCounterproposal` field verbatim (each counterproposal's Option / Argument / Citations preserved), merges critic-provided `RelatedDecisionIDs` with the regex-auto-extracted set (critic-provided wins on conflict), and marks sentinel-only concerns as advisory.
 
 **Files expected to change:**
 
 - [internal/agent/workflow_spec_generation.go](../../internal/agent/workflow_spec_generation.go):
-  - `mergeCriticIssues` rewritten: unmarshals into the new `CriticIssues` shape; for each `CriticIssue`, constructs a `Concern` carrying Text (from Weakness + Evidence), Counterproposal (verbatim from the issue), RelatedDecisionIDs (union of critic-provided + regex-extracted, dedup-preserving).
+  - `mergeCriticIssues` rewritten: unmarshals into the new `CriticIssues` shape; for each `CriticIssue`, constructs a `Concern` carrying Text (from Weakness + Evidence), Counterproposals (verbatim slice from the issue including each counterproposal's Option / Argument / Citations), RelatedDecisionIDs (union of critic-provided + regex-extracted, dedup-preserving).
   - `newConcernFromCritic` extended to accept the structured `CriticIssue` parameter; the prior free-form-string overload is retired.
+  - Sentinel detection: a concern whose Counterproposals are all `Option: "needs investigation"` is marked advisory (new `Concern.Advisory bool` field, omitempty) — `hasReviseableConcerns` and `fanoutReviseableConcerns` skip advisory concerns even when Status==open.
 
 **Tests:**
 
-- `TestMergeCriticIssuesPopulatesCounterproposal` — fixture with one critic emitting one structured issue; assert `Concern.Counterproposal` matches the critic's verbatim field.
+- `TestMergeCriticIssuesPopulatesCounterproposalMenu` — fixture with one critic emitting one issue with 3 counterproposals; assert `Concern.Counterproposals` matches the critic's slice verbatim, each Option / Argument / Citations preserved.
 - `TestMergeCriticIssuesUnionsRelatedDecisionIDs` — critic emits explicit RelatedDecisionIDs `[dec-x]`; the text mentions `dec-y`; the merged Concern carries both.
-- `TestMergeCriticIssuesPreservesSentinelCounterproposals` — sentinel "needs investigation" issues flow into Concerns with the sentinel verbatim in Counterproposal; downstream `hasReviseableConcerns` filters them out.
+- `TestMergeCriticIssuesMarksSentinelConcernsAdvisory` — fixture: critic emits one concern with a single `Option: "needs investigation"` counterproposal and empty citations. Assert: `Concern.Advisory` is true; `hasReviseableConcerns` returns false even when Status is open.
+- `TestMergeCriticIssuesMixedSentinelAndConcrete` — fixture: one concern has 2 counterproposals, one sentinel + one concrete. Concern is NOT advisory (concrete counterproposal present); fanout includes it; the elaborator's projection renders both with the sentinel one labeled as the "no concrete alternative known" surface.
 
 **Verification:** `go build ./... && go test ./internal/agent/... -count=1 -race`.
 
@@ -105,18 +110,19 @@ Recorded in chat 2026-05-20 between the winplan re-run failure and this plan; se
 
 **Files expected to change:**
 
-- [internal/scaffold/agents/architect_critic.md](../../internal/scaffold/agents/architect_critic.md): the `## Task` section's "Emit issues" paragraph rewrites to walk the `CriticIssue` field shape (Weakness, Evidence, Counterproposal, RelatedDecisionIDs) in schema order; the "Don't raise a concern you wouldn't commit to a specific alternative for" framing replaces the current "find what doesn't add up" output discipline. The 9-rule analysis framing stays — that's the analysis lens, not the output discipline. Architect-lens counterproposals name an architectural pattern (e.g. "swap RDS Multi-AZ for Aurora Serverless v2 for the OLTP store" rather than "rethink the data layer").
-- [internal/scaffold/agents/devops_critic.md](../../internal/scaffold/agents/devops_critic.md): same shape; devops-lens counterproposals name a deployment-shape change (e.g. "add a separate staging environment with auto-promotion rules to the GitHub Actions workflow" rather than "improve CI/CD").
-- [internal/scaffold/agents/sre_critic.md](../../internal/scaffold/agents/sre_critic.md): same shape; sre-lens counterproposals name an SLO / error-budget adjustment (e.g. "lower the availability SLO from 99.9% to 99.5% to fit the budget cap" rather than "the SLO seems too tight").
-- [internal/scaffold/agents/cost_critic.md](../../internal/scaffold/agents/cost_critic.md): same shape; cost-lens counterproposals name a vendor swap or capacity adjustment (e.g. "switch from Datadog to CloudWatch + Sentry to fit the $150 cap" rather than "Datadog is too expensive").
-- All four: the literal sentinel "needs investigation" value is documented as the one acceptable empty-counterproposal output for cases where the critic sees a problem but genuinely cannot name a specific alternative. Sentinel concerns are advisory; they do not drive revisions.
+- [internal/scaffold/agents/architect_critic.md](../../internal/scaffold/agents/architect_critic.md): the `## Task` section's "Emit issues" paragraph rewrites to walk the `CriticIssue` field shape (Weakness, Evidence, Counterproposals, RelatedDecisionIDs) in schema order. For each Counterproposal entry the prompt walks `Option`, `Argument`, `Citations` in schema order and names the per-field discipline. The "Don't raise a concern you wouldn't commit to a specific alternative for" framing replaces the current "find what doesn't add up" output discipline; **paired with the enumeration framing — "if you see three options that would address the concern, list all three with arguments and citations; don't pick one arbitrarily and don't omit ones you'd accept."** The 9-rule analysis framing stays — that's the analysis lens, not the output discipline. Architect-lens counterproposals name an architectural pattern (e.g. `Option: "swap RDS Multi-AZ for Aurora Serverless v2 for the OLTP store"`, `Argument: "Aurora Serverless v2's pay-per-ACU pricing fits the $150/mo ceiling at expected steady-state load; Multi-AZ doubles the bill without addressing the bursty traffic pattern GOALS §3 describes"`, `Citations: [{kind: web, reference: "https://aws.amazon.com/rds/aurora/pricing/", excerpt: "..."}]`). Critic uses `spec_search` / `spec_get` to verify Citation references against the existing graph, web search to verify external references.
+- [internal/scaffold/agents/devops_critic.md](../../internal/scaffold/agents/devops_critic.md): same shape; devops-lens counterproposals name a deployment-shape change (e.g. `Option: "add a separate staging environment with auto-promotion rules to the GitHub Actions workflow"`, grounded in a doc / best-practice / spec_node citation).
+- [internal/scaffold/agents/sre_critic.md](../../internal/scaffold/agents/sre_critic.md): same shape; sre-lens counterproposals name an SLO / error-budget adjustment (e.g. `Option: "lower the availability SLO from 99.9% to 99.5%"`, `Argument: "the 99.9% target requires multi-region failover infrastructure that exceeds the $150/mo ceiling per dec-cost-ceiling; 99.5% is achievable in single-region ECS at half the cost per the SRE handbook's availability-cost table"`, `Citations: [{kind: best_practice, reference: "Google SRE Book Ch.4: availability vs cost"}, {kind: spec_node, reference: "dec-cost-ceiling"}]`).
+- [internal/scaffold/agents/cost_critic.md](../../internal/scaffold/agents/cost_critic.md): same shape; cost-lens counterproposals name a vendor swap or capacity adjustment with pricing citations (e.g. `Option: "switch from Datadog to CloudWatch + Sentry"`, `Citations: [{kind: web, reference: "https://datadoghq.com/pricing", excerpt: "..."}, {kind: web, reference: "https://aws.amazon.com/cloudwatch/pricing/", excerpt: "..."}]`).
+- All four: the literal `"needs investigation"` Option value is documented as the one acceptable form for cases where the critic sees a real problem but genuinely cannot name a specific alternative — emitted as a single counterproposal with that Option and empty Citations. Sentinel concerns surface in the manifest as advisory-only; they do not drive revisions. Critics should NOT default to the sentinel — the prompt frames it as a last-resort acknowledgment of investigative limits, not a way to dodge the enumeration discipline.
 
 **Process discipline:** walk [docs/agent-conventions.md](../../docs/agent-conventions.md) end-to-end before drafting per the memory checklist. The counterproposal-discipline framing is high-stakes; the "no specific alternative" sentinel parallels the search-failure sentinels in `justify_researcher.md` / `spec_decision_elaborator.md`.
 
 **Tests:**
 
-- `TestEveryCriticPromptRequiresCounterproposal` — for each of the 4 critic prompts, assert the prompt names "Counterproposal" as a field and describes the per-lens commitment discipline.
-- `TestEveryCriticPromptDocumentsSentinel` — assert each prompt names the literal "needs investigation" sentinel verbatim.
+- `TestEveryCriticPromptRequiresEnumeratedCounterproposals` — for each of the 4 critic prompts, assert the prompt names "Counterproposals" (plural) as a field, names "Option", "Argument", "Citations" as the per-counterproposal sub-fields, and frames the enumeration discipline ("list every option you'd accept, not one arbitrary pick").
+- `TestEveryCriticPromptDocumentsSentinel` — assert each prompt names the literal "needs investigation" sentinel verbatim AND frames it as a last-resort, not a default.
+- `TestEveryCriticPromptDescribesCitationGrounding` — assert each prompt names the citation kind enum (or equivalents) and the literal-sentinel grounding pattern.
 - `TestCriticPromptDropsLegacyIssuesStringFraming` — assert none of the critic prompts retain the legacy `Issues []string` "list of objections" framing.
 
 **Verification:** `go test ./internal/scaffold/... -count=1 -race`.
@@ -131,15 +137,18 @@ Recorded in chat 2026-05-20 between the winplan re-run failure and this plan; se
 
 - [internal/agent/workflow_spec_generation_dj124.go](../../internal/agent/workflow_spec_generation_dj124.go):
   - `mergeDecisions` revise-path (the `len(matches) == 1` and `len(existingMatches) == 1` branches) extended:
-    - Construct a "prior-chosen-as-alternative" entry from the prior decision: `Name = prior.Title`, `Rationale = prior.ArchitectRationale`, `RejectedBecause = <first driving concern's Counterproposal-aware text>`, `Citations = prior.Citations`, `RejectedAtIteration = currentIter`, `RejectedByConcernText = <driving concern verbatim>`.
-    - Validate the incoming revision: every prior alternative (by Name) appears in the revised alternatives; the prior chosen option is in the revised alternatives. Reject the revision if either invariant fails; record an integrity-violation concern naming the elaborator's error.
-    - On valid revision: prepend (or append at the right position) the demoted prior-chosen entry into the revised alternatives slice — the elaborator should already have done this per the revise prompt, but the merge function enforces the invariant defensively.
-  - New helper `validateAlternativeMonotonicity(prior, revised RawDecisionProposal, drivingConcern *Concern) error` returns nil on valid revisions, descriptive error on shrinkage. Called from both replace branches.
+    - Construct a "prior-chosen-as-alternative" entry from the prior decision: `Name = prior.Title`, `Rationale = prior.ArchitectRationale`, `RejectedBecause = <synthesized from the picking counterproposal's Argument when revised was a flip, or from the first driving concern's Weakness when revised was a reject>`, `Citations = prior.Citations`, `RejectedAtIteration = currentIter`, `RejectedByConcernText = <driving concern verbatim>`.
+    - Validate the incoming revision: every prior alternative (by Name fuzzy-match) appears in the revised alternatives; the prior chosen option appears in the revised alternatives; every critic counterproposal from the driving concerns appears in either the revised chosen option (flip case, matched by Option ~= Title) or the revised alternatives (reject case, matched by Option ~= Name). Reject the revision if any invariant fails; record an integrity-violation concern naming the elaborator's error.
+    - Counterproposal → alternative folding: for each driving-concern counterproposal that the elaborator did NOT pick as chosen, ensure the revised alternatives contain an entry whose `Rationale` carries the critic's Argument verbatim and whose `Citations` carry the critic's Citations slice. The elaborator should produce these (per the prompt); merge fills in the gaps defensively (a missing-but-required alternative is auto-added with placeholder `RejectedBecause = "elaborator did not engage with this counterproposal; merge folded it in to preserve the deliberation log"` and an integrity-violation concern recorded).
+  - New helper `validateAlternativeMonotonicity(prior, revised RawDecisionProposal, drivingConcerns []Concern) error` returns nil on valid revisions, descriptive error on shrinkage or counterproposal-drop. Called from both replace branches.
+  - New helper `foldCounterproposalsAsAlternatives(revised *RawDecisionProposal, drivingConcerns []Concern, currentIter int)` walks the driving concerns' Counterproposals, ensures each one (other than the picked one if a flip occurred) appears in `revised.Alternatives` with the critic-provided Argument + Citations preserved.
 
 **Tests:**
 
-- `TestMergeDecisionsDemotesPriorChosenOption` — fixture: prior dec-X with chosen option A, alternatives [B, C]. Revise to chosen option B, alternatives [A, C] (B promoted, A demoted). Assert the revised decision in state.RawProposal carries A as an alternative with RejectedAtIteration set; RejectedBecause carries the driving concern text.
+- `TestMergeDecisionsDemotesPriorChosenOption` — fixture: prior dec-X with chosen option A, alternatives [B, C]; driving concern with counterproposal B (flip). Revise to chosen option B, alternatives [A, C]. Assert the revised decision in state.RawProposal carries A as an alternative with RejectedAtIteration set; RejectedBecause references the critic's Argument for B.
 - `TestMergeDecisionsRejectsAlternativeShrinking` — fixture: prior dec-X with alternatives [B, C]. Revise emits alternatives [D] (dropped B, C). Assert: revision rejected; prior decision unchanged; integrity_critic concern recorded naming the shrinkage.
+- `TestMergeDecisionsFoldsRejectedCounterproposalsAsAlternatives` — fixture: prior dec-X with chosen A, alternatives [B]; driving concern enumerates counterproposals [C with arg+cite, D with arg+cite]; elaborator emits a Reject revision (chosen still A, alternatives [B, C-with-rejected_because, D-with-rejected_because]). Assert: C and D appear in alternatives with the critic's Argument verbatim in Rationale and the critic's Citations verbatim in Citations; elaborator's RejectedBecause appears.
+- `TestMergeDecisionsAutoFoldsMissingCounterproposalAlternatives` — fixture: driving concern enumerates [C, D]; elaborator emits a Reject revision but omits D from alternatives. Assert: D is auto-folded into alternatives by the merge with placeholder RejectedBecause; integrity-violation concern recorded naming the elaborator's omission.
 - `TestMergeDecisionsAlternativeMonotonicityHonorsNewAlternatives` — fixture: revise emits prior alternatives [B, C] PLUS demoted prior chosen A PLUS new alternative D. Total: 4 alternatives. Accept.
 - `TestMergeDecisionsDemotionPreservesAlternativeCitations` — fixture: prior chosen A has citations [c1, c2]. After demotion to alternative, the alternative entry carries [c1, c2].
 
@@ -149,24 +158,30 @@ Recorded in chat 2026-05-20 between the winplan re-run failure and this plan; se
 
 ## Phase 5 — Revise mode prompt rewrite
 
-**Goal:** the revise mode section of `spec_decision_elaborator.md` walks the elaborator through the alternative-monotonicity discipline — every revision either flips a prior alternative to chosen (and demotes the prior chosen) or rejects the critic's counterproposal (and adds it as a new alternative with elaborator-side rejection reasoning). The new `Counterproposal` field on each rendered finding becomes the load-bearing input.
+**Goal:** the revise mode section of `spec_decision_elaborator.md` walks the elaborator through the alternative-monotonicity discipline AND the counterproposal-menu evaluation discipline. Each rendered concern carries a menu of counterproposals (one or more, each with Option + Argument + Citations). The elaborator evaluates the full menu, picks at most one as the new chosen option (or rejects all coherently), and folds every counterproposal into the deliberation log.
 
 **Files expected to change:**
 
 - [internal/scaffold/agents/spec_decision_elaborator.md](../../internal/scaffold/agents/spec_decision_elaborator.md):
-  - The Revise mode section's pattern-list (Factual error / Cross-decision contradiction / Hallucinated citation) extends with a new top-level structural pattern:
-    - **Flip:** the critic's counterproposal becomes the new chosen option; the prior chosen option moves to alternatives with `rejected_because` naming the critic's reasoning. Use when the critic's argument is correct and the counterproposal is genuinely better.
-    - **Reject:** the critic's counterproposal becomes a new alternative entry with `rejected_because` naming the elaborator's reasoning. The chosen option stays; the alternatives list grows by one. Use when the critic's argument doesn't survive scrutiny.
+  - The Revise mode section gains an explicit "Evaluate the counterproposal menu" subsection placed before the existing pattern-list. Walk:
+    - Each counterproposal carries an Argument (positive reasoning for why this option is superior on the dimension the Weakness names) and Citations (grounded evidence). Verify the citations: read each cited GOALS clause, spec node, or retrieved URL via `spec_get` / web fetch when feasible. A counterproposal whose citation can't be verified is dispatched as if it carried no citation (the critic's grounding was thin).
+    - Compare each counterproposal against the prior decision's alternatives — if the counterproposal matches an existing alternative (same product, same architectural shape) the prior's `rejected_because` is the starting point for engagement; the critic's Argument needs to argue with the rejection reasoning, not restate the original case.
+    - Decide on a single outcome per revise call: one chosen option, all other options (prior chosen + rejected counterproposals + retained alternatives) become alternatives.
+  - The pattern-list extends with the two top-level structural patterns:
+    - **Flip:** pick one of the counterproposals as the new chosen option. The picked counterproposal's Argument folds into the new decision's `rationale`; the picked counterproposal's Citations carry into the new decision's `citations[]`. The prior chosen option demotes to alternatives with `rejected_because` synthesized from the critic's Argument verbatim + the iteration tag. Other (unpicked) counterproposals also become alternatives, each with `Rationale = critic.Argument`, `RejectedBecause = elaborator's reasoning for not picking this one over the chosen counterproposal`, `Citations = critic.Citations`. Use when at least one counterproposal's argument is strong enough to displace the current choice.
+    - **Reject:** keep the prior chosen option. Every counterproposal becomes a new alternative entry: `Rationale = critic.Argument`, `RejectedBecause = elaborator's reasoning for why the prior chosen option still wins`, `Citations = critic.Citations`. Use when the critic's enumeration doesn't survive scrutiny; the elaborator's `rejected_because` must engage with each counterproposal's specific Argument, not just restate the prior rationale.
   - The "Preserve `axes[]` verbatim" and "Preserve the prior `id`" mandates stay.
-  - New mandate: the alternatives list strictly grows. Every prior alternative appears in the revised alternatives; the prior chosen option appears in the revised alternatives (demoted with the driving concern's text as `rejected_because`); the critic's counterproposal appears either as the new chosen option (flip) or as a new alternative (reject).
-  - The "deliberation log" framing names the alternatives as the durable record of what was considered and why; reviewers + future iterations read it to avoid re-litigating settled rejections.
+  - New mandate: alternatives strictly grow. Every prior alternative appears in the revised alternatives. On flip: the prior chosen appears in alternatives; rejected counterproposals appear in alternatives; the picked counterproposal becomes chosen. On reject: every counterproposal appears in alternatives.
+  - The "deliberation log" framing names the alternatives as the durable record of what was considered and why; reviewers + future iterations read it to avoid re-litigating settled rejections. Critic counterproposals that land as alternatives carry their critic-provided Argument and Citations verbatim, so the spec records the critic's case alongside the elaborator's response.
 
-**Process discipline:** walk [docs/agent-conventions.md](../../docs/agent-conventions.md) end-to-end before drafting. The flip/reject discipline is high-stakes; the failure mode "elaborator silently drops prior alternatives" is exactly what the validator catches but the prompt should make it unlikely in the first place.
+**Process discipline:** walk [docs/agent-conventions.md](../../docs/agent-conventions.md) end-to-end before drafting. The counterproposal-menu evaluation is high-stakes; the failure modes are "elaborator silently drops counterproposals" (validator catches) and "elaborator picks a counterproposal without engaging with the others" (prompt must make explicit).
 
 **Tests:**
 
 - `TestDecisionElaboratorReviseModeRequiresAlternativeMonotonicity` — scaffolded prompt mandates the alternative-monotonicity discipline by name; explicitly says the prior chosen option becomes an alternative on revise.
-- `TestDecisionElaboratorReviseModeDescribesFlipAndReject` — prompt names both the flip and reject patterns and ties each to the critic's counterproposal field.
+- `TestDecisionElaboratorReviseModeDescribesFlipAndReject` — prompt names both the flip and reject patterns and ties each to the counterproposal-menu evaluation.
+- `TestDecisionElaboratorReviseModeRequiresCitationVerification` — prompt instructs the elaborator to verify counterproposal citations (call `spec_get` / web fetch on cited references) before promoting a counterproposal to chosen.
+- `TestDecisionElaboratorReviseModeFoldsCriticArgumentVerbatim` — prompt names the discipline that critic Arguments + Citations carry into alternatives verbatim (no paraphrase / no drop).
 - `TestDecisionElaboratorReviseModeRetainsAxesPreservation` — existing DJ-126 axis-preservation mandate survives the prompt rewrite.
 
 **Verification:** `go test ./internal/scaffold/... -count=1 -race`.
