@@ -3283,7 +3283,7 @@ The within-iteration parallel-fanout race remains — two iter-N elaborators que
 
 ## DJ-124: Spec Generation Re-Architecture — Decisions Before Narrative, Scout-as-Judge Convergence, Unified Import Flow (Refines DJ-068 Spec Graph Topology, Replaces DJ-105 Inline-Decisions Schema, Re-Scopes DJ-123 In-Flight Search)
 
-**Status:** proposed
+**Status:** shipping (Phases 1-8 landed 2026-05-16 on branch `worktree-dj-124-decisions-before-narrative`; Phase 9 — winplan re-run validation — pending live model execution; Phase 10 status-flip to `shipped` conditional on Phase 9)
 
 **Context.** DJ-122 shipped a convergence loop for the spec-generation council. DJ-123 attempted to close cross-iteration recurrence in that loop by giving elaborators an in-flight `spec_search` against the working `RawProposal`. The first real winplan re-run (trace at [`/Users/chetan/projects/winplan/.locutus/sessions/20260515/0006/29-5135bd/`](file:///Users/chetan/projects/winplan/.locutus/sessions/20260515/0006/29-5135bd/)) failed to converge inside the 5-iteration budget. The empirical signature was an **iter-3 → iter-4 explosion**: iter-3 had 3 open dimensions (multi-tenant isolation, rollout strategy, runbook structure); iter-4 had 5 entirely *new* dimensions (Redis hosting, auth provider, container orchestration, DB engine, multi-tenant isolation re-named); iter-5 saw the same 5 with subtle renames. The DJ-123 in-flight search did not fire — zero `spec_search` invocations across 138 agent calls — but the deeper problem is structural.
 
