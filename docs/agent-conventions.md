@@ -132,6 +132,19 @@ thinking: off
 The override is per-agent and lives in `AgentDef.Thinking`. It supersedes the
 tier's default.
 
+**DJ-130 update:** the adapter layer now handles this failure mode
+automatically — when an agent declares thinking-on + a structured output
+schema, each provider adapter's `requiresThinkingSchemaSplit` predicate
+fires and `runSplit` issues two SDK calls (reasoning pass with thinking
+on + schema cleared, then a format pass with thinking off + schema set
+against the provider's own fast tier). The convention here is now
+informational rather than load-bearing for agent authors: shipping
+`thinking: on` with a schema is no longer silently corrupting. Authors
+still see the failure mode here as forensic context for understanding
+why the adapter splits, and the convention remains the right call when
+the agent's prose-mode reasoning isn't worth two SDK calls' worth of
+cost.
+
 ## Patterns to prefer
 
 ### Push constraints into the schema, not the prompt

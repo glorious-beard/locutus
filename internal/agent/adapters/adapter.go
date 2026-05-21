@@ -205,6 +205,24 @@ type Request struct {
 	// request. The adapter drives the loop until the model emits a
 	// final response without further tool requests.
 	Tools []ToolDef
+
+	// FormatModel names the provider's fast-tier model the adapter
+	// uses for the format pass of the DJ-130 thinking + schema split.
+	// Populated by the executor from the picked provider's `fast:`
+	// tier in models.yaml. Each adapter consults it only when its
+	// requiresThinkingSchemaSplit predicate fires (thinking != off +
+	// OutputSchema present on a known-affected model). Empty when the
+	// caller built the Request outside the executor or against a
+	// provider whose `fast:` tier isn't configured — the adapter then
+	// falls back to running the request as a single call against the
+	// declared Model (the same degenerate behaviour pre-DJ-130).
+	FormatModel string
+
+	// FormatMaxOutputTokens caps the format pass's response length.
+	// Populated alongside FormatModel from the same provider's
+	// `fast:` tier in models.yaml. Zero falls back to the adapter's
+	// per-provider default (see defaultAnthropicMaxTokens, etc.).
+	FormatMaxOutputTokens int
 }
 
 // ToolDef is one entry in Request.Tools. The adapter advertises the

@@ -146,11 +146,38 @@ type RoundResult struct {
 
 // WorkflowExecutor runs a workflow using the generic DAG executor with a
 // caller-supplied state value.
+//
+// Dispatcher, when set, routes every per-step LLM call through
+// Dispatcher.Dispatch — picking up provider rotation, corrective retry,
+// validator hooks, and the (Phase 3) adapter-level per-call recording on
+// the same surface every other LLM call site goes through. When nil, the
+// executor lazily constructs a default via NewDispatcher(Executor) on
+// first use (one construction per WorkflowExecutor; concurrent-safe via
+// sync.Once). Tests can inject an AgentDispatcher mock to assert that
+// the workflow routes through dispatch rather than calling RunWithRetry
+// directly (DJ-130 Phase 1).
 type WorkflowExecutor[S any] struct {
-	Executor  AgentExecutor
-	AgentDefs map[string]AgentDef
-	Workflow  *Workflow[S]
-	Events    chan WorkflowEvent // optional; nil disables progress reporting
+	Executor   AgentExecutor
+	AgentDefs  map[string]AgentDef
+	Workflow   *Workflow[S]
+	Events     chan WorkflowEvent // optional; nil disables progress reporting
+	Dispatcher AgentDispatcher    // optional; lazily defaults to NewDispatcher(Executor)
+
+	dispatcherOnce sync.Once
+	dispatcherLazy AgentDispatcher
+}
+
+// resolveDispatcher returns the Dispatcher wired on the executor or
+// lazily constructs one via NewDispatcher(e.Executor) on first call.
+// Concurrent-safe; the lazy default is built exactly once and reused.
+func (e *WorkflowExecutor[S]) resolveDispatcher() AgentDispatcher {
+	if e.Dispatcher != nil {
+		return e.Dispatcher
+	}
+	e.dispatcherOnce.Do(func() {
+		e.dispatcherLazy = NewDispatcher(e.Executor)
+	})
+	return e.dispatcherLazy
 }
 
 // BridgeToSink wires e.Events so workflow step lifecycle events
@@ -319,7 +346,17 @@ func (e *WorkflowExecutor[S]) executeAgent(ctx context.Context, step WorkflowSte
 	}
 	input := AgentInput{Messages: messages}
 
-	resp, err := RunWithRetry(ctx, e.Executor, def, input, executionRetryConfig())
+	// DJ-130 Phase 1: workflow per-step calls route through
+	// Dispatcher.Dispatch instead of RunWithRetry. The dispatcher
+	// orchestrates provider rotation, corrective retry, and (Phase 2+)
+	// the adapter-level split for thinking-on + structured-output
+	// agents. The Role tag carries the workflow's step identifier so
+	// per-call telemetry attributes the work cleanly.
+	retry := executionRetryConfig()
+	resp, err := e.resolveDispatcher().Dispatch(ctx, def, input, DispatchOptions{
+		Role:  "workflow:" + stepID,
+		Retry: &retry,
+	})
 	if err != nil {
 		e.emitEvent(stepID, agentID, "error", err.Error())
 		return RoundResult{StepID: stepID, AgentID: agentID, Err: err, FanoutItem: snap.FanoutItem}

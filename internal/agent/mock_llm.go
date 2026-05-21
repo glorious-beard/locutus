@@ -32,25 +32,15 @@ type MockResponse struct {
 // testing. Responses are consumed in order; if exhausted, Run
 // returns an error. All calls are recorded for assertion.
 //
-// MockExecutor optionally implements FormatProvider via FormatPrefs
-// — when set, the dispatcher's split path is exercised; when nil
-// (the default), the dispatcher treats this executor as
-// split-disabled and runs the agent as a single call. Tests that
-// don't care about the split don't have to touch it; tests that
-// exercise the split-and-format path set FormatPrefs explicitly.
+// DJ-130 retired the dispatcher-side thinking + schema split; the
+// MockExecutor no longer needs a FormatProvider opt-in. Tests that
+// want to exercise the split go through the per-adapter logic
+// (internal/agent/adapters/*) rather than wiring a mock dispatcher.
 type MockExecutor struct {
 	mu        sync.Mutex
 	responses []MockResponse
 	calls     []MockCall
 	pos       int
-
-	// FormatPrefs, when non-empty, makes MockExecutor implement the
-	// FormatProvider interface and causes the dispatcher to take
-	// the reason-then-format split for thinking-on + schema agents.
-	// Returned by FormatPreferences(); set in tests that exercise
-	// the split path. Never accessed under the mutex — set once at
-	// construction and treated as read-only.
-	FormatPrefs []ModelPreference
 
 	// specSearch is the optional SwappableSpecSearch the mock exposes
 	// to specSearchSwap so tests can drive GenerateSpec end-to-end and
@@ -151,15 +141,6 @@ func (m *MockExecutor) Reset(responses ...MockResponse) {
 	m.responses = responses
 	m.calls = nil
 	m.pos = 0
-}
-
-// FormatPreferences implements the FormatProvider interface. Returns
-// m.FormatPrefs as-is; nil/empty disables the dispatcher's split
-// path for this executor (the default), so existing tests are
-// unaffected. Tests that exercise the split set FormatPrefs in the
-// MockExecutor struct literal.
-func (m *MockExecutor) FormatPreferences() []ModelPreference {
-	return m.FormatPrefs
 }
 
 // SetSpecSearch wires the swappable spec_search backend the council

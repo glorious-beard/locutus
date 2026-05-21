@@ -70,25 +70,12 @@ providers:
       max_output_tokens: 32768
       concurrent_requests: 8
 
-# Provider rotation order for the dispatcher's structured-output format
-# pass. When an agent declares `thinking: on/high` AND `output_schema`,
-# the dispatcher splits the call into a reasoning pass (the agent's
-# declared model, thinking on, schema-free) followed by a format pass
-# (one of these providers' fast tier, thinking off, no tools, schema set).
-# The dispatcher walks the list in order, skipping providers whose
-# adapter init fails (missing API key, rate-limited, etc.) — same skip
-# semantics as the agent-dispatch fallback walk.
-#
-# Default when absent: providers in declaration order above. Each entry
-# must name a provider with a `fast` tier defined; a mismatch is a
-# config error at load time.
-#
-# Why this is separate from agent `models:` priority: format calls are a
-# different operational concern (mechanical schema extraction, not
-# reasoning quality). An operator may rationally prefer Anthropic Haiku
-# here for cost + per-eval reliability while still preferring a different
-# rotation order for agent calls.
-format_providers:
-  - anthropic
-  - openai
-  - googleai
+# DJ-130 retired the dispatcher-side `format_providers:` rotation
+# that used to live here. Each provider adapter
+# (internal/agent/adapters/{anthropic,gemini,openai_responses}.go)
+# now handles its own thinking + schema split against its own provider's
+# `fast:` tier above (Anthropic Haiku for Claude reasoning; Gemini
+# Flash-Lite for Gemini reasoning; gpt-5-mini for gpt-5 reasoning) —
+# no cross-provider rotation for the format pass. A stale
+# `format_providers:` block left in a user-edited models.yaml is
+# silently ignored by the parser.

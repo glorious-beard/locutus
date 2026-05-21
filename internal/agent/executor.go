@@ -226,30 +226,6 @@ func (e *Executor) SpecListManifest() *SwappableSpecListManifest     { return e.
 func (e *Executor) SetSpecGet(s *SwappableSpecGet) { e.specGet = s }
 func (e *Executor) SpecGet() *SwappableSpecGet     { return e.specGet }
 
-// FormatPreferences returns the model-preference list the dispatcher
-// uses for the structured-output format pass — each entry resolves
-// to a provider's fast tier in cfg.FormatProviderOrder() order.
-// Empty when no providers are configured for the format pass; the
-// dispatcher treats that as "no split path available" and runs the
-// agent as a single call (which will likely degenerate if the agent
-// is thinking-on + structured).
-//
-// Implements the FormatProvider interface the Dispatcher detects to
-// decide whether the split path is wired up. Production wiring
-// always supplies a real *Executor; test mocks that omit this method
-// silently fall through to single-call mode.
-func (e *Executor) FormatPreferences() []ModelPreference {
-	if e == nil || e.cfg == nil {
-		return nil
-	}
-	order := e.cfg.FormatProviderOrder()
-	prefs := make([]ModelPreference, 0, len(order))
-	for _, name := range order {
-		prefs = append(prefs, ModelPreference{Provider: name, Tier: string(TierFast)})
-	}
-	return prefs
-}
-
 // Providers reports which provider SDKs the executor was
 // initialized with. Used by the CLI's startup banner.
 func (e *Executor) Providers() DetectedProviders { return e.providers }
@@ -497,7 +473,7 @@ func (e *Executor) runOne(ctx context.Context, def AgentDef, input AgentInput, p
 		cb()
 	}
 
-	req, err := buildAdapterRequest(def, input, pick, e.tools)
+	req, err := buildAdapterRequest(def, input, pick, e.tools, e.cfg)
 	if err != nil {
 		return nil, fmt.Errorf("agent %q: build request: %w", def.ID, err)
 	}
@@ -586,13 +562,23 @@ func outputFromResponse(resp *adapters.Response, model string) *AgentOutput {
 // When external tools (with side effects) eventually land, a
 // richer capability model will replace this all-or-nothing
 // exposure.
-func buildAdapterRequest(def AgentDef, input AgentInput, pick *ResolvedModel, registry *ToolRegistry) (adapters.Request, error) {
+func buildAdapterRequest(def AgentDef, input AgentInput, pick *ResolvedModel, registry *ToolRegistry, cfg *ModelConfig) (adapters.Request, error) {
 	req := adapters.Request{
 		Model:           pick.Model,
 		SystemPrompt:    BuildSystemPrompt(def),
 		MaxOutputTokens: pick.MaxOutputTokens,
 		Thinking:        pick.Thinking,
 		Grounding:       def.Grounding,
+	}
+	// DJ-130: populate the format pass model from the picked
+	// provider's `fast:` tier so the adapter's runSplit can extract
+	// against a cheap/reliable model. Empty when the provider has no
+	// fast tier configured — the adapter falls back to single-call.
+	if cfg != nil {
+		if tierCfg, ok := cfg.Resolve(string(pick.Provider), string(TierFast)); ok {
+			req.FormatModel = tierCfg.Model
+			req.FormatMaxOutputTokens = tierCfg.MaxOutputTokens
+		}
 	}
 	for _, m := range input.Messages {
 		req.Messages = append(req.Messages, adapters.Message{

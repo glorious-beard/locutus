@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -72,6 +73,20 @@ func (g *GeminiAdapter) Provider() string { return "googleai" }
 // zero (Gemini doesn't surface cache metering today, and emitting
 // zero would just clutter the trace).
 func (g *GeminiAdapter) Run(ctx context.Context, req Request) (*Response, error) {
+	if g.requiresThinkingSchemaSplit(req) {
+		return g.runSplit(ctx, req)
+	}
+	return g.runOnce(ctx, req, RecordedRoleSingle)
+}
+
+// runOnce is the single-SDK-call dispatch path. Gemini 3's combined
+// ThinkingConfig + ResponseJsonSchema request runs here for
+// thinking-off + schema and (currently empty) thinking-on + schema
+// models requiresThinkingSchemaSplit decides not to split.
+//
+// role names the recorded sub-call (DJ-130 Phase 3) — see
+// AnthropicAdapter.runOnce for the recorder contract.
+func (g *GeminiAdapter) runOnce(ctx context.Context, req Request, role string) (*Response, error) {
 	ctx, span := otel.Tracer(adapterTracerName).Start(ctx, "provider.generate",
 		oteltrace.WithAttributes(
 			attribute.String("gen_ai.system", "googleai"),
@@ -79,9 +94,74 @@ func (g *GeminiAdapter) Run(ctx context.Context, req Request) (*Response, error)
 			attribute.String("gen_ai.operation.name", "chat"),
 		))
 	defer span.End()
+	var handle CallHandle
+	if rec := CallRecorderFromContext(ctx); rec != nil {
+		handle = rec.Begin(ctx, role, req.Model, req, time.Now())
+	}
 	resp, err := g.runInner(ctx, req)
 	annotateGenAISpan(span, resp)
+	if handle != nil {
+		handle.Finish(resp, err)
+	}
 	return resp, err
+}
+
+// requiresThinkingSchemaSplit reports whether (thinking != off) +
+// OutputSchema on this provider's model is known to drop fields
+// between thinking and JSON serialization. The fifth winplan re-run
+// (DJ-130) traced the symptom end-to-end on Gemini 3 Pro Preview: the
+// scout's iter-0 thinking drafted two strategies but the final
+// structured output emitted only one feature; the strategies were
+// silently dropped. Universal across the current Gemini 3 family
+// (Pro Preview, Flash, Flash-Lite) even though Gemini 3 explicitly
+// supports `responseJsonSchema` composing with the full feature
+// matrix — the API accepts the combination; the model emits lossy
+// output.
+//
+// Empty FormatModel falls back to single-call (see Anthropic's
+// requiresThinkingSchemaSplit for the rationale).
+func (g *GeminiAdapter) requiresThinkingSchemaSplit(req Request) bool {
+	if req.Thinking == ThinkingOff || req.OutputSchema == nil {
+		return false
+	}
+	if req.FormatModel == "" {
+		return false
+	}
+	return true
+}
+
+// runSplit handles the thinking-on + schema combination by issuing
+// two GenerateContent calls back-to-back: a reasoning pass against
+// the agent's declared model with the schema cleared, and a format
+// pass against the provider's fast tier (Flash-Lite) with thinking
+// off + schema set + tools stripped. Returns one merged Response.
+//
+// Mirrors AnthropicAdapter.runSplit; see there for the merge
+// semantics and the reasoning-pass-keeps-grounding rationale.
+func (g *GeminiAdapter) runSplit(ctx context.Context, req Request) (*Response, error) {
+	reasoningReq := req
+	reasoningReq.OutputSchema = nil
+	reasoning, err := g.runOnce(ctx, reasoningReq, RecordedRoleReason)
+	if err != nil {
+		return reasoning, fmt.Errorf("gemini split reason: %w", err)
+	}
+	if reasoning == nil || reasoning.Content == "" {
+		return reasoning, fmt.Errorf("gemini split reason: empty response")
+	}
+
+	formatReq := Request{
+		Model:           req.FormatModel,
+		SystemPrompt:    CanonicalFormatterPrompt,
+		Messages:        []Message{{Role: RoleUser, Content: reasoning.Content}},
+		MaxOutputTokens: req.FormatMaxOutputTokens,
+		Thinking:        ThinkingOff,
+		OutputSchema:    req.OutputSchema,
+	}
+	formatted, err := g.runOnce(ctx, formatReq, RecordedRoleFormat)
+	if err != nil {
+		return formatted, fmt.Errorf("gemini split format: %w", err)
+	}
+	return mergeSplitResponses(reasoning, formatted), nil
 }
 
 func (g *GeminiAdapter) runInner(ctx context.Context, req Request) (*Response, error) {

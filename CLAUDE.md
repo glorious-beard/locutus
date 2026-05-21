@@ -11,6 +11,7 @@ Locutus — a Go CLI and MCP server that acts as an autonomous project manager f
 - `docs/DECISION_JOURNAL.md` — architectural decisions with rationale, alternatives considered, and reversals. Authoritative design record.
 - `.claude/plans/` — active implementation plans (current consolidation work is in `verb-set-phase-{a,b,c,d}.md`). Copy to `docs/plans/` once a phase stabilises.
 - `docs/agent-conventions.md` — documented anti-patterns and conventions for agent prompt files. **Read this before editing or creating any file under `internal/scaffold/agents/`.** It captures lessons we've re-learned multiple times (anti-pattern priming, thinking-leakage, schema-skeleton placeholders) and the prefer-positive-phrasing + push-constraints-to-schema-tags patterns that replace them.
+- `docs/debugging-traces.md` — operational guide for walking session traces and OTel spans when an LLM-driven verb misbehaves. Covers the per-step folder layout (DJ-130), the per-call YAML / OTel correlation, common failure patterns, and one-liners for grepping concerns / extracting structured responses.
 
 When these documents conflict with any other file in the repo, `docs/` and `.claude/plans/` win.
 
@@ -28,6 +29,19 @@ If a Go struct is registered via `RegisterSchema` (or otherwise travels into an 
 The library is `github.com/invopop/jsonschema` v0.13.0 (per DJ-118). Tag syntax is key=value, comma-separated. Don't use `github.com/google/jsonschema-go` syntax (bare-string-as-description) — it produces silent no-ops in invopop.
 
 When adding a new struct to the response-shape set: walk the field list, ask "if the model gives me garbage in this field, would the user know what went wrong?", and tag every field where the answer is "only because we wrote a validator." Push the validator's constraint into the schema. The validator becomes a safety net for the rare cases that slip through, not the primary enforcement.
+
+## LLM Layering Invariant (DJ-130)
+
+The workflow expresses intent; the dispatcher orchestrates retry/rotation/observability; the adapter handles provider-specific mechanics including any internal multi-call workaround. Observability follows the provider-call boundary on both surfaces (OTel and YAML).
+
+Concretely:
+
+- **Workflow** ([internal/agent/workflow.go](internal/agent/workflow.go)) emits one `Dispatcher.Dispatch` call per agent step. It knows nothing about which provider serves the call, whether the call splits, or how token cost is computed.
+- **Dispatcher** ([internal/agent/dispatcher.go](internal/agent/dispatcher.go)) handles provider rotation, corrective retry, and ReAct iteration. From its perspective every adapter Run is one logical SDK call (even when the adapter splits internally).
+- **Adapter** ([internal/agent/adapters/](internal/agent/adapters/)) handles provider-specific mechanics: native structured output via `OutputConfig.Format.Schema` (Anthropic, DJ-108), `responseJsonSchema` (Gemini), `json_schema strict:true` (OpenAI Responses); the multi-round tool-use loop; AND the thinking + schema split via `requiresThinkingSchemaSplit` → `runSplit`. Each adapter's `runSplit` issues two SDK calls back-to-back (reasoning pass keeps tools + grounding; format pass strips them and runs against the provider's own `fast:` tier from models.yaml).
+- **Recorder** ([internal/agent/session.go](internal/agent/session.go)) opens a parent `step.yaml` when `LoggingExecutor.Run` is invoked and plumbs an `adapters.CallRecorder` bridge onto ctx; each adapter then writes one per-SDK-call YAML per real provider round-trip into the step's folder. Per-call YAMLs and OTel `provider.generate` spans now agree on what constitutes a "call." See [docs/debugging-traces.md](docs/debugging-traces.md) for the operational guide to walking session traces.
+
+The per-deployer `format_providers:` rotation in `models.yaml` is retired — each adapter handles its own provider's fast tier for the format pass, no cross-provider rotation. A stale `format_providers:` block left in a user-edited `models.yaml` is silently ignored by the parser.
 
 ## Command Surface
 

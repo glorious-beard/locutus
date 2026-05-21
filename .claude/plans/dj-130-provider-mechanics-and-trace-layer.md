@@ -2,7 +2,7 @@
 
 > **Governing DJ:** [DJ-130](../../docs/DECISION_JOURNAL.md#dj-130). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
 >
-> **Status:** designed; implementation not started.
+> **Status:** DONE for Phases 1-4 + 6 (landed 2026-05-21). Phase 5 (winplan empirical re-run) deferred — requires a live API + the external winplan project; the static surface (build, vet, race, tests) is clean and the per-step folder + per-SDK-call recording is exercised by `TestSessionRecorderPerStepFolderLayout` / `TestParentStepYAMLAggregatesTokens` / `TestAdapterEmitsChildRecordPerSDKCall` in `internal/agent/session_dj130_test.go`. Re-running winplan to confirm strategies come through and per-step folders shape correctly is the next user-initiated step.
 > **Predecessors:** [DJ-108](../../docs/DECISION_JOURNAL.md#dj-108) (Anthropic native structured output — set the direction); [DJ-122](../../docs/DECISION_JOURNAL.md#dj-122) (spawner-driven WorkflowExecutor — introduced the wiring gap); commit [`5d15e7b`](https://github.com/chetan/locutus/commit/5d15e7b) (unrecorded dispatcher-side split — what this plan retires).
 > **Surface area:** dispatcher cleanup + workflow wiring + per-adapter split logic + recorder relocation + on-disk trace layout change.
 > **Discipline (per memory):** tests → design pause in chat → code; mid-impl failures trigger design judgment, not test patching. Each phase verifies independently before moving on. **Per-adapter logic changes require empirical verification against the provider's API**; static unit tests aren't sufficient evidence that the split actually fires correctly on the real model.

@@ -63,6 +63,19 @@ func (a *OpenAIResponsesAdapter) Provider() string { return "openai" }
 // non-zero (no separate creation charge on Responses, so creation
 // stays zero).
 func (a *OpenAIResponsesAdapter) Run(ctx context.Context, req Request) (*Response, error) {
+	if a.requiresThinkingSchemaSplit(req) {
+		return a.runSplit(ctx, req)
+	}
+	return a.runOnce(ctx, req, RecordedRoleSingle)
+}
+
+// runOnce is the single-SDK-call dispatch path. Responses API
+// json_schema strict-mode runs here for thinking-off + schema
+// requests.
+//
+// role names the recorded sub-call (DJ-130 Phase 3) — see
+// AnthropicAdapter.runOnce for the recorder contract.
+func (a *OpenAIResponsesAdapter) runOnce(ctx context.Context, req Request, role string) (*Response, error) {
 	ctx, span := otel.Tracer(adapterTracerName).Start(ctx, "provider.generate",
 		oteltrace.WithAttributes(
 			attribute.String("gen_ai.system", "openai"),
@@ -70,9 +83,69 @@ func (a *OpenAIResponsesAdapter) Run(ctx context.Context, req Request) (*Respons
 			attribute.String("gen_ai.operation.name", "chat"),
 		))
 	defer span.End()
+	var handle CallHandle
+	if rec := CallRecorderFromContext(ctx); rec != nil {
+		handle = rec.Begin(ctx, role, req.Model, req, time.Now())
+	}
 	resp, err := a.runInner(ctx, req)
 	annotateGenAISpan(span, resp)
+	if handle != nil {
+		handle.Finish(resp, err)
+	}
 	return resp, err
+}
+
+// requiresThinkingSchemaSplit reports whether (thinking != off) +
+// OutputSchema on this provider's model is known to emit empty `{}`
+// tool args / structured output. Surfaced on gpt-5-nano under low
+// reasoning_effort + structured output (DJ-130 motivating context);
+// the failure mode is shared across the gpt-5 family today even
+// though strict json_schema validation is enforced server-side.
+//
+// Empty FormatModel falls back to single-call (see Anthropic's
+// requiresThinkingSchemaSplit for the rationale).
+func (a *OpenAIResponsesAdapter) requiresThinkingSchemaSplit(req Request) bool {
+	if req.Thinking == ThinkingOff || req.OutputSchema == nil {
+		return false
+	}
+	if req.FormatModel == "" {
+		return false
+	}
+	return true
+}
+
+// runSplit handles the thinking-on + schema combination by issuing
+// two Responses API calls back-to-back: a reasoning pass against the
+// agent's declared model with the schema cleared, and a format pass
+// against the provider's fast tier (gpt-5-mini) with thinking off +
+// schema set + tools stripped. Returns one merged Response.
+//
+// Mirrors AnthropicAdapter.runSplit; see there for the merge
+// semantics and the reasoning-pass-keeps-grounding rationale.
+func (a *OpenAIResponsesAdapter) runSplit(ctx context.Context, req Request) (*Response, error) {
+	reasoningReq := req
+	reasoningReq.OutputSchema = nil
+	reasoning, err := a.runOnce(ctx, reasoningReq, RecordedRoleReason)
+	if err != nil {
+		return reasoning, fmt.Errorf("openai split reason: %w", err)
+	}
+	if reasoning == nil || reasoning.Content == "" {
+		return reasoning, fmt.Errorf("openai split reason: empty response")
+	}
+
+	formatReq := Request{
+		Model:           req.FormatModel,
+		SystemPrompt:    CanonicalFormatterPrompt,
+		Messages:        []Message{{Role: RoleUser, Content: reasoning.Content}},
+		MaxOutputTokens: req.FormatMaxOutputTokens,
+		Thinking:        ThinkingOff,
+		OutputSchema:    req.OutputSchema,
+	}
+	formatted, err := a.runOnce(ctx, formatReq, RecordedRoleFormat)
+	if err != nil {
+		return formatted, fmt.Errorf("openai split format: %w", err)
+	}
+	return mergeSplitResponses(reasoning, formatted), nil
 }
 
 func (a *OpenAIResponsesAdapter) runInner(ctx context.Context, req Request) (*Response, error) {

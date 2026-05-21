@@ -40,22 +40,6 @@ func (p *providerSpanExecutor) Run(ctx context.Context, def AgentDef, input Agen
 	return p.inner.Run(ctx, def, input)
 }
 
-// dispatcherBridgeExecutor satisfies AgentExecutor by routing every
-// Run through a Dispatcher. Lets a WorkflowExecutor open its
-// workflow.phase span and have the dispatched call descend through
-// agent.dispatch / llm.attempt / provider.generate. Mirrors the
-// shape per-verb workflow migrations land in Phase 5+ — today's
-// executeAgent path skips the dispatcher, so the bridge is the
-// minimal intervention to exercise the documented hierarchy.
-type dispatcherBridgeExecutor struct {
-	dispatcher *Dispatcher
-	role       string
-}
-
-func (b *dispatcherBridgeExecutor) Run(ctx context.Context, def AgentDef, input AgentInput) (*AgentOutput, error) {
-	return b.dispatcher.Dispatch(ctx, def, input, DispatchOptions{Role: b.role})
-}
-
 // installTracerProvider builds a TracerProvider that writes OTLP-JSON
 // to <tempDir>/trace.jsonl using the same custom file exporter
 // production code uses, then sets it as the package-wide global. The
@@ -183,13 +167,11 @@ func getString(m map[string]any, key string) string {
 // adapter (simulated here by providerSpanExecutor) opens
 // provider.generate.
 //
-// To exercise all four layers in one test, the workflow's executor
-// runs the dispatcher (via a small bridge executor) so a workflow
-// step's executeAgent path threads through Dispatch instead of
-// straight RunWithRetry. The bridge mirrors what the per-verb
-// workflow migrations (Phase 5+) will use; today's executeAgent
-// code path skips the dispatcher, so this test wires the dispatcher
-// in explicitly.
+// DJ-130 Phase 1 wired WorkflowExecutor.executeAgent to dispatch
+// through Dispatcher.Dispatch directly, so the workflow's executor
+// is just the provider-span wrapper around the mock — no bridge
+// needed. The role attribute on agent.dispatch is now
+// `workflow:<step-id>` (the role tag executeAgent stamps).
 //
 // Asserts on structure, not timing — the test is deterministic
 // regardless of how fast the in-memory mock returns.
@@ -200,16 +182,10 @@ func TestTraceShapeWorkflowExecutor(t *testing.T) {
 
 	mock := NewMockExecutor(mockResp("planner output"))
 	wrapped := &providerSpanExecutor{inner: mock, provider: "anthropic"}
-	dispatcher := NewDispatcher(wrapped)
 
 	defs := map[string]AgentDef{
 		"planner": {ID: "planner", SystemPrompt: "You are the planner."},
 	}
-
-	// Bridge executor: when ExecuteRound's executeAgent calls Run on
-	// us, route through the dispatcher so we get the full
-	// agent.dispatch + llm.attempt + provider.generate sub-tree.
-	bridge := &dispatcherBridgeExecutor{dispatcher: dispatcher, role: "propose"}
 
 	wf := &Workflow[PlanningState]{
 		Rounds: []WorkflowStep[PlanningState]{{
@@ -220,7 +196,7 @@ func TestTraceShapeWorkflowExecutor(t *testing.T) {
 	}
 
 	exec := &WorkflowExecutor[PlanningState]{
-		Executor:  bridge,
+		Executor:  wrapped,
 		AgentDefs: defs,
 		Workflow:  wf,
 	}
@@ -267,7 +243,8 @@ func TestTraceShapeWorkflowExecutor(t *testing.T) {
 	assert.Equal(t, "propose", phase.Attributes["locutus.workflow.phase"])
 	assert.Equal(t, "planner", phase.Attributes["locutus.agent.id"])
 	assert.Equal(t, "planner", dispatch.Attributes["locutus.agent.id"])
-	assert.Equal(t, "propose", dispatch.Attributes["locutus.dispatch.role"])
+	assert.Equal(t, "workflow:propose", dispatch.Attributes["locutus.dispatch.role"],
+		"DJ-130 Phase 1: executeAgent tags dispatches with workflow:<step-id>")
 	assert.Equal(t, "1", attempt.Attributes["locutus.attempt"])
 	assert.Equal(t, "anthropic", provider.Attributes["gen_ai.system"])
 	assert.Equal(t, "test-model", provider.Attributes["gen_ai.request.model"])

@@ -93,6 +93,25 @@ func (a *AnthropicAdapter) Provider() string { return "anthropic" }
 // spans (one provider.generate per logical Run is the cleaner shape;
 // per-round detail is already in Response.Rounds and the per-call YAML).
 func (a *AnthropicAdapter) Run(ctx context.Context, req Request) (*Response, error) {
+	if a.requiresThinkingSchemaSplit(req) {
+		return a.runSplit(ctx, req)
+	}
+	return a.runOnce(ctx, req, RecordedRoleSingle)
+}
+
+// runOnce is the single-SDK-call dispatch path. The DJ-108 native
+// `OutputConfig.Format.Schema` strict-mode enforcement runs here for
+// thinking-off + schema requests and the (currently empty) set of
+// thinking-on + schema models requiresThinkingSchemaSplit decides not
+// to split.
+//
+// role names the recorded sub-call ("single" for non-split, "reason"
+// or "format" for the split's two passes). When a CallRecorder is on
+// ctx (DJ-130 Phase 3), runOnce opens one per-SDK-call child record
+// under the parent step before dispatching. Recorder absence is
+// silent — ad-hoc callers that bypassed LoggingExecutor get the same
+// behaviour they had pre-Phase 3.
+func (a *AnthropicAdapter) runOnce(ctx context.Context, req Request, role string) (*Response, error) {
 	ctx, span := otel.Tracer(adapterTracerName).Start(ctx, "provider.generate",
 		oteltrace.WithAttributes(
 			attribute.String("gen_ai.system", "anthropic"),
@@ -100,10 +119,92 @@ func (a *AnthropicAdapter) Run(ctx context.Context, req Request) (*Response, err
 			attribute.String("gen_ai.operation.name", "chat"),
 		))
 	defer span.End()
+	var handle CallHandle
+	if rec := CallRecorderFromContext(ctx); rec != nil {
+		handle = rec.Begin(ctx, role, req.Model, req, time.Now())
+	}
 	params := buildAnthropicMessageNewParams(req)
 	resp, err := a.dispatch(ctx, params, req)
 	annotateGenAISpan(span, resp)
+	if handle != nil {
+		handle.Finish(resp, err)
+	}
 	return resp, err
+}
+
+// requiresThinkingSchemaSplit reports whether (thinking != off) +
+// OutputSchema on this provider's model is known to emit degenerate
+// output: Claude's `dummy` placeholder regime, where extended thinking
+// produces real reasoning but the structured JSON pass drops fields
+// or substitutes placeholder tokens. Surfaced by the fifth winplan
+// re-run (DJ-130; commit 5d15e7b originally landed the split as a
+// dispatcher-layer workaround for the same failure mode on Sonnet 4.6
+// and Opus 4.7). Universal across the current Claude model family
+// (Haiku 4.5 included) — the Models API's structuredOutputs.supported
+// flag claims the combination works, but empirical reliability says
+// otherwise.
+//
+// Future Claude models that handle thinking + schema cleanly opt out
+// here with an explicit per-model `return false`; the static gate is
+// the source of truth (DJ-130 alternative considered: dynamic
+// capability detection via Models API — rejected for the initial
+// landing because the API's claim and the empirical behaviour
+// diverge).
+func (a *AnthropicAdapter) requiresThinkingSchemaSplit(req Request) bool {
+	if req.Thinking == ThinkingOff || req.OutputSchema == nil {
+		return false
+	}
+	// Empty FormatModel means the executor couldn't resolve the fast
+	// tier (deployer-edited models.yaml, test fixture, etc.). Fall
+	// back to single-call so the request still goes through — the
+	// caller will see the degenerate output and the operator can fix
+	// the config. Splitting against the same model the reasoning pass
+	// used would defeat the purpose.
+	if req.FormatModel == "" {
+		return false
+	}
+	return true
+}
+
+// runSplit handles the thinking-on + schema combination by issuing
+// two SDK calls back-to-back: a reasoning pass against the agent's
+// declared model with the schema cleared, and a format pass against
+// the provider's fast tier with thinking off + schema set + tools
+// stripped. Returns one merged Response carrying the format pass's
+// structured Content, the reasoning pass's thinking, and the union
+// of metadata + summed token counts.
+//
+// The reasoning pass keeps grounding and custom tools — the model is
+// expected to reason, search, and call tools normally. The format
+// pass strips tools (extraction-only) and grounding (the reasoning
+// pass already grounded; doing it again on the format pass would
+// duplicate cost without surfacing new evidence). The reasoning
+// pass's tool calls + citations are carried forward via
+// mergeSplitResponses so downstream consumers see the full picture.
+func (a *AnthropicAdapter) runSplit(ctx context.Context, req Request) (*Response, error) {
+	reasoningReq := req
+	reasoningReq.OutputSchema = nil
+	reasoning, err := a.runOnce(ctx, reasoningReq, RecordedRoleReason)
+	if err != nil {
+		return reasoning, fmt.Errorf("anthropic split reason: %w", err)
+	}
+	if reasoning == nil || reasoning.Content == "" {
+		return reasoning, fmt.Errorf("anthropic split reason: empty response")
+	}
+
+	formatReq := Request{
+		Model:           req.FormatModel,
+		SystemPrompt:    CanonicalFormatterPrompt,
+		Messages:        []Message{{Role: RoleUser, Content: reasoning.Content}},
+		MaxOutputTokens: req.FormatMaxOutputTokens,
+		Thinking:        ThinkingOff,
+		OutputSchema:    req.OutputSchema,
+	}
+	formatted, err := a.runOnce(ctx, formatReq, RecordedRoleFormat)
+	if err != nil {
+		return formatted, fmt.Errorf("anthropic split format: %w", err)
+	}
+	return mergeSplitResponses(reasoning, formatted), nil
 }
 
 // buildAnthropicMessageNewParams projects a neutral Request into the

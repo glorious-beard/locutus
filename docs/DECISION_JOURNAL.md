@@ -3889,7 +3889,7 @@ Five coupled changes:
 
 ## DJ-130: Provider Mechanics Encapsulated in Adapters; Trace Recording Follows the Provider-Call Boundary (Supersedes Unrecorded `5d15e7b` Split-in-Dispatcher Pattern)
 
-**Status:** proposed
+**Status:** shipping (Phases 1-4 landed 2026-05-21; Phase 5 winplan empirical verification pending live-API run)
 
 **Context.** The fifth winplan re-run ([`/Users/chetan/projects/winplan/.locutus/sessions/20260521/0055/07-b8e485/`](file:///Users/chetan/projects/winplan/.locutus/sessions/20260521/0055/07-b8e485/)) converged for the first time but produced a spec with 13 decisions, 2 features, and **zero strategies**. The architecture's only path to author strategies is `scout.new_nodes[kind=strategy] → narrative-elaborator → strat-` body; in the failing trace the scout's iter-0 *thinking* drafted two strategies (`strat-deployment`, `strat-data-store`) but the final structured-output JSON emitted only one feature. The strategies were silently dropped between extended thinking and structured-output serialization. Iter-1 through iter-4 emitted zero `new_nodes` at all. This is the failure mode `docs/agent-conventions.md` §6 names ("extended thinking + structured + short output = lossy serialization"), now observed end-to-end on Gemini 3 Pro Preview after prior identification on Claude (the `dummy` placeholder regime) and OpenAI gpt-5-nano (empty `{}` tool args under low reasoning_effort).
 

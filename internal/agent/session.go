@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/chetan/locutus/internal/agent/adapters"
 	"github.com/chetan/locutus/internal/specio"
 )
 
@@ -141,6 +142,61 @@ func RetryCallbackFromContext(ctx context.Context) func(int, error) {
 	return nil
 }
 
+// sessionRecorderContextKey carries the SessionRecorder for the duration
+// of a LoggingExecutor.Run delegation. Adapters consult it indirectly via
+// adapters.CallRecorderFromContext, which receives a bridge wrapping
+// the parent stepHandle the LoggingExecutor opened. Most call sites
+// don't need to touch this directly — LoggingExecutor.Run plumbs it on
+// the agent's behalf.
+type sessionRecorderContextKey struct{}
+
+// WithSessionRecorder tags ctx with the SessionRecorder so deeper
+// layers (the dispatch retry path, ad-hoc child calls) can record
+// additional sub-calls under the active session if needed. Production
+// wiring is one call from LoggingExecutor.Run; ad-hoc callers leave
+// it unset and recording stays off.
+func WithSessionRecorder(ctx context.Context, r *SessionRecorder) context.Context {
+	if r == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionRecorderContextKey{}, r)
+}
+
+// SessionRecorderFromContext returns the SessionRecorder set via
+// WithSessionRecorder, or nil when none was set.
+func SessionRecorderFromContext(ctx context.Context) *SessionRecorder {
+	if v, ok := ctx.Value(sessionRecorderContextKey{}).(*SessionRecorder); ok {
+		return v
+	}
+	return nil
+}
+
+// parentCallIDContextKey carries the parent step's id for child SDK
+// calls. DJ-130 Phase 3 uses this to link adapter-emitted per-SDK-call
+// records to the step.yaml the LoggingExecutor opens at delegation
+// time. Mirrors the WithRole / WithAgentID / WithCallTag pattern.
+type parentCallIDContextKey struct{}
+
+// WithParentCallID tags ctx with the parent step id so child call
+// records can carry parent_call_id pointing at the step.yaml that
+// groups them. Production wiring is one call from LoggingExecutor.Run
+// after it opens the parent step.
+func WithParentCallID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, parentCallIDContextKey{}, id)
+}
+
+// ParentCallIDFromContext returns the parent call id set via
+// WithParentCallID, or "" when none.
+func ParentCallIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(parentCallIDContextKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // rateLimitWaitCallbackKey carries a callback invoked when a single
 // LLM call hits a 429 with a usable Retry-After hint and the executor
 // decides to sleep on the same pick rather than rotate. Distinct from
@@ -195,6 +251,13 @@ type SessionRecorder struct {
 	manifest  sessionManifest
 	inFlight  map[int]*callHandle
 	nextIndex int
+
+	// DJ-130 Phase 3: per-step folder bookkeeping. BeginStep
+	// allocates a nextStepIndex, opens a folder under calls/, and
+	// tracks the in-flight stepHandles so Close can mark a SIGKILL'd
+	// step as interrupted alongside its child calls.
+	inFlightSteps map[int]*stepHandle
+	nextStepIndex int
 }
 
 // sessionManifest is the on-disk shape of <dir>/session.yaml.
@@ -343,9 +406,41 @@ type recordedMessage struct {
 	Content string `yaml:"content"`
 }
 
+// recordedStep is the on-disk shape of a per-step `step.yaml` — the
+// parent record DJ-130 Phase 3 added so per-step folders carry a
+// summary the operator can read first before drilling into per-SDK
+// child YAMLs. Token counts sum across children; duration spans from
+// first child start to last child finish; ChildCalls names each
+// child in order.
+type recordedStep struct {
+	Index         int      `yaml:"index"`
+	AgentID       string   `yaml:"agent_id,omitempty"`
+	Role          string   `yaml:"role,omitempty"`
+	CallTag       string   `yaml:"call_tag,omitempty"`
+	Status        string   `yaml:"status,omitempty"`
+	StartedAt     string   `yaml:"started_at"`
+	CompletedAt   string   `yaml:"completed_at,omitempty"`
+	DurationMS    int64    `yaml:"duration_ms,omitempty"`
+	Model         string   `yaml:"model,omitempty"`
+	OutputSchema  bool     `yaml:"output_schema,omitempty"`
+	SpanID        string   `yaml:"span_id,omitempty"`
+	InputTokens   int      `yaml:"input_tokens,omitempty"`
+	OutputTokens  int      `yaml:"output_tokens,omitempty"`
+	ThoughtsTokens int     `yaml:"thoughts_tokens,omitempty"`
+	TotalTokens   int      `yaml:"total_tokens,omitempty"`
+	CacheCreationInputTokens int `yaml:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `yaml:"cache_read_input_tokens,omitempty"`
+	ChildCalls    []string `yaml:"child_calls,omitempty"`
+	Error         string   `yaml:"error,omitempty"`
+}
+
 // CallsDirName is the subdirectory under a session directory that
 // holds per-call YAML files. Exported for tools that walk a session.
 const CallsDirName = "calls"
+
+// StepFileName is the parent-summary filename written under each
+// per-step folder under <session>/calls/<NNNN>-<agent>[-<tag>]/.
+const StepFileName = "step.yaml"
 
 // SessionManifestFile is the manifest filename within a session
 // directory. Exported for tools that walk a session.
@@ -389,7 +484,8 @@ func NewSessionRecorder(fsys specio.FS, command, projectRoot string) (*SessionRe
 			Command:     command,
 			ProjectRoot: projectRoot,
 		},
-		inFlight: make(map[int]*callHandle),
+		inFlight:      make(map[int]*callHandle),
+		inFlightSteps: make(map[int]*stepHandle),
 	}
 	if err := rec.writeManifest(); err != nil {
 		return nil, err
@@ -447,12 +543,22 @@ func (r *SessionRecorder) Record(role, agentID, callTag string, def AgentDef, in
 // path and the in-memory recordedCall struct that gets mutated then
 // flushed on Finish; after Finish the handle drops out of inFlight
 // and its memory is GC-eligible.
+//
+// DJ-130 Phase 3: when the handle was opened via stepHandle.BeginChild
+// (a per-SDK-call record under a parent step folder), stepRef points
+// at the owning step and callID names the child's stable id (used in
+// the step.yaml's child_calls list and as the per-call YAML filename
+// minus extension). Both nil/empty for flat callHandles opened via
+// the legacy SessionRecorder.Begin path.
 type callHandle struct {
 	recorder *SessionRecorder
 	index    int
 	filePath string
 	started  time.Time
 	call     recordedCall
+
+	stepRef *stepHandle
+	callID  string
 }
 
 // Begin assigns the next call index, writes the per-call file with
@@ -601,6 +707,299 @@ func (h *callHandle) finishAt(out *AgentOutput, callErr error, completedAt time.
 	h.recorder.mu.Unlock()
 }
 
+// stepHandle is the parent-step bookkeeping LoggingExecutor.Run opens
+// before delegating. Adapters discover it (indirectly via the
+// callRecorderBridge) and call BeginChild for each SDK round-trip;
+// the agent-side LoggingExecutor finalizes the step after the inner
+// Run returns. Children written under the step's folder; the parent
+// step.yaml carries summed token counts + child id list + duration.
+type stepHandle struct {
+	recorder *SessionRecorder
+	index    int
+	dir      string
+	filePath string
+	started  time.Time
+	step     recordedStep
+
+	mu           sync.Mutex
+	childCounter int
+	children     []*callHandle
+}
+
+// childCallID returns a stable identifier for a child file (no
+// extension). Mirrors callFilePath's name shape but bounded to the
+// step folder (4-digit step + 2-digit child + role).
+func (s *stepHandle) childCallID(role string) (filename, callID string, idx int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.childCounter++
+	idx = s.childCounter
+	base := fmt.Sprintf("%02d", idx)
+	if role != "" {
+		base = base + "-" + role
+	}
+	return base + ".yaml", base, idx
+}
+
+// BeginChild opens a child per-SDK-call record under this step's
+// folder. Returns the callHandle so callers can Finish it with the
+// adapter Response. Safe for concurrent use; the child counter is
+// atomic with respect to the step's mutex.
+func (s *stepHandle) BeginChild(role, model string, def AgentDef, input AgentInput, started time.Time) *callHandle {
+	filename, callID, idx := s.childCallID(role)
+	call := recordedCall{
+		Index:        idx,
+		AgentID:      s.step.AgentID,
+		Role:         role,
+		Status:       CallStatusInProgress,
+		StartedAt:    started.Format(time.RFC3339),
+		Model:        model,
+		OutputSchema: def.OutputSchema != "",
+	}
+	systemPrompt := BuildSystemPrompt(def)
+	if systemPrompt != "" {
+		call.Messages = append(call.Messages, recordedMessage{Role: "system", Content: systemPrompt})
+	}
+	for _, m := range input.Messages {
+		call.Messages = append(call.Messages, recordedMessage{Role: m.Role, Content: m.Content})
+	}
+	h := &callHandle{
+		recorder: s.recorder,
+		index:    idx,
+		filePath: path.Join(s.dir, filename),
+		started:  started,
+		call:     call,
+		stepRef:  s,
+		callID:   callID,
+	}
+	s.mu.Lock()
+	s.children = append(s.children, h)
+	s.mu.Unlock()
+	if err := h.flush(); err != nil {
+		slog.Warn("session recorder: child call in-progress flush failed",
+			"session", s.recorder.manifest.SessionID, "step", s.index, "child", idx, "error", err)
+	}
+	return h
+}
+
+// Finish finalizes the step.yaml: sums token counts across children,
+// computes duration, lists child call ids, sets status. Idempotent
+// on nil. Called by LoggingExecutor.Run after the inner adapter
+// dispatch returns.
+func (s *stepHandle) Finish(err error) {
+	if s == nil {
+		return
+	}
+	completedAt := time.Now()
+	s.step.CompletedAt = completedAt.Format(time.RFC3339)
+	s.step.DurationMS = completedAt.Sub(s.started).Milliseconds()
+	if err != nil {
+		s.step.Status = CallStatusError
+		s.step.Error = err.Error()
+	} else {
+		s.step.Status = CallStatusCompleted
+	}
+
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.children))
+	for _, c := range s.children {
+		ids = append(ids, c.callID)
+		s.step.InputTokens += c.call.InputTokens
+		s.step.OutputTokens += c.call.OutputTokens
+		s.step.ThoughtsTokens += c.call.ThoughtsTokens
+		s.step.TotalTokens += c.call.TotalTokens
+		s.step.CacheCreationInputTokens += c.call.CacheCreationInputTokens
+		s.step.CacheReadInputTokens += c.call.CacheReadInputTokens
+		// First child's model is representative (the strong-tier
+		// reasoning pass for splits; the single model otherwise).
+		if s.step.Model == "" && c.call.Model != "" {
+			s.step.Model = c.call.Model
+		}
+	}
+	s.step.ChildCalls = ids
+	s.mu.Unlock()
+
+	if flushErr := s.flush(); flushErr != nil {
+		slog.Warn("session recorder: step finish flush failed",
+			"session", s.recorder.manifest.SessionID, "step", s.index, "error", flushErr)
+	}
+	s.recorder.mu.Lock()
+	delete(s.recorder.inFlightSteps, s.index)
+	s.recorder.mu.Unlock()
+}
+
+func (s *stepHandle) flush() error {
+	data, err := yaml.Marshal(&s.step)
+	if err != nil {
+		return err
+	}
+	return specio.AtomicWriteFile(s.recorder.fsys, s.filePath, data, 0o644)
+}
+
+// BeginStep opens the parent step record DJ-130 Phase 3 introduced.
+// LoggingExecutor.Run calls this before delegating; adapter-emitted
+// per-SDK-call records (via callRecorderBridge below) land under the
+// returned step's folder. Safe for concurrent use.
+func (r *SessionRecorder) BeginStep(role, agentID, callTag string, def AgentDef, input AgentInput, started time.Time) *stepHandle {
+	r.mu.Lock()
+	r.nextStepIndex++
+	idx := r.nextStepIndex
+	r.mu.Unlock()
+
+	dir := r.stepDirPath(idx, agentID, callTag)
+	if err := r.fsys.MkdirAll(dir, 0o755); err != nil {
+		slog.Warn("session recorder: step mkdir failed",
+			"session", r.manifest.SessionID, "step", idx, "error", err)
+	}
+	step := recordedStep{
+		Index:        idx,
+		AgentID:      agentID,
+		Role:         role,
+		CallTag:      callTag,
+		Status:       CallStatusInProgress,
+		StartedAt:    started.Format(time.RFC3339),
+		OutputSchema: def.OutputSchema != "",
+	}
+	h := &stepHandle{
+		recorder: r,
+		index:    idx,
+		dir:      dir,
+		filePath: path.Join(dir, StepFileName),
+		started:  started,
+		step:     step,
+	}
+	r.mu.Lock()
+	r.inFlightSteps[idx] = h
+	r.mu.Unlock()
+	if err := h.flush(); err != nil {
+		slog.Warn("session recorder: in-progress step flush failed",
+			"session", r.manifest.SessionID, "step", idx, "error", err)
+	}
+	return h
+}
+
+// stepDirPath builds the per-step folder path:
+//
+//	<dir>/calls/<NNNN>-<agent>-<tag>/   when agent and tag are set
+//	<dir>/calls/<NNNN>-<agent>/         when only agent is set
+//	<dir>/calls/<NNNN>/                 when neither is set
+func (r *SessionRecorder) stepDirPath(idx int, agentID, callTag string) string {
+	name := fmt.Sprintf("%04d", idx)
+	if agentID != "" {
+		name = name + "-" + agentID
+	}
+	if callTag != "" {
+		name = name + "-" + callTag
+	}
+	return path.Join(r.dir, CallsDirName, name)
+}
+
+// callRecorderBridge adapts a stepHandle so it satisfies the
+// adapters.CallRecorder interface — adapters call Begin/Finish on
+// per-SDK-call handles; the bridge routes the work onto stepHandle's
+// per-step folder. Defined here (not in adapters/) because the bridge
+// needs to convert adapters.Request → agent.AgentInput, which would
+// import-cycle the other direction.
+type callRecorderBridge struct {
+	step *stepHandle
+}
+
+func (b *callRecorderBridge) Begin(ctx context.Context, role, model string, req adapters.Request, started time.Time) adapters.CallHandle {
+	// Project adapters.Request → AgentDef + AgentInput so the
+	// recorded YAML carries the messages the adapter actually sent
+	// (not the messages the upper layer originally projected — they
+	// can diverge mid-split when the format pass swaps in
+	// CanonicalFormatterPrompt + the reasoning pass's output).
+	def := AgentDef{
+		ID:           b.step.step.AgentID,
+		SystemPrompt: req.SystemPrompt,
+		OutputSchema: "",
+	}
+	if req.OutputSchema != nil {
+		def.OutputSchema = "<schema>" // truthy marker so recordedCall.OutputSchema reflects the call shape
+	}
+	input := AgentInput{}
+	for _, m := range req.Messages {
+		input.Messages = append(input.Messages, Message{Role: string(m.Role), Content: m.Content})
+	}
+	child := b.step.BeginChild(role, model, def, input, started)
+	child.call.SpanID = SpanIDFromContext(ctx)
+	return &callHandleBridge{child: child}
+}
+
+// callHandleBridge bridges adapters.Response → AgentOutput on Finish
+// so the per-SDK-call YAML carries the same fields LoggingExecutor.Run
+// stamped pre-DJ-130 (tokens, citations, tool calls, rounds).
+type callHandleBridge struct {
+	child *callHandle
+}
+
+func (b *callHandleBridge) Finish(resp *adapters.Response, err error) {
+	if b == nil || b.child == nil {
+		return
+	}
+	out := agentOutputFromAdapterResponse(resp)
+	b.child.Finish(out, err)
+}
+
+// agentOutputFromAdapterResponse is a local subset of the projection
+// in executor.outputFromResponse, narrowed to what the per-call
+// recorder cares about. Defined here so the bridge doesn't have to
+// reach into the executor package.
+func agentOutputFromAdapterResponse(resp *adapters.Response) *AgentOutput {
+	if resp == nil {
+		return nil
+	}
+	out := &AgentOutput{
+		Content:                  resp.Content,
+		Reasoning:                resp.Reasoning,
+		RawMessage:               resp.RawMessage,
+		Model:                    resp.Model,
+		InputTokens:              resp.InputTokens,
+		OutputTokens:             resp.OutputTokens,
+		ThoughtsTokens:           resp.ThoughtsTokens,
+		TotalTokens:              resp.TotalTokens,
+		CacheCreationInputTokens: resp.CacheCreationInputTokens,
+		CacheReadInputTokens:     resp.CacheReadInputTokens,
+	}
+	if len(resp.Citations) > 0 {
+		out.Citations = make([]Citation, len(resp.Citations))
+		for i, c := range resp.Citations {
+			out.Citations[i] = Citation{URL: c.URL, Title: c.Title, Snippet: c.Snippet}
+		}
+	}
+	if len(resp.ToolCalls) > 0 {
+		out.ToolCalls = make([]ToolCall, len(resp.ToolCalls))
+		for i, t := range resp.ToolCalls {
+			out.ToolCalls[i] = ToolCall{Name: t.Name, Query: t.Query, Status: t.Status, ErrorCode: t.ErrorCode}
+		}
+	}
+	if len(resp.Rounds) > 1 {
+		out.Rounds = make([]GenerateRound, len(resp.Rounds))
+		for i, r := range resp.Rounds {
+			gr := GenerateRound{
+				Index:                    r.Index,
+				Reasoning:                r.Reasoning,
+				Text:                     r.Text,
+				Message:                  r.Message,
+				InputTokens:              r.InputTokens,
+				OutputTokens:             r.OutputTokens,
+				ThoughtsTokens:           r.ThoughtsTokens,
+				CacheCreationInputTokens: r.CacheCreationInputTokens,
+				CacheReadInputTokens:     r.CacheReadInputTokens,
+			}
+			if len(r.Citations) > 0 {
+				gr.Citations = make([]Citation, len(r.Citations))
+				for j, c := range r.Citations {
+					gr.Citations[j] = Citation{URL: c.URL, Title: c.Title, Snippet: c.Snippet}
+				}
+			}
+			out.Rounds[i] = gr
+		}
+	}
+	return out
+}
+
 // Close stamps the manifest's completed_at and marks any still-in-flight
 // calls as interrupted on disk. Safe to call multiple times; idempotent
 // past the first call. Optional — sessions left without Close still have
@@ -615,6 +1014,11 @@ func (r *SessionRecorder) Close() error {
 		stragglers = append(stragglers, h)
 	}
 	r.inFlight = make(map[int]*callHandle)
+	stepStragglers := make([]*stepHandle, 0, len(r.inFlightSteps))
+	for _, s := range r.inFlightSteps {
+		stepStragglers = append(stepStragglers, s)
+	}
+	r.inFlightSteps = make(map[int]*stepHandle)
 	r.mu.Unlock()
 
 	for _, h := range stragglers {
@@ -622,6 +1026,13 @@ func (r *SessionRecorder) Close() error {
 		if err := h.flush(); err != nil {
 			slog.Warn("session recorder: close flush failed",
 				"session", r.manifest.SessionID, "index", h.index, "error", err)
+		}
+	}
+	for _, s := range stepStragglers {
+		s.step.Status = CallStatusInterrupted
+		if err := s.flush(); err != nil {
+			slog.Warn("session recorder: close step flush failed",
+				"session", r.manifest.SessionID, "step", s.index, "error", err)
 		}
 	}
 	return r.writeManifest()
@@ -727,26 +1138,35 @@ func NewLoggingExecutorWithHeartbeat(inner AgentExecutor, recorder *SessionRecor
 	return &LoggingExecutor{inner: inner, recorder: recorder, HeartbeatEnabled: heartbeat}
 }
 
-// Run delegates to the inner AgentExecutor and records the call. The
-// recorder gets an in-progress entry at start so a tail of the per-
-// call file reveals what's currently in flight. A heartbeat goroutine
-// logs "still running" every heartbeatInterval so an operator
-// watching stderr knows the call hasn't deadlocked even when the
-// underlying non-streaming Run produces no output of its own.
+// Run delegates to the inner AgentExecutor and records the call.
 //
-// After delegating to the inner executor we read the active OTel
-// span id from ctx and stamp it on the recorded call. The
-// provider.generate span (opened by each adapter's Run) is the
-// active span at this point, so the id we capture matches the leaf
-// span in the OTLP-JSON trace artifact. When the SDK isn't
-// initialized SpanIDFromContext returns "" and the omitempty tag
-// keeps the YAML output unchanged for existing fixtures.
+// DJ-130 Phase 3 reshape: instead of a flat one-YAML-per-Run record,
+// Run opens a parent stepHandle (writes <step>/step.yaml with status
+// in_progress) and plumbs a callRecorderBridge onto ctx so the
+// downstream adapter Run / runSplit emits one per-SDK-call YAML per
+// real provider round-trip — children under the step's folder. After
+// the inner Run returns, stepHandle.Finish sums child token counts +
+// computes duration + finalizes the step.yaml.
+//
+// A heartbeat goroutine logs "still running" every heartbeatInterval
+// so an operator watching stderr knows the call hasn't deadlocked
+// even when the underlying non-streaming Run produces no output of
+// its own.
 func (l *LoggingExecutor) Run(ctx context.Context, def AgentDef, input AgentInput) (*AgentOutput, error) {
 	started := time.Now()
 	role := RoleFromContext(ctx)
 	agentID := AgentIDFromContext(ctx)
 	callTag := CallTagFromContext(ctx)
-	handle := l.recorder.Begin(role, agentID, callTag, def, input, started)
+	step := l.recorder.BeginStep(role, agentID, callTag, def, input, started)
+
+	// Plumb the recorder + parent id so adapters can emit per-SDK-call
+	// child records into the step's folder. WithSessionRecorder is for
+	// callers that want to access the recorder directly; the bridge is
+	// what the adapter layer actually consults via
+	// adapters.CallRecorderFromContext.
+	ctx = WithSessionRecorder(ctx, l.recorder)
+	ctx = WithParentCallID(ctx, fmt.Sprintf("step-%04d", step.index))
+	ctx = adapters.WithCallRecorder(ctx, &callRecorderBridge{step: step})
 
 	var stop func()
 	if l.HeartbeatEnabled {
@@ -757,10 +1177,10 @@ func (l *LoggingExecutor) Run(ctx context.Context, def AgentDef, input AgentInpu
 	defer stop()
 
 	out, err := l.inner.Run(ctx, def, input)
-	if handle != nil {
-		handle.call.SpanID = SpanIDFromContext(ctx)
+	if step != nil {
+		step.step.SpanID = SpanIDFromContext(ctx)
 	}
-	handle.Finish(out, err)
+	step.Finish(err)
 	return out, err
 }
 
