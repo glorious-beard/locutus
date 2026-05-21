@@ -134,6 +134,50 @@ The user message may include an `## Imported content` section listing one or mor
 
 Multiple imported documents on a single iteration are valid — emit one `new_nodes[]` entry per document. Recognise what each document represents (feature vs strategy vs cross-cutting concern) and dispatch accordingly.
 
+### critique_dimensions
+
+After identifying what needs to be DECIDED (axes_open) and what new nodes the project should carry (new_nodes), identify the dimensions the council should CHALLENGE the proposal on. Each dimension is one critique surface: a focus question, source evidence, and the grounding disciplines the critic should apply.
+
+The output schema's `critique_dimensions` field carries one `CritiqueDimension` per surface. Walk the fields in this order:
+
+1. **`id`** — a stable slug (lowercase / hyphen-separated / three to five words derived from the dimension's focus). Stable across iterations so dimensionsAreStable can detect new-dimension additions vs. recurrences of previously-surfaced dimensions.
+
+2. **`lens`** — a free-form grouping label naming the category. Pick the most specific label that fits. Categories you may see: `cost` (budget commitments), `sre` (reliability, capacity, on-call), `devops` (build, ship, rollback), `architecture` (coherence, integration), `compliance` (regulatory regimes), `security` (auth, secrets, PII), `vendor-portability` (lock-in, migration paths), `accessibility` (WCAG, screen readers), `maintainability` (team capacity vs scope). Project-specific lenses are encouraged: a campaign-software project might surface an `election-cycle-traffic` lens; a fintech project a `pci-scope` lens. Lens is open-ended.
+
+3. **`focus_question`** — a complete-sentence question the critic should answer. Concrete enough that the critic can read it and immediately know what to look for ("Does every paid SaaS or compute commitment engage with the $150/mo ceiling in GOALS §3?"; not "Is cost considered?"). The question names what the critic challenges, not the answer.
+
+4. **`source_evidence`** — verbatim text excerpts from GOALS / spec nodes / imported content that surfaced this dimension. At least one entry; empty would mean the dimension is invented rather than grounded. The critic cites these as starting points for the challenge.
+
+5. **`disciplines`** — a bounded enum slice naming the grounding patterns the critic must apply when raising concerns on this dimension. The five values:
+   - `web_grounded` — claims must cite URLs with verbatim excerpts. Use when the dimension involves external sources that change (vendor pricing, current product capabilities, regulatory text).
+   - `spec_node_grounded` — claims must cite other spec nodes by id. Use for cross-decision coherence dimensions.
+   - `best_practice_grounded` — claims cite named engineering principles. Use for dimensions where the discipline is conceptual rather than empirical (SLO math, architectural patterns).
+   - `goals_grounded` — claims cite GOALS.md clauses verbatim. Use when the dimension enforces a GOALS-stated constraint.
+   - `freeform` — no specific grounding required. Use when the focus question is the entire framing and citations would be forced.
+   Multiple disciplines compose. A cost dimension often takes `[web_grounded, goals_grounded]` — web for vendor pricing, goals for the budget clause. Pick the smallest set that captures what the critic needs to ground.
+
+6. **`severity_floor`** — `high` / `medium` / `low`. Default severity for concerns surfaced on this dimension. `high` blocks shipping; `medium` is worth addressing; `low` is polish. The critic may emit higher-severity concerns than the floor when warranted.
+
+#### When to add, retain, or retire a dimension
+
+Dimensions are mostly stable across iterations. Add a new dimension only when a new decision or new evidence surfaces a concern the prior iteration's set didn't cover (e.g. a new payments feature surfaces a `pci-scope` dimension). Retain a dimension across iterations as long as the spec touches the area it covers. Retire a dimension when the spec no longer references the area — say the council removed the payments feature and the `pci-scope` dimension no longer applies. Retirement is a positive signal that the concern was considered and concluded; the workflow's stability check treats retirement as a non-event.
+
+#### Example dimensions (illustrative — adapt to the project at hand)
+
+A monitoring-product spec with a $150/mo budget might surface:
+- `id: cost-ceiling-coverage`, `lens: cost`, `focus_question: Does every commitment engage with the $150/mo ceiling in GOALS §3?`, `disciplines: [web_grounded, goals_grounded]`, `severity_floor: high`
+- `id: observability-three-pillars`, `lens: sre`, `focus_question: Does the proposal commit on metrics, logs, AND traces with named tools?`, `disciplines: [best_practice_grounded, spec_node_grounded]`, `severity_floor: medium`
+
+A campaign-software project with state-level privacy regimes might add:
+- `id: voter-file-privacy`, `lens: compliance`, `focus_question: Does the voter-file storage path honor per-state privacy regimes (CA SB-1121; VA CDPA)?`, `disciplines: [goals_grounded, best_practice_grounded]`, `severity_floor: high`
+- `id: election-cycle-traffic`, `lens: sre`, `focus_question: Does the capacity plan account for the months-of-zero-load followed by a 6-week sprint pattern?`, `disciplines: [best_practice_grounded, goals_grounded]`, `severity_floor: medium`
+
+A research project where GOALS explicitly de-prioritizes cost might surface no cost-lens dimension at all. Match dimensions to the project's GOALS rather than forcing a fixed set of lenses on every project.
+
+#### Empty is a valid output
+
+When the proposal is too thin to critique (iter 0 with no decisions yet), an empty `critique_dimensions` array is correct. Add dimensions as decisions accumulate and surface real surfaces to challenge.
+
 ### concern_dispositions
 
 From iter 1 onward, the user message includes an `## Outstanding critic findings` section listing each concern with a `c-N/status` header (the manifest position is the id you reference back). The mechanical pre-pass already disposed every concern whose related axis is now settled — those carry `stale` status and you skip them. For every concern still marked `open`, write one `concern_dispositions[]` entry with three fields:
