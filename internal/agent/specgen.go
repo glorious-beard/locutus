@@ -68,6 +68,11 @@ type DecisionProposal struct {
 	Citations          []spec.Citation    `json:"citations,omitempty" jsonschema:"description=Sources backing the decision: GOALS.md clauses; vendor docs; prior decisions. Verbatim excerpts."`
 	ArchitectRationale string             `json:"architect_rationale,omitempty" jsonschema:"description=One-sentence summary of why this choice fits the architecture; used by the reconciler when matching inline duplicates across features."`
 	InfluencedBy       []string           `json:"influenced_by,omitempty" jsonschema:"description=IDs of other decisions whose outcome made this decision necessary or constrained the option set. Empty when the decision stands on its own."`
+	// Locked propagates the DJ-128 cap-as-commit flag through the
+	// build pipeline so persistence sees it on spec.Decision. Not in
+	// the model-facing schema (omitted from the LLM example); set by
+	// the workflow controller after the council terminates.
+	Locked bool `json:"-"`
 }
 
 // StrategyProposal is an LLM-friendly subset of spec.Strategy. Body is
@@ -179,12 +184,55 @@ type NewSpecNode struct {
 }
 
 // CriticIssues is the structured output of every critic on the council
-// (architect_critic, devops_critic, sre_critic, cost_critic). Each issue
-// is one specific, actionable finding; the workflow's
-// merge_as=critic_issues handler flattens them into PlanningState.Concerns
-// for the revise step to address.
+// (architect_critic, devops_critic, sre_critic, cost_critic). Under
+// DJ-128 each issue is a structured CriticIssue carrying weakness,
+// evidence, and an enumerated counterproposal menu; the merge layer
+// flattens them into PlanningState.Concerns for the revise step.
+//
+// Pre-DJ-128 the shape was `Issues []string` (free-form objection text);
+// the new shape forces critics to enumerate concrete alternatives so the
+// elaborator's revise pass can engage the menu rather than guess what
+// the critic wanted, and so revisions land in the deliberation log
+// (alternatives) with the critic's own argument + citations preserved
+// verbatim.
 type CriticIssues struct {
-	Issues []string `json:"issues" jsonschema:"description=Specific; actionable findings the proposer should address. Each entry is a complete sentence naming a concrete concern (e.g. 'dec-postgres rationale does not address the 50ms p99 latency budget from GOALS §3'). Generic concerns ('not enough error handling') are too vague; reject them in favour of pointing at the specific node and clause."`
+	Issues []CriticIssue `json:"issues" jsonschema:"description=The critic's structured findings. Each entry is one specific, actionable issue with a weakness statement, evidence supporting it, and an enumerated menu of counterproposals the elaborator can pick from. Empty issues array is the convergence signal (the critic found nothing this iteration)."`
+}
+
+// CriticIssue is one structured critic finding (DJ-128). The shape
+// mirrors AdversarialConcern's discipline (Weakness + Evidence) and
+// adds an enumerated counterproposal menu so the elaborator's revise
+// pass picks from concrete alternatives the critic committed to,
+// rather than guessing what the critic wanted.
+//
+// RelatedDecisionIDs is the critic's own structured surfacing of which
+// decisions the issue targets. Merged with the regex-extracted set in
+// mergeCriticIssues (critic-provided wins on conflict).
+type CriticIssue struct {
+	Weakness          string                   `json:"weakness" jsonschema:"description=A complete sentence naming the specific weakness in the current proposal. Concrete enough that a reader who hasn't seen the proposal can tell what's wrong without re-reading the rationale. Cites the spec node id or GOALS.md clause when relevant. Not a generic complaint like 'not enough error handling'."`
+	Evidence          string                   `json:"evidence" jsonschema:"description=A complete sentence with concrete support for the weakness — draws from the proposal's own rationale, GOALS.md clauses, named engineering practices, or current vendor/library behaviour. Names the source the elaborator should engage with."`
+	Counterproposals  []CriticCounterproposal  `json:"counterproposals" jsonschema:"description=The enumerated menu of concrete alternatives the critic would accept in place of the current proposal. List every option you would accept on this dimension — do not pick one arbitrarily and do not omit candidates. The elaborator's revise pass evaluates the full menu and either picks one as the new chosen option or rejects all of them coherently. Each counterproposal becomes an alternative entry in the deliberation log with its Argument and Citations preserved verbatim.,minItems=1"`
+	RelatedDecisionIDs []string                `json:"related_decision_ids,omitempty" jsonschema:"description=Decision IDs (starting 'dec-') this issue targets — the critic's structured surfacing of which decisions need revision. Merged with the regex-extracted set in mergeCriticIssues; the critic's list wins on conflict. Empty when the issue spans the whole proposal rather than a specific decision."`
+}
+
+// CriticCounterproposal is one entry in a CriticIssue's enumerated
+// counterproposal menu (DJ-128). Each counterproposal is a concrete
+// alternative the critic commits to: a specific vendor, configuration,
+// architectural pattern, or behavior — not "use something else."
+//
+// All three fields are required content. The validator
+// (degenerateCriticIssueValidator) rejects placeholder Options like
+// "dummy" / "TBD" / one-word answers, empty Citations on non-sentinel
+// Options, and Arguments shorter than a sentence. The exception is the
+// literal "needs investigation" sentinel: when a critic sees a real
+// problem but cannot name a concrete alternative, emitting a single
+// counterproposal with Option == "needs investigation" + empty Citations
+// is acceptable — the concern surfaces to the user as advisory-only
+// (the merge marks it Advisory, hasReviseableConcerns skips it).
+type CriticCounterproposal struct {
+	Option    string          `json:"option" jsonschema:"description=The concrete alternative the critic commits to — a specific vendor; configuration; architectural pattern; or behavior the elaborator could pick from (e.g. 'Aurora Serverless v2 for the OLTP store'; 'lower the availability SLO from 99.9% to 99.5%'; 'switch from Datadog to CloudWatch + Sentry'). Names a specific product or pattern that the elaborator's revise pass can engage with point-by-point. The one exception is the literal sentinel 'needs investigation' — emit that exactly when you see a real problem but genuinely cannot name a specific alternative; the concern then surfaces as advisory-only."`
+	Argument  string          `json:"argument" jsonschema:"description=A complete sentence stating positively why this option is superior to the current decision on the dimension the Weakness names. Argues with the prior chosen path's rationale; does not just restate the weakness. The elaborator's revise pass folds this Argument verbatim into the alternative's Rationale field when the counterproposal lands in the deliberation log."`
+	Citations []spec.Citation `json:"citations" jsonschema:"description=Sources grounding the Argument — GOALS.md clauses; vendor docs; web-fetched research; named best practices; other spec nodes. minItems=1 unless Option is the literal sentinel 'needs investigation' (which permits empty citations). Citation kinds and reference format match the canonical Citation discipline used elsewhere in the spec."`
 }
 
 // GenerateSpec runs the spec-generation council to derive a spec graph
@@ -515,6 +563,16 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 		return nil, fmt.Errorf("parse spec proposal: %w (content=%q)", err, proposalJSON)
 	}
 	proposal.ConflictActions = state.ConflictActions
+	// DJ-128: propagate the cap-as-commit Locked flag from PlanningState
+	// onto each affected DecisionProposal so ToAssimilationResult
+	// projects it onto the persisted spec.Decision.
+	if len(state.LockedDecisionIDs) > 0 {
+		for i := range proposal.Decisions {
+			if _, locked := state.LockedDecisionIDs[proposal.Decisions[i].ID]; locked {
+				proposal.Decisions[i].Locked = true
+			}
+		}
+	}
 
 	// Integrity gate. If the proposal references node IDs it didn't
 	// emit, ask the architect to repair the proposal rather than
@@ -854,6 +912,7 @@ func (p *SpecProposal) ToAssimilationResult() *AssimilationResult {
 			Confidence:   dp.Confidence,
 			Alternatives: dp.Alternatives,
 			InfluencedBy: dp.InfluencedBy,
+			Locked:       dp.Locked,
 		}
 		// Denormalize provenance onto the decision per DJ-085. We populate
 		// only when the architect supplied citations or a summary —

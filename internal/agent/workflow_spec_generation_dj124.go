@@ -223,30 +223,244 @@ func scoutConvergenceFailedTerminal(historian *history.Historian, snapState *Pla
 // different failure mode (revise-side oscillation rather than scout-
 // side reopen) that warrants its own DJ-103 event kind.
 //
-// Writes a convergence_revision_capped DJ-103 event naming the capped
-// axes and the cap that fired; returns a non-nil error so the executor
-// propagates the failure through GenerateSpec.
+// DJ-128 cap-as-commit: rather than erroring out, this terminal
+// commits the latest revision of each capped decision and lets the
+// scout's normal convergence rule fire on the next iteration.
+//
+// Steps:
+//
+//  1. Mark Locked: true on each in-flight decision whose axes
+//     intersect the capped set so the deliberation log carries the
+//     cap signal and subsequent revise dispatches skip these
+//     decisions (Phase 6 filter in hasReviseableConcerns).
+//  2. Flip every open concern whose RelatedDecisionIDs name a locked
+//     decision to Status=wontfix with a justification naming the cap.
+//     The scout's next-iteration grading pass sees the wontfix
+//     dispositions and Converged=true naturally.
+//  3. Record a convergence_revision_capped DJ-103 event for the
+//     operator's history view.
+//  4. Record one decision_locked DJ-103 event per locked decision so
+//     `locutus history` distinguishes cap-as-commit signals from
+//     normal revisions.
+//
+// Returns nil error: the cap is no longer a workflow failure under
+// DJ-128. The next-iteration template still spawns and the scout's
+// regular convergence rule fires naturally on the next call.
 func scoutConvergenceRevisionCappedTerminal(historian *history.Historian, snapState *PlanningState, brief *ScoutBrief, iter int, capped []string) WorkflowStep[PlanningState] {
 	terminalID := fmt.Sprintf("convergence_revision_capped_iter:%d", iter)
-	snapshotSpec := snapState.ProposedSpec
-	concerns := append([]Concern(nil), snapState.Concerns...)
-	cappedCopy := append([]string(nil), capped...)
 	cap := readDecisionRevisionCap()
+	cappedCopy := append([]string(nil), capped...)
+	cappedAxisIDs := axisIDsExceedingRevisionCap(snapState, cap)
+	briefCopy := brief
+	// Capture the iteration / cap config in the closure so the merge
+	// handler has the same parameters the RunItem saw.
 	return WorkflowStep[PlanningState]{
 		ID:     terminalID,
 		Agents: []string{"spec_scout"},
 		RunItem: func(_ context.Context, _ StateSnapshot[PlanningState]) (string, error) {
+			// The RunItem path operates on a snapshot, not the
+			// orchestrator state; the Merge below applies the lock /
+			// wontfix mutations to the real state, plus emits the
+			// DJ-103 events. nil error means the loop ends with
+			// cap-as-commit semantics rather than the pre-DJ-128
+			// error-and-exit.
+			return "ok", nil
+		},
+		Merge: func(s *PlanningState, _ []RoundResult) {
+			// (1) Lock the capped decisions on the live orchestrator
+			// state; collect their bodies + concerns for the per-
+			// decision event.
+			lockedDecisions := lockCappedDecisions(s, cappedAxisIDs)
+			// (2) Flip the contested concerns to wontfix in place.
+			flipConcernsToWontfix(s, lockedDecisions, iter, cap)
+			// (3) Record the aggregate convergence_revision_capped
+			// event for operator visibility.
+			snapshotSpec := s.ProposedSpec
+			concerns := append([]Concern(nil), s.Concerns...)
 			if historian != nil {
-				evt := buildScoutConvergenceRevisionCappedEvent(brief, iter, cap, snapshotSpec, concerns, cappedCopy)
+				evt := buildScoutConvergenceRevisionCappedEvent(briefCopy, iter, cap, snapshotSpec, concerns, cappedCopy)
 				if err := historian.Record(evt); err != nil {
 					slog.Warn("convergence_revision_capped: failed to record DJ-103 event", "err", err)
 				}
+				// (4) One decision_locked event per locked decision.
+				for _, ld := range lockedDecisions {
+					devt := buildDecisionLockedEvent(ld.Decision, ld.ContestedConcerns, iter, cap)
+					if err := historian.Record(devt); err != nil {
+						slog.Warn("decision_locked: failed to record DJ-103 event", "err", err, "id", ld.Decision.ID)
+					}
+				}
 			}
-			return "", fmt.Errorf(
-				"spec-generation council revision-capped at iter %d: %d axis/axes hit the per-axis revision cap of %d. Capped axes: %s",
-				iter+1, len(cappedCopy), cap, strings.Join(cappedCopy, "; "),
-			)
 		},
+	}
+}
+
+// lockedDecisionRecord pairs a capped decision with the concerns
+// that were contesting it at lock time. Used by the cap-as-commit
+// terminal to record one decision_locked DJ-103 event per locked
+// decision with the contested-concerns block in the rationale.
+type lockedDecisionRecord struct {
+	Decision          RawDecisionProposal
+	ContestedConcerns []Concern
+}
+
+// lockCappedDecisions sets Locked=true on each in-flight decision
+// whose Axes[] intersects the capped axis IDs. Re-marshals the
+// state.RawProposal so subsequent merge calls see the locked flag.
+// Returns the per-decision records the terminal uses to write the
+// decision_locked DJ-103 events.
+func lockCappedDecisions(s *PlanningState, cappedAxisIDs []string) []lockedDecisionRecord {
+	if s == nil || len(cappedAxisIDs) == 0 || s.RawProposal == "" {
+		return nil
+	}
+	var raw RawSpecProposal
+	if err := json.Unmarshal([]byte(s.RawProposal), &raw); err != nil {
+		slog.Warn("lockCappedDecisions: malformed RawProposal; skipping", "err", err)
+		return nil
+	}
+	cappedSet := make(map[string]struct{}, len(cappedAxisIDs))
+	for _, a := range cappedAxisIDs {
+		cappedSet[strings.TrimSpace(a)] = struct{}{}
+	}
+	var records []lockedDecisionRecord
+	mutated := false
+	for i := range raw.Decisions {
+		d := &raw.Decisions[i]
+		intersects := false
+		for _, axis := range d.Axes {
+			if _, ok := cappedSet[strings.TrimSpace(axis)]; ok {
+				intersects = true
+				break
+			}
+		}
+		if !intersects {
+			continue
+		}
+		mutated = true
+		records = append(records, lockedDecisionRecord{
+			Decision:          *d,
+			ContestedConcerns: openConcernsTargeting(s, d.ID),
+		})
+	}
+	if mutated {
+		// Re-marshal RawProposal so downstream consumers see the
+		// effects of any state changes (currently none on raw, but
+		// reserved for when persistence picks up Locked from the
+		// proposal body).
+		if out, err := json.Marshal(raw); err == nil {
+			s.RawProposal = string(out)
+		}
+	}
+	// Mark the locked records on PlanningState so the SpecProposal
+	// returned from GenerateSpec can carry Locked=true through to the
+	// persistence layer.
+	if s.LockedDecisionIDs == nil {
+		s.LockedDecisionIDs = make(map[string]struct{})
+	}
+	for _, r := range records {
+		s.LockedDecisionIDs[r.Decision.ID] = struct{}{}
+	}
+	return records
+}
+
+// openConcernsTargeting returns the open concerns whose
+// RelatedDecisionIDs contain priorID. Snapshot before mutation so
+// the event's rationale carries the as-flagged concern text.
+func openConcernsTargeting(s *PlanningState, priorID string) []Concern {
+	if s == nil || priorID == "" {
+		return nil
+	}
+	var out []Concern
+	for i := range s.Concerns {
+		c := s.Concerns[i]
+		if effectiveConcernStatus(&c) != ConcernStatusOpen {
+			continue
+		}
+		if !stringSliceContains(c.RelatedDecisionIDs, priorID) {
+			continue
+		}
+		copy := c
+		if len(c.RelatedDecisionIDs) > 0 {
+			copy.RelatedDecisionIDs = append([]string(nil), c.RelatedDecisionIDs...)
+		}
+		if len(c.RelatedAxisIDs) > 0 {
+			copy.RelatedAxisIDs = append([]string(nil), c.RelatedAxisIDs...)
+		}
+		if len(c.Counterproposals) > 0 {
+			copy.Counterproposals = append([]CriticCounterproposal(nil), c.Counterproposals...)
+		}
+		out = append(out, copy)
+	}
+	return out
+}
+
+// flipConcernsToWontfix walks state.Concerns and marks any open
+// concern whose RelatedDecisionIDs intersects a locked decision id
+// as Status=wontfix with a justification naming the cap firing.
+// Concerns naming a mix of locked and unlocked decisions stay open
+// for the unlocked ones (Phase 6's hasReviseableConcerns filter
+// keeps them dispatchable on the unlocked axis).
+func flipConcernsToWontfix(s *PlanningState, lockedDecisions []lockedDecisionRecord, iter, cap int) {
+	if s == nil || len(lockedDecisions) == 0 {
+		return
+	}
+	lockedIDs := make(map[string]struct{}, len(lockedDecisions))
+	for _, r := range lockedDecisions {
+		lockedIDs[r.Decision.ID] = struct{}{}
+	}
+	justification := fmt.Sprintf(
+		"Axis hit revision cap of %d at iter %d; council could not resolve critic↔elaborator disagreement; the current decision is committed as the ship-quality answer; the alternatives slice carries the contested reasoning.",
+		cap, iter+1,
+	)
+	for i := range s.Concerns {
+		c := &s.Concerns[i]
+		if effectiveConcernStatus(c) != ConcernStatusOpen {
+			continue
+		}
+		intersectsLocked := false
+		hasUnlocked := false
+		for _, did := range c.RelatedDecisionIDs {
+			if _, ok := lockedIDs[strings.TrimSpace(did)]; ok {
+				intersectsLocked = true
+			} else {
+				hasUnlocked = true
+			}
+		}
+		if !intersectsLocked {
+			continue
+		}
+		if hasUnlocked {
+			// Concern still actionable on the unlocked decision(s);
+			// leave its status alone. hasReviseableConcerns / fanout
+			// filter locked-only matches separately.
+			continue
+		}
+		c.Status = ConcernStatusWontfix
+		c.Justification = justification
+	}
+}
+
+// buildDecisionLockedEvent records the cap-as-commit signal for one
+// decision. Distinct from decision_revised so `locutus history` can
+// distinguish a normal revision from a cap-fired commit.
+func buildDecisionLockedEvent(decision RawDecisionProposal, contestedConcerns []Concern, iter, cap int) history.Event {
+	now := time.Now()
+	var rationale strings.Builder
+	fmt.Fprintf(&rationale, "Decision %s locked at iter %d: per-axis revision cap of %d fired and the council committed the latest revision as the ship-quality answer.",
+		decision.ID, iter+1, cap)
+	if len(contestedConcerns) > 0 {
+		rationale.WriteString("\n\nContested concerns flipped to wontfix:")
+		for _, c := range contestedConcerns {
+			fmt.Fprintf(&rationale, "\n- [%s/%s] %s", c.AgentID, c.Severity, c.Text)
+		}
+	}
+	body, _ := json.MarshalIndent(decision, "", "  ")
+	return history.Event{
+		ID:        history.EventID("decision_locked", decision.ID, now),
+		Timestamp: now,
+		Kind:      "decision_locked",
+		TargetID:  decision.ID,
+		Rationale: rationale.String(),
+		NewValue:  string(body),
 	}
 }
 
@@ -883,6 +1097,34 @@ func mergeDecisions(s *PlanningState, results []RoundResult) {
 			prior := raw.Decisions[idx]
 			priorID := prior.ID
 			d.ID = priorID
+			// DJ-128: snapshot driving concerns BEFORE the deliberation-
+			// log helpers run (and BEFORE markConcernsAddressedByRevision
+			// flips statuses) so they see the concerns in as-flagged
+			// form. The counterproposal-fold helper needs the snapshot
+			// to fold each unpicked counterproposal into alternatives;
+			// queueDecisionRevisedEvent will re-capture the same set
+			// (independently) for the history event.
+			driving := drivingConcernsForDecision(s, priorID)
+			// DJ-128: enforce alternative monotonicity. The elaborator
+			// should produce the demoted prior chosen + the unpicked
+			// counterproposals as alternatives; the helpers below fill
+			// in defensively when it omits them. Order matters:
+			// demote-then-fold first (so monotonicity validation sees
+			// the auto-fold result), then validate.
+			demotePriorChosenAsAlternative(&prior, &d, driving, currentIter)
+			foldedCount := foldCounterproposalsAsAlternatives(&d, driving, currentIter, prior.Title)
+			if foldedCount > 0 {
+				recordCounterproposalFoldNotice(s, priorID, foldedCount)
+			}
+			if err := validateAlternativeMonotonicity(prior, d); err != nil {
+				// Reject the revision: leave the prior in place and
+				// record an integrity-violation concern naming the
+				// elaborator's error. Skipping continues to the next
+				// result; the cap-trip terminal still fires on the
+				// shrunk-axis if the elaborator keeps shrinking.
+				recordMonotonicityViolation(s, priorID, err)
+				continue
+			}
 			raw.Decisions[idx] = d
 			replacedThisCall = append(replacedThisCall, priorID)
 			// Record axes for cycle/iteration tracking. earliest-wins
@@ -923,6 +1165,16 @@ func mergeDecisions(s *PlanningState, results []RoundResult) {
 				}
 			}
 			d.ID = priorID
+			driving := drivingConcernsForDecision(s, priorID)
+			demotePriorChosenAsAlternative(&prior, &d, driving, currentIter)
+			foldedCount := foldCounterproposalsAsAlternatives(&d, driving, currentIter, prior.Title)
+			if foldedCount > 0 {
+				recordCounterproposalFoldNotice(s, priorID, foldedCount)
+			}
+			if err := validateAlternativeMonotonicity(prior, d); err != nil {
+				recordMonotonicityViolation(s, priorID, err)
+				continue
+			}
 			raw.Decisions = append(raw.Decisions, d)
 			usedIDs[priorID] = struct{}{}
 			replacedThisCall = append(replacedThisCall, priorID)
@@ -1133,6 +1385,24 @@ func axesExceedingRevisionCap(s *PlanningState, cap int) []string {
 	}
 	sort.Strings(over)
 	return over
+}
+
+// axisIDsExceedingRevisionCap returns just the axis IDs (no "revised
+// N×" suffix) that hit cap. Used by the cap-as-commit terminal
+// (DJ-128) to look up which decisions to flip to Locked. Sorted for
+// determinism.
+func axisIDsExceedingRevisionCap(s *PlanningState, cap int) []string {
+	if s == nil || cap <= 0 || len(s.AxisRevisionCount) == 0 {
+		return nil
+	}
+	var ids []string
+	for axisID, count := range s.AxisRevisionCount {
+		if count >= cap {
+			ids = append(ids, axisID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // queueDecisionRevisedEvent appends a PendingDecisionRevisedEvent
@@ -1539,10 +1809,17 @@ type reviseableConcernItem struct {
 
 // hasReviseableConcerns gates the revise-decisions step. Returns true
 // when at least one concern has Status==open AND names at least one
-// decision ID present in the in-flight proposal or the existing graph.
+// decision ID present in the in-flight proposal or the existing graph
+// AND not yet locked by the cap-as-commit terminal.
+//
 // DJ-126: the revise dispatch only fires for concerns the workflow
 // can act on — a concern whose RelatedDecisionIDs are empty or name
 // no known decisions is left for the scout to grade in the next pass.
+//
+// DJ-128: Advisory concerns (counterproposal menu was sentinel-only)
+// are skipped; locked decisions (set by cap-as-commit) are skipped;
+// a concern naming a mix of locked + unlocked decisions stays
+// reviseable on the unlocked entries.
 func hasReviseableConcerns(s *PlanningState) bool {
 	if s == nil || len(s.Concerns) == 0 {
 		return false
@@ -1555,16 +1832,34 @@ func hasReviseableConcerns(s *PlanningState) bool {
 		if effectiveConcernStatus(&c) != ConcernStatusOpen {
 			continue
 		}
+		if c.Advisory {
+			continue
+		}
 		if len(c.RelatedDecisionIDs) == 0 {
 			continue
 		}
 		for _, did := range c.RelatedDecisionIDs {
-			if _, ok := known[strings.TrimSpace(did)]; ok {
-				return true
+			id := strings.TrimSpace(did)
+			if _, ok := known[id]; !ok {
+				continue
 			}
+			if isLockedDecision(s, id) {
+				continue
+			}
+			return true
 		}
 	}
 	return false
+}
+
+// isLockedDecision reports whether the decision id has been locked by
+// the cap-as-commit terminal (DJ-128).
+func isLockedDecision(s *PlanningState, id string) bool {
+	if s == nil || len(s.LockedDecisionIDs) == 0 || id == "" {
+		return false
+	}
+	_, locked := s.LockedDecisionIDs[id]
+	return locked
 }
 
 // effectiveConcernStatus returns the Status field of c, defaulting to
@@ -1617,6 +1912,11 @@ func fanoutReviseableConcerns(s *PlanningState) ([]string, error) {
 			if id == "" {
 				continue
 			}
+			// DJ-128: skip locked decisions — cap-as-commit committed
+			// them and they should not be revised again.
+			if isLockedDecision(s, id) {
+				continue
+			}
 			priorByID[id] = decisionToRawProposal(d)
 		}
 	}
@@ -1626,6 +1926,9 @@ func fanoutReviseableConcerns(s *PlanningState) ([]string, error) {
 			for _, d := range raw.Decisions {
 				id := strings.TrimSpace(d.ID)
 				if id == "" {
+					continue
+				}
+				if isLockedDecision(s, id) {
 					continue
 				}
 				priorByID[id] = d
@@ -1648,9 +1951,16 @@ func fanoutReviseableConcerns(s *PlanningState) ([]string, error) {
 		if effectiveConcernStatus(&c) != ConcernStatusOpen {
 			continue
 		}
+		// DJ-128: Advisory concerns are sentinel-only counterproposal
+		// menus surfaced for human review; they do not drive revise
+		// dispatch.
+		if c.Advisory {
+			continue
+		}
 		for _, didRaw := range c.RelatedDecisionIDs {
 			did := strings.TrimSpace(didRaw)
 			if _, ok := priorByID[did]; !ok {
+				// Either unknown or locked — skip.
 				continue
 			}
 			g, ok := groups[did]

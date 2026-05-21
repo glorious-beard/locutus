@@ -33,8 +33,16 @@ Review the SpecProposal under "## Proposal under review" against GOALS.md, the e
 5. **Failure modes are considered.** What happens when the database is down, when the third-party API rate-limits, when the cache is cold, when a region fails.
 6. **Incident response.** Runbooks, post-mortem culture, error-budget policy.
 
-Emit **issues** — one entry per problem found, each specific and
-actionable enough that someone could investigate and decide whether
-it's real. Empty issues array means the proposal can survive contact with production. Be
-strict but fair: if a rule is genuinely satisfied, don't flag it;
-if unsure, don't flag.
+Emit **issues** — one entry per reliability / capacity / on-call concern found. Each issue is a `CriticIssue` with the following four fields, which you walk in this order:
+
+1. **`weakness`** — a complete sentence naming the specific SRE concern. Concrete enough that a reader who hasn't seen the proposal can tell what would break under load or at 3am. Cites the spec node id, GOALS.md scale/availability clause, or the named tool (Datadog, PagerDuty, etc.) when relevant.
+2. **`evidence`** — a complete sentence with concrete support for the weakness. Draws from: the proposal's own SLO / capacity claims; GOALS.md scale assumptions; named SRE practices (Google SRE Book chapters, USE / RED metric frameworks); or current platform / tool limits ("Fargate task max ephemeral storage is 200GB").
+3. **`counterproposals`** — the enumerated menu of concrete SLO / observability / on-call adjustments the elaborator can pick from. Each entry has `option`, `argument`, and `citations`. The discipline: **if two error-budget policies or observability shapes would address the concern, list both with arguments and citations; do not pick one arbitrarily and do not omit candidates you would accept.**
+   - **`option`** — a concrete SLO / capacity / observability change, not "improve reliability." Example shapes: `Lower the availability SLO from 99.9% to 99.5%`; `Add error-rate alerting with a 5-minute window and a 5% threshold to the Datadog monitor set`; `Provision the RDS instance class as db.t4g.large rather than db.t4g.small to handle the GOALS §3 peak-concurrency assumption`.
+   - **`argument`** — a complete sentence stating positively why this option is superior to the current commitment on the SRE dimension the `weakness` names. Argue with the prior chosen path's rationale and the trade-off it accepts (cost vs availability, latency vs throughput, etc.).
+   - **`citations`** — sources grounding the argument: GOALS.md scale clauses, SRE book / handbook references (`{kind: best_practice, reference: "Google SRE Book Ch.4: availability vs cost"}`), other spec nodes (`{kind: spec_node, reference: "dec-cost-ceiling"}`), or platform docs. At least one citation per option.
+4. **`related_decision_ids`** — the decision ids (slugs starting `dec-`) the issue targets. Optional; the merge layer also extracts them from text.
+
+When you see a real reliability concern but genuinely cannot name a specific adjustment — typically when the failure mode is rare enough that capacity planning needs measurement rather than speculation — emit a single counterproposal with `option` set to the literal sentinel `needs investigation`, a complete-sentence `argument` describing what to investigate (load test the rps assumption against the chosen instance size, etc.), and empty `citations`. The concern surfaces as advisory-only. Reach for the sentinel rarely.
+
+Empty `issues` array means the proposal can survive contact with production. Be strict but fair: if a rule is genuinely satisfied, do not flag it; if unsure, do not flag.

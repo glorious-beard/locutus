@@ -1069,6 +1069,20 @@ func collectDanglingReferences(applied []AppliedAction) []string {
 // concern text (the long-standing idRefRegex); related axis IDs come
 // from a manifest lookup against the axes currently known to the
 // council (settled + open).
+//
+// DJ-128: critic output shape switched from `Issues []string` to
+// structured CriticIssue carrying Weakness + Evidence + an enumerated
+// Counterproposals menu + RelatedDecisionIDs surfacing. The merge
+// populates Concern.Counterproposals verbatim from the critic's slice
+// so the revise projection renders the menu; the merge marks the
+// concern Advisory when every counterproposal is the "needs
+// investigation" sentinel so hasReviseableConcerns can skip
+// counterproposal-less surfaces. Critic-provided RelatedDecisionIDs
+// are unioned with the regex-extracted set; critic-provided ids win
+// on conflict (they're the structured surface). Outputs the validator
+// classifies as degenerate are logged but still recorded as concerns
+// against the raw output text, so a flaky critic doesn't make a real
+// problem invisible to the operator.
 func mergeCriticIssues(s *PlanningState, results []RoundResult) {
 	knownAxisIDs := collectKnownAxisIDs(s)
 	for _, r := range results {
@@ -1079,11 +1093,22 @@ func mergeCriticIssues(s *PlanningState, results []RoundResult) {
 		kind := critiqueKindFor(r.AgentID)
 		var ci CriticIssues
 		if err := json.Unmarshal([]byte(r.Output), &ci); err != nil {
-			s.Concerns = append(s.Concerns, newConcernFromCritic(r.AgentID, kind, r.Output, iter, knownAxisIDs))
+			// JSON parse failure: fall back to the raw output text as
+			// the concern body so the user still sees what the critic
+			// emitted. Mechanical regex extraction handles related-id
+			// hits; no counterproposal menu attaches.
+			s.Concerns = append(s.Concerns, newConcernFromFreeformText(r.AgentID, kind, r.Output, iter, knownAxisIDs))
+			continue
+		}
+		if reason, deg := degenerateCriticIssueValidator(&ci); deg {
+			slog.Warn("critic emitted degenerate CriticIssues; recording raw output as concern",
+				"agent", r.AgentID,
+				"reason", reason)
+			s.Concerns = append(s.Concerns, newConcernFromFreeformText(r.AgentID, kind, r.Output, iter, knownAxisIDs))
 			continue
 		}
 		for _, issue := range ci.Issues {
-			s.Concerns = append(s.Concerns, newConcernFromCritic(r.AgentID, kind, issue, iter, knownAxisIDs))
+			s.Concerns = append(s.Concerns, newConcernFromCriticIssue(r.AgentID, kind, issue, iter, knownAxisIDs))
 		}
 	}
 	appendIntegrityFindings(s)
@@ -1095,12 +1120,45 @@ func mergeCriticIssues(s *PlanningState, results []RoundResult) {
 	mechanicalDisposeConcerns(s)
 }
 
-// newConcernFromCritic constructs a fully-populated Concern from a
-// critic finding. The related-id extraction is mechanical (no LLM call):
-// idRefRegex catches dec-* / feat-* / strat- references; the axis-ID
-// pass walks the supplied known-axis set and adds any axis whose ID
-// appears as a whole-word match in the concern text.
-func newConcernFromCritic(agentID, kind, text string, iter int, knownAxisIDs []string) Concern {
+// newConcernFromCriticIssue constructs a Concern from a structured
+// DJ-128 CriticIssue. Text is synthesized as "Weakness — Evidence" so
+// downstream consumers (the revise projection, the deliberation log)
+// see the same conjoined narrative the model produced. The
+// Counterproposals slice is carried verbatim; the Advisory flag is
+// set when every counterproposal is the "needs investigation"
+// sentinel. RelatedDecisionIDs is the union of the critic's
+// structured surfacing and the regex-extracted hits on the text;
+// duplicates are removed preserving order.
+func newConcernFromCriticIssue(agentID, kind string, issue CriticIssue, iter int, knownAxisIDs []string) Concern {
+	text := strings.TrimSpace(issue.Weakness)
+	if ev := strings.TrimSpace(issue.Evidence); ev != "" {
+		if text != "" {
+			text = text + " — " + ev
+		} else {
+			text = ev
+		}
+	}
+	related := unionDecisionIDs(issue.RelatedDecisionIDs, extractDecisionRefsFromText(text))
+	return Concern{
+		AgentID:            agentID,
+		Severity:           "medium",
+		Kind:               kind,
+		Text:               text,
+		IterationRaised:    iter,
+		Status:             ConcernStatusOpen,
+		RelatedDecisionIDs: related,
+		RelatedAxisIDs:     extractAxisRefsFromText(text, knownAxisIDs),
+		Counterproposals:   append([]CriticCounterproposal(nil), issue.Counterproposals...),
+		Advisory:           isAdvisoryCounterproposalMenu(issue.Counterproposals),
+	}
+}
+
+// newConcernFromFreeformText is the pre-DJ-128 fallback shape: a
+// concern built straight from raw critic text with no counterproposal
+// menu. Used when the critic emits invalid JSON or a degenerate
+// structured output — the operator still sees the raw critique even
+// when the structured surface fails.
+func newConcernFromFreeformText(agentID, kind, text string, iter int, knownAxisIDs []string) Concern {
 	return Concern{
 		AgentID:            agentID,
 		Severity:           "medium",
@@ -1111,6 +1169,46 @@ func newConcernFromCritic(agentID, kind, text string, iter int, knownAxisIDs []s
 		RelatedDecisionIDs: extractDecisionRefsFromText(text),
 		RelatedAxisIDs:     extractAxisRefsFromText(text, knownAxisIDs),
 	}
+}
+
+// unionDecisionIDs combines two slices of decision IDs preserving
+// order with the first slice's entries taking precedence. Used by
+// mergeCriticIssues to merge the critic's structured
+// RelatedDecisionIDs with the regex-extracted set from the concern
+// text. Returns nil when both inputs are empty so the omitempty JSON
+// tag on Concern.RelatedDecisionIDs drops the field.
+func unionDecisionIDs(primary, secondary []string) []string {
+	if len(primary) == 0 && len(secondary) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(primary)+len(secondary))
+	out := make([]string, 0, len(primary)+len(secondary))
+	for _, id := range primary {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, id := range secondary {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // collectKnownAxisIDs returns the set of axis IDs currently known to

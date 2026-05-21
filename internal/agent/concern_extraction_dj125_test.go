@@ -6,18 +6,48 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/chetan/locutus/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// validCounterproposals returns a fully-grounded two-entry
+// CriticCounterproposal slice for tests that need a non-degenerate
+// issue. Pulls the construction out of every test so adding a new
+// schema-validator field doesn't require touching every fixture.
+func validCounterproposals() []CriticCounterproposal {
+	return []CriticCounterproposal{{
+		Option:   "Single-instance RDS Postgres on t4g.small reserved",
+		Argument: "A reserved t4g.small lands under $30/mo and meets the JSONB requirement the analytics roadmap depends on.",
+		Citations: []spec.Citation{{
+			Kind:      "web",
+			Reference: "https://aws.amazon.com/rds/postgresql/pricing/",
+			Excerpt:   "db.t4g.small reserved (1-year, no upfront): $0.034/hr in us-east-1",
+		}},
+	}, {
+		Option:   "Supabase Pro tier with PgBouncer",
+		Argument: "Supabase's Pro tier bundles pooling and backups at a flat $25/mo and absorbs the ops burden the small team cannot carry.",
+		Citations: []spec.Citation{{
+			Kind:      "web",
+			Reference: "https://supabase.com/pricing",
+			Excerpt:   "Pro: $25/mo includes 8GB database storage, daily backups, and PgBouncer connection pooling.",
+		}},
+	}}
+}
 
 // TestMergeCriticIssuesExtractsDecisionIDs verifies decision-id
 // references in concern text land on Concern.RelatedDecisionIDs.
 func TestMergeCriticIssuesExtractsDecisionIDs(t *testing.T) {
 	issues := CriticIssues{
-		Issues: []string{
-			"dec-postgres rationale doesn't address the 50ms p99 latency budget",
-			"two unrelated decisions dec-stream and dec-cache contradict",
-		},
+		Issues: []CriticIssue{{
+			Weakness:         "dec-postgres rationale doesn't address the 50ms p99 latency budget from GOALS §3.",
+			Evidence:         "GOALS §3 names 50ms p99 as a hard ceiling and the rationale doesn't mention latency at all.",
+			Counterproposals: validCounterproposals(),
+		}, {
+			Weakness:         "two unrelated decisions dec-stream and dec-cache contradict on the realtime path.",
+			Evidence:         "dec-stream commits to push delivery while dec-cache implies request-pull semantics for the same data.",
+			Counterproposals: validCounterproposals(),
+		}},
 	}
 	out, err := json.Marshal(issues)
 	require.NoError(t, err)
@@ -43,12 +73,20 @@ func TestMergeCriticIssuesExtractsDecisionIDs(t *testing.T) {
 // land on Concern.RelatedAxisIDs when they appear in concern text.
 func TestMergeCriticIssuesExtractsAxisIDs(t *testing.T) {
 	issues := CriticIssues{
-		Issues: []string{
-			"The auth-provider axis is settled but the auth flow doesn't cover SSO",
-			"oltp-store choice is risky for the workload",
+		Issues: []CriticIssue{{
+			Weakness:         "The auth-provider axis is settled but the auth flow doesn't cover SSO at the org tier.",
+			Evidence:         "GOALS §4 names enterprise SSO as a tier-2 requirement; the auth-provider rationale stops at password auth.",
+			Counterproposals: validCounterproposals(),
+		}, {
+			Weakness:         "oltp-store choice is risky for the workload described in GOALS.",
+			Evidence:         "GOALS describes a bursty traffic pattern and the rationale assumes steady-state load.",
+			Counterproposals: validCounterproposals(),
+		}, {
 			// Should NOT match: "auth" alone is not a known axis ID.
-			"auth flow needs review",
-		},
+			Weakness:         "auth flow needs review against the new compliance regime.",
+			Evidence:         "The compliance regime named in GOALS §5 added field-level audit trails that the flow does not produce.",
+			Counterproposals: validCounterproposals(),
+		}},
 	}
 	out, err := json.Marshal(issues)
 	require.NoError(t, err)
@@ -73,7 +111,11 @@ func TestMergeCriticIssuesExtractsAxisIDs(t *testing.T) {
 // TestMergeCriticIssuesPopulatesIterationRaised verifies the iteration
 // index threads through from RoundResult onto the new concern.
 func TestMergeCriticIssuesPopulatesIterationRaised(t *testing.T) {
-	issues := CriticIssues{Issues: []string{"some concern"}}
+	issues := CriticIssues{Issues: []CriticIssue{{
+		Weakness:         "some concern about the proposal's coverage of the GOALS §2 latency budget.",
+		Evidence:         "GOALS §2 names p99 latency as a hard requirement; the proposal does not cite it anywhere.",
+		Counterproposals: validCounterproposals(),
+	}}}
 	out, _ := json.Marshal(issues)
 	state := &PlanningState{}
 

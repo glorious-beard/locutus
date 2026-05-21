@@ -888,9 +888,20 @@ func TestMergeDecisionsReplacesWhenAxesIntersectExactlyOne(t *testing.T) {
 		Title:     "Revised X",
 		Rationale: "corrected rationale",
 		Confidence: 0.9,
+		// DJ-128: revised alternatives include the prior alt-old AND
+		// the prior chosen "Original X" (demoted) AND a new alt-new.
+		// The monotonicity discipline requires every prior alternative
+		// + the demoted prior chosen to appear in the revised
+		// alternatives.
 		Alternatives: []spec.Alternative{{
 			Name: "alt-new", Rationale: "new", RejectedBecause: "new",
 			Citations: []spec.Citation{{Kind: "web", Reference: "https://new", Excerpt: "new"}},
+		}, {
+			Name: "alt-old", Rationale: "old", RejectedBecause: "old",
+			Citations: []spec.Citation{{Kind: "web", Reference: "https://old", Excerpt: "old"}},
+		}, {
+			Name: "Original X", Rationale: "old chosen path", RejectedBecause: "factual error",
+			Citations: []spec.Citation{{Kind: "web", Reference: "https://old", Excerpt: "old"}},
 		}},
 		Citations: []spec.Citation{{Kind: "web", Reference: "https://new", Excerpt: "new"}},
 		Axes:      []string{"axis-a"}, // intersects prior's [a,b] on axis-a
@@ -1060,8 +1071,16 @@ func TestMergeDecisionsMarksDrivingConcernAddressed(t *testing.T) {
 	revised := RawDecisionProposal{
 		ID: "dec-cloudwatch", Title: "Adopt CloudWatch", Rationale: "revised",
 		Confidence: 0.85,
-		Alternatives: []spec.Alternative{{Name: "Datadog", Rationale: "r", RejectedBecause: "cost",
-			Citations: []spec.Citation{{Kind: "web", Reference: "https://aws", Excerpt: "e"}}}},
+		// DJ-128: revised alternatives preserve the prior alternative
+		// "alt" AND demote the prior chosen "Adopt Datadog" — the
+		// monotonicity validator requires every prior alternative to
+		// survive plus the prior chosen to appear when the Title flips.
+		Alternatives: []spec.Alternative{
+			{Name: "Adopt Datadog", Rationale: "old", RejectedBecause: "cost",
+				Citations: []spec.Citation{{Kind: "web", Reference: "https://aws", Excerpt: "e"}}},
+			{Name: "alt", Rationale: "r", RejectedBecause: "r",
+				Citations: []spec.Citation{{Kind: "web", Reference: "https://d", Excerpt: "e"}}},
+		},
 		Citations:  []spec.Citation{{Kind: "web", Reference: "https://aws", Excerpt: "e"}},
 		Axes:       []string{"observability-stack"},
 		SurfacedBy: []string{"feat-monitoring"},
@@ -1108,8 +1127,14 @@ func TestAxisRevisionCountIncrementsOnReplace(t *testing.T) {
 	// First revision: count becomes 1.
 	rev1 := RawDecisionProposal{
 		ID: "dec-x", Title: "Rev1", Rationale: "rev1", Confidence: 0.85,
-		Alternatives: []spec.Alternative{{Name: "alt", Rationale: "r", RejectedBecause: "r",
-			Citations: []spec.Citation{{Kind: "web", Reference: "https://r1", Excerpt: "e"}}}},
+		// DJ-128: alternatives include the prior alt AND the prior
+		// chosen "X" to satisfy monotonicity.
+		Alternatives: []spec.Alternative{
+			{Name: "alt", Rationale: "r", RejectedBecause: "r",
+				Citations: []spec.Citation{{Kind: "web", Reference: "https://r1", Excerpt: "e"}}},
+			{Name: "X", Rationale: "old chosen", RejectedBecause: "revised",
+				Citations: []spec.Citation{{Kind: "goals", Reference: "GOALS.md", Excerpt: "e"}}},
+		},
 		Citations: []spec.Citation{{Kind: "web", Reference: "https://r1", Excerpt: "e"}},
 		Axes:      []string{"axis-a"}, SurfacedBy: []string{"feat-x"},
 	}
@@ -1120,6 +1145,15 @@ func TestAxisRevisionCountIncrementsOnReplace(t *testing.T) {
 	rev2 := rev1
 	rev2.Title = "Rev2"
 	rev2.Rationale = "rev2"
+	// DJ-128: rev2 demotes Rev1 — needs alt + X + Rev1 as alternatives.
+	rev2.Alternatives = []spec.Alternative{
+		{Name: "alt", Rationale: "r", RejectedBecause: "r",
+			Citations: []spec.Citation{{Kind: "web", Reference: "https://r1", Excerpt: "e"}}},
+		{Name: "X", Rationale: "old chosen", RejectedBecause: "revised",
+			Citations: []spec.Citation{{Kind: "goals", Reference: "GOALS.md", Excerpt: "e"}}},
+		{Name: "Rev1", Rationale: "first revision", RejectedBecause: "revised again",
+			Citations: []spec.Citation{{Kind: "web", Reference: "https://r1", Excerpt: "e"}}},
+	}
 	mergeDecisions(state, []RoundResult{makeDecisionResult(t, rev2, 2)})
 	require.Equal(t, 2, state.AxisRevisionCount["axis-a"], "second revision bumps the count to 2")
 
@@ -1171,8 +1205,20 @@ func TestRevisionCapTerminatesWhenExceeded(t *testing.T) {
 	})
 
 	// Critic on iter-1 raises a concern naming dec-x — driving a revise
-	// dispatch on iter-2 onwards.
-	criticIssuesFlagX := `{"issues":[{"agent_id":"cost_critic","severity":"high","text":"dec-x is wrong","related_decision_ids":["dec-x"]}]}`
+	// dispatch on iter-2 onwards. DJ-128 structured critic shape:
+	// weakness + evidence + a grounded counterproposal menu.
+	criticIssuesFlagX := mustJSON(t, CriticIssues{Issues: []CriticIssue{{
+		Weakness: "The dec-x rationale does not engage with the cost ceiling implied by GOALS.md.",
+		Evidence: "GOALS.md names a cost ceiling that the rationale never cites or engages with.",
+		Counterproposals: []CriticCounterproposal{{
+			Option:   "Adopt a cheaper alternative with explicit cost engagement",
+			Argument: "A cheaper alternative would fit the cost ceiling and force the rationale to address the budget constraint explicitly.",
+			Citations: []spec.Citation{{
+				Kind: "goals", Reference: "GOALS.md", Excerpt: "cost ceiling",
+			}},
+		}},
+		RelatedDecisionIDs: []string{"dec-x"},
+	}}})
 	criticNoIssues := `{"issues":[]}`
 
 	// Iter-1 scout (after iter-0 critique) — keeps converged=false with
@@ -1185,7 +1231,11 @@ func TestRevisionCapTerminatesWhenExceeded(t *testing.T) {
 		Converged:           false,
 	})
 
-	// Iter-2 revise output (one revision of dec-x).
+	// Iter-2 revise output (one revision of dec-x). DJ-128: the
+	// monotonicity discipline requires every prior alternative to
+	// survive the revision; the demote / fold helpers in mergeDecisions
+	// handle prior-chosen demotion + counterproposal folding, but the
+	// elaborator must still preserve every alt the prior carried.
 	revV1 := decisionProposalJSON(t, RawDecisionProposal{
 		ID: "dec-x", Title: "X v1", Rationale: "v1", Confidence: 0.8,
 		Alternatives: []spec.Alternative{{Name: "alt", Rationale: "r", RejectedBecause: "r",
@@ -1194,10 +1244,23 @@ func TestRevisionCapTerminatesWhenExceeded(t *testing.T) {
 		Axes:      []string{"axis-a"}, SurfacedBy: []string{"feat-x"},
 	})
 	// Iter-3 revise output (second revision; count==2 hits the cap=2).
+	// Carries the alternatives accumulated by iter-2's merge: the prior
+	// `alt`, the demoted prior chosen `X v0`, and the folded counter-
+	// proposal `Adopt a cheaper alternative ...`. Without these the
+	// monotonicity validator would reject the revision, the cap counter
+	// would stay at 1, and the loop would hit budget instead of cap.
 	revV2 := decisionProposalJSON(t, RawDecisionProposal{
 		ID: "dec-x", Title: "X v2", Rationale: "v2", Confidence: 0.85,
-		Alternatives: []spec.Alternative{{Name: "alt", Rationale: "r", RejectedBecause: "r",
-			Citations: []spec.Citation{{Kind: "web", Reference: "https://x2", Excerpt: "e"}}}},
+		Alternatives: []spec.Alternative{
+			{Name: "alt", Rationale: "r", RejectedBecause: "r",
+				Citations: []spec.Citation{{Kind: "web", Reference: "https://x2", Excerpt: "e"}}},
+			{Name: "X v0", Rationale: "first version", RejectedBecause: "revised in iter 2",
+				Citations: []spec.Citation{{Kind: "goals", Reference: "GOALS.md", Excerpt: "e"}}},
+			{Name: "Adopt a cheaper alternative with explicit cost engagement",
+				Rationale: "A cheaper alternative would fit the cost ceiling.",
+				RejectedBecause: "Elaborator picked X v1 instead.",
+				Citations: []spec.Citation{{Kind: "goals", Reference: "GOALS.md", Excerpt: "cost ceiling"}}},
+		},
 		Citations: []spec.Citation{{Kind: "web", Reference: "https://x2", Excerpt: "e"}},
 		Axes:      []string{"axis-a"}, SurfacedBy: []string{"feat-x"},
 	})
@@ -1257,20 +1320,33 @@ func TestRevisionCapTerminatesWhenExceeded(t *testing.T) {
 	)
 
 	wf := NewSpecGenerationWorkflow(historian, 10)
-	_, err := generateSpecWithWorkflow(context.Background(), mock, fs, SpecGenRequest{
+	proposal, err := generateSpecWithWorkflow(context.Background(), mock, fs, SpecGenRequest{
 		GoalsBody: "Build it.",
 	}, wf)
-	require.Error(t, err, "loop must error out when the revision cap fires")
-	assert.Contains(t, err.Error(), "revision-capped")
-	assert.Contains(t, err.Error(), "axis-a")
+	// DJ-128 cap-as-commit: the cap firing is no longer a workflow
+	// failure — the latest revision is committed with Locked=true and
+	// the loop exits cleanly. The convergence_revision_capped event
+	// still surfaces for operator visibility.
+	require.NoError(t, err, "loop exits cleanly under DJ-128 cap-as-commit semantics")
+	require.NotNil(t, proposal)
+
+	// The final proposal must carry dec-x with Locked=true.
+	var locked *DecisionProposal
+	for i := range proposal.Decisions {
+		if proposal.Decisions[i].ID == "dec-x" {
+			locked = &proposal.Decisions[i]
+		}
+	}
+	require.NotNil(t, locked, "final proposal must carry dec-x")
+	assert.True(t, locked.Locked, "capped decision must be flipped to Locked=true")
 
 	// DJ-103 event must be written under .borg/history/.
 	entries, readErr := os.ReadDir(filepath.Join(tmp, ".borg", "history"))
 	require.NoError(t, readErr)
-	var found bool
+	var foundCapEvent, foundLockedEvent bool
 	for _, e := range entries {
 		if strings.Contains(e.Name(), "convergence_revision_capped") && strings.HasSuffix(e.Name(), ".json") {
-			found = true
+			foundCapEvent = true
 			body, err := os.ReadFile(filepath.Join(tmp, ".borg", "history", e.Name()))
 			require.NoError(t, err)
 			var evt history.Event
@@ -1279,8 +1355,19 @@ func TestRevisionCapTerminatesWhenExceeded(t *testing.T) {
 			assert.Contains(t, evt.Rationale, "axis-a",
 				"history event rationale names the capped axis")
 		}
+		if strings.Contains(e.Name(), "decision_locked") && strings.HasSuffix(e.Name(), ".json") {
+			foundLockedEvent = true
+			body, err := os.ReadFile(filepath.Join(tmp, ".borg", "history", e.Name()))
+			require.NoError(t, err)
+			var evt history.Event
+			require.NoError(t, json.Unmarshal(body, &evt))
+			assert.Equal(t, "decision_locked", evt.Kind)
+			assert.Equal(t, "dec-x", evt.TargetID,
+				"decision_locked event names the locked decision id")
+		}
 	}
-	assert.True(t, found, "convergence_revision_capped DJ-103 event must be written under .borg/history/")
+	assert.True(t, foundCapEvent, "convergence_revision_capped DJ-103 event must be written")
+	assert.True(t, foundLockedEvent, "decision_locked DJ-103 event must be written per locked decision (DJ-128)")
 }
 
 // TestRevisionCapPerAxisIndependent verifies the counts are per-axis:
@@ -1426,8 +1513,15 @@ func TestDecisionRevisedEventIncludesDrivingConcern(t *testing.T) {
 	revised := RawDecisionProposal{
 		ID: "dec-cloudwatch", Title: "CloudWatch", Rationale: "switched",
 		Confidence: 0.85,
-		Alternatives: []spec.Alternative{{Name: "Datadog", Rationale: "polish", RejectedBecause: "cost",
-			Citations: []spec.Citation{{Kind: "web", Reference: "https://aws", Excerpt: "e"}}}},
+		// DJ-128: revised alternatives preserve every prior alternative
+		// (alt) AND demote the prior chosen (Datadog v0). Without
+		// alt the monotonicity validator would reject the revision.
+		Alternatives: []spec.Alternative{
+			{Name: "Datadog v0", Rationale: "polish", RejectedBecause: "cost",
+				Citations: []spec.Citation{{Kind: "web", Reference: "https://aws", Excerpt: "e"}}},
+			{Name: "alt", Rationale: "r", RejectedBecause: "r",
+				Citations: []spec.Citation{{Kind: "web", Reference: "https://d", Excerpt: "e"}}},
+		},
 		Citations: []spec.Citation{{Kind: "web", Reference: "https://aws", Excerpt: "e"}},
 		Axes:      []string{"observability-stack"}, SurfacedBy: []string{"feat-monitoring"},
 	}
@@ -1548,8 +1642,17 @@ func TestLoopConvergesAfterForcedContradictionViaRevision(t *testing.T) {
 
 	// iter-1 critique: cost_critic flags the dec-datadog cost issue.
 	// extractDecisionRefsFromText picks up the dec-datadog-obs mention
-	// and populates RelatedDecisionIDs automatically.
-	costIssue := `{"issues":["dec-datadog-obs conflicts with the $150 monthly cost ceiling per GOALS.md"]}`
+	// in the Weakness text and populates RelatedDecisionIDs.
+	costIssue := mustJSON(t, CriticIssues{Issues: []CriticIssue{{
+		Weakness: "dec-datadog-obs conflicts with the $150 monthly cost ceiling per GOALS.md.",
+		Evidence: "GOALS.md names a $150 monthly ceiling and Datadog's per-host pricing exceeds it at the assumed fleet size.",
+		Counterproposals: []CriticCounterproposal{{
+			Option:   "Switch from Datadog to CloudWatch + Sentry",
+			Argument: "CloudWatch + Sentry combined land under $50/mo at the assumed scale where Datadog Pro lands at ~$300/mo.",
+			Citations: []spec.Citation{{Kind: "web", Reference: "https://aws.amazon.com/cloudwatch/pricing/", Excerpt: "CloudWatch Logs: $0.50 per GB ingested"}},
+		}},
+		RelatedDecisionIDs: []string{"dec-datadog-obs"},
+	}}})
 	noIssues := `{"issues":[]}`
 
 	// iter-1 scout (tail): nothing new; concern stays open; not converged.
@@ -1561,13 +1664,26 @@ func TestLoopConvergesAfterForcedContradictionViaRevision(t *testing.T) {
 	})
 
 	// iter-2 revise-decisions: dec-datadog-obs revised to CloudWatch
-	// (same axis, same id).
+	// (same axis, same id). DJ-128: the elaborator's alternatives
+	// must preserve every prior alternative (CloudWatch was prior alt;
+	// promoted to the chosen here so it appears as the Title — the
+	// monotonicity validator skips the title-vs-alt-name match) AND
+	// demote the prior chosen Datadog observability — my merge helpers
+	// fill in the demotion + counterproposal fold automatically.
 	revisedDecCloudWatch := decisionProposalJSON(t, RawDecisionProposal{
 		ID: "dec-datadog-obs", Title: "CloudWatch observability",
 		Rationale:  "CloudWatch fits within the cost ceiling.",
 		Confidence: 0.85,
-		Alternatives: []spec.Alternative{{Name: "Datadog", Rationale: "best APM", RejectedBecause: "exceeds cost ceiling",
-			Citations: []spec.Citation{{Kind: "web", Reference: "https://datadog", Excerpt: "e"}}}},
+		Alternatives: []spec.Alternative{
+			{Name: "Datadog", Rationale: "best APM", RejectedBecause: "exceeds cost ceiling",
+				Citations: []spec.Citation{{Kind: "web", Reference: "https://datadog", Excerpt: "e"}}},
+			// CloudWatch was the prior alternative; the elaborator
+			// promoted it to chosen. Preserve it in the alternatives
+			// slice anyway so monotonicity holds (the validator does
+			// not treat promotion to Title as removal-from-alts).
+			{Name: "CloudWatch", Rationale: "AWS-native", RejectedBecause: "promoted to chosen — preserved here as deliberation log",
+				Citations: []spec.Citation{{Kind: "web", Reference: "https://cw", Excerpt: "e"}}},
+		},
 		Citations:  []spec.Citation{{Kind: "web", Reference: "https://aws", Excerpt: "CloudWatch pricing"}},
 		Axes:       []string{"observability-stack"}, // same axis → triggers replace
 		SurfacedBy: []string{"feat-monitoring"},

@@ -44,9 +44,27 @@ type Decision struct {
 	SurfacedBy   []string  `json:"surfaced_by,omitempty" yaml:"surfaced_by,omitempty" jsonschema:"description=Spec node IDs (goal / feature / strategy) that surfaced the axis this decision answers. Examples: [\"feat-realtime-dashboard\"], [\"strat-storage-platform\",\"goal-multi-tenancy\"]. Populated by the scout's dispatch at decision-creation time. Empty for legacy decisions authored before DJ-124."`
 	CreatedAt    time.Time `json:"created_at" yaml:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at" yaml:"updated_at"`
+	// Locked is set when the convergence loop's per-axis revision cap
+	// fired and committed this decision as its best-answer snapshot
+	// (DJ-128 cap-as-commit). Locked decisions are excluded from the
+	// revise-fanout dispatch on subsequent iterations — their
+	// associated concerns are flipped to wontfix at the moment the cap
+	// fires, and the decision is shipped with the contested reasoning
+	// preserved in the alternatives deliberation log. Persisted with
+	// omitempty so legacy / unlocked decisions look identical on-disk
+	// to their pre-DJ-128 form.
+	Locked bool `json:"locked,omitempty" yaml:"locked,omitempty" jsonschema:"description=True when the per-axis revision cap fired on this decision and the loop committed its latest revision as the ship-quality answer (DJ-128 cap-as-commit). Locked decisions are excluded from subsequent revise dispatches; the deliberation log in alternatives preserves what was contested. False for decisions that converged organically."`
 }
 
 // Alternative represents a considered but not chosen option for a decision.
+//
+// DJ-128 adds two deliberation-log provenance fields:
+// RejectedAtIteration and RejectedByConcernText. They are populated by
+// mergeDecisions when the elaborator demotes a prior chosen option (or
+// a critic counterproposal that lost out) into the alternatives slice
+// during a revise pass. Both fields are omitempty so first-author
+// alternatives (those the elaborator weighed before a critic intervened)
+// load without artifacts.
 type Alternative struct {
 	Name            string `json:"name" yaml:"name" jsonschema:"description=The alternative's name — a concrete product or approach (e.g. 'MySQL' or 'Server-rendered React'). A noun phrase rather than a sentence; do not paraphrase the decision."`
 	Rationale       string `json:"rationale" yaml:"rationale" jsonschema:"description=Why this alternative was considered seriously. A complete sentence naming the real advantages it offered over the chosen path. Empty / 'no reason' indicates the alternative wasn't worth listing."`
@@ -59,6 +77,17 @@ type Alternative struct {
 	// `required` during unmarshal, so legacy on-disk alternatives
 	// without citations continue to deserialize cleanly.
 	Citations []Citation `json:"citations" yaml:"citations" jsonschema:"description=Citations backing the rejected_because reasoning for this alternative — evidence that this option was considered seriously and the reason it lost is grounded.,minItems=1"`
+	// RejectedAtIteration is the council iteration index at which this
+	// alternative was demoted from the chosen position (or from a critic
+	// counterproposal) into the alternatives slice (DJ-128). Zero for
+	// first-author alternatives the elaborator weighed before any critic
+	// engaged; set positive only by mergeDecisions during a revise pass.
+	RejectedAtIteration int `json:"rejected_at_iteration,omitempty" yaml:"rejected_at_iteration,omitempty" jsonschema:"description=Iteration index at which this alternative was demoted into the alternatives slice via a revise pass. Zero for first-author alternatives the elaborator weighed before any critic engaged; positive when a critic concern displaced a prior chosen option or a counterproposal lost on review."`
+	// RejectedByConcernText carries the verbatim text of the critic
+	// concern that drove the demotion (DJ-128). Empty for first-author
+	// alternatives. The deliberation log uses this so next-iteration
+	// critics see what was contested and don't re-litigate the same axis.
+	RejectedByConcernText string `json:"rejected_by_concern_text,omitempty" yaml:"rejected_by_concern_text,omitempty" jsonschema:"description=Verbatim text of the critic concern that drove this alternative into the deliberation log. Empty for first-author alternatives; populated by mergeDecisions when a revise pass demotes a prior chosen option or rejects a counterproposal. Lets next-iteration critics see what was contested and avoid re-litigating settled rejections."`
 }
 
 // Citation is one durable reference backing a decision: a span of

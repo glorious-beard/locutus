@@ -67,6 +67,27 @@ type Concern struct {
 	RelatedAxisIDs []string `json:"related_axis_ids,omitempty" jsonschema:"description=Axis IDs this concern references. Populated mechanically. Powers staleness checks against the manifest's axis-state field."`
 
 	Justification string `json:"justification,omitempty" jsonschema:"description=One-sentence rationale from the scout's grading pass (DJ-125 Phase 7). Set when Status is addressed or wontfix to explain WHY the scout dispositioned the concern; empty otherwise."`
+
+	// Counterproposals is the critic's enumerated alternative menu
+	// (DJ-128). Carried verbatim from CriticIssue.Counterproposals at
+	// merge time; consumed by projectReviseDecision so the revise
+	// projection renders the full menu and the elaborator either picks
+	// one or rejects all coherently. Each unpicked counterproposal lands
+	// in the revised decision's alternatives slice with the critic's
+	// Argument as the Rationale and the critic's Citations preserved.
+	// Empty for concerns raised by the integrity critic or other
+	// mechanical passes that have no counterproposal menu.
+	Counterproposals []CriticCounterproposal `json:"counterproposals,omitempty" jsonschema:"description=The enumerated counterproposal menu the LLM critic surfaced for this concern (DJ-128). Each entry is one concrete option the elaborator can pick from in the revise pass; unpicked ones become alternatives in the deliberation log with the critic's argument + citations preserved verbatim. Empty for mechanical concerns (integrity violations, etc.) that have no counterproposal shape."`
+
+	// Advisory marks concerns where every counterproposal is the
+	// literal "needs investigation" sentinel (DJ-128). Advisory
+	// concerns surface to the user but do NOT drive revise dispatch:
+	// hasReviseableConcerns and fanoutReviseableConcerns skip them.
+	// The sentinel is the one acceptable form for a critic that sees a
+	// real problem but cannot name a concrete alternative; the
+	// resulting concern is surfaced for human review rather than
+	// forcing the elaborator to revise against a non-menu.
+	Advisory bool `json:"advisory,omitempty" jsonschema:"description=True when every counterproposal in this concern is the literal 'needs investigation' sentinel — the critic saw a real problem but could not name a specific alternative (DJ-128). Advisory concerns surface for human review but never drive the revise-fanout dispatch."`
 }
 
 // Finding is a research result from the researcher.
@@ -238,6 +259,15 @@ type PlanningState struct {
 	// production (wrapped) and unit-test (direct) callers.
 	PendingDecisionRevisedEvents []PendingDecisionRevisedEvent `json:"-"`
 
+	// LockedDecisionIDs is the set of decision IDs the cap-as-commit
+	// terminal has flipped to Locked (DJ-128). Populated by the
+	// revision-capped terminal; consumed by hasReviseableConcerns and
+	// fanoutReviseableConcerns to skip locked decisions from
+	// subsequent revise dispatches, AND by the SpecProposal projection
+	// so persisted decisions carry the Locked flag downstream.
+	// Set, not slice, so membership lookup is O(1) in the filter path.
+	LockedDecisionIDs map[string]struct{} `json:"-"`
+
 	// DanglingReferences accumulates integrity-violation findings from
 	// ApplyReconciliation. Surfaced to the scout's next-iteration input
 	// as concerns so the loop can self-correct (e.g. the scout iterates
@@ -382,6 +412,12 @@ func snapshotPlanningState(s *PlanningState) PlanningState {
 		out.DecidedAxesByIter = make(map[string]int, len(s.DecidedAxesByIter))
 		for k, v := range s.DecidedAxesByIter {
 			out.DecidedAxesByIter[k] = v
+		}
+	}
+	if len(s.LockedDecisionIDs) > 0 {
+		out.LockedDecisionIDs = make(map[string]struct{}, len(s.LockedDecisionIDs))
+		for k := range s.LockedDecisionIDs {
+			out.LockedDecisionIDs[k] = struct{}{}
 		}
 	}
 	return out

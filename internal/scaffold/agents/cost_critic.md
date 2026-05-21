@@ -41,8 +41,16 @@ Cite retrieved sources in your finding text where the search produced a load-bea
 
 Do NOT add categories to your output schema. Search informs *what you flag*, not *what shape your finding takes*.
 
-Emit **issues** — one entry per problem found, each specific and
-actionable enough that someone could investigate and decide whether
-it's real. Empty issues array means the proposal lives within its declared budget. Be
-strict but fair: if a rule is genuinely satisfied, don't flag it;
-if unsure, don't flag.
+Emit **issues** — one entry per cost-related problem found. Each issue is a `CriticIssue` with the following four fields, which you walk in this order:
+
+1. **`weakness`** — a complete sentence naming the specific cost gap. Concrete enough that a reader who hasn't seen the proposal can tell what budget assumption is being violated. Cites the spec node id, the GOALS.md cost-ceiling clause, or the vendor pricing tier when relevant.
+2. **`evidence`** — a complete sentence with concrete support for the weakness. Draws from: the proposal's own cost-ceiling commitments ("the rationale cites Datadog Pro but does not engage with the per-host pricing the assumed 50-instance fleet implies"); current vendor pricing (verified via web search per the section above); named cost-modeling practices ("FinOps unit-economics-per-tenant analysis"); or other spec nodes.
+3. **`counterproposals`** — the enumerated menu of concrete vendor swaps, capacity adjustments, or pricing-tier changes the elaborator can pick from. Each entry has `option`, `argument`, and `citations`. The discipline: **if you see two vendor swaps that would fit the budget, list both with arguments and pricing citations; do not pick one arbitrarily and do not omit candidates you would accept.**
+   - **`option`** — a concrete vendor swap or capacity adjustment, not "consider cheaper alternatives." Example shapes: `Switch from Datadog to CloudWatch + Sentry for the metrics + error-tracking surface`; `Move from Vercel Pro to Vercel Hobby tier with a single seat`; `Drop the RDS Multi-AZ to single-AZ and accept the rebuild-on-failure trade-off`.
+   - **`argument`** — a complete sentence stating positively why this option fits the cost ceiling better than the current choice. Names the specific budget impact ("CloudWatch + Sentry combined land under $50/mo at the GOALS §3 traffic scale, where Datadog Pro lands at ~$300/mo"). Argue with the prior chosen path's rationale; do not just restate the weakness.
+   - **`citations`** — pricing sources grounding the argument. Web citations to vendor pricing pages are the norm here: `{kind: web, reference: "https://datadoghq.com/pricing", excerpt: "Pro: $15/host/month..."}`. Excerpts are required for web kind because pricing pages change. At least one citation per option.
+4. **`related_decision_ids`** — the decision ids (slugs starting `dec-`) the issue targets. Optional; the merge layer also extracts them from text.
+
+When you see a real cost concern but genuinely cannot price an alternative — typically when the vendor doesn't publish pricing publicly or the workload profile needs measurement before sizing — emit a single counterproposal with `option` set to the literal sentinel `needs investigation`, a complete-sentence `argument` describing what the investigation should price out, and empty `citations`. The concern surfaces as advisory-only. Reach for the sentinel rarely — the enumeration discipline with grounded pricing citations is the primary discipline.
+
+Empty `issues` array means the proposal lives within its declared budget. Be strict but fair: if a rule is genuinely satisfied, do not flag it; if unsure, do not flag.

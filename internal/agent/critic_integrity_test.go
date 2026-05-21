@@ -97,22 +97,47 @@ func TestCritiqueKindFor(t *testing.T) {
 // TestMergeResultsTagsCriticConcernsWithKind — verifies LLM critic
 // concerns land on state.Concerns with Kind populated, so the revise
 // projection can group them by lens.
+//
+// Under DJ-128 the critic shape is structured; the test issues are
+// constructed via the validCriticIssueFixture helper so the validator
+// accepts them as non-degenerate (otherwise the merge falls back to
+// the freeform-text path with a slog warning and the Kind tagging
+// still happens but via a different code path).
 func TestMergeResultsTagsCriticConcernsWithKind(t *testing.T) {
+	archOut := mustJSON(t, CriticIssues{Issues: []CriticIssue{{
+		Weakness:         "Architecture problem: the stack picks Django but GOALS §1 specifies Go for the API tier.",
+		Evidence:         "GOALS §1 names Go as the API language; the rationale doesn't engage with that constraint.",
+		Counterproposals: validCounterproposals(),
+	}}})
+	devopsOut := mustJSON(t, CriticIssues{Issues: []CriticIssue{{
+		Weakness:         "Devops problem: the deployment shape leaves staging unspecified.",
+		Evidence:         "The proposal commits to GitHub Actions but does not name a staging environment between PR and prod.",
+		Counterproposals: validCounterproposals(),
+	}}})
+
 	state := &PlanningState{}
 	results := []RoundResult{
-		{StepID: "critique", AgentID: "architect_critic", Output: `{"issues":["arch problem"]}`},
-		{StepID: "critique", AgentID: "devops_critic", Output: `{"issues":["devops problem"]}`},
+		{StepID: "critique", AgentID: "architect_critic", Output: archOut},
+		{StepID: "critique", AgentID: "devops_critic", Output: devopsOut},
 	}
 	mergeCriticIssues(state, results)
 
 	require.Len(t, state.Concerns, 2)
 	kinds := map[string]string{}
 	for _, c := range state.Concerns {
-		kinds[c.Text] = c.Kind
+		// Text is "Weakness — Evidence"; use a prefix match against
+		// the weakness to identify each critic's concern.
+		if strings.HasPrefix(c.Text, "Architecture problem:") {
+			kinds["arch"] = c.Kind
+		}
+		if strings.HasPrefix(c.Text, "Devops problem:") {
+			kinds["devops"] = c.Kind
+		}
 	}
-	assert.Equal(t, "architecture", kinds["arch problem"])
-	assert.Equal(t, "devops", kinds["devops problem"])
+	assert.Equal(t, "architecture", kinds["arch"])
+	assert.Equal(t, "devops", kinds["devops"])
 }
+
 
 // TestBuildRevisePromptDirectiveShape — the new revise prompt opens
 // with an explicit rejection, groups findings by kind, lists required

@@ -2,7 +2,7 @@
 
 > **Governing DJ:** [DJ-128](../../docs/DECISION_JOURNAL.md#dj-128-decisions-as-deliberation-logs-structured-critic-counterproposals-revision-cap-as-commit-refines-dj-126-revise-loop-after-third-winplan-re-run). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
 >
-> **Status:** designed; implementation not started.
+> **Status:** Phases 1-7 landed 2026-05-20; Phase 8 pending user validation against winplan; Phase 9 (DJ status flip) waits on Phase 8.
 > **Prerequisite:** [DJ-126](../../docs/DECISION_JOURNAL.md#dj-126) must be landed (it is — Phases 1-6 in main as of 2026-05-20). DJ-128 reshapes how DJ-126's revise loop behaves; it does not replace the structural pieces (revise dispatch, replace-by-axis merge, per-axis cap counter).
 > **Surface area:** schema changes on `CriticIssues` + `Alternative` + `Decision` + `Concern`; `mergeDecisions` revise-path rewrite for alternative monotonicity; `mergeCriticIssues` consumes new shape; cap terminal flipped from error to commit; 4 critic prompts + decision-elaborator revise prompt rewrites; new validators.
 > **Discipline (per memory):** tests → design pause in chat → code; prompt edits walk [docs/agent-conventions.md](../../docs/agent-conventions.md) end-to-end before drafting per [[feedback-agent-conventions-checklist-first]]. Schema changes follow [CLAUDE.md's jsonschema-tag rule](../../CLAUDE.md): every meaningful field carries a tag with enough detail to prevent degenerate outputs; the validator is the safety net, not the primary enforcement.

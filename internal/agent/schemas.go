@@ -288,8 +288,41 @@ func init() {
 	//   - reuse_existing  → required: kind, sources, existing_id
 	RegisterSchemaOverride("ReconciliationVerdict", buildReconciliationVerdictSchema())
 
+	// CriticIssues example payload (DJ-128): a structured cost-lens
+	// critique of a Postgres OLTP decision with two enumerated
+	// counterproposals carrying argument + citation discipline. The
+	// payload's prose engages the proposal's own rationale rather than
+	// using placeholder tokens, so the schema-skeleton failure mode
+	// (the prompt-doc renderer leaking example values into the
+	// model's output) doesn't fire on this surface.
 	RegisterSchema("CriticIssues", CriticIssues{
-		Issues: []string{"feature feat-x references dec-y but dec-y is not generated"},
+		Issues: []CriticIssue{{
+			Weakness: "The dec-postgres-oltp-store rationale commits to Aurora Serverless v2 but does not engage with the $150/mo steady-state ceiling in GOALS §3.",
+			Evidence: "GOALS §3 names a $150/mo infrastructure ceiling for the first 12 months; the rationale cites Aurora Serverless v2's elastic ACU pricing without naming the expected steady-state ACU floor.",
+			Counterproposals: []CriticCounterproposal{{
+				Option:   "Single-instance RDS Postgres on a t4g.small reserved instance",
+				Argument: "A reserved t4g.small lands under $30/mo and still satisfies the JSONB query path the analytics roadmap depends on; the elastic-ACU advantage of Aurora Serverless v2 is irrelevant to the predictable steady-state load profile GOALS §2 describes.",
+				Citations: []spec.Citation{{
+					Kind:      "web",
+					Reference: "https://aws.amazon.com/rds/postgresql/pricing/",
+					Excerpt:   "db.t4g.small reserved (1-year, no upfront): $0.034/hr in us-east-1",
+				}, {
+					Kind:      "goals",
+					Reference: "GOALS.md",
+					Span:      "§3 Cost ceiling",
+					Excerpt:   "Steady-state monthly infrastructure spend stays under $150 for the first 12 months.",
+				}},
+			}, {
+				Option:   "Managed Postgres on Supabase Pro tier",
+				Argument: "Supabase's Pro tier bundles connection pooling and daily backups at a flat $25/mo and absorbs the ops burden the small team cannot carry; the trade-off is Supabase's per-row egress pricing, which only matters above the analytics-query volume GOALS §2 caps.",
+				Citations: []spec.Citation{{
+					Kind:      "web",
+					Reference: "https://supabase.com/pricing",
+					Excerpt:   "Pro: $25/mo includes 8GB database storage, daily backups, and PgBouncer connection pooling.",
+				}},
+			}},
+			RelatedDecisionIDs: []string{"dec-postgres-oltp-store"},
+		}},
 	})
 
 	// LLMFindingClusters is the spec_finding_clusterer agent's output
