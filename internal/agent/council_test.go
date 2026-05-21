@@ -162,47 +162,34 @@ You are the architect.
 }
 
 func TestBuildSystemPrompt(t *testing.T) {
-	// Schema descriptions reach the model via the provider's strict-
-	// mode structured-output configuration on every call. The
-	// example payload appended here is complementary — concrete
-	// shape demonstration for the thinking-off path. Thinking-on
-	// agents go through the dispatcher's two-call split and don't
-	// need (or want) a JSON example on the reasoning call.
+	// DJ-130 follow-up: BuildSystemPrompt no longer appends the
+	// schema example to the system prompt. The example reaches the
+	// model as a Cacheable user message via the executor's
+	// buildAdapterRequest (single-call path) or the adapter's
+	// runSplit (split path) — see TestBuildAdapterRequestPrependsProseExample
+	// below for the user-message delivery, and the adapters' split
+	// tests for the split path. The system prompt now stays
+	// byte-stable across calls of the same agent regardless of
+	// whether a schema is set.
 
 	t.Run("no schema yields prompt unchanged", func(t *testing.T) {
 		def := AgentDef{ID: "noschema", SystemPrompt: "hello"}
 		assert.Equal(t, "hello", BuildSystemPrompt(def))
 	})
 
-	t.Run("thinking-on agents do not get the example", func(t *testing.T) {
+	t.Run("thinking-on agents get system prompt unchanged", func(t *testing.T) {
 		def := AgentDef{ID: "spec_advocate", SystemPrompt: "advocate prompt", OutputSchema: "ChallengeBrief", Thinking: "on"}
 		out := BuildSystemPrompt(def)
-		assert.Equal(t, "advocate prompt", out, "thinking-on agents route through the split; no JSON example on the reasoning call")
+		assert.Equal(t, "advocate prompt", out)
 		assert.NotContains(t, out, "Example output")
 	})
 
-	t.Run("thinking-high agents do not get the example", func(t *testing.T) {
-		def := AgentDef{ID: "spec_architect", SystemPrompt: "architect prompt", OutputSchema: "RawSpecProposal", Thinking: "high"}
-		out := BuildSystemPrompt(def)
-		assert.Equal(t, "architect prompt", out, "thinking-high agents are still split; no JSON example on the reasoning call")
-	})
-
-	t.Run("thinking-off agent with schema gets the example appended", func(t *testing.T) {
+	t.Run("thinking-off agent with schema also gets system prompt unchanged", func(t *testing.T) {
 		def := AgentDef{ID: "scout", SystemPrompt: "scout prompt", OutputSchema: "ScoutBrief", Thinking: "off"}
 		out := BuildSystemPrompt(def)
-		assert.Contains(t, out, "scout prompt")
-		assert.Contains(t, out, "## Example output")
-		assert.Contains(t, out, "domain_read", "example payload's field names appear in the rendered JSON")
-	})
-
-	t.Run("empty thinking treated as off", func(t *testing.T) {
-		// Defensive: if an agent ships without an explicit
-		// thinking value (the guard test in Phase E catches this
-		// but BuildSystemPrompt must still behave sensibly), treat
-		// it as off so the agent gets the example.
-		def := AgentDef{ID: "scout", SystemPrompt: "scout prompt", OutputSchema: "ScoutBrief"}
-		out := BuildSystemPrompt(def)
-		assert.Contains(t, out, "## Example output")
+		assert.Equal(t, "scout prompt", out,
+			"DJ-130 follow-up: example no longer appended to system prompt; reaches model via user message instead")
+		assert.NotContains(t, out, "Example output")
 	})
 }
 

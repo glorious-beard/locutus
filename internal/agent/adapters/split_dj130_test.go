@@ -163,15 +163,37 @@ func TestBuildReasoningPassMessagesAppendsProseDirective(t *testing.T) {
 		{Role: RoleUser, Content: "projected input two"},
 	}
 
-	out := buildReasoningPassMessages(in)
-	require.Len(t, out, 3, "input messages survive verbatim; directive trails them")
-	assert.Equal(t, in[0], out[0], "first projected input passes through unchanged")
-	assert.Equal(t, in[1], out[1], "second projected input passes through unchanged")
-	assert.Equal(t, RoleUser, out[2].Role,
-		"directive lands as a user message — same role as the prior turn so the model reads it as continuation, not assistant injection")
-	assert.Equal(t, ReasoningPassProseDirective, out[2].Content)
-	assert.False(t, out[2].Cacheable,
-		"directive is guidance not content; no cache value in marking it")
+	t.Run("with_prose_example", func(t *testing.T) {
+		out := buildReasoningPassMessages("## domain_read\n\nExample content", in)
+		require.Len(t, out, 4,
+			"prose example first (Cacheable), projected inputs in middle, directive last")
+
+		// Layer 1: prose example, Cacheable=true
+		assert.Equal(t, RoleUser, out[0].Role)
+		assert.True(t, out[0].Cacheable,
+			"example layer is Cacheable=true for per-agent cross-iteration caching")
+		assert.Contains(t, out[0].Content, "## Example output shape")
+		assert.Contains(t, out[0].Content, "## domain_read")
+
+		// Middle: projected inputs verbatim
+		assert.Equal(t, in[0], out[1])
+		assert.Equal(t, in[1], out[2])
+
+		// Layer last: prose directive, Cacheable=false
+		assert.Equal(t, RoleUser, out[3].Role)
+		assert.Equal(t, ReasoningPassProseDirective, out[3].Content)
+		assert.False(t, out[3].Cacheable,
+			"directive is guidance not content; no cache value in marking it")
+	})
+
+	t.Run("without_prose_example", func(t *testing.T) {
+		out := buildReasoningPassMessages("", in)
+		require.Len(t, out, 3,
+			"empty exampleProse → no example layer; just inputs + directive")
+		assert.Equal(t, in[0], out[0])
+		assert.Equal(t, in[1], out[1])
+		assert.Equal(t, ReasoningPassProseDirective, out[2].Content)
+	})
 }
 
 // TestBuildFormatPassMessagesDoesNotIncludeProseDirective is the
@@ -180,7 +202,7 @@ func TestBuildReasoningPassMessagesAppendsProseDirective(t *testing.T) {
 // pass receives the example layer (Cacheable) and the reasoning
 // prose (uncacheable), nothing else.
 func TestBuildFormatPassMessagesDoesNotIncludeProseDirective(t *testing.T) {
-	msgs := buildFormatPassMessages(`{"k":"v"}`, "the reasoning prose")
+	msgs := buildFormatPassMessages("## domain_read\n\nExample", `{"k":"v"}`, "the reasoning prose")
 	for _, m := range msgs {
 		assert.NotContains(t, m.Content, "prose, not JSON",
 			"format pass must not carry the reasoning pass's prose directive — it would tell the formatter to emit prose instead of JSON")
@@ -201,24 +223,44 @@ func TestBuildFormatPassMessagesDoesNotIncludeProseDirective(t *testing.T) {
 // 1 (different agents → different prompts → different cache keys);
 // the helper structure tested here is what avoids that regression.
 func TestBuildFormatPassMessagesLayersExampleAsCacheableUserMessage(t *testing.T) {
-	t.Run("with_example_doc", func(t *testing.T) {
-		msgs := buildFormatPassMessages(`{"k":"v"}`, "the reasoning prose")
-		require.Len(t, msgs, 2)
-		assert.Equal(t, RoleUser, msgs[0].Role)
-		assert.True(t, msgs[0].Cacheable,
-			"example layer is Cacheable=true so per-agent cross-iteration caching catches it")
-		assert.Contains(t, msgs[0].Content, "## Example output")
-		assert.Contains(t, msgs[0].Content, `{"k":"v"}`)
+	t.Run("with_prose_and_json_example", func(t *testing.T) {
+		msgs := buildFormatPassMessages(
+			"## domain_read\n\nExample prose content",
+			`{"k":"v"}`,
+			"the reasoning prose",
+		)
+		require.Len(t, msgs, 3, "prose example, JSON example, reasoning prose")
 
+		// Layer 1: prose example (input shape demonstration)
+		assert.Equal(t, RoleUser, msgs[0].Role)
+		assert.True(t, msgs[0].Cacheable)
+		assert.Contains(t, msgs[0].Content, "Example reasoning-prose input")
+		assert.Contains(t, msgs[0].Content, "## domain_read")
+
+		// Layer 2: JSON example (output shape demonstration)
 		assert.Equal(t, RoleUser, msgs[1].Role)
-		assert.False(t, msgs[1].Cacheable,
+		assert.True(t, msgs[1].Cacheable,
+			"JSON example layer is Cacheable=true so per-agent cross-iteration caching catches it")
+		assert.Contains(t, msgs[1].Content, "Example structured output")
+		assert.Contains(t, msgs[1].Content, `{"k":"v"}`)
+
+		// Final: per-call reasoning prose, uncached
+		assert.Equal(t, RoleUser, msgs[2].Role)
+		assert.False(t, msgs[2].Cacheable,
 			"per-call reasoning prose is never reusable — Cacheable=false keeps the cache marker off it")
+		assert.Equal(t, "the reasoning prose", msgs[2].Content)
+	})
+
+	t.Run("with_only_json_example", func(t *testing.T) {
+		msgs := buildFormatPassMessages("", `{"k":"v"}`, "the reasoning prose")
+		require.Len(t, msgs, 2, "no prose example → only JSON example + reasoning prose")
+		assert.Contains(t, msgs[0].Content, "Example structured output")
 		assert.Equal(t, "the reasoning prose", msgs[1].Content)
 	})
 
-	t.Run("without_example_doc", func(t *testing.T) {
-		msgs := buildFormatPassMessages("", "the reasoning prose")
-		require.Len(t, msgs, 1, "no example registered → no example layer; just the reasoning prose")
+	t.Run("without_any_example", func(t *testing.T) {
+		msgs := buildFormatPassMessages("", "", "the reasoning prose")
+		require.Len(t, msgs, 1, "no examples registered → just the reasoning prose")
 		assert.Equal(t, RoleUser, msgs[0].Role)
 		assert.False(t, msgs[0].Cacheable)
 		assert.Equal(t, "the reasoning prose", msgs[0].Content)

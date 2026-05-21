@@ -3,6 +3,9 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/invopop/jsonschema"
@@ -283,5 +286,253 @@ func SchemaPromptDoc(name string) string {
 		return ""
 	}
 	return string(data)
+}
+
+// SchemaProsePromptDoc returns a labeled-prose rendering of the
+// registered example for inline documentation in agent prompts and
+// user messages. Each top-level field becomes a ## section: the
+// jsonschema `description=` tag value supplies the section context,
+// and the example value renders below it as an "Example: ..." block
+// (scalars inline; structs/slices as nested labeled lists).
+//
+// Used in three places:
+//
+//   - Single-call agents (thinking off + schema): the executor
+//     prepends this as a Cacheable user message before the projected
+//     input so the model sees a worked content shape in prose form
+//     without the JSON dump priming JSON-mode output.
+//   - Reasoning pass of the DJ-130 split: same plumbing; the prose
+//     example demonstrates the kind of narrative the reasoner should
+//     produce, complementing the explicit prose directive that
+//     trails the projected input.
+//   - Format pass of the split: emitted alongside the JSON example
+//     so the formatter sees a one-shot pairing (prose-shaped input →
+//     JSON-shaped output) for the same example content.
+//
+// Returns "" when no example is registered or when the example isn't
+// a struct (a JSON example exists but prose rendering needs named
+// fields to anchor against).
+func SchemaProsePromptDoc(name string) string {
+	example, ok := SchemaExample(name)
+	if !ok {
+		return ""
+	}
+	v := reflect.ValueOf(example)
+	for v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return ""
+	}
+	var b strings.Builder
+	renderProseStruct(&b, v)
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderProseStruct walks a struct value's exported fields and emits
+// each as a `## <name>` section with the field's jsonschema
+// description and an "Example: " block. Top-level entry point for
+// the generator; nested structs go through renderProseFields below
+// (which uses labeled-list shape instead of headings).
+func renderProseStruct(b *strings.Builder, v reflect.Value) {
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name := proseJSONName(f)
+		if name == "" || name == "-" {
+			continue
+		}
+		fmt.Fprintf(b, "## %s\n\n", name)
+		if desc := proseExtractDescription(f.Tag.Get("jsonschema")); desc != "" {
+			b.WriteString(desc)
+			b.WriteString("\n\n")
+		}
+		b.WriteString("Example: ")
+		renderProseExampleBlock(b, v.Field(i), 0)
+		b.WriteString("\n\n")
+	}
+}
+
+// renderProseExampleBlock renders one field's example value as either
+// an inline scalar (for strings/numbers/bools) on the same line as
+// "Example: ", or a multi-line list/struct under it. depth controls
+// list indentation for nested values.
+func renderProseExampleBlock(b *strings.Builder, v reflect.Value, depth int) {
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			b.WriteString("(none)")
+			return
+		}
+		v = v.Elem()
+	}
+	switch v.Kind() {
+	case reflect.String, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64, reflect.Bool:
+		b.WriteString(proseFormatScalar(v))
+	case reflect.Slice, reflect.Array:
+		if v.Len() == 0 {
+			b.WriteString("(none)")
+			return
+		}
+		b.WriteString("\n")
+		renderProseSliceEntries(b, v, depth+1)
+	case reflect.Struct:
+		b.WriteString("\n")
+		renderProseFields(b, v, depth+1)
+	case reflect.Map:
+		if v.Len() == 0 {
+			b.WriteString("(none)")
+			return
+		}
+		b.WriteString("\n")
+		renderProseMapEntries(b, v, depth+1)
+	default:
+		b.WriteString("(unsupported)")
+	}
+}
+
+// renderProseSliceEntries renders each slice entry as a top-level
+// bullet at depth-indent. Struct entries expand their fields as
+// nested labeled bullets one level deeper; scalar entries render
+// inline on the bullet. We render every entry so the example shows
+// the full variety the registered fixture authored; registered
+// examples are short by convention (1-3 entries each).
+func renderProseSliceEntries(b *strings.Builder, v reflect.Value, depth int) {
+	indent := strings.Repeat("  ", depth-1)
+	for i := 0; i < v.Len(); i++ {
+		entry := v.Index(i)
+		for entry.Kind() == reflect.Pointer {
+			if entry.IsNil() {
+				break
+			}
+			entry = entry.Elem()
+		}
+		switch entry.Kind() {
+		case reflect.Struct:
+			fmt.Fprintf(b, "%s- entry:\n", indent)
+			renderProseFields(b, entry, depth+1)
+		default:
+			fmt.Fprintf(b, "%s- ", indent)
+			renderProseExampleBlock(b, entry, depth)
+			b.WriteString("\n")
+		}
+	}
+}
+
+// renderProseFields renders a struct's exported fields as labeled
+// bullets at depth-indent. Used for nested structs (slice entries,
+// map values, fields inside a parent struct). Top-level structs go
+// through renderProseStruct's heading form instead.
+func renderProseFields(b *strings.Builder, v reflect.Value, depth int) {
+	indent := strings.Repeat("  ", depth-1)
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name := proseJSONName(f)
+		if name == "" || name == "-" {
+			continue
+		}
+		fv := v.Field(i)
+		for fv.Kind() == reflect.Pointer {
+			if fv.IsNil() {
+				break
+			}
+			fv = fv.Elem()
+		}
+		fmt.Fprintf(b, "%s- %s: ", indent, name)
+		switch fv.Kind() {
+		case reflect.Slice, reflect.Array:
+			if fv.Len() == 0 {
+				b.WriteString("(none)\n")
+				continue
+			}
+			b.WriteString("\n")
+			renderProseSliceEntries(b, fv, depth+1)
+		case reflect.Struct:
+			b.WriteString("\n")
+			renderProseFields(b, fv, depth+1)
+		case reflect.Map:
+			if fv.Len() == 0 {
+				b.WriteString("(none)\n")
+				continue
+			}
+			b.WriteString("\n")
+			renderProseMapEntries(b, fv, depth+1)
+		default:
+			b.WriteString(proseFormatScalar(fv))
+			b.WriteString("\n")
+		}
+	}
+}
+
+// renderProseMapEntries renders map[K]V entries as `- key: value`
+// bullets. Used rarely (most schemas use slices and structs); kept
+// for completeness so reflection on any registered example doesn't
+// fall through to "(unsupported)".
+func renderProseMapEntries(b *strings.Builder, v reflect.Value, depth int) {
+	indent := strings.Repeat("  ", depth-1)
+	for _, key := range v.MapKeys() {
+		fmt.Fprintf(b, "%s- %v: ", indent, key.Interface())
+		renderProseExampleBlock(b, v.MapIndex(key), depth)
+		b.WriteString("\n")
+	}
+}
+
+// proseFormatScalar renders a scalar Value as the inline text that
+// appears after "Example: " or "- name: ". Strings are quoted so
+// multi-word values stay legible.
+func proseFormatScalar(v reflect.Value) string {
+	switch v.Kind() {
+	case reflect.String:
+		return fmt.Sprintf("%q", v.String())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return fmt.Sprintf("%d", v.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return fmt.Sprintf("%d", v.Uint())
+	case reflect.Float32, reflect.Float64:
+		return strconv.FormatFloat(v.Float(), 'g', -1, 64)
+	case reflect.Bool:
+		return fmt.Sprintf("%t", v.Bool())
+	}
+	return fmt.Sprintf("%v", v.Interface())
+}
+
+// proseJSONName returns the field's JSON-encoded name from its `json`
+// struct tag, falling back to the Go field name when no tag is set.
+// Returns "" / "-" for fields tagged out of JSON serialization so the
+// renderer can skip them (matches `encoding/json`'s convention).
+func proseJSONName(f reflect.StructField) string {
+	tag := f.Tag.Get("json")
+	if tag == "" {
+		return f.Name
+	}
+	if comma := strings.IndexByte(tag, ','); comma >= 0 {
+		tag = tag[:comma]
+	}
+	if tag == "" {
+		return f.Name
+	}
+	return tag
+}
+
+// proseExtractDescription pulls the `description=...` value out of an
+// invopop-style jsonschema tag. Returns "" when the tag has no
+// description= key. Convention in this codebase is that description=
+// is the LAST key in the comma-separated tag (after enum=, minItems=,
+// etc.), so taking everything after the first `description=` substring
+// captures the full description including any internal commas.
+func proseExtractDescription(tag string) string {
+	idx := strings.Index(tag, "description=")
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(tag[idx+len("description="):])
 }
 

@@ -39,38 +39,75 @@ Rules:
 // the same JSON-mode bias on thinking-on + analytical tasks.
 const ReasoningPassProseDirective = "Make sure to output well-formatted prose, not JSON. I'll convert it to JSON on your behalf in a later step."
 
-// buildReasoningPassMessages appends the prose directive to the
-// projected input so the reasoning pass produces prose instead of
-// drifting into JSON mode. The directive sits last so the model
-// reads it most recently before generating. Used by each adapter's
-// runSplit; centralised here so the directive stays consistent
-// across providers.
-func buildReasoningPassMessages(in []Message) []Message {
-	out := make([]Message, 0, len(in)+1)
+// buildReasoningPassMessages assembles the user-message list the
+// reasoning pass receives. Two optional layers wrap the projected
+// input:
+//
+//   - Prose example (when exampleProse is non-empty): a Cacheable
+//     user message that goes FIRST, demonstrating the kind of
+//     section-anchored content the reasoner should produce. Per-agent
+//     content; hits the cache on every iteration of the same agent.
+//   - Prose directive: a Cacheable=false trailing user message
+//     (ReasoningPassProseDirective) that fires LAST so the model
+//     reads "produce prose, not JSON" most recently before
+//     generating.
+//
+// The projected input sits between them, carrying whatever
+// Cacheable markers the upstream layer set. Used by each adapter's
+// runSplit; centralised here so the directive + example layering
+// stays consistent across providers.
+func buildReasoningPassMessages(exampleProse string, in []Message) []Message {
+	out := make([]Message, 0, len(in)+2)
+	if exampleProse != "" {
+		out = append(out, Message{
+			Role:      RoleUser,
+			Content:   "## Example output shape\n\n" + exampleProse,
+			Cacheable: true,
+		})
+	}
 	out = append(out, in...)
 	out = append(out, Message{Role: RoleUser, Content: ReasoningPassProseDirective})
 	return out
 }
 
 // buildFormatPassMessages composes the user-message list each
-// adapter's runSplit hands to the format pass. When exampleDoc is
-// non-empty (the OutputSchema has a registered example), it goes
-// first as a Cacheable=true user message — exposing it to per-agent
-// cross-iteration prefix caching while keeping
-// CanonicalFormatterPrompt as the universal cache prefix in the
-// system position. The reasoning prose trails as a Cacheable=false
-// user message (per-call content, never reusable).
+// adapter's runSplit hands to the format pass. Layered:
 //
-// When exampleDoc is empty, the list collapses to a single
-// reasoning-prose user message — no example layer, but the formatter
-// prompt still drives shape via the OutputSchema struct tags the
-// provider's strict-mode enforcement reads.
-func buildFormatPassMessages(exampleDoc, reasoningProse string) []Message {
+//   - Prose example (when exampleProse is non-empty): a Cacheable
+//     user message showing the kind of reasoning-prose input the
+//     formatter receives. Per-agent; hits the cache on every
+//     iteration of the same agent.
+//   - JSON example (when exampleDoc is non-empty): a Cacheable user
+//     message showing the kind of structured output the formatter
+//     produces. Paired with the prose example above, this is a
+//     one-shot input → output demonstration.
+//   - Reasoning prose: the per-call trailing user message
+//     (Cacheable=false) carrying the actual reasoning pass's output
+//     to extract from.
+//
+// CanonicalFormatterPrompt stays as the universal Layer-1 cache
+// prefix in the system position; the prose+JSON example layers stack
+// as Layer-2 per-agent cache hits; the reasoning prose is the only
+// per-call uncacheable segment.
+//
+// When both example fields are empty (RegisterSchemaOverride paths
+// with no Go example), the list collapses to a single reasoning-prose
+// user message — no example layers, but the formatter prompt still
+// drives shape via the OutputSchema struct tags the provider's
+// strict-mode enforcement reads.
+func buildFormatPassMessages(exampleProse, exampleDoc, reasoningProse string) []Message {
 	var msgs []Message
+	if exampleProse != "" {
+		msgs = append(msgs, Message{
+			Role:      RoleUser,
+			Content:   "## Example reasoning-prose input\n\n" + exampleProse,
+			Cacheable: true,
+		})
+	}
 	if exampleDoc != "" {
 		msgs = append(msgs, Message{
 			Role:      RoleUser,
-			Content:   "## Example output\n\n```json\n" + exampleDoc + "\n```\n",
+			Content:   "## Example structured output for the prose above\n\n```json\n" + exampleDoc + "\n```\n",
 			Cacheable: true,
 		})
 	}

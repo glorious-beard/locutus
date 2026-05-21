@@ -123,36 +123,36 @@ func LoadAgentDefs(fsys specio.FS, dir string) ([]AgentDef, error) {
 	return defs, nil
 }
 
-// BuildSystemPrompt returns the agent's system prompt with an
-// optional JSON example payload appended.
+// BuildSystemPrompt returns the agent's system prompt verbatim.
 //
-// The example is appended only when BOTH conditions hold:
+// DJ-130 follow-up: this used to append a `## Example output` block
+// with the registered schema example as indented JSON. That dump
+// reached the model in the system prompt on every thinking-off +
+// schema call. Two problems:
 //
-//  1. The agent declares an OutputSchema. (Without it, there's
-//     nothing to demonstrate.)
-//  2. The agent's thinking mode is off. Thinking-on agents that
-//     emit structured output run through the dispatcher's two-call
-//     split (reasoning call has no schema; format call extracts
-//     into JSON), so a JSON example on the reasoning call would
-//     suggest a JSON output shape the reasoning call isn't asked
-//     to produce.
+//  1. JSON dumps in the system prompt prime JSON-mode output —
+//     exactly the failure that DJ-130 surfaced (the model treats
+//     the dump as "what shape my response should match" and emits
+//     JSON throughout, dropping content between thinking and JSON
+//     serialization).
+//  2. The example bytes varied per-agent, so the system prompt was
+//     per-agent, which broke cross-agent cache-prefix reuse on
+//     providers that prefix-cache (OpenAI Responses, Gemini Pro).
 //
-// Schema descriptions reach the model via the provider's strict-
-// mode structured-output configuration on every call. The example
-// payload here is complementary — concrete shape demonstration
-// alongside the description-driven field semantics. Agents that
-// want positive "cover these aspects" prose framing add it to
-// their .md directly.
+// The example now reaches the model as a Cacheable user message
+// (executor.buildAdapterRequest for single-call agents; adapter's
+// runSplit for the split path). Same content surface; cleaner cache
+// layering (system prompt stays byte-stable across calls of the
+// same agent and even across agents whose system prompts are
+// identical); and the example renders as prose via
+// SchemaProsePromptDoc rather than as a JSON dump that primes
+// JSON-mode output.
+//
+// BuildSystemPrompt remains the canonical entry point for "render
+// the agent's system prompt for this call" so the session recorder
+// and adapters route through one helper. The helper is now a thin
+// pass-through; left in place for the lifecycle hook and for
+// future extensions (e.g., per-agent guardrail prefixes).
 func BuildSystemPrompt(def AgentDef) string {
-	if def.OutputSchema == "" {
-		return def.SystemPrompt
-	}
-	if def.Thinking != "" && def.Thinking != "off" {
-		return def.SystemPrompt
-	}
-	doc := SchemaPromptDoc(def.OutputSchema)
-	if doc == "" {
-		return def.SystemPrompt
-	}
-	return def.SystemPrompt + "\n\n## Example output\n\n```json\n" + doc + "\n```\n"
+	return def.SystemPrompt
 }
