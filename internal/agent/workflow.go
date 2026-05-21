@@ -135,6 +135,13 @@ type RoundResult struct {
 	// executeAgent doesn't need to know about iterations.
 	TemplateID     string
 	IterationIndex int
+
+	// FanoutItem echoes the per-call fanout dispatch context (the
+	// raw JSON of the per-iteration item the executor dispatched
+	// against). Empty for non-fanout calls. Threaded through from
+	// snap.FanoutItem so merge handlers can attribute results back
+	// to the dimension/cluster/item that produced them (DJ-129).
+	FanoutItem string
 }
 
 // WorkflowExecutor runs a workflow using the generic DAG executor with a
@@ -266,15 +273,15 @@ func (e *WorkflowExecutor[S]) executeAgent(ctx context.Context, step WorkflowSte
 		out, err := step.RunItem(ctx, snap)
 		if err != nil {
 			e.emitEvent(stepID, agentID, "error", err.Error())
-			return RoundResult{StepID: stepID, AgentID: agentID, Output: out, Err: err}
+			return RoundResult{StepID: stepID, AgentID: agentID, Output: out, Err: err, FanoutItem: snap.FanoutItem}
 		}
 		e.emitEvent(stepID, agentID, "completed", "")
-		return RoundResult{StepID: stepID, AgentID: agentID, Output: out}
+		return RoundResult{StepID: stepID, AgentID: agentID, Output: out, FanoutItem: snap.FanoutItem}
 	}
 
 	def, ok := e.AgentDefs[agentID]
 	if !ok {
-		return RoundResult{StepID: stepID, AgentID: agentID, Err: fmt.Errorf("agent %q not found", agentID)}
+		return RoundResult{StepID: stepID, AgentID: agentID, Err: fmt.Errorf("agent %q not found", agentID), FanoutItem: snap.FanoutItem}
 	}
 
 	e.emitEvent(stepID, agentID, "queued", "")
@@ -315,11 +322,11 @@ func (e *WorkflowExecutor[S]) executeAgent(ctx context.Context, step WorkflowSte
 	resp, err := RunWithRetry(ctx, e.Executor, def, input, executionRetryConfig())
 	if err != nil {
 		e.emitEvent(stepID, agentID, "error", err.Error())
-		return RoundResult{StepID: stepID, AgentID: agentID, Err: err}
+		return RoundResult{StepID: stepID, AgentID: agentID, Err: err, FanoutItem: snap.FanoutItem}
 	}
 
 	e.emitEvent(stepID, agentID, "completed", "")
-	return RoundResult{StepID: stepID, AgentID: agentID, Output: resp.Content}
+	return RoundResult{StepID: stepID, AgentID: agentID, Output: resp.Content, FanoutItem: snap.FanoutItem}
 }
 
 // ExecuteRound runs a single workflow step against the current state. For

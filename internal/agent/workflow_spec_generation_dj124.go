@@ -60,7 +60,14 @@ func scoutSpawnFor(myIter, budget int, loopTemplate func(executor.IterationConte
 		// concerns remain is rejected — the scout must either
 		// dispose every open concern or report converged=false.
 		openCount := countOpenConcerns(&snap.State)
-		if brief.Converged && openCount == 0 {
+		// DJ-129: convergence requires dimension stability — a scout
+		// that surfaces a new critique dimension this iteration must
+		// run at least one more iteration so the new dimension's
+		// critic-elaborator gets a chance to surface concerns. Per
+		// design decision #7, retirement does not block; only
+		// new-addition does.
+		dimsStable := dimensionsAreStable(&snap.State)
+		if brief.Converged && openCount == 0 && dimsStable {
 			return nil, nil, nil
 		}
 		if brief.Converged && openCount > 0 {

@@ -860,6 +860,17 @@ func mergeScoutBrief(s *PlanningState, results []RoundResult) {
 	s.PriorScoutBrief = s.ScoutBrief
 	s.ScoutBrief = v
 
+	// Pick the iteration index off the first result that supplied
+	// the brief content. RoundResult.IterationIndex is stamped by the
+	// RunStep wrapper from the executor.Step.
+	var iter int
+	for _, r := range results {
+		if r.Output == v {
+			iter = r.IterationIndex
+			break
+		}
+	}
+
 	var brief ScoutBrief
 	if err := json.Unmarshal([]byte(v), &brief); err != nil {
 		// Brief is unparseable as a ScoutBrief — leave AxesOpen /
@@ -868,6 +879,7 @@ func mergeScoutBrief(s *PlanningState, results []RoundResult) {
 		// it tries to read Converged.
 		s.AxesOpen = nil
 		s.NewNodesFromScout = nil
+		s.CurrentCritiqueDimensions = nil
 		return
 	}
 	// Replace (not append) the per-iteration slices. Axes closed in the
@@ -883,6 +895,17 @@ func mergeScoutBrief(s *PlanningState, results []RoundResult) {
 	} else {
 		s.NewNodesFromScout = nil
 	}
+
+	// DJ-129: absorb critique dimensions onto PlanningState and
+	// record stability. Per design decision #7,
+	// recordDimensionStability is append-only so the historical
+	// signal of "this dimension was considered" survives retirement.
+	if len(brief.CritiqueDimensions) > 0 {
+		s.CurrentCritiqueDimensions = append([]CritiqueDimension(nil), brief.CritiqueDimensions...)
+	} else {
+		s.CurrentCritiqueDimensions = nil
+	}
+	recordDimensionStability(s, brief.CritiqueDimensions, iter)
 
 	// DJ-125 Phase 7: apply scout-graded concern dispositions onto
 	// state.Concerns by id-match. The id is the manifest position
