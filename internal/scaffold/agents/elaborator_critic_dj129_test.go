@@ -14,10 +14,17 @@ import (
 
 func loadCriticElaboratorPrompt(t *testing.T) string {
 	t.Helper()
+	return loadPrompt(t, "spec_critic_elaborator.md")
+}
+
+// loadPrompt reads one prompt file from the canonical scaffold dir.
+// Shared by the elaborator-* test files that assert prompt shape.
+func loadPrompt(t *testing.T, name string) string {
+	t.Helper()
 	wd, err := os.Getwd()
 	require.NoError(t, err)
-	b, err := os.ReadFile(filepath.Join(wd, "spec_critic_elaborator.md"))
-	require.NoError(t, err)
+	b, err := os.ReadFile(filepath.Join(wd, name))
+	require.NoError(t, err, "reading %s", name)
 	return string(b)
 }
 

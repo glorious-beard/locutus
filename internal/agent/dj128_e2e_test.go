@@ -49,6 +49,15 @@ func TestDJ128HappyPathConvergesViaFlipRevision(t *testing.T) {
 	require.NoError(t, osFS.MkdirAll(".borg/history", 0o755))
 	historian := history.NewHistorian(osFS, ".borg/history")
 
+	// DJ-129: scout surfaces a cost dimension every iter; one
+	// spec_critic_elaborator call fires per iter.
+	costDim := CritiqueDimension{
+		ID: "cost-ceiling-coverage", Lens: "cost",
+		FocusQuestion:  "Does the proposal fit the $150/mo ceiling?",
+		SourceEvidence: []string{"GOALS §3: $150/mo ceiling"},
+		Disciplines:    []string{"web_grounded", "goals_grounded"},
+		SeverityFloor:  "high",
+	}
 	scout0 := scoutBriefJSON(t, ScoutBrief{
 		DomainRead: "Observability product",
 		AxesOpen: []OpenAxis{{
@@ -59,7 +68,8 @@ func TestDJ128HappyPathConvergesViaFlipRevision(t *testing.T) {
 			Kind: "feature", ID: "feat-monitoring", Title: "Monitoring product",
 			Summary: "Metrics + logs dashboard.", Decisions: []string{},
 		}},
-		Converged: false,
+		CritiqueDimensions: []CritiqueDimension{costDim},
+		Converged:          false,
 	})
 	decDatadog := decisionProposalJSON(t, RawDecisionProposal{
 		ID: "dec-observability", Title: "Adopt Datadog",
@@ -95,7 +105,8 @@ func TestDJ128HappyPathConvergesViaFlipRevision(t *testing.T) {
 
 	scoutKeepOpen := scoutBriefJSON(t, ScoutBrief{
 		DomainRead: "Observability product", AxesOpen: []OpenAxis{}, NewNodes: []NewSpecNode{},
-		Converged: false,
+		CritiqueDimensions: []CritiqueDimension{costDim},
+		Converged:          false,
 	})
 
 	// Flip revision: elaborator picks the cost critic's CloudWatch
@@ -121,7 +132,8 @@ func TestDJ128HappyPathConvergesViaFlipRevision(t *testing.T) {
 
 	scoutConverged := scoutBriefJSON(t, ScoutBrief{
 		DomainRead: "Observability product", AxesOpen: []OpenAxis{}, NewNodes: []NewSpecNode{},
-		Converged: true,
+		CritiqueDimensions: []CritiqueDimension{costDim},
+		Converged:          true,
 	})
 
 	mock := NewMockExecutor(
@@ -130,18 +142,12 @@ func TestDJ128HappyPathConvergesViaFlipRevision(t *testing.T) {
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decDatadog, Model: "m"}},
 		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featMonitoring, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: costIssue, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: costIssue, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 		// iter-2: revise fires; concern flips to addressed; tail scout converges.
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revFlip, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutConverged, Model: "m"}},
 	)
 
@@ -191,6 +197,14 @@ func TestDJ128CapAsCommitShipsWithLockedDecisions(t *testing.T) {
 	require.NoError(t, osFS.MkdirAll(".borg/history", 0o755))
 	historian := history.NewHistorian(osFS, ".borg/history")
 
+	// DJ-129: scout surfaces a cost dimension every iter.
+	capCostDim := CritiqueDimension{
+		ID: "cost-ceiling-coverage", Lens: "cost",
+		FocusQuestion:  "Does the proposal fit the $150/mo ceiling?",
+		SourceEvidence: []string{"GOALS §3: $150/mo ceiling"},
+		Disciplines:    []string{"web_grounded", "goals_grounded"},
+		SeverityFloor:  "high",
+	}
 	scout0 := scoutBriefJSON(t, ScoutBrief{
 		DomainRead: "Observability product",
 		AxesOpen: []OpenAxis{{
@@ -201,7 +215,8 @@ func TestDJ128CapAsCommitShipsWithLockedDecisions(t *testing.T) {
 			Kind: "feature", ID: "feat-monitoring", Title: "Monitoring",
 			Summary: "Metrics + logs.", Decisions: []string{},
 		}},
-		Converged: false,
+		CritiqueDimensions: []CritiqueDimension{capCostDim},
+		Converged:          false,
 	})
 	decFirst := decisionProposalJSON(t, RawDecisionProposal{
 		ID: "dec-observability", Title: "Adopt Datadog v0",
@@ -228,11 +243,11 @@ func TestDJ128CapAsCommitShipsWithLockedDecisions(t *testing.T) {
 		},
 		RelatedDecisionIDs: []string{"dec-observability"},
 	}}})
-	noIssues := `{"issues":[]}`
 
 	scoutKeepOpen := scoutBriefJSON(t, ScoutBrief{
 		DomainRead: "Observability product", AxesOpen: []OpenAxis{}, NewNodes: []NewSpecNode{},
-		Converged: false,
+		CritiqueDimensions: []CritiqueDimension{capCostDim},
+		Converged:          false,
 	})
 
 	// Iter-2 revise: elaborator emits a revision that satisfies
@@ -273,26 +288,17 @@ func TestDJ128CapAsCommitShipsWithLockedDecisions(t *testing.T) {
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decFirst, Model: "m"}},
 		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featForObs, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: costPersists, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: costPersists, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 		// iter-2
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revV1, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: costPersists, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: costPersists, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 		// iter-3 (cap=2 fires after this revise)
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revV2, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: costPersists, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: costPersists, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 	)
 
@@ -342,6 +348,14 @@ func TestDJ128RejectRevisionAddsCriticCounterproposalAsAlternative(t *testing.T)
 	require.NoError(t, osFS.MkdirAll(".borg/history", 0o755))
 	historian := history.NewHistorian(osFS, ".borg/history")
 
+	// DJ-129: scout surfaces a cost dimension every iter.
+	rejectCostDim := CritiqueDimension{
+		ID: "cost-ceiling-coverage", Lens: "cost",
+		FocusQuestion:  "Does the proposal fit the $150/mo ceiling?",
+		SourceEvidence: []string{"GOALS §3"},
+		Disciplines:    []string{"web_grounded", "goals_grounded"},
+		SeverityFloor:  "high",
+	}
 	scout0 := scoutBriefJSON(t, ScoutBrief{
 		DomainRead: "Observability product",
 		AxesOpen: []OpenAxis{{
@@ -352,7 +366,8 @@ func TestDJ128RejectRevisionAddsCriticCounterproposalAsAlternative(t *testing.T)
 			Kind: "feature", ID: "feat-monitoring", Title: "Monitoring",
 			Summary: "Metrics + logs.", Decisions: []string{},
 		}},
-		Converged: false,
+		CritiqueDimensions: []CritiqueDimension{rejectCostDim},
+		Converged:          false,
 	})
 	decDatadog := decisionProposalJSON(t, RawDecisionProposal{
 		ID: "dec-observability", Title: "Adopt Datadog",
@@ -383,7 +398,8 @@ func TestDJ128RejectRevisionAddsCriticCounterproposalAsAlternative(t *testing.T)
 
 	scoutKeepOpen := scoutBriefJSON(t, ScoutBrief{
 		DomainRead: "Observability product", AxesOpen: []OpenAxis{}, NewNodes: []NewSpecNode{},
-		Converged: false,
+		CritiqueDimensions: []CritiqueDimension{rejectCostDim},
+		Converged:          false,
 	})
 
 	// Reject revision: elaborator KEEPS "Adopt Datadog" as the chosen
@@ -408,7 +424,8 @@ func TestDJ128RejectRevisionAddsCriticCounterproposalAsAlternative(t *testing.T)
 
 	scoutConverged := scoutBriefJSON(t, ScoutBrief{
 		DomainRead: "Observability product", AxesOpen: []OpenAxis{}, NewNodes: []NewSpecNode{},
-		Converged: true,
+		CritiqueDimensions: []CritiqueDimension{rejectCostDim},
+		Converged:          true,
 	})
 
 	mock := NewMockExecutor(
@@ -416,17 +433,11 @@ func TestDJ128RejectRevisionAddsCriticCounterproposalAsAlternative(t *testing.T)
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decDatadog, Model: "m"}},
 		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featForObs, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: costIssue, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: costIssue, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revReject, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutConverged, Model: "m"}},
 	)
 

@@ -584,8 +584,15 @@ func assembleRawProposal(state *PlanningState) (string, bool) {
 }
 
 // critiqueKindFor maps a critic agent ID to its lens label for grouping
-// in the revise prompt. Unknown agents fall back to "review" so concerns
-// don't lose their kind tag entirely.
+// in the revise projection. Under DJ-129 the primary path for deriving
+// Concern.Kind is the CritiqueDimension's Lens field (via
+// deriveCritiqueKind). This helper is retained as a fallback when:
+//
+//   - the result has no FanoutItem (pre-DJ-129 loaded session data);
+//   - the FanoutItem doesn't decode as CritiqueDimensionItem;
+//   - the dimension's Lens is empty.
+//
+// Unknown agent IDs fall back to "review" so the Kind tag is never empty.
 func critiqueKindFor(agentID string) string {
 	switch agentID {
 	case "architect_critic":

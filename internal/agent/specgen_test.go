@@ -58,7 +58,9 @@ var testSpecGenWorkflow = &Workflow[PlanningState]{
 		{ID: "survey", Agents: []string{"spec_scout"}, Project: projectDefault, Merge: mergeScoutBrief},
 		{ID: "propose", Agents: []string{"spec_architect"}, DependsOn: []string{"survey"}, Project: projectPropose, Merge: testMergeRawProposal},
 		{ID: "reconcile", Agents: []string{"spec_reconciler"}, DependsOn: []string{"propose"}, Project: projectReconcile, Merge: mergeReconciledProposal},
-		{ID: "critique", Agents: []string{"architect_critic", "devops_critic", "sre_critic", "cost_critic"}, Parallel: true, DependsOn: []string{"reconcile"}, Project: projectChallenge, Merge: mergeCriticIssues},
+		// DJ-129: critique is a Fanout over scout-surfaced CritiqueDimensions
+		// dispatching the parametric spec_critic_elaborator.
+		{ID: "critique", Agents: []string{"spec_critic_elaborator"}, DependsOn: []string{"reconcile"}, Fanout: fanoutCritiqueDimensions, Project: projectCritiqueDimension, Merge: mergeCriticIssues},
 		{ID: "revise", Agents: []string{"spec_architect"}, DependsOn: []string{"critique"}, Conditional: testHasConcerns, Project: projectRevise, Merge: testMergeRawProposal},
 		{ID: "reconcile_revise", Agents: []string{"spec_reconciler"}, DependsOn: []string{"revise"}, Conditional: testHasConcerns, Project: projectReconcile, Merge: mergeReconciledProposal},
 	},
@@ -81,9 +83,13 @@ Test agent %s.
 `, id, role, capability, schema, id)
 }
 
-// setupSpecGenFixture builds a MemFS with the six council agents
+// setupSpecGenFixture builds a MemFS with the council agents
 // testSpecGenWorkflow expects. Tests pass this fs alongside
 // testSpecGenWorkflow to generateSpecWithWorkflow.
+//
+// DJ-129: spec_critic_elaborator replaces the fixed four critic
+// agents (architect, devops, sre, cost) — the critique step is now
+// a fanout over scout-surfaced CritiqueDimensions.
 func setupSpecGenFixture(t *testing.T) specio.FS {
 	t.Helper()
 	fs := specio.NewMemFS()
@@ -92,10 +98,7 @@ func setupSpecGenFixture(t *testing.T) specio.FS {
 		{"spec_scout", "survey", "balanced", "ScoutBrief"},
 		{"spec_architect", "planning", "strong", "RawSpecProposal"},
 		{"spec_reconciler", "reconcile", "balanced", "ReconciliationVerdict"},
-		{"architect_critic", "review", "balanced", "CriticIssues"},
-		{"devops_critic", "review", "balanced", "CriticIssues"},
-		{"sre_critic", "review", "balanced", "CriticIssues"},
-		{"cost_critic", "review", "balanced", "CriticIssues"},
+		{"spec_critic_elaborator", "review", "balanced", "CriticIssues"},
 	} {
 		require.NoError(t, fs.WriteFile(
 			fmt.Sprintf(".borg/agents/%s.md", a.id),
@@ -108,7 +111,11 @@ func setupSpecGenFixture(t *testing.T) specio.FS {
 // Canonical mock-response shorthands so each test reads as a sequence
 // rather than a wall of JSON.
 const (
-	scoutResp     = `{"domain_read":"a project","technology_options":["x: a vs b"],"implicit_assumptions":["scale: 100k. Default: 1k concurrent"],"watch_outs":["x"]}`
+	// DJ-129: scoutResp surfaces a single CritiqueDimension so the
+	// critique fanout dispatches one spec_critic_elaborator call per
+	// iteration. The tests built on testSpecGenWorkflow expect the
+	// critic to fire (mock the criticEmpty / criticDangler shapes).
+	scoutResp     = `{"domain_read":"a project","technology_options":["x: a vs b"],"implicit_assumptions":["scale: 100k. Default: 1k concurrent"],"watch_outs":["x"],"critique_dimensions":[{"id":"architecture-coherence","lens":"architecture","focus_question":"Does the proposal hang together?","source_evidence":["GOALS.md describes the project"],"disciplines":["freeform"],"severity_floor":"medium"}]}`
 	criticEmpty   = `{"issues":[]}`
 	criticDangler = `{"issues":["feature feat-x references dec-missing but it is not generated"]}`
 	// rawProposalCanonical is a RawSpecProposal under DJ-124: one feature
@@ -142,15 +149,12 @@ func TestGenerateSpecRequiresFSys(t *testing.T) {
 }
 
 func TestGenerateSpecCleanProposalSkipsRevise(t *testing.T) {
-	// Phase 2 flow: scout → propose → reconcile → 4 critics (all empty)
-	// → no revise → no reconcile_revise = 7 calls.
+	// DJ-129 flow: scout → propose → reconcile → 1 critic (fanout over
+	// 1 dim) → no revise → no reconcile_revise = 4 calls.
 	mock := NewMockExecutor(
 		MockResponse{Response: &AgentOutput{Content: scoutResp, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: rawProposalCanonical, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
 	)
 	fs := setupSpecGenFixture(t)
@@ -167,8 +171,8 @@ func TestGenerateSpecCleanProposalSkipsRevise(t *testing.T) {
 		"canonical IDs are slug-derived from the inline decision's title")
 	assert.Equal(t, []string{"dec-use-d"}, out.Features[0].Decisions,
 		"feature should reference the canonical decision id assigned by the reconciler")
-	assert.Equal(t, 7, mock.CallCount(),
-		"seven calls when critics return empty: scout + propose + reconcile + 4 critics, no revise")
+	assert.Equal(t, 4, mock.CallCount(),
+		"four calls when critic returns empty under DJ-129: scout + propose + reconcile + 1 dim critic, no revise")
 }
 
 func TestGenerateSpecBridgesEventsToSink(t *testing.T) {
@@ -180,9 +184,6 @@ func TestGenerateSpecBridgesEventsToSink(t *testing.T) {
 		MockResponse{Response: &AgentOutput{Content: scoutResp, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: rawProposalCanonical, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
 	)
 	fs := setupSpecGenFixture(t)
@@ -216,9 +217,9 @@ func TestGenerateSpecBridgesEventsToSink(t *testing.T) {
 	}
 	assert.Equal(t, agentStarted, agentCompleted,
 		"every agent started should pair with a completed in a clean run")
-	assert.GreaterOrEqual(t, agentStarted, 7,
-		"seven agents (scout + proposer + reconciler + 4 critics) should each emit started+completed")
-	for _, want := range []string{"spec_scout", "spec_architect", "spec_reconciler", "architect_critic", "devops_critic", "sre_critic", "cost_critic"} {
+	assert.GreaterOrEqual(t, agentStarted, 4,
+		"four agents (scout + proposer + reconciler + 1 critic-elaborator) should each emit started+completed under DJ-129")
+	for _, want := range []string{"spec_scout", "spec_architect", "spec_reconciler", "spec_critic_elaborator"} {
 		assert.True(t, seenAgents[want], "expected events for agent %q", want)
 	}
 
@@ -264,9 +265,9 @@ func TestStripMutates(t *testing.T) {
 }
 
 func TestGenerateSpecCritiqueRevisesProposal(t *testing.T) {
-	// Phase 2 flow with critic findings:
-	// scout → propose (raw) → reconcile → 4 critics (1 flags, 3 empty)
-	// → revise → reconcile_revise = 9 calls.
+	// DJ-129 flow with critic findings:
+	// scout → propose (raw) → reconcile → 1 critic-elaborator (flags)
+	// → revise → reconcile_revise = 6 calls.
 	rawRevised := `{
 		"features": [{"id":"feat-x","title":"X","description":"a feature","decisions":["dec-use-d","dec-cache-reads"]}],
 		"strategies": [{"id":"strat-x","title":"S","kind":"foundational","body":"prose","decisions":["dec-use-d"]}],
@@ -276,12 +277,8 @@ func TestGenerateSpecCritiqueRevisesProposal(t *testing.T) {
 		MockResponse{Response: &AgentOutput{Content: scoutResp, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: rawProposalCanonical, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
-		// Four critic responses: one flags, three are empty. Order is
-		// non-deterministic across goroutines, but the count is fixed.
+		// One critic-elaborator call per dimension (the scout surfaces 1).
 		MockResponse{Response: &AgentOutput{Content: criticDangler, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
 		// revise emits a new RawSpecProposal.
 		MockResponse{Response: &AgentOutput{Content: rawRevised, Model: "m"}},
 		// reconcile_revise emits an empty verdict (no clusters need merging).
@@ -296,8 +293,8 @@ func TestGenerateSpecCritiqueRevisesProposal(t *testing.T) {
 	require.Equal(t, 1, len(out.Features))
 	require.Equal(t, 2, len(out.Decisions),
 		"revise added a second inline decision; reconcile_revise minted a separate canonical id for it")
-	assert.Equal(t, 9, mock.CallCount(),
-		"nine calls when critics flag issues: scout + propose + reconcile + 4 critics + revise + reconcile_revise")
+	assert.Equal(t, 6, mock.CallCount(),
+		"six calls under DJ-129: scout + propose + reconcile + 1 critic-elaborator + revise + reconcile_revise")
 }
 
 func TestGenerateSpecScoutBriefReachesProposer(t *testing.T) {
@@ -307,15 +304,13 @@ func TestGenerateSpecScoutBriefReachesProposer(t *testing.T) {
 		"domain_read":"electoral campaign tooling",
 		"technology_options":["frontend: Next.js vs Remix"],
 		"implicit_assumptions":["scale: 100k registered, 1k concurrent. Default: small team"],
-		"watch_outs":["BigQuery costs at scale"]
+		"watch_outs":["BigQuery costs at scale"],
+		"critique_dimensions":[{"id":"architecture-coherence","lens":"architecture","focus_question":"Does the proposal hang together?","source_evidence":["GOALS.md"],"disciplines":["freeform"],"severity_floor":"medium"}]
 	}`
 	mock := NewMockExecutor(
 		MockResponse{Response: &AgentOutput{Content: scout, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: rawProposalCanonical, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: criticEmpty, Model: "m"}},
 	)
 	fs := setupSpecGenFixture(t)
@@ -325,7 +320,7 @@ func TestGenerateSpecScoutBriefReachesProposer(t *testing.T) {
 	}, testSpecGenWorkflow)
 	require.NoError(t, err)
 
-	// Find the proposer call. Order: 0=scout, 1=propose, 2=reconcile, 3-6=critics.
+	// Find the proposer call. Order: 0=scout, 1=propose, 2=reconcile, 3=critic.
 	calls := mock.Calls()
 	require.GreaterOrEqual(t, len(calls), 2)
 	proposerUser := calls[1].Input.Messages[len(calls[1].Input.Messages)-1].Content
@@ -338,18 +333,15 @@ func TestGenerateSpecScoutBriefReachesProposer(t *testing.T) {
 }
 
 func TestGenerateSpecCriticIssuesReachReviser(t *testing.T) {
-	// Each critic emits CriticIssues; merge_as=critic_issues flattens
-	// each issue into a Concern entry. The revise call (architect round
-	// 2) should then see the concerns formatted in its user message.
-	scout := `{"domain_read":"x"}`
+	// DJ-129: the critic-elaborator emits CriticIssues; merge_as=
+	// critic_issues flattens each issue into a Concern entry. The
+	// revise call should see the concerns formatted in its user message.
+	scout := `{"domain_read":"x","critique_dimensions":[{"id":"architecture-coherence","lens":"architecture","focus_question":"q","source_evidence":["e"],"disciplines":["freeform"],"severity_floor":"medium"}]}`
 	mock := NewMockExecutor(
 		MockResponse{Response: &AgentOutput{Content: scout, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: rawProposalCanonical, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: `{"issues":["arch issue"]}`, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: `{"issues":["devops issue"]}`, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: `{"issues":["sre issue"]}`, Model: "m"}},
-		MockResponse{Response: &AgentOutput{Content: `{"issues":["cost issue"]}`, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: rawProposalCanonical, Model: "m"}},
 		MockResponse{Response: &AgentOutput{Content: reconcileEmpty, Model: "m"}},
 	)
@@ -361,17 +353,14 @@ func TestGenerateSpecCriticIssuesReachReviser(t *testing.T) {
 	require.NoError(t, err)
 
 	calls := mock.Calls()
-	require.Equal(t, 9, len(calls),
-		"scout + propose + reconcile + 4 critics + revise + reconcile_revise = 9")
-	// The revise call is at index 7 (after the 4 critics). Its user
-	// content should mention every critic's issue, with role-based
+	require.Equal(t, 6, len(calls),
+		"DJ-129: scout + propose + reconcile + 1 critic-elaborator + revise + reconcile_revise = 6")
+	// The revise call is at index 4 (after 1 critic-elaborator). Its
+	// user content should mention the critic's issue, with role-based
 	// attribution from projectRevise.
-	revise := calls[7].Input.Messages
+	revise := calls[4].Input.Messages
 	revisePrompt := strings.Join(messageContents(revise), "\n")
 	assert.Contains(t, revisePrompt, "arch issue")
-	assert.Contains(t, revisePrompt, "devops issue")
-	assert.Contains(t, revisePrompt, "sre issue")
-	assert.Contains(t, revisePrompt, "cost issue")
 }
 
 func messageContents(msgs []Message) []string {

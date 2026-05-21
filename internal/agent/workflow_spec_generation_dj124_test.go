@@ -79,9 +79,9 @@ func setupSpecGenFixtureDJ124(t *testing.T) specio.FS {
 // TestSpecGenerationWorkflowDispatchOrder drives the new workflow with
 // a single open axis + a single new node on iter 0, then a converged
 // scout on iter 1. Asserts the agent dispatch order matches the
-// DJ-124 round shape: scout(iter0) → decisions(iter1, fanout=1) →
-// narrative(iter1, fanout=1) → reconcile(iter1) → critique(iter1, x4)
-// → scout(iter1).
+// DJ-129 round shape: scout(iter0) → decisions(iter1, fanout=1) →
+// narrative(iter1, fanout=1) → reconcile(iter1) → critique(iter1,
+// fanout=1) → scout(iter1).
 func TestSpecGenerationWorkflowDispatchOrder(t *testing.T) {
 	fs := setupSpecGenFixtureDJ124(t)
 
@@ -100,13 +100,22 @@ func TestSpecGenerationWorkflowDispatchOrder(t *testing.T) {
 			Summary:   "Live tiles update over WebSocket.",
 			Decisions: []string{},
 		}},
+		CritiqueDimensions: []CritiqueDimension{{
+			ID:             "architecture-coherence",
+			Lens:           "architecture",
+			FocusQuestion:  "Does the proposed store fit the realtime dashboard's read pattern?",
+			SourceEvidence: []string{"GOALS.md mentions realtime"},
+			Disciplines:    []string{"freeform"},
+			SeverityFloor:  "medium",
+		}},
 		Converged: false,
 	})
 	iter1Scout := scoutBriefJSON(t, ScoutBrief{
-		DomainRead: "test domain",
-		AxesOpen:   []OpenAxis{},
-		NewNodes:   []NewSpecNode{},
-		Converged:  true,
+		DomainRead:         "test domain",
+		AxesOpen:           []OpenAxis{},
+		NewNodes:           []NewSpecNode{},
+		CritiqueDimensions: []CritiqueDimension{{ID: "architecture-coherence", Lens: "architecture", FocusQuestion: "q", SourceEvidence: []string{"e"}, Disciplines: []string{"freeform"}, SeverityFloor: "medium"}},
+		Converged:          true,
 	})
 
 	decisionForDataStore := decisionProposalJSON(t, RawDecisionProposal{
@@ -133,10 +142,7 @@ func TestSpecGenerationWorkflowDispatchOrder(t *testing.T) {
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decisionForDataStore, Model: "m"}},
 		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featureNarrative, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: iter1Scout, Model: "m"}},
 	)
 
@@ -146,32 +152,19 @@ func TestSpecGenerationWorkflowDispatchOrder(t *testing.T) {
 	}, wf)
 	require.NoError(t, err)
 
-	// Order of fired agents — extracted from the call log. The parallel
-	// critic step makes ordering between the four critics non-
-	// deterministic, but the relative position of scout / decision /
-	// feature / reconciler vs the critic block is stable.
 	calls := mock.Calls()
-	require.GreaterOrEqual(t, len(calls), 9, "expected at least 9 dispatches across the round shape")
+	require.GreaterOrEqual(t, len(calls), 6, "expected at least 6 dispatches across the DJ-129 round shape")
 	agentOrder := make([]string, 0, len(calls))
 	for _, c := range calls {
 		agentOrder = append(agentOrder, c.Def.ID)
 	}
 
-	// Hard assertions on the dispatch sequence.
 	assert.Equal(t, "spec_scout", agentOrder[0], "iter-0 scout fires first")
 	assert.Equal(t, "spec_decision_elaborator", agentOrder[1], "decisions step fires after scout")
 	assert.Equal(t, "spec_feature_elaborator", agentOrder[2], "narrative step fires after decisions")
 	assert.Equal(t, "spec_reconciler", agentOrder[3], "reconcile fires after narrative")
-
-	criticBlock := agentOrder[4:8]
-	criticSet := map[string]bool{}
-	for _, c := range criticBlock {
-		criticSet[c] = true
-	}
-	for _, want := range []string{"architect_critic", "devops_critic", "sre_critic", "cost_critic"} {
-		assert.True(t, criticSet[want], "critic %q should appear in the parallel critic block", want)
-	}
-	assert.Equal(t, "spec_scout", agentOrder[8], "next-iter scout fires after critique")
+	assert.Equal(t, "spec_critic_elaborator", agentOrder[4], "critique dispatches the parametric critic")
+	assert.Equal(t, "spec_scout", agentOrder[5], "next-iter scout fires after critique")
 }
 
 // TestConditionalNarrativeDispatchOnlyTouchesAffected drives a scout
@@ -338,10 +331,6 @@ func TestCycleDetectionWhenAxisReopens(t *testing.T) {
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decisionForA, Model: "m"}},
 		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featureForX, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutIter1Cycle, Model: "m"}},
 	)
 
@@ -427,10 +416,6 @@ func TestGenerateSpecExercisesNewWorkflow(t *testing.T) {
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: dec, Model: "m"}},
 		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: feat, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout1, Model: "m"}},
 	)
 
@@ -564,10 +549,6 @@ func TestImportFlowUnifiedWithRefineWorkflow(t *testing.T) {
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: dec, Model: "m"}},
 		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: feat, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout1, Model: "m"}},
 	)
 
@@ -1182,6 +1163,15 @@ func TestRevisionCapTerminatesWhenExceeded(t *testing.T) {
 
 	fs := setupSpecGenFixtureDJ124(t)
 
+	// DJ-129: scout surfaces one cost dimension every iteration. The
+	// fanout dispatches one spec_critic_elaborator call per iter.
+	costDim := CritiqueDimension{
+		ID: "cost-ceiling-coverage", Lens: "cost",
+		FocusQuestion:  "Does the proposal engage with the GOALS cost ceiling?",
+		SourceEvidence: []string{"GOALS.md cost ceiling clause"},
+		Disciplines:    []string{"goals_grounded"},
+		SeverityFloor:  "high",
+	}
 	scoutIter0 := scoutBriefJSON(t, ScoutBrief{
 		DomainRead: "test",
 		AxesOpen: []OpenAxis{{
@@ -1191,7 +1181,8 @@ func TestRevisionCapTerminatesWhenExceeded(t *testing.T) {
 		NewNodes: []NewSpecNode{{
 			Kind: "feature", ID: "feat-x", Title: "X", Summary: "x", Decisions: []string{},
 		}},
-		Converged: false,
+		CritiqueDimensions: []CritiqueDimension{costDim},
+		Converged:          false,
 	})
 	decFirstAuthor := decisionProposalJSON(t, RawDecisionProposal{
 		ID: "dec-x", Title: "X v0", Rationale: "v0", Confidence: 0.7,
@@ -1219,7 +1210,6 @@ func TestRevisionCapTerminatesWhenExceeded(t *testing.T) {
 		}},
 		RelatedDecisionIDs: []string{"dec-x"},
 	}}})
-	criticNoIssues := `{"issues":[]}`
 
 	// Iter-1 scout (after iter-0 critique) — keeps converged=false with
 	// no new axes; concern about dec-x stays open. Triggers iter-2.
@@ -1227,6 +1217,7 @@ func TestRevisionCapTerminatesWhenExceeded(t *testing.T) {
 		DomainRead:          "test",
 		AxesOpen:            []OpenAxis{}, // no new axes
 		NewNodes:            []NewSpecNode{},
+		CritiqueDimensions:  []CritiqueDimension{costDim},
 		ConcernDispositions: nil,
 		Converged:           false,
 	})
@@ -1296,26 +1287,17 @@ func TestRevisionCapTerminatesWhenExceeded(t *testing.T) {
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decFirstAuthor, Model: "m"}},
 		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featureForX, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: criticNoIssues, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: criticNoIssues, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: criticNoIssues, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: criticIssuesFlagX, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: criticIssuesFlagX, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 		// iter-2 (revise fires)
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revV1, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: criticNoIssues, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: criticNoIssues, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: criticNoIssues, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: criticIssuesFlagX, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: criticIssuesFlagX, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 		// iter-3 (revise fires again; count hits 2; cap=2 fires at tail scout)
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revV2, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: criticNoIssues, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: criticNoIssues, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: criticNoIssues, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: criticIssuesFlagX, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: criticIssuesFlagX, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 	)
 
@@ -1600,6 +1582,15 @@ func TestMergeDecisionsRecordingNilHistorianIsNoOp(t *testing.T) {
 func TestLoopConvergesAfterForcedContradictionViaRevision(t *testing.T) {
 	fs := setupSpecGenFixtureDJ124(t)
 
+	// DJ-129: scout surfaces a cost dimension every iter; one
+	// spec_critic_elaborator call fires per iter.
+	costDim := CritiqueDimension{
+		ID: "cost-ceiling-coverage", Lens: "cost",
+		FocusQuestion:  "Does the proposal fit the $150/mo ceiling?",
+		SourceEvidence: []string{"GOALS.md $150/mo ceiling clause"},
+		Disciplines:    []string{"goals_grounded", "web_grounded"},
+		SeverityFloor:  "high",
+	}
 	// iter-0 scout: two axes + one new node.
 	scout0 := scoutBriefJSON(t, ScoutBrief{
 		DomainRead: "monitoring product",
@@ -1613,7 +1604,8 @@ func TestLoopConvergesAfterForcedContradictionViaRevision(t *testing.T) {
 			Kind: "feature", ID: "feat-monitoring", Title: "Monitoring product",
 			Summary: "Metrics + logs dashboard.", Decisions: []string{},
 		}},
-		Converged: false,
+		CritiqueDimensions: []CritiqueDimension{costDim},
+		Converged:          false,
 	})
 
 	// iter-1 first-author decisions: dec-cognito-auth, dec-datadog-obs.
@@ -1657,10 +1649,11 @@ func TestLoopConvergesAfterForcedContradictionViaRevision(t *testing.T) {
 
 	// iter-1 scout (tail): nothing new; concern stays open; not converged.
 	scoutIter1Open := scoutBriefJSON(t, ScoutBrief{
-		DomainRead: "monitoring product",
-		AxesOpen:   []OpenAxis{},
-		NewNodes:   []NewSpecNode{},
-		Converged:  false,
+		DomainRead:         "monitoring product",
+		AxesOpen:           []OpenAxis{},
+		NewNodes:           []NewSpecNode{},
+		CritiqueDimensions: []CritiqueDimension{costDim},
+		Converged:          false,
 	})
 
 	// iter-2 revise-decisions: dec-datadog-obs revised to CloudWatch
@@ -1689,12 +1682,14 @@ func TestLoopConvergesAfterForcedContradictionViaRevision(t *testing.T) {
 		SurfacedBy: []string{"feat-monitoring"},
 	})
 
-	// iter-2 scout: converged (concern now addressed).
+	// iter-2 scout: converged (concern now addressed). The cost dimension
+	// remains stable across iterations so dimensionsAreStable holds.
 	scoutIter2Converged := scoutBriefJSON(t, ScoutBrief{
-		DomainRead: "monitoring product",
-		AxesOpen:   []OpenAxis{},
-		NewNodes:   []NewSpecNode{},
-		Converged:  true,
+		DomainRead:         "monitoring product",
+		AxesOpen:           []OpenAxis{},
+		NewNodes:           []NewSpecNode{},
+		CritiqueDimensions: []CritiqueDimension{costDim},
+		Converged:          true,
 	})
 
 	tmp := t.TempDir()
@@ -1709,18 +1704,12 @@ func TestLoopConvergesAfterForcedContradictionViaRevision(t *testing.T) {
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decDatadog, Model: "m"}},
 		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featMonitoring, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: costIssue, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: costIssue, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutIter1Open, Model: "m"}},
 		// iter-2 (decisions + narrative skipped; revise-decisions fires; reconcile; critique; tail scout)
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revisedDecCloudWatch, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "architect_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "devops_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "sre_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "cost_critic", Response: &AgentOutput{Content: noIssues, Model: "m"}},
+		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}},
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutIter2Converged, Model: "m"}},
 	)
 
