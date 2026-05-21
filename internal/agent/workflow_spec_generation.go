@@ -517,11 +517,16 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				Merge:     mergeReconciledProposal,
 			},
 			{
+				// DJ-129: critique is a Fanout over CritiqueDimensions
+				// the scout surfaces. One spec_critic_elaborator call
+				// per dimension. When the scout surfaces zero
+				// dimensions, the fanout fires zero items and the step
+				// becomes a no-op.
 				ID:        "critique",
-				Agents:    []string{"architect_critic", "devops_critic", "sre_critic", "cost_critic"},
-				Parallel:  true,
+				Agents:    []string{"spec_critic_elaborator"},
 				DependsOn: []string{"reconcile"},
-				Project:   projectChallenge,
+				Fanout:    fanoutCritiqueDimensions,
+				Project:   projectCritiqueDimension,
 				Merge:     mergeCriticIssues,
 			},
 			{
@@ -1113,7 +1118,10 @@ func mergeCriticIssues(s *PlanningState, results []RoundResult) {
 			continue
 		}
 		iter := r.IterationIndex
-		kind := critiqueKindFor(r.AgentID)
+		// DJ-129: lens-first kind derivation from the fanout item;
+		// legacy fallback to critiqueKindFor(AgentID) for pre-DJ-129
+		// session data.
+		kind := deriveCritiqueKind(r)
 		var ci CriticIssues
 		if err := json.Unmarshal([]byte(r.Output), &ci); err != nil {
 			// JSON parse failure: fall back to the raw output text as
@@ -1380,6 +1388,77 @@ func mergeRevisedNodes(s *PlanningState, results []RoundResult) {
 // still proceed; the worst case is that one spec_search call returns
 // no hits until the next merge succeeds. The disk index is not the
 // fallback during the council (per DJ-123 resolved design question 3:
+// projectCritiqueDimension builds the spec_critic_elaborator's user
+// message for one fanout call (DJ-129). The prefix carries the
+// project context (GOALS + scout brief + in-flight manifest); the
+// suffix carries the dimension-specific framing (focus_question +
+// source_evidence + applicable disciplines) plus the proposal block
+// the critic-elaborator prompt keys on.
+func projectCritiqueDimension(snap StateSnapshot[PlanningState]) []Message {
+	st := snap.State
+	var prefix strings.Builder
+	prefix.WriteString(st.Prompt)
+	if st.ScoutBrief != "" {
+		if formatted := formatScoutBrief(st.ScoutBrief); formatted != "" {
+			prefix.WriteString("\n\n## Scout brief\n\n")
+			prefix.WriteString(formatted)
+		}
+	}
+	if rendered := renderManifestForProjection(&st); rendered != "" {
+		prefix.WriteString("\n\n## In-flight spec manifest (use spec_get to fetch full node bodies)\n\n")
+		prefix.WriteString(rendered)
+	}
+
+	var item CritiqueDimensionItem
+	if snap.FanoutItem != "" {
+		_ = json.Unmarshal([]byte(snap.FanoutItem), &item)
+	}
+
+	var suffix strings.Builder
+	suffix.WriteString("## Dimension to challenge\n\n")
+	fmt.Fprintf(&suffix, "- **ID:** `%s`\n", item.Dimension.ID)
+	fmt.Fprintf(&suffix, "- **Lens:** `%s`\n", item.Dimension.Lens)
+	fmt.Fprintf(&suffix, "- **Severity floor:** `%s`\n", item.Dimension.SeverityFloor)
+	suffix.WriteString("\n### Focus question\n\n")
+	suffix.WriteString(item.Dimension.FocusQuestion)
+	suffix.WriteString("\n\n### Source evidence\n\n")
+	for _, e := range item.Dimension.SourceEvidence {
+		fmt.Fprintf(&suffix, "- %s\n", e)
+	}
+	suffix.WriteString("\n### Apply these disciplines\n\n")
+	for _, d := range item.Dimension.Disciplines {
+		fmt.Fprintf(&suffix, "- `%s`\n", d)
+	}
+	suffix.WriteString("\nFollow the matching discipline sections in your system prompt.\n")
+
+	suffix.WriteString("\n## Proposal under review\n\n```json\n")
+	suffix.WriteString(st.ProposedSpec)
+	suffix.WriteString("\n```\n")
+
+	return []Message{
+		{Role: "user", Content: prefix.String(), Cacheable: true},
+		{Role: "user", Content: suffix.String()},
+	}
+}
+
+// deriveCritiqueKind returns the Concern.Kind for a critic
+// RoundResult. Under DJ-129, the kind comes from the CritiqueDimension
+// the fanout dispatched against (the FanoutItem's Dimension.Lens).
+// For pre-DJ-129 results (no FanoutItem present, or the FanoutItem
+// doesn't decode as CritiqueDimensionItem), falls back to
+// critiqueKindFor(AgentID) so loaded session data still resolves.
+func deriveCritiqueKind(r RoundResult) string {
+	if strings.TrimSpace(r.FanoutItem) != "" {
+		var item CritiqueDimensionItem
+		if err := json.Unmarshal([]byte(r.FanoutItem), &item); err == nil {
+			if lens := strings.TrimSpace(item.Dimension.Lens); lens != "" {
+				return lens
+			}
+		}
+	}
+	return critiqueKindFor(r.AgentID)
+}
+
 // agents see ONLY the in-flight proposal, never the persisted graph).
 func rebuildInFlightIndex(s *PlanningState) {
 	if s == nil {

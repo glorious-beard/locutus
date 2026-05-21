@@ -2,8 +2,11 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/chetan/locutus/internal/executor"
+	"github.com/chetan/locutus/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -151,4 +154,101 @@ func TestConvergenceRequiresDimensionStability(t *testing.T) {
 		},
 	}
 	assert.False(t, dimensionsAreStable(s), "unit-level sanity check before the e2e exercise in Phase 6")
+}
+
+// TestProjectCritiqueDimensionRendersFocusAndDisciplines — the
+// projection's user message contains the dimension's focus_question
+// + each applicable discipline section header so the critic knows
+// what to apply.
+func TestProjectCritiqueDimensionRendersFocusAndDisciplines(t *testing.T) {
+	dim := CritiqueDimension{
+		ID: "cost-ceiling-coverage", Lens: "cost",
+		FocusQuestion:  "Does every commitment engage with the $150/mo ceiling?",
+		SourceEvidence: []string{"GOALS §3: ceiling of $150/mo"},
+		Disciplines:    []string{"web_grounded", "goals_grounded"},
+		SeverityFloor:  "high",
+	}
+	item := CritiqueDimensionItem{AgentID: "spec_critic_elaborator", ID: "crit:cost-ceiling-coverage", Dimension: dim}
+	itemJSON, err := json.Marshal(item)
+	require.NoError(t, err)
+
+	snap := StateSnapshot[PlanningState]{
+		State:      PlanningState{Prompt: "## GOALS.md\n\nShip a monitoring product within $150/mo.", ProposedSpec: `{"decisions":[]}`},
+		FanoutItem: string(itemJSON),
+	}
+	msgs := projectCritiqueDimension(snap)
+	require.NotEmpty(t, msgs)
+	combined := ""
+	for _, m := range msgs {
+		combined += m.Content
+	}
+	assert.Contains(t, combined, "Does every commitment engage with the $150/mo ceiling?")
+	assert.Contains(t, combined, "web_grounded")
+	assert.Contains(t, combined, "goals_grounded")
+	assert.Contains(t, combined, "GOALS §3: ceiling of $150/mo")
+	assert.Contains(t, combined, "## Proposal under review",
+		"projection must render the proposal block the critic-elaborator prompt keys on")
+}
+
+// TestCritiqueStepIsAFanoutOverCritiqueDimensions — the workflow's
+// critique step uses Fanout dispatch (one call per dimension)
+// rather than parallel hard-coded agent IDs.
+func TestCritiqueStepIsAFanoutOverCritiqueDimensions(t *testing.T) {
+	tmpl := convergenceLoopTemplate(nil, 5)
+	steps := tmpl(executor.IterationContext{TemplateID: specLoopTemplateID, IterationIndex: 1})
+	var critique *WorkflowStep[PlanningState]
+	for i := range steps {
+		if strings.HasSuffix(steps[i].ID, ":critique") || steps[i].ID == "critique" {
+			critique = &steps[i]
+		}
+	}
+	require.NotNil(t, critique, "critique step must appear in the iteration template")
+	require.Len(t, critique.Agents, 1, "DJ-129: critique uses one parametric agent (spec_critic_elaborator), not four fixed critics")
+	assert.Equal(t, "spec_critic_elaborator", critique.Agents[0])
+	require.NotNil(t, critique.Fanout, "critique must dispatch via Fanout under DJ-129")
+}
+
+// TestMergeCriticIssuesTagsKindFromDimensionLens — when a fanout
+// item is present on the RoundResult, the Concern.Kind comes from
+// the dimension's Lens (e.g. "compliance"), not from
+// critiqueKindFor(AgentID).
+func TestMergeCriticIssuesTagsKindFromDimensionLens(t *testing.T) {
+	dim := CritiqueDimension{
+		ID: "voter-file-privacy", Lens: "compliance",
+		FocusQuestion: "q", SourceEvidence: []string{"e"}, Disciplines: []string{"goals_grounded"}, SeverityFloor: "high",
+	}
+	item := CritiqueDimensionItem{AgentID: "spec_critic_elaborator", ID: "crit:voter-file-privacy", Dimension: dim}
+	itemJSON, _ := json.Marshal(item)
+
+	issue := CriticIssue{
+		Weakness:         "The auth flow does not honor the per-state privacy regimes named in GOALS §5.",
+		Evidence:         "GOALS §5 names per-state auditing; the auth flow rationale is silent on it.",
+		Counterproposals: validCounterproposalsForDJ129Test(),
+	}
+	out, _ := json.Marshal(CriticIssues{Issues: []CriticIssue{issue}})
+
+	state := &PlanningState{}
+	mergeCriticIssues(state, []RoundResult{{
+		AgentID:        "spec_critic_elaborator",
+		Output:         string(out),
+		IterationIndex: 2,
+		FanoutItem:     string(itemJSON),
+	}})
+
+	require.Len(t, state.Concerns, 1)
+	assert.Equal(t, "compliance", state.Concerns[0].Kind,
+		"Concern.Kind comes from the dimension's Lens, not from a hard-coded mapping")
+}
+
+// validCounterproposalsForDJ129Test mirrors the validator's
+// non-degenerate threshold: a single concrete option with sentence-
+// shape argument and at least one citation.
+func validCounterproposalsForDJ129Test() []CriticCounterproposal {
+	return []CriticCounterproposal{{
+		Option:   "Adopt per-user Auth0 accounts with named-account audit log forwarding to S3",
+		Argument: "Per-user Auth0 accounts honor the GOALS §5 named-account auditing requirement and Auth0's built-in audit log forwarding covers the audit-trail surface without bespoke wiring.",
+		Citations: []spec.Citation{
+			{Kind: "goals", Reference: "GOALS.md", Excerpt: "state-level privacy regimes require named-account auditing"},
+		},
+	}}
 }
