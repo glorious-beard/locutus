@@ -18,7 +18,15 @@ import (
 	"github.com/chetan/locutus/internal/specio"
 )
 
-//go:embed agents
+// Embed only .md scaffold prompts. Test files (`*_test.go`) coexist
+// in this directory for the agents_test package — go:embed would
+// otherwise pull them into the binary and `locutus init` /
+// `update --reset` would litter every user's .borg/agents/ with Go
+// source. The loader only reads .md, so .go files would be silently
+// ignored at runtime but persist on disk (the Reset cleanup pass
+// only inspects .md). Narrowing the pattern keeps both this
+// directory's dual-purpose layout and the user-facing scaffold clean.
+//go:embed agents/*.md
 var agentsFS embed.FS
 
 // directories is the set of directories created by Scaffold.
