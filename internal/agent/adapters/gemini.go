@@ -251,16 +251,25 @@ func (g *GeminiAdapter) dispatch(ctx context.Context, req Request, contents []*g
 		out.OutputTokens = usage.out
 		out.ThoughtsTokens = usage.thoughts
 		out.TotalTokens = usage.total
+		// DJ-130 follow-up: surface Gemini's implicit / explicit
+		// cache hits on Response.CacheReadInputTokens so per-call
+		// YAML traces show whether the prefix-cache layering DJ-130
+		// designed for is actually firing on Gemini. CacheCreation
+		// stays zero (Gemini bills implicit-cache writes as regular
+		// input tokens; explicit cachedContent has a separate API
+		// surface we don't yet use).
+		out.CacheReadInputTokens += usage.cacheRead
 
 		out.Rounds = append(out.Rounds, Round{
-			Index:          round,
-			Reasoning:      reasoning,
-			Text:           text,
-			Message:        string(raw),
-			InputTokens:    usage.in,
-			OutputTokens:   usage.out,
-			ThoughtsTokens: usage.thoughts,
-			Citations:      citations,
+			Index:                round,
+			Reasoning:            reasoning,
+			Text:                 text,
+			Message:              string(raw),
+			InputTokens:          usage.in,
+			OutputTokens:         usage.out,
+			ThoughtsTokens:       usage.thoughts,
+			CacheReadInputTokens: usage.cacheRead,
+			Citations:            citations,
 		})
 		out.Citations = mergeCitations(out.Citations, citations)
 
@@ -335,7 +344,14 @@ func splitGeminiContent(resp *genai.GenerateContentResponse) (text, reasoning st
 	return strings.Join(textParts, ""), strings.Join(reasoningParts, "\n\n"), calls
 }
 
-type geminiUsageTotals struct{ in, out, thoughts, total int }
+// geminiUsageTotals carries the per-call token breakdown extracted
+// from Gemini's UsageMetadata. cacheRead corresponds to
+// CachedContentTokenCount — the number of tokens served from the
+// prefix cache (implicit on Pro models ≥ 4096 prompt tokens;
+// explicit when a cachedContent resource is referenced). Per
+// Gemini's docs, PromptTokenCount INCLUDES the cached tokens, so
+// cacheRead is a breakdown of `in`, not an additive surcharge.
+type geminiUsageTotals struct{ in, out, thoughts, total, cacheRead int }
 
 func geminiUsage(resp *genai.GenerateContentResponse) geminiUsageTotals {
 	if resp == nil || resp.UsageMetadata == nil {
@@ -343,10 +359,11 @@ func geminiUsage(resp *genai.GenerateContentResponse) geminiUsageTotals {
 	}
 	u := resp.UsageMetadata
 	return geminiUsageTotals{
-		in:       int(u.PromptTokenCount),
-		out:      int(u.CandidatesTokenCount),
-		thoughts: int(u.ThoughtsTokenCount),
-		total:    int(u.TotalTokenCount),
+		in:        int(u.PromptTokenCount),
+		out:       int(u.CandidatesTokenCount),
+		thoughts:  int(u.ThoughtsTokenCount),
+		total:     int(u.TotalTokenCount),
+		cacheRead: int(u.CachedContentTokenCount),
 	}
 }
 
