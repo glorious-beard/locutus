@@ -150,6 +150,45 @@ func TestMergeSplitResponsesPreservesReasoningSideState(t *testing.T) {
 	assert.Equal(t, 5, merged.CacheReadInputTokens, "cache read tokens preserved")
 }
 
+// TestBuildReasoningPassMessagesAppendsProseDirective verifies the
+// reasoning pass receives the prose directive as a trailing user
+// message so the model knows JSON output is handled by the format
+// pass. Universal across providers — without the directive, models
+// (notably Gemini's strong tier) default to JSON for analytical
+// tasks even with OutputSchema stripped and the agent prompt
+// scrubbed of explicit JSON framing.
+func TestBuildReasoningPassMessagesAppendsProseDirective(t *testing.T) {
+	in := []Message{
+		{Role: RoleUser, Content: "projected input one"},
+		{Role: RoleUser, Content: "projected input two"},
+	}
+
+	out := buildReasoningPassMessages(in)
+	require.Len(t, out, 3, "input messages survive verbatim; directive trails them")
+	assert.Equal(t, in[0], out[0], "first projected input passes through unchanged")
+	assert.Equal(t, in[1], out[1], "second projected input passes through unchanged")
+	assert.Equal(t, RoleUser, out[2].Role,
+		"directive lands as a user message — same role as the prior turn so the model reads it as continuation, not assistant injection")
+	assert.Equal(t, ReasoningPassProseDirective, out[2].Content)
+	assert.False(t, out[2].Cacheable,
+		"directive is guidance not content; no cache value in marking it")
+}
+
+// TestBuildFormatPassMessagesDoesNotIncludeProseDirective is the
+// reciprocal check: the format pass exists to PRODUCE JSON, so the
+// "produce prose" directive must not survive into it. The format
+// pass receives the example layer (Cacheable) and the reasoning
+// prose (uncacheable), nothing else.
+func TestBuildFormatPassMessagesDoesNotIncludeProseDirective(t *testing.T) {
+	msgs := buildFormatPassMessages(`{"k":"v"}`, "the reasoning prose")
+	for _, m := range msgs {
+		assert.NotContains(t, m.Content, "prose, not JSON",
+			"format pass must not carry the reasoning pass's prose directive — it would tell the formatter to emit prose instead of JSON")
+		assert.NotContains(t, m.Content, "convert it to JSON",
+			"format pass must not carry the reasoning pass's prose directive")
+	}
+}
+
 // TestBuildFormatPassMessagesLayersExampleAsCacheableUserMessage
 // confirms the DJ-130 follow-up: when an OutputSchema has a
 // registered example, the format pass receives it as a Cacheable

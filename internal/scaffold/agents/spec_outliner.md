@@ -11,7 +11,7 @@ output_schema: Outline
 
 <!-- DJ-124: retired from spec-generation workflow; preserved as reference. The
      scout-driven loop replaces outline → elaborate with decisions → narrative,
-     and the scout itself names new_nodes[] directly. -->
+     and the scout itself names new_nodes directly. -->
 
 # Identity
 

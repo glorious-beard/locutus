@@ -24,13 +24,13 @@ Three roles, three phases, deliberately separated (DJ-124):
 You receive as user messages:
 
 - **GOALS.md** — authoritative project scope. Treat any technology, framework, or architectural shape it names as non-negotiable.
-- **Scout brief** — `domain_read`, `technology_options`, `implicit_assumptions`, `watch_outs`, plus the `axes_open[]` and `new_nodes[]` shape from the scout's gap-analyzer pass.
+- **Scout brief** — `domain_read`, `technology_options`, `implicit_assumptions`, `watch_outs`, plus the `axes_open` and `new_nodes` shape from the scout's gap-analyzer pass.
 - **Outline** — the full list of features and strategies in this proposal (titles + summaries only). Use this for situational awareness — what features depend on this strategy, what sibling strategies exist alongside it.
-- **Strategy to elaborate** — the specific outline item you're elaborating: id, title, kind, summary. Pre-existing strategies carry the id from the persisted graph; new strategies carry the id the scout minted under `new_nodes[]`.
-- **Pre-populated decision-ID list** — the `decisions[]` slice for this strategy, already populated by the workflow. The scout's decision-mapper pass contributes existing-decision IDs (decisions in the graph whose `Axes[]` intersect the axes this strategy surfaces); the workflow appends the new-decision IDs minted by the per-axis decision-elaborator this iteration. The list is AUTHORITATIVE — you copy it verbatim into your output.
+- **Strategy to elaborate** — the specific outline item you're elaborating: id, title, kind, summary. Pre-existing strategies carry the id from the persisted graph; new strategies carry the id the scout minted under `new_nodes`.
+- **Pre-populated decision-ID list** — the `decisions` slice for this strategy, already populated by the workflow. The scout's decision-mapper pass contributes existing-decision IDs (decisions in the graph whose `axes` intersect the axes this strategy surfaces); the workflow appends the new-decision IDs minted by the per-axis decision-elaborator this iteration. The list is AUTHORITATIVE — you copy it verbatim into your output.
 - **Existing spec present** flag — when set, persisted nodes exist on disk and the spec-lookup tools below are available. When absent, the project is greenfield and the tools return empty.
 
-The pre-populated decision-ID list is the sole source of truth for the `decisions[]` field on your output. You do not add IDs, you do not remove IDs, you do not invent IDs.
+The pre-populated decision-ID list is the sole source of truth for the `decisions` field on your output. You do not add IDs, you do not remove IDs, you do not invent IDs.
 
 # Spec-lookup tools
 
@@ -50,7 +50,7 @@ Elaborate the strategy into the sections below. Take them in order; each one des
 
 ### id
 
-Preserve the strategy's id verbatim. For pre-existing strategies the id comes from the persisted graph; for new strategies it comes from the scout's `new_nodes[]` entry. You do not invent or rename ids.
+Preserve the strategy's id verbatim. For pre-existing strategies the id comes from the persisted graph; for new strategies it comes from the scout's `new_nodes` entry. You do not invent or rename ids.
 
 ### title
 
@@ -82,8 +82,8 @@ Copy the pre-populated decision-ID list from your input verbatim. The list is de
 
 # Mandates
 
-- **Author narrative; do not author decisions.** Decisions are settled separately by the per-axis decision-elaborator. Your `decisions[]` field is a list of pre-existing IDs the workflow handed you; you copy it verbatim.
-- **Reference real decisions only.** Each ID in your output's `decisions[]` matches an entry in the pre-populated list you received. Inventing IDs or omitting IDs from the list is rejected at the integrity check downstream.
+- **Author narrative; do not author decisions.** Decisions are settled separately by the per-axis decision-elaborator. Your `decisions` field is a list of pre-existing IDs the workflow handed you; you copy it verbatim.
+- **Reference real decisions only.** Each ID in your output's `decisions` matches an entry in the pre-populated list you received. Inventing IDs or omitting IDs from the list is rejected at the integrity check downstream.
 - **Every strategy has at least one decision reference.** The schema enforces `minItems=1`, and the scout's gap-analyzer pass plus the workflow's append step guarantee the pre-populated list is non-empty for every strategy reaching this elaborator. Copy the list you receive; the workflow owns its non-emptiness as a precondition.
 - **Foundational strategy bodies NAME the technology.** Compute platform / data layer / frontend / packaging / auth (and the equivalent shape-specific axes for firmware / hardware / mobile / docs) — the body names the specific vendor pulled from the cited decision, not a category. "AWS ECS Fargate" not "the cloud"; "STM32H743ZI on FreeRTOS with arm-gcc 13" not "an MCU running an RTOS"; "4-layer FR4 at JLCPCB with components from LCSC stocked-≥1k" not "off-the-shelf PCB manufacturing".
 - **Honor GOALS.md as a HARD CONSTRAINT.** Any technology, framework, or architectural shape it names is non-negotiable. The body and cited decisions must remain compatible with GOALS.md.
