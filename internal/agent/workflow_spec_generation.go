@@ -901,8 +901,11 @@ func mergeScoutBrief(s *PlanningState, results []RoundResult) {
 		s.NewNodesFromScout = nil
 	}
 
-	// DJ-129: absorb critique dimensions onto PlanningState and
-	// record stability. Per design decision #7,
+	// DJ-129: absorb critique dimensions onto PlanningState. Compute
+	// stability BEFORE folding new dims into CritiqueDimensionsByIter
+	// (otherwise the new dims would already be "seen" by the time
+	// scoutSpawnFor checks). Then record so the next iteration's
+	// check sees the dims as historical. Per design decision #7,
 	// recordDimensionStability is append-only so the historical
 	// signal of "this dimension was considered" survives retirement.
 	if len(brief.CritiqueDimensions) > 0 {
@@ -910,6 +913,7 @@ func mergeScoutBrief(s *PlanningState, results []RoundResult) {
 	} else {
 		s.CurrentCritiqueDimensions = nil
 	}
+	s.LastDimensionsStable = dimensionsAreStable(s)
 	recordDimensionStability(s, brief.CritiqueDimensions, iter)
 
 	// DJ-125 Phase 7: apply scout-graded concern dispositions onto

@@ -65,8 +65,15 @@ func scoutSpawnFor(myIter, budget int, loopTemplate func(executor.IterationConte
 		// run at least one more iteration so the new dimension's
 		// critic-elaborator gets a chance to surface concerns. Per
 		// design decision #7, retirement does not block; only
-		// new-addition does.
-		dimsStable := dimensionsAreStable(&snap.State)
+		// new-addition does. mergeScoutBrief captured the stability
+		// decision into LastDimensionsStable BEFORE folding the new
+		// dims into CritiqueDimensionsByIter, so reading it here
+		// reflects the prior map shape (the correct comparison).
+		//
+		// Empty CurrentCritiqueDimensions is trivially stable — this
+		// also covers test paths that drive the spawner with hand-
+		// built state that never went through mergeScoutBrief.
+		dimsStable := len(snap.State.CurrentCritiqueDimensions) == 0 || snap.State.LastDimensionsStable
 		if brief.Converged && openCount == 0 && dimsStable {
 			return nil, nil, nil
 		}

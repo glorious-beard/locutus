@@ -276,8 +276,15 @@ type PlanningState struct {
 	// check. Retirement is a positive signal that a dimension was
 	// considered and concluded; the historical record stays in the map
 	// per design decision #7.
+	//
+	// LastDimensionsStable captures the stability decision computed by
+	// mergeScoutBrief BEFORE the new iteration's dimensions are folded
+	// into CritiqueDimensionsByIter. scoutSpawnFor reads it to gate
+	// convergence — checking the live map there is too late because
+	// the new dims are already recorded.
 	CurrentCritiqueDimensions []CritiqueDimension `json:"-"`
 	CritiqueDimensionsByIter  map[string]int      `json:"-"`
+	LastDimensionsStable      bool                `json:"-"`
 
 	// DanglingReferences accumulates integrity-violation findings from
 	// ApplyReconciliation. Surfaced to the scout's next-iteration input
