@@ -54,9 +54,9 @@ For each deliverable you inventoried; use search to verify what shipping a matur
 
 Search informs *what you commit on*; not *what shape your output takes*. You are sanity-checking that your understanding of the lifecycle for each deliverable matches what real teams ship today.
 
-## 3. Walk the JSON shape, field by field
+## 3. What to surface, section by section
 
-You produce a single ScoutBrief object. Each field below is described in the order it appears in the JSON. Each field has its own task body. Pitch every field at the convergence target above.
+Each subsection below names one piece of what you surface. Take them in order; the order tracks how the downstream workflow consumes them. Pitch every section at the convergence target above.
 
 ### domain_read
 
@@ -121,7 +121,7 @@ When imported content (PRD markdown, design document) or a recent goal change su
 - `summary` — one-sentence what-the-node-does (features) or what-the-node-adopts (strategies), ending with a period. The narrative-elaborator picks this up later as the seed for the full body.
 - `decisions` — IDs of existing decisions that already cover axes this node references. This is your decision-mapper pass: walk the existing decisions, match each one's `Axes` slice against the axes this new node would reference, and list every decision whose axes intersect. If `dec-postgres-oltp-store` is tagged `Axes: ["oltp-store"]` and the new feature surfaces an oltp-store requirement, the new feature's `decisions[]` includes `dec-postgres-oltp-store`. Axes that the node depends on but that no existing decision covers must show up as entries in `axes_open[]`; the workflow controller appends the resulting new decision IDs to `decisions[]` after those elaborators run.
 
-When no new nodes surface this iteration, leave the array empty.
+When no new nodes surface this iteration, surface nothing here.
 
 ### When `locutus import` provides imported content
 
@@ -138,7 +138,7 @@ Multiple imported documents on a single iteration are valid — emit one `new_no
 
 After identifying what needs to be DECIDED (axes_open) and what new nodes the project should carry (new_nodes), identify the dimensions the council should CHALLENGE the proposal on. Each dimension is one critique surface: a focus question, source evidence, and the grounding disciplines the critic should apply.
 
-The output schema's `critique_dimensions` field carries one `CritiqueDimension` per surface. Walk the fields in this order:
+Walk the elements below in order; each one describes one piece of a critique dimension:
 
 1. **`id`** — a stable slug (lowercase / hyphen-separated / three to five words derived from the dimension's focus). Stable across iterations so dimensionsAreStable can detect new-dimension additions vs. recurrences of previously-surfaced dimensions.
 
@@ -176,7 +176,7 @@ A research project where GOALS explicitly de-prioritizes cost might surface no c
 
 #### Empty is a valid output
 
-When the proposal is too thin to critique (iter 0 with no decisions yet), an empty `critique_dimensions` array is correct. Add dimensions as decisions accumulate and surface real surfaces to challenge.
+When the proposal is too thin to critique (iter 0 with no decisions yet), surfacing no critique dimensions is correct. Add dimensions as decisions accumulate and surface real surfaces to challenge.
 
 ### concern_dispositions
 
@@ -209,7 +209,7 @@ Grading `still_open` is honest reporting — the loop continues another iteratio
 
 The grading discipline matters: a premature `addressed` causes the loop to exit on a still-broken proposal, and an over-conservative `still_open` causes the loop to thrash. Look at the proposal's actual content (use `spec_get(id)` to fetch any node body you need to inspect) before disposing each concern.
 
-Empty array is valid when no concerns are still `open` after the mechanical pre-pass. The convergence rule reads the dispositioned state.
+Surface no dispositions when no concerns are still `open` after the mechanical pre-pass. The convergence rule reads the dispositioned state.
 
 ### converged
 

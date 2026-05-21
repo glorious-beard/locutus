@@ -195,7 +195,7 @@ func (a *AnthropicAdapter) runSplit(ctx context.Context, req Request) (*Response
 	formatReq := Request{
 		Model:           req.FormatModel,
 		SystemPrompt:    CanonicalFormatterPrompt,
-		Messages:        []Message{{Role: RoleUser, Content: reasoning.Content}},
+		Messages:        buildFormatPassMessages(req.FormatExampleDoc, reasoning.Content),
 		MaxOutputTokens: req.FormatMaxOutputTokens,
 		Thinking:        ThinkingOff,
 		OutputSchema:    req.OutputSchema,

@@ -593,6 +593,12 @@ func buildAdapterRequest(def AgentDef, input AgentInput, pick *ResolvedModel, re
 			return req, err
 		}
 		req.OutputSchema = schema
+		// DJ-130 follow-up: thread the registered example payload to
+		// the adapter so its runSplit can append it to the format
+		// pass's prompt. Empty when the schema uses
+		// RegisterSchemaOverride (no Go example exists); the
+		// formatter falls back to bare CanonicalFormatterPrompt.
+		req.FormatExampleDoc = SchemaPromptDoc(def.OutputSchema)
 	}
 	for _, name := range registry.Names() {
 		tool, ok := registry.Resolve(name)

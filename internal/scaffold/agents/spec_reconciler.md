@@ -55,15 +55,11 @@ Emit a `ReconciliationVerdict` with an `actions[]` list. Each action covers one 
 
 # Source references
 
-Each action's `sources[]` array points at specific (parent, index) tuples in the raw proposal:
+Each action's `sources` points at specific (parent, index) tuples in the raw proposal. Three pieces identify each source:
 
-```json
-{
-  "parent_kind": "feature",     // or "strategy"
-  "parent_id": "feat-voter-ingest",
-  "index": 2                    // position in that parent's decisions[] slice
-}
-```
+- The parent's kind — `feature` or `strategy`.
+- The parent's id — the slug of the feature or strategy that holds the inline decision (e.g. `feat-voter-ingest`).
+- The index — the position of the decision in that parent's decisions list, zero-indexed.
 
 Sources MUST be exact. Off-by-one errors will cause the wrong inline decisions to be merged.
 

@@ -20,6 +20,32 @@ Rules:
 - Preserve specifics: vendor names; version numbers; citations; quoted text.
 - Each schema field receives the corresponding content from the prose.`
 
+// buildFormatPassMessages composes the user-message list each
+// adapter's runSplit hands to the format pass. When exampleDoc is
+// non-empty (the OutputSchema has a registered example), it goes
+// first as a Cacheable=true user message — exposing it to per-agent
+// cross-iteration prefix caching while keeping
+// CanonicalFormatterPrompt as the universal cache prefix in the
+// system position. The reasoning prose trails as a Cacheable=false
+// user message (per-call content, never reusable).
+//
+// When exampleDoc is empty, the list collapses to a single
+// reasoning-prose user message — no example layer, but the formatter
+// prompt still drives shape via the OutputSchema struct tags the
+// provider's strict-mode enforcement reads.
+func buildFormatPassMessages(exampleDoc, reasoningProse string) []Message {
+	var msgs []Message
+	if exampleDoc != "" {
+		msgs = append(msgs, Message{
+			Role:      RoleUser,
+			Content:   "## Example output\n\n```json\n" + exampleDoc + "\n```\n",
+			Cacheable: true,
+		})
+	}
+	msgs = append(msgs, Message{Role: RoleUser, Content: reasoningProse})
+	return msgs
+}
+
 // mergeSplitResponses composes the final Response from the
 // reason+format pair. The format pass's structured Content is the
 // agent's contract; reasoning-side state (the thinking text, tool

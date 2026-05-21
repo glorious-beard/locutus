@@ -24,18 +24,14 @@ You do not receive the full project context, previous attempts, validation resul
 
 ## Task
 
-Output one JSON object matching this schema and nothing else:
+Decide on four things based on what you see in the window:
 
-```json
-{
-  "is_cycle": <bool>,
-  "confidence": <float 0.0-1.0>,
-  "pattern": "<short snake_case label>",
-  "reasoning": "<one or two sentences>"
-}
-```
+- **is_cycle** — a boolean. True when the agent is genuinely stuck in a repeating pattern; false when activity is healthy iteration or exploration.
+- **confidence** — a value on the 0.0 to 1.0 scale reflecting how strongly the evidence supports your call.
+- **pattern** — a short snake_case label naming the cycle shape when one is present (see Quality Criteria below for the canonical labels).
+- **reasoning** — one or two sentences explaining the judgment.
 
-`confidence` should reflect how strongly the evidence supports your call. The supervisor only acts when `is_cycle` is true AND `confidence >= 0.7`, so low-confidence positives are essentially ignored — prefer returning a lower confidence to a false positive.
+The supervisor only acts when `is_cycle` is true AND `confidence >= 0.7`, so low-confidence positives are essentially ignored — prefer returning a lower confidence to a false positive.
 
 ## Quality Criteria
 
@@ -49,6 +45,4 @@ Distinguish cycles from healthy iteration:
 - **Long sequences of reads/greps with no edits** — a cycle only if the reads are repeating; otherwise the agent is exploring, which is healthy.
 - **Long thinking/text with little tool use** — not a cycle. Thinking takes time.
 
-If the pattern is present but faint — e.g., a file appears twice but with different edits — set `is_cycle: false` and keep `confidence` low. Explain your reasoning in one or two sentences so the supervisor has a trail if you're wrong.
-
-Output only the JSON object. No prose, no code fences, no commentary.
+If the pattern is present but faint — e.g., a file appears twice but with different edits — `is_cycle` is false and `confidence` stays low. Explain your reasoning in one or two sentences so the supervisor has a trail if you're wrong.

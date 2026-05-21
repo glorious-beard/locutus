@@ -223,6 +223,38 @@ type Request struct {
 	// `fast:` tier in models.yaml. Zero falls back to the adapter's
 	// per-provider default (see defaultAnthropicMaxTokens, etc.).
 	FormatMaxOutputTokens int
+
+	// FormatExampleDoc is the indented JSON of the OutputSchema's
+	// registered example payload. The executor populates it from
+	// SchemaPromptDoc(def.OutputSchema) when an example is registered.
+	// Each adapter's runSplit emits it as a Cacheable user message
+	// before the reasoning prose so the formatter sees a concrete
+	// shape to target.
+	//
+	// Why a separate user message (not appended to the system prompt):
+	// the format pass's system prompt is CanonicalFormatterPrompt —
+	// identical across every format call site-wide. Keeping it
+	// unchanged makes it a cache prefix that hits across every
+	// format call regardless of agent (Layer 1). The per-agent
+	// example as a Cacheable=true user message becomes Layer 2 —
+	// hits across every iteration of the same agent. Splicing the
+	// example into the system prompt would dissolve Layer 1
+	// (different agents → different system prompts → different
+	// cache keys) and waste the cross-agent reuse the formatter
+	// pass would otherwise enjoy.
+	//
+	// Empty when no example is registered or the schema uses an
+	// override; the adapter then emits only the reasoning prose as
+	// the user message, with no example layer.
+	//
+	// Closes the DJ-130 follow-up where the registered example
+	// never reached the model on the split path (BuildSystemPrompt
+	// intentionally suppresses the example for thinking-on agents
+	// because rendering it in the reasoning pass primes JSON output
+	// mode and the reasoning pass is supposed to produce prose;
+	// rendering it in the format pass is exactly what the formatter
+	// asks for).
+	FormatExampleDoc string
 }
 
 // ToolDef is one entry in Request.Tools. The adapter advertises the

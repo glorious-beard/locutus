@@ -70,48 +70,16 @@ The sentence stays at this altitude — gestalt judgment, not enumeration. The s
 - `reasoning` — one sentence explaining why leaving this axis uncommitted blocks the YES for the named deliverable. This sentence becomes the Concern text the next iteration's revise sees.
 - `current_commitment_quoted` — verbatim text from the current proposal that you judge insufficient on this axis. The schema description for this field describes both the populated case (commitment exists but doesn't go far enough; quote it) and the empty case (nothing on this axis at all; leave blank). Read that description — populating this field correctly is what lets the next iteration's elaborator strengthen the right text rather than rewriting from scratch.
 
-# Worked example — converged: false
+# Worked example — judgment is "not converged"
 
-Three deliverables; two have a present-but-insufficient commitment; one has nothing yet:
+Picture three deliverables, two of which carry present-but-insufficient commitments and one which has nothing yet on the relevant axis. The judgment is "not converged" because three distinct gaps remain across deploy and support phases:
 
-```json
-{
-  "converged": false,
-  "reasoning": "Define and develop are committed; deploy carries weak commitments and support has one genuine gap.",
-  "open_dimensions": [
-    {
-      "deliverable": "iOS companion app",
-      "phase": "deploy",
-      "axis": "App Store / TestFlight rollout cadence",
-      "reasoning": "Distribution channel is named but the staged-rollout cadence between TestFlight and App Store is not committed; the team cannot decide release tagging without it.",
-      "current_commitment_quoted": "Releases ship to the App Store via Fastlane."
-    },
-    {
-      "deliverable": "nRF52840 firmware",
-      "phase": "deploy",
-      "axis": "OTA update channel",
-      "reasoning": "The firmware has no OTA path; the team cannot ship a security fix after first install.",
-      "current_commitment_quoted": ""
-    },
-    {
-      "deliverable": "Vapor backend",
-      "phase": "support",
-      "axis": "incident response runbook structure",
-      "reasoning": "Datadog and SLOs are committed but the proposal never says where runbooks live or how they're authored; on-call engineers will have alerts without a response playbook.",
-      "current_commitment_quoted": "Observability is provided via Datadog with OpenTelemetry, tracking p99 latency and error-rate SLOs at 99.9%."
-    }
-  ]
-}
-```
+- **iOS companion app, deploy phase, App Store / TestFlight rollout cadence axis.** The distribution channel is named but the staged-rollout cadence between TestFlight and App Store is not committed; the team cannot decide release tagging without it. The current commitment to quote is the single sentence the proposal already carries: "Releases ship to the App Store via Fastlane." A single committed sentence gets quoted; the new axis (cadence) is what the next iteration needs to add — not a rewording of the Fastlane commitment.
+- **nRF52840 firmware, deploy phase, OTA update channel axis.** The firmware has no OTA path; the team cannot ship a security fix after first install. There's nothing in the current proposal to quote here, so the current-commitment field stays empty — that signals to the next iteration's elaborator that this axis needs a fresh commitment rather than strengthening an existing one.
+- **Vapor backend, support phase, incident response runbook structure axis.** Datadog and SLOs are committed but the proposal never says where runbooks live or how they're authored; on-call engineers will have alerts without a response playbook. The current commitment to quote is the existing observability sentence: "Observability is provided via Datadog with OpenTelemetry, tracking p99 latency and error-rate SLOs at 99.9%." Quote it even though it's about observability rather than runbooks — the SLO commitment is concrete and adequate for the SLO axis; the gap is the *different* axis of where runbooks live, which the quoted text doesn't address. Quoting it gives the next iteration's elaborator the anchor point to extend.
 
-Notice the first entry: a single committed sentence is quoted; the new axis (cadence) is what the next iteration needs to add — not a rewording of the Fastlane commitment. The second entry has nothing on OTA so the field is empty. The third entry quotes the existing observability commitment because the SLO commitment is concrete and adequate for the SLO axis — the gap is the *different* axis of where runbooks live, which the quoted text doesn't address.
+The overall reasoning sentence reads at the altitude of "define and develop are committed; deploy carries weak commitments and support has one genuine gap" — gestalt judgment, with the gap list above carrying the specifics.
 
-# Worked example — converged: true
+# Worked example — judgment is "converged"
 
-```json
-{
-  "converged": true,
-  "reasoning": "Every deliverable named in GOALS.md commits to concrete values across define; develop; deploy; and support; no open concerns remain.",
-  "open_dimensions": []
-}
-```
+When every deliverable named in GOALS.md commits to concrete values across define, develop, deploy, and support — and no open concerns remain — the judgment is "converged" with no open dimensions to surface. The reasoning sentence reports the gestalt: every deliverable is committed end-to-end and the convergence loop should exit.

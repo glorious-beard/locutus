@@ -150,6 +150,42 @@ func TestMergeSplitResponsesPreservesReasoningSideState(t *testing.T) {
 	assert.Equal(t, 5, merged.CacheReadInputTokens, "cache read tokens preserved")
 }
 
+// TestBuildFormatPassMessagesLayersExampleAsCacheableUserMessage
+// confirms the DJ-130 follow-up: when an OutputSchema has a
+// registered example, the format pass receives it as a Cacheable
+// user message BEFORE the reasoning prose — preserving
+// CanonicalFormatterPrompt as the Layer-1 cross-agent cache prefix
+// in the system position while the example is a Layer-2 per-agent
+// cache layer.
+//
+// Splicing the example into the system prompt would dissolve Layer
+// 1 (different agents → different prompts → different cache keys);
+// the helper structure tested here is what avoids that regression.
+func TestBuildFormatPassMessagesLayersExampleAsCacheableUserMessage(t *testing.T) {
+	t.Run("with_example_doc", func(t *testing.T) {
+		msgs := buildFormatPassMessages(`{"k":"v"}`, "the reasoning prose")
+		require.Len(t, msgs, 2)
+		assert.Equal(t, RoleUser, msgs[0].Role)
+		assert.True(t, msgs[0].Cacheable,
+			"example layer is Cacheable=true so per-agent cross-iteration caching catches it")
+		assert.Contains(t, msgs[0].Content, "## Example output")
+		assert.Contains(t, msgs[0].Content, `{"k":"v"}`)
+
+		assert.Equal(t, RoleUser, msgs[1].Role)
+		assert.False(t, msgs[1].Cacheable,
+			"per-call reasoning prose is never reusable — Cacheable=false keeps the cache marker off it")
+		assert.Equal(t, "the reasoning prose", msgs[1].Content)
+	})
+
+	t.Run("without_example_doc", func(t *testing.T) {
+		msgs := buildFormatPassMessages("", "the reasoning prose")
+		require.Len(t, msgs, 1, "no example registered → no example layer; just the reasoning prose")
+		assert.Equal(t, RoleUser, msgs[0].Role)
+		assert.False(t, msgs[0].Cacheable)
+		assert.Equal(t, "the reasoning prose", msgs[0].Content)
+	})
+}
+
 // TestMergeSplitResponsesNilSafety confirms the merger handles partial
 // inputs (e.g. an adapter error before the format pass populated a
 // Response) without panicking. The reasoning return path on a format

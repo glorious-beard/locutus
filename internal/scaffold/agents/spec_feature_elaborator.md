@@ -46,7 +46,7 @@ During a council run, `spec_search` queries the **in-flight proposal** — what 
 
 # Task
 
-You produce a single `RawFeatureProposal` JSON object. Walk the JSON shape in order:
+Elaborate the feature into the sections below. Take them in order; each one describes one piece of the feature body.
 
 ### id
 
