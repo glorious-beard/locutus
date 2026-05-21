@@ -1,5 +1,7 @@
 # DJ-129 Dimension-Driven Critics — Implementation Plan
 
+> **Status:** DONE (Phases 1-6 + 8 landed 2026-05-20; Phase 7 winplan validation deferred to user — requires real LLM API calls).
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Companion documents:** [dj-129-dimension-driven-critics.md](dj-129-dimension-driven-critics.md) is the design doc — read it first for context and rationale. [dj-128-deliberation-log-and-cap-as-commit.md](dj-128-deliberation-log-and-cap-as-commit.md) is the prior DJ this builds on.
