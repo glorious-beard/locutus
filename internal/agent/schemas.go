@@ -93,6 +93,21 @@ func init() {
 			Summary:   "Campaign managers see live progress against the per-district win number with voter-contact attempts plotted on a turf map.",
 			Decisions: []string{"dec-postgres-oltp-store"},
 		}},
+		CritiqueDimensions: []CritiqueDimension{{
+			ID:             "cost-ceiling-coverage",
+			Lens:           "cost",
+			FocusQuestion:  "Does every paid SaaS or compute commitment engage with the $150/mo cost ceiling in GOALS §3?",
+			SourceEvidence: []string{"GOALS §3: steady-state ceiling of $150/mo for first 12 months"},
+			Disciplines:    []string{"web_grounded", "goals_grounded"},
+			SeverityFloor:  "high",
+		}, {
+			ID:             "voter-file-privacy",
+			Lens:           "compliance",
+			FocusQuestion:  "Does the voter-file storage path honor per-state privacy regimes (CA SB-1121; VA CDPA) for derived data?",
+			SourceEvidence: []string{"GOALS §Compliance: state-level privacy regimes require named-account auditing"},
+			Disciplines:    []string{"best_practice_grounded", "goals_grounded"},
+			SeverityFloor:  "high",
+		}},
 		ConcernDispositions: []ConcernDisposition{{
 			ConcernID:     "c-2",
 			Disposition:   "addressed",
@@ -379,6 +394,15 @@ func init() {
 		AgentID:  "critic",
 		Severity: "high",
 		Text:     "description of the concern",
+	})
+
+	RegisterSchema("CritiqueDimension", CritiqueDimension{
+		ID:             "cost-ceiling-coverage",
+		Lens:           "cost",
+		FocusQuestion:  "Does every paid SaaS or compute commitment engage with the $150/mo cost ceiling in GOALS §3?",
+		SourceEvidence: []string{"GOALS §3: 'Steady-state monthly infrastructure spend stays under $150 for the first 12 months.'", "dec-datadog rationale claims best-in-class APM but does not name the per-host pricing"},
+		Disciplines:    []string{"web_grounded", "goals_grounded"},
+		SeverityFloor:  "high",
 	})
 
 	RegisterSchema("Finding", Finding{

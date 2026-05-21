@@ -139,6 +139,7 @@ type ScoutBrief struct {
 	WatchOuts            []string             `json:"watch_outs" jsonschema:"description=Risks; gotchas; or non-obvious constraints the decision-elaborator should be aware of (e.g. 'election-cycle traffic seasonality: months of near-zero load followed by 6-week sprint'; 'PII handling regulations vary by state'). Each entry actionable; not generic."`
 	AxesOpen             []OpenAxis           `json:"axes_open" jsonschema:"description=Foundational axes the scout identified that no decision in the current graph covers. Each entry is one axis the loop must resolve before convergence. Empty array exactly when Converged is true. The dispatcher in Phase 5 spawns one decision-elaborator per entry."`
 	NewNodes             []NewSpecNode        `json:"new_nodes" jsonschema:"description=New feature or strategy nodes the scout identified from imported content or goal-shape analysis. Each entry pre-populates its decisions[] with existing-decision IDs that cover the node's axes; new decisions get appended at decision-creation time. Empty when no new nodes surface this iteration."`
+	CritiqueDimensions   []CritiqueDimension  `json:"critique_dimensions" jsonschema:"description=Critique surfaces the scout has identified for the council's critic-elaborator to challenge this proposal on (DJ-129). Each dimension is one lens with a focus question and grounded source evidence. The workflow's critique step dispatches one critic-elaborator call per dimension. Empty array is valid when the proposal is too thin to critique yet (e.g. iter 0 with no decisions) or when GOALS explicitly suppresses categories the scout would otherwise surface."`
 	ConcernDispositions  []ConcernDisposition `json:"concern_dispositions" jsonschema:"description=DJ-125 Phase 7: one entry per concern the scout grades from the open set this iteration. Concern IDs come from the manifest's c-N positions (the open concerns in the prompt's outstanding-findings section). Empty array when no concerns are open this iteration (the mechanical pre-pass already disposed them). Each entry's disposition tells the workflow whether the concern still blocks convergence; the justification field carries the scout's one-sentence rationale."`
 	Converged            bool                 `json:"converged" jsonschema:"description=True only when AxesOpen is empty AND no concern's effective status is open (after applying the dispositions in ConcernDispositions). Loop exits as the queue drains. False otherwise; the loop continues with another iteration."`
 }
@@ -166,6 +167,28 @@ type OpenAxis struct {
 	Description    string   `json:"description" jsonschema:"description=One-sentence statement of what needs to be decided on this axis — a noun phrase plus the deciding question (e.g. 'Auth provider: who owns the user identity store and how do clients authenticate against it?'). Concrete enough that the decision-elaborator knows what to research and pick."`
 	SourceEvidence []string `json:"source_evidence" jsonschema:"description=Verbatim text excerpts from goals / features / strategies / imported content that surfaced this axis. Each entry is a span the elaborator can cite back to. At least one entry; empty means the axis was invented and the integrity check rejects it.,minItems=1"`
 	SurfacedBy     []string `json:"surfaced_by" jsonschema:"description=Spec node IDs (goal / feature / strategy) whose content surfaced this axis. Mirrors Decision.SurfacedBy on the eventual decision. At least one entry.,minItems=1"`
+}
+
+// CritiqueDimension is one critique surface the scout has identified
+// for the council's critic-elaborator to challenge (DJ-129). Each
+// dimension carries a project-specific framing (focus_question +
+// source_evidence) plus a bounded discipline-enum slice that drives
+// the critic-elaborator prompt's grounding sections.
+//
+// Lens is a free-form grouping label that drives Concern.Kind for the
+// revise projection but is not constrained by code — projects can
+// declare any lens (e.g. "compliance", "election-cycle-traffic") and
+// the workflow dispatches the same parametric critic-elaborator.
+// Disciplines is bounded to keep the elaborator's prompt sections
+// finite; the saturated set covers all grounding patterns the council
+// supports.
+type CritiqueDimension struct {
+	ID             string   `json:"id" jsonschema:"description=Stable slug identifying this dimension across iterations — lowercase / hyphen-separated / three to five words derived from the focus (e.g. 'cost-ceiling-coverage'; 'voter-file-privacy'; 'election-cycle-traffic'). Stable across iterations so dimensionsAreStable can detect new-dimension additions."`
+	Lens           string   `json:"lens" jsonschema:"description=Free-form grouping label naming the category of concern (e.g. 'cost'; 'sre'; 'compliance'; 'security'; 'vendor-portability'). Drives Concern.Kind for grouping in the revise projection; not constrained by code. Pick the most specific label that fits."`
+	FocusQuestion  string   `json:"focus_question" jsonschema:"description=A complete-sentence question framing what the critic should challenge on this dimension (e.g. 'Does every paid SaaS or compute commitment engage with the $150/mo ceiling in GOALS §3?'). Concrete enough that the critic-elaborator can read it and immediately know what to look for."`
+	SourceEvidence []string `json:"source_evidence" jsonschema:"description=Verbatim text excerpts from GOALS / spec nodes / imported content that surfaced this dimension. Each entry is a span the critic can cite back to. At least one entry; empty means the dimension was invented and the dispatcher should reject it.,minItems=1"`
+	Disciplines    []string `json:"disciplines" jsonschema:"enum=web_grounded,enum=spec_node_grounded,enum=best_practice_grounded,enum=goals_grounded,enum=freeform,minItems=1,description=Bounded enum slice naming the grounding patterns the critic must apply. web_grounded=cite URLs with verbatim excerpts; spec_node_grounded=cite other spec nodes by id; best_practice_grounded=cite named principles; goals_grounded=cite GOALS.md clauses with verbatim excerpts; freeform=no specific grounding required. Multiple disciplines compose (e.g. a cost dimension may require both web_grounded for vendor pricing and goals_grounded for the budget clause)."`
+	SeverityFloor  string   `json:"severity_floor" jsonschema:"enum=high,enum=medium,enum=low,description=Default severity for concerns surfaced on this dimension. high=blocks shipping; medium=worth addressing; low=polish-pass note. The critic-elaborator may emit higher-severity concerns than the floor when warranted."`
 }
 
 // NewSpecNode names a new feature or strategy the scout identified

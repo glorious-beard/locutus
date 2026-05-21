@@ -268,6 +268,17 @@ type PlanningState struct {
 	// Set, not slice, so membership lookup is O(1) in the filter path.
 	LockedDecisionIDs map[string]struct{} `json:"-"`
 
+	// DJ-129: dimension tracking for the dimension-driven critic
+	// dispatch. CurrentCritiqueDimensions is replaced per iteration
+	// from the scout's brief; CritiqueDimensionsByIter is append-only
+	// (records every dimension ever surfaced with its first-seen
+	// iteration index) and powers dimensionsAreStable's monotonic-add
+	// check. Retirement is a positive signal that a dimension was
+	// considered and concluded; the historical record stays in the map
+	// per design decision #7.
+	CurrentCritiqueDimensions []CritiqueDimension `json:"-"`
+	CritiqueDimensionsByIter  map[string]int      `json:"-"`
+
 	// DanglingReferences accumulates integrity-violation findings from
 	// ApplyReconciliation. Surfaced to the scout's next-iteration input
 	// as concerns so the loop can self-correct (e.g. the scout iterates
@@ -418,6 +429,26 @@ func snapshotPlanningState(s *PlanningState) PlanningState {
 		out.LockedDecisionIDs = make(map[string]struct{}, len(s.LockedDecisionIDs))
 		for k := range s.LockedDecisionIDs {
 			out.LockedDecisionIDs[k] = struct{}{}
+		}
+	}
+	if len(s.CurrentCritiqueDimensions) > 0 {
+		out.CurrentCritiqueDimensions = make([]CritiqueDimension, len(s.CurrentCritiqueDimensions))
+		copy(out.CurrentCritiqueDimensions, s.CurrentCritiqueDimensions)
+		// Deep-copy each dimension's slice fields so snapshots stay
+		// independent of orchestrator-side mutations.
+		for i := range out.CurrentCritiqueDimensions {
+			if len(s.CurrentCritiqueDimensions[i].SourceEvidence) > 0 {
+				out.CurrentCritiqueDimensions[i].SourceEvidence = append([]string(nil), s.CurrentCritiqueDimensions[i].SourceEvidence...)
+			}
+			if len(s.CurrentCritiqueDimensions[i].Disciplines) > 0 {
+				out.CurrentCritiqueDimensions[i].Disciplines = append([]string(nil), s.CurrentCritiqueDimensions[i].Disciplines...)
+			}
+		}
+	}
+	if len(s.CritiqueDimensionsByIter) > 0 {
+		out.CritiqueDimensionsByIter = make(map[string]int, len(s.CritiqueDimensionsByIter))
+		for k, v := range s.CritiqueDimensionsByIter {
+			out.CritiqueDimensionsByIter[k] = v
 		}
 	}
 	return out
