@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"encoding/json"
+	"strings"
 
 	"google.golang.org/genai"
 )
@@ -34,28 +35,104 @@ func mergeCitations(dst, cs []Citation) []Citation {
 // flattens the GroundingChunks[].Web entries into Citations. Dedupes
 // on URL — Gemini emits the same chunk multiple times when several
 // text spans cite it, and the trace only needs one row per source.
+//
+// Snippet enrichment (genai v1.52+ surface):
+//
+// Each GroundingSupport ties a model assertion (Segment) to a list of
+// GroundingChunkIndices (which sources back the claim) plus
+// RenderedParts (indices into a source-side rendered_parts text
+// array on GroundingMetadata). The source-side rendered_parts array
+// itself is NOT yet exposed on the Go SDK's GroundingMetadata struct
+// as of v1.58 — only the indices on GroundingSupport are typed. So
+// the richest source-side excerpt the Go API gives us today is
+// Segment.Text: the assistant's own response span that cites this
+// chunk. We populate Citation.Snippet from those segment-texts
+// (joined by " | " when multiple supports cite the same chunk) so
+// trace forensics gets "the model said X about this URL" instead of
+// the bare URL.
+//
+// When the Go SDK exposes the underlying rendered_parts text array on
+// GroundingMetadata, the enrichment swaps from segment.text to
+// rendered_parts[support.RenderedParts[...]] for true source-side
+// excerpts. The Citation surface stays the same; only the snippet
+// source changes.
 func extractGeminiCitations(resp *genai.GenerateContentResponse) []Citation {
 	if resp == nil {
 		return nil
 	}
 	var out []Citation
-	seen := make(map[string]struct{})
+	seen := make(map[string]int) // URL → out[] index for snippet aggregation
 	for _, cand := range resp.Candidates {
 		if cand == nil || cand.GroundingMetadata == nil {
 			continue
 		}
-		for _, ch := range cand.GroundingMetadata.GroundingChunks {
+		// Build chunk_index → []snippet from the supports. Each
+		// support cites one or more chunks via GroundingChunkIndices
+		// and carries the model's own response excerpt in
+		// Segment.Text. We walk supports first so we have the
+		// snippets ready when we emit Citations below.
+		snippetByChunk := make(map[int32][]string)
+		for _, sup := range cand.GroundingMetadata.GroundingSupports {
+			if sup == nil || sup.Segment == nil {
+				continue
+			}
+			text := strings.TrimSpace(sup.Segment.Text)
+			if text == "" {
+				continue
+			}
+			for _, idx := range sup.GroundingChunkIndices {
+				snippetByChunk[idx] = append(snippetByChunk[idx], text)
+			}
+		}
+		for i, ch := range cand.GroundingMetadata.GroundingChunks {
 			if ch == nil || ch.Web == nil || ch.Web.URI == "" {
 				continue
 			}
-			if _, dup := seen[ch.Web.URI]; dup {
+			snippet := strings.Join(snippetByChunk[int32(i)], " | ")
+			if existingIdx, dup := seen[ch.Web.URI]; dup {
+				// Same URL cited in a later candidate — fold its
+				// snippets into the first occurrence. Keeps Citations
+				// deduped on URL while still aggregating per-URL
+				// provenance across candidates.
+				if snippet != "" {
+					out[existingIdx].Snippet = mergeSnippet(out[existingIdx].Snippet, snippet)
+				}
 				continue
 			}
-			seen[ch.Web.URI] = struct{}{}
-			out = append(out, Citation{URL: ch.Web.URI, Title: ch.Web.Title})
+			seen[ch.Web.URI] = len(out)
+			out = append(out, Citation{URL: ch.Web.URI, Title: ch.Web.Title, Snippet: snippet})
 		}
 	}
 	return out
+}
+
+// mergeSnippet joins two snippet strings deduping on identical
+// per-piece text while preserving first-seen order. Both inputs are
+// formatted as " | "-joined per-piece text (the within-candidate
+// aggregation in extractGeminiCitations); merging across candidates
+// must split, dedupe, and rejoin to avoid stuttering the same model
+// claim N times in the trace.
+func mergeSnippet(existing, incoming string) string {
+	if existing == "" {
+		return incoming
+	}
+	if incoming == "" {
+		return existing
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, piece := range strings.Split(existing+" | "+incoming, " | ") {
+		piece = strings.TrimSpace(piece)
+		if piece == "" {
+			continue
+		}
+		if _, dup := seen[piece]; dup {
+			continue
+		}
+		seen[piece] = struct{}{}
+		out = append(out, piece)
+	}
+	return strings.Join(out, " | ")
 }
 
 // extractOpenAICitations parses raw output-array JSON (as captured in

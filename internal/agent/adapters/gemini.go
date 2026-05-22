@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -165,6 +167,93 @@ func (g *GeminiAdapter) runSplit(ctx context.Context, req Request) (*Response, e
 	return mergeSplitResponses(reasoning, formatted), nil
 }
 
+// geminiModelStatusWarned dedupes ModelStatus warnings across the
+// adapter's lifetime so operators get one alert per (model,
+// retirement-time) pair rather than one per call. The map key is
+// "<model>|<rfc3339-retirement>"; an entry's presence means we've
+// already warned. sync.Map is right here because reads vastly
+// outnumber writes — the warn-once write fires once per new
+// retirement notice; every other call is a fast read-hit-and-skip.
+var geminiModelStatusWarned sync.Map
+
+// noteGeminiModelStatus inspects the response's ModelStatus block
+// and logs a deduped slog.Warn when the API surfaces an upcoming
+// retirement or other non-zero status. The genai SDK v1.52+ surfaces
+// ModelStatus.RetirementTime as the load-bearing field; preview
+// models (gemini-3.1-pro-preview, etc.) start carrying a retirement
+// time as soon as Google announces deprecation, which gives
+// operators advance notice before a model 404s on the next call.
+//
+// The warning is logger-side (not Response-side) deliberately: the
+// per-call YAML recorder already captures the raw response body that
+// carries the structured ModelStatus, so machine-readable consumers
+// have the data. The slog.Warn is the human-readable surface that
+// makes the deprecation visible without grep'ing trace folders.
+//
+// Status messages without a retirement time still log when present
+// — Google has used the Message field for non-deprecation operator
+// notices in the past (e.g. capacity migrations) and operator
+// visibility on those is the same benefit.
+func noteGeminiModelStatus(model string, status *genai.ModelStatus) {
+	if status == nil {
+		return
+	}
+	if status.Message == "" && status.RetirementTime.IsZero() && status.ModelStage == "" {
+		return
+	}
+	key := model + "|" + status.RetirementTime.UTC().Format(time.RFC3339)
+	if _, dup := geminiModelStatusWarned.LoadOrStore(key, struct{}{}); dup {
+		return
+	}
+	args := []any{"model", model}
+	if !status.RetirementTime.IsZero() {
+		args = append(args,
+			"retirement_time", status.RetirementTime.UTC().Format(time.RFC3339),
+			"retires_in", time.Until(status.RetirementTime).Round(time.Hour).String(),
+		)
+	}
+	if status.ModelStage != "" {
+		args = append(args, "model_stage", string(status.ModelStage))
+	}
+	if status.Message != "" {
+		args = append(args, "message", status.Message)
+	}
+	slog.Warn("gemini: model status notice — operator visibility for upcoming deprecation or platform notice", args...)
+}
+
+// geminiServiceTier maps the neutral adapters.ServiceTier onto
+// genai's ServiceTier enum. Returns (zero, false) for ServiceTierUnset
+// so the caller can skip the GenerateContentConfig.ServiceTier
+// assignment entirely — keeps the request behaviour unchanged for
+// non-tier-aware callers and lets the genai default (Standard) apply.
+//
+// Mapping rationale (DJ-132 follow-up):
+//   - Flex (fast tier): best-effort latency, materially cheaper. The
+//     fast-tier candidate-survey fanout fires N parallel calls per
+//     iteration; Flex is the right cost posture there because each
+//     call is independent and a slow tail call doesn't block the
+//     workflow's critical path (the survey step waits for all axes
+//     either way).
+//   - Standard (balanced tier): default cost / latency. Matches the
+//     legacy behaviour pre-DJ-132-followup.
+//   - Priority (strong tier): latency-stable, higher cost. Council's
+//     strong-tier agents (scout, decision-elaborator, critic-
+//     elaborator) gate convergence — a Flex tail call would extend
+//     wall-clock perceptibly per iteration; Priority is the right
+//     posture for latency-sensitive deep-reasoning calls.
+func geminiServiceTier(t ServiceTier) (genai.ServiceTier, bool) {
+	switch t {
+	case ServiceTierFlex:
+		return genai.ServiceTierFlex, true
+	case ServiceTierStandard:
+		return genai.ServiceTierStandard, true
+	case ServiceTierPriority:
+		return genai.ServiceTierPriority, true
+	default:
+		return "", false
+	}
+}
+
 func (g *GeminiAdapter) runInner(ctx context.Context, req Request) (*Response, error) {
 	cfg := &genai.GenerateContentConfig{}
 	if req.SystemPrompt != "" {
@@ -192,6 +281,14 @@ func (g *GeminiAdapter) runInner(ctx context.Context, req Request) (*Response, e
 	if req.OutputSchema != nil {
 		cfg.ResponseMIMEType = "application/json"
 		cfg.ResponseJsonSchema = req.OutputSchema
+	}
+
+	// DJ-132 follow-up: per-tier ServiceTier mapping (genai v1.52+).
+	// Empty ServiceTier falls through to the provider default, so
+	// requests built outside the executor's tier-aware path keep
+	// their pre-existing behaviour.
+	if mapped, ok := geminiServiceTier(req.ServiceTier); ok {
+		cfg.ServiceTier = mapped
 	}
 
 	var tools []*genai.Tool
@@ -244,6 +341,15 @@ func (g *GeminiAdapter) dispatch(ctx context.Context, req Request, contents []*g
 		text, reasoning, calls := splitGeminiContent(resp)
 		raw, _ := json.Marshal(resp)
 		citations := extractGeminiCitations(resp)
+
+		// genai v1.52+ surfaces ModelStatus carrying RetirementTime
+		// when the API has announced a deprecation. Deduped across
+		// the adapter's lifetime so operators get one warning per
+		// (model, retirement-time) rather than one per call. Load-
+		// bearing for users on preview-channel models like
+		// gemini-3.1-pro-preview where surprise shutdowns mid-run
+		// otherwise look like generic 404s.
+		noteGeminiModelStatus(resp.ModelVersion, resp.ModelStatus)
 
 		usage := geminiUsage(resp)
 		out.Model = resp.ModelVersion

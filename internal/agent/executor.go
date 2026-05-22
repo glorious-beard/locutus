@@ -549,6 +549,32 @@ func outputFromResponse(resp *adapters.Response, model string) *AgentOutput {
 	return out
 }
 
+// tierToServiceTier maps the executor's resolved Tier string onto
+// the neutral adapters.ServiceTier the adapter consumes. The
+// mapping is fixed by policy (DJ-132 follow-up):
+//
+//   - "fast"     → Flex     (cheaper; best-effort latency)
+//   - "balanced" → Standard (default cost/latency)
+//   - "strong"   → Priority (higher cost; latency-stable)
+//
+// Unknown / empty tier strings return ServiceTierUnset so the
+// adapter falls through to the provider default — keeps ad-hoc
+// dispatchers (intake, supervisor calls) that build a Request
+// outside the tier-aware path working unchanged. Only the Gemini
+// adapter consumes this knob today (genai v1.52+).
+func tierToServiceTier(tier string) adapters.ServiceTier {
+	switch tier {
+	case string(TierFast):
+		return adapters.ServiceTierFlex
+	case string(TierBalanced):
+		return adapters.ServiceTierStandard
+	case string(TierStrong):
+		return adapters.ServiceTierPriority
+	default:
+		return adapters.ServiceTierUnset
+	}
+}
+
 // buildAdapterRequest projects an AgentDef + AgentInput + resolved
 // pick into the provider-neutral adapters.Request. Resolves the
 // strict-mode schema and tool definitions; the adapter consumes them
@@ -569,6 +595,7 @@ func buildAdapterRequest(def AgentDef, input AgentInput, pick *ResolvedModel, re
 		MaxOutputTokens: pick.MaxOutputTokens,
 		Thinking:        pick.Thinking,
 		Grounding:       def.Grounding,
+		ServiceTier:     tierToServiceTier(pick.Tier),
 	}
 	// DJ-130: populate the format pass model from the picked
 	// provider's `fast:` tier so the adapter's runSplit can extract

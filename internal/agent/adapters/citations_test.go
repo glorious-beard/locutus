@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/genai"
 )
 
@@ -36,6 +37,125 @@ func TestExtractGeminiCitations_NoGrounding(t *testing.T) {
 		Candidates: []*genai.Candidate{{}},
 	}
 	assert.Empty(t, extractGeminiCitations(resp))
+}
+
+// TestExtractGeminiCitations_SnippetsFromGroundingSupports verifies
+// the v1.52+ Snippet enrichment: each GroundingSupport's Segment.Text
+// (the model's own response excerpt that cites this chunk) lands as
+// the Citation.Snippet for the chunks listed in
+// GroundingChunkIndices. Multiple supports citing the same chunk
+// aggregate their texts joined by " | ". This gives trace forensics
+// "what the model said about this URL" instead of an empty Snippet
+// (the pre-DJ-132-followup behaviour).
+//
+// The Go SDK doesn't yet expose the source-side rendered_parts text
+// array on GroundingMetadata; once it does, the enrichment swaps
+// from segment.text to the underlying source excerpts without
+// changing the Citation surface or this test's structure.
+func TestExtractGeminiCitations_SnippetsFromGroundingSupports(t *testing.T) {
+	resp := &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{{
+			GroundingMetadata: &genai.GroundingMetadata{
+				GroundingChunks: []*genai.GroundingChunk{
+					{Web: &genai.GroundingChunkWeb{URI: "https://a.example/x", Title: "Source A"}},
+					{Web: &genai.GroundingChunkWeb{URI: "https://b.example/y", Title: "Source B"}},
+				},
+				GroundingSupports: []*genai.GroundingSupport{
+					// One assertion cites chunk 0 only.
+					{
+						Segment:               &genai.Segment{Text: "Postgres 16 ships with native JSONB."},
+						GroundingChunkIndices: []int32{0},
+					},
+					// Another assertion cites both chunks.
+					{
+						Segment:               &genai.Segment{Text: "Aurora Serverless v2 is now Postgres 16 compatible."},
+						GroundingChunkIndices: []int32{0, 1},
+					},
+					// A third assertion cites chunk 1 only.
+					{
+						Segment:               &genai.Segment{Text: "Aurora's per-ACU pricing starts at $0.12/hour."},
+						GroundingChunkIndices: []int32{1},
+					},
+				},
+			},
+		}},
+	}
+
+	got := extractGeminiCitations(resp)
+
+	assert.Equal(t, []Citation{
+		{
+			URL:     "https://a.example/x",
+			Title:   "Source A",
+			Snippet: "Postgres 16 ships with native JSONB. | Aurora Serverless v2 is now Postgres 16 compatible.",
+		},
+		{
+			URL:     "https://b.example/y",
+			Title:   "Source B",
+			Snippet: "Aurora Serverless v2 is now Postgres 16 compatible. | Aurora's per-ACU pricing starts at $0.12/hour.",
+		},
+	}, got)
+}
+
+// TestExtractGeminiCitations_SnippetsWithNoSupports verifies the
+// pre-enrichment behaviour remains unchanged when the response
+// carries chunks but no GroundingSupports. Older preview models and
+// some grounding paths emit chunks without supports — Snippet stays
+// empty in that case.
+func TestExtractGeminiCitations_SnippetsWithNoSupports(t *testing.T) {
+	resp := &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{{
+			GroundingMetadata: &genai.GroundingMetadata{
+				GroundingChunks: []*genai.GroundingChunk{
+					{Web: &genai.GroundingChunkWeb{URI: "https://a.example/x", Title: "Source A"}},
+				},
+				// No GroundingSupports.
+			},
+		}},
+	}
+
+	got := extractGeminiCitations(resp)
+
+	assert.Equal(t, []Citation{
+		{URL: "https://a.example/x", Title: "Source A"},
+	}, got)
+}
+
+// TestExtractGeminiCitations_DedupeOnURLAggregatesAcrossCandidates
+// verifies that when the same URL surfaces across multiple
+// candidates, the snippet aggregation folds new texts into the
+// first occurrence — and skips duplicates. Same-text-twice does not
+// produce a stuttering "X | X" snippet.
+func TestExtractGeminiCitations_DedupeOnURLAggregatesAcrossCandidates(t *testing.T) {
+	resp := &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{{
+			GroundingMetadata: &genai.GroundingMetadata{
+				GroundingChunks: []*genai.GroundingChunk{
+					{Web: &genai.GroundingChunkWeb{URI: "https://a.example/x", Title: "Source A"}},
+				},
+				GroundingSupports: []*genai.GroundingSupport{
+					{Segment: &genai.Segment{Text: "Postgres ships with JSONB."}, GroundingChunkIndices: []int32{0}},
+				},
+			},
+		}, {
+			GroundingMetadata: &genai.GroundingMetadata{
+				GroundingChunks: []*genai.GroundingChunk{
+					{Web: &genai.GroundingChunkWeb{URI: "https://a.example/x", Title: "Source A again"}},
+				},
+				GroundingSupports: []*genai.GroundingSupport{
+					{Segment: &genai.Segment{Text: "Postgres ships with JSONB."}, GroundingChunkIndices: []int32{0}}, // identical text
+					{Segment: &genai.Segment{Text: "JSONB supports GIN indexes."}, GroundingChunkIndices: []int32{0}},
+				},
+			},
+		}},
+	}
+
+	got := extractGeminiCitations(resp)
+	require.Len(t, got, 1, "URL appearing across candidates must dedupe to one Citation")
+	assert.Equal(t, "https://a.example/x", got[0].URL)
+	assert.Equal(t, "Source A", got[0].Title, "first occurrence's Title wins")
+	assert.Equal(t, "Postgres ships with JSONB. | JSONB supports GIN indexes.", got[0].Snippet,
+		"redundant snippet text is dropped; net-new text from later candidates folds in")
 }
 
 // TestExtractOpenAICitations verifies url_citation annotations on

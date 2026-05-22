@@ -205,6 +205,31 @@ const (
 	ThinkingHigh ThinkingLevel = "high"
 )
 
+// ServiceTier is the neutral cost/latency tier the executor passes
+// down to provider adapters. Providers' own enums map onto this:
+//
+//   - ServiceTierFlex → Gemini's ServiceTierFlex (Anthropic /
+//     OpenAI have no direct equivalent today; their adapters ignore
+//     the knob and dispatch at the provider default).
+//   - ServiceTierStandard → Gemini's ServiceTierStandard (default
+//     for all adapters when this field is empty).
+//   - ServiceTierPriority → Gemini's ServiceTierPriority (Anthropic
+//     also exposes a "priority" service tier on MessageNewParams
+//     since SDK v1.x but Locutus doesn't wire it today; tracked
+//     separately).
+//
+// Empty value means "use the provider default" — adapters skip the
+// knob entirely so the request behaves as it did before
+// service-tier plumbing existed.
+type ServiceTier string
+
+const (
+	ServiceTierUnset    ServiceTier = ""
+	ServiceTierFlex     ServiceTier = "flex"
+	ServiceTierStandard ServiceTier = "standard"
+	ServiceTierPriority ServiceTier = "priority"
+)
+
 // Request is the provider-neutral input the executor builds for a
 // single agent call. Fields stay flat / value-typed so adapters can
 // inspect them without callbacks back into the agent package.
@@ -234,6 +259,21 @@ type Request struct {
 	// Thinking is the resolved thinking-level. Adapters set
 	// provider-specific budget knobs from this enum.
 	Thinking ThinkingLevel
+
+	// ServiceTier is the neutral cost/latency tier the adapter
+	// passes through to the provider's service-tier knob. The
+	// executor populates this from the picked (provider, tier) entry
+	// in models.yaml: fast→Flex (cheaper, best-effort latency),
+	// balanced→Standard (default cost / latency), strong→Priority
+	// (higher cost, latency-stable). Empty means "use the provider
+	// default" — adapters skip the knob entirely so the request
+	// behaves as it did pre-DJ-132-followup.
+	//
+	// Only the Gemini adapter consumes this today (genai v1.52+ ships
+	// the ServiceTier field on GenerateContentConfig). Anthropic and
+	// OpenAI ignore it; their SDKs expose different service-tier
+	// surfaces that are tracked separately.
+	ServiceTier ServiceTier
 
 	// OutputSchema is the JSON Schema (as a generic map) the model's
 	// response must conform to. Each adapter projects this into the
