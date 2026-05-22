@@ -12,6 +12,7 @@ Locutus — a Go CLI and MCP server that acts as an autonomous project manager f
 - `.claude/plans/` — active implementation plans (current consolidation work is in `verb-set-phase-{a,b,c,d}.md`). Copy to `docs/plans/` once a phase stabilises.
 - `docs/agent-conventions.md` — documented anti-patterns and conventions for agent prompt files. **Read this before editing or creating any file under `internal/scaffold/agents/`.** It captures lessons we've re-learned multiple times (anti-pattern priming, thinking-leakage, schema-skeleton placeholders) and the prefer-positive-phrasing + push-constraints-to-schema-tags patterns that replace them.
 - `docs/debugging-traces.md` — operational guide for walking session traces and OTel spans when an LLM-driven verb misbehaves. Covers the per-step folder layout (DJ-130), the per-call YAML / OTel correlation, common failure patterns, and one-liners for grepping concerns / extracting structured responses.
+- `docs/council.md` — workflow diagram + per-agent reference for the spec-generation council (and the other verb-level workflows that reuse council agents). Read this when reasoning about which agent runs when, what schema each emits, or which DJ governs a given step.
 
 When these documents conflict with any other file in the repo, `docs/` and `.claude/plans/` win.
 
