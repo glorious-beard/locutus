@@ -141,7 +141,7 @@ func (g *GeminiAdapter) requiresThinkingSchemaSplit(req Request) bool {
 func (g *GeminiAdapter) runSplit(ctx context.Context, req Request) (*Response, error) {
 	reasoningReq := req
 	reasoningReq.OutputSchema = nil
-	reasoningReq.Messages = buildReasoningPassMessages(req.Messages)
+	reasoningReq.Messages = buildReasoningPassMessages(req.FormatExampleProse, req.Messages)
 	reasoning, err := g.runOnce(ctx, reasoningReq, RecordedRoleReason)
 	if err != nil {
 		return reasoning, fmt.Errorf("gemini split reason: %w", err)

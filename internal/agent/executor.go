@@ -594,27 +594,38 @@ func buildAdapterRequest(def AgentDef, input AgentInput, pick *ResolvedModel, re
 		}
 		req.OutputSchema = schema
 		// DJ-130 follow-up: thread the registered example payloads
-		// to the adapter for the format pass's one-shot
-		// demonstration (input prose → output JSON pairing). Empty
-		// when the schema uses RegisterSchemaOverride; the format
-		// pass then falls back to bare CanonicalFormatterPrompt +
-		// strict-mode schema enforcement.
-		//
-		// Examples are NOT prepended into the request's user
-		// messages for the reasoning pass or for single-call paths.
-		// The fifth winplan re-run trace surfaced two distinct
-		// failures from doing that: (1) scout copying example
-		// concern_disposition text verbatim into its actual
-		// concern_dispositions output; (2) decision-elaborator
-		// anchoring on the example's 1-alternative list length
-		// against a revise that needed 6+ alternatives. The example
-		// taught the model to imitate content, not just shape — and
-		// LLMs treat example content as evidence about what
-		// belongs in the output. Schema descriptions (via struct
-		// tags) and strict-mode enforcement carry shape without
-		// the content-imitation risk.
+		// to the adapter. JSON form goes to the format pass; prose
+		// form goes to the reasoning pass (split path) or to the
+		// single call's user-message layer (non-split path). Empty
+		// when the schema uses RegisterSchemaOverride (no Go example
+		// exists); the adapter then skips the corresponding layer.
 		req.FormatExampleDoc = SchemaPromptDoc(def.OutputSchema)
 		req.FormatExampleProse = SchemaProsePromptDoc(def.OutputSchema)
+		// Single-call path (thinking off + schema): prepend the
+		// prose example as a Cacheable user message before the
+		// projected input. The example reaches the model the same
+		// way it reaches the format pass — via a labeled user
+		// message — so the cache layering stays consistent and the
+		// system prompt stays byte-stable across calls of the same
+		// agent.
+		//
+		// Split-path requests (thinking on + schema) skip this
+		// prepend: the adapter's runSplit handles example placement
+		// for both reasoning and format passes itself (the reasoning
+		// pass needs the prose example BEFORE adding the prose
+		// directive; doing it here would put the example before the
+		// projected input on a request that the adapter then
+		// re-splits, which would be wrong on the format-pass side).
+		if def.Thinking == "" || def.Thinking == "off" {
+			if req.FormatExampleProse != "" {
+				preface := []adapters.Message{{
+					Role:      adapters.RoleUser,
+					Content:   "## Example output shape\n\n" + req.FormatExampleProse,
+					Cacheable: true,
+				}}
+				req.Messages = append(preface, req.Messages...)
+			}
+		}
 	}
 	for _, name := range registry.Names() {
 		tool, ok := registry.Resolve(name)

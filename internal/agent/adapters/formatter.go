@@ -40,29 +40,31 @@ Rules:
 const ReasoningPassProseDirective = "Make sure to output well-formatted prose, not JSON. I'll convert it to JSON on your behalf in a later step."
 
 // buildReasoningPassMessages assembles the user-message list the
-// reasoning pass receives: the projected input verbatim, with the
-// prose directive trailing as a Cacheable=false user message so the
-// model reads "produce prose, not JSON" most recently before
-// generating.
+// reasoning pass receives. Two optional layers wrap the projected
+// input:
 //
-// The reasoning pass intentionally does NOT receive the registered
-// schema example as a user-message prepend, even though that wiring
-// existed briefly. The fifth winplan re-run surfaced two distinct
-// contamination patterns from rendering examples on the reasoning
-// side: (1) scout copying example concern_disposition text verbatim
-// into actual output; (2) decision-elaborator anchoring on the
-// example's 1-alternative length against a revise that needed 6+
-// alternatives. Examples taught the model to imitate content, not
-// just shape — LLMs treat example content as evidence about what
-// belongs in the output. Schema descriptions (via struct tags) +
-// strict-mode enforcement carry shape on the format pass; the
-// reasoning pass leans on the agent prompt's own structure (its
-// section headings, its explicit task framing) for shape.
+//   - Prose example (when exampleProse is non-empty): a Cacheable
+//     user message that goes FIRST, demonstrating the kind of
+//     section-anchored content the reasoner should produce. Per-agent
+//     content; hits the cache on every iteration of the same agent.
+//   - Prose directive: a Cacheable=false trailing user message
+//     (ReasoningPassProseDirective) that fires LAST so the model
+//     reads "produce prose, not JSON" most recently before
+//     generating.
 //
-// Used by each adapter's runSplit; centralised here so the
-// directive layering stays consistent across providers.
-func buildReasoningPassMessages(in []Message) []Message {
-	out := make([]Message, 0, len(in)+1)
+// The projected input sits between them, carrying whatever
+// Cacheable markers the upstream layer set. Used by each adapter's
+// runSplit; centralised here so the directive + example layering
+// stays consistent across providers.
+func buildReasoningPassMessages(exampleProse string, in []Message) []Message {
+	out := make([]Message, 0, len(in)+2)
+	if exampleProse != "" {
+		out = append(out, Message{
+			Role:      RoleUser,
+			Content:   "## Example output shape\n\n" + exampleProse,
+			Cacheable: true,
+		})
+	}
 	out = append(out, in...)
 	out = append(out, Message{Role: RoleUser, Content: ReasoningPassProseDirective})
 	return out

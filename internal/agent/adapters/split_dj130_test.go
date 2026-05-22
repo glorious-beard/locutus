@@ -163,34 +163,37 @@ func TestBuildReasoningPassMessagesAppendsProseDirective(t *testing.T) {
 		{Role: RoleUser, Content: "projected input two"},
 	}
 
-	out := buildReasoningPassMessages(in)
-	require.Len(t, out, 3,
-		"projected inputs verbatim, then the prose directive trailing")
-	assert.Equal(t, in[0], out[0], "first projected input passes through unchanged")
-	assert.Equal(t, in[1], out[1], "second projected input passes through unchanged")
-	assert.Equal(t, RoleUser, out[2].Role,
-		"directive lands as a user message — same role as the prior turn so the model reads it as continuation, not assistant injection")
-	assert.Equal(t, ReasoningPassProseDirective, out[2].Content)
-	assert.False(t, out[2].Cacheable,
-		"directive is guidance not content; no cache value in marking it")
-}
+	t.Run("with_prose_example", func(t *testing.T) {
+		out := buildReasoningPassMessages("## domain_read\n\nExample content", in)
+		require.Len(t, out, 4,
+			"prose example first (Cacheable), projected inputs in middle, directive last")
 
-// TestBuildReasoningPassMessagesDoesNotIncludeExampleProse documents
-// the explicit decision (after the fifth winplan re-run surfaced
-// example-content bleed on the scout's concern_dispositions and the
-// elaborator's alternatives) that the reasoning pass receives NO
-// rendered schema example, even if the request carries
-// FormatExampleProse. Examples reach the model only via the format
-// pass's one-shot demonstration, where the task is shape conversion
-// rather than content generation and the model doesn't anchor on
-// example content.
-func TestBuildReasoningPassMessagesDoesNotIncludeExampleProse(t *testing.T) {
-	in := []Message{{Role: RoleUser, Content: "projected input"}}
-	out := buildReasoningPassMessages(in)
-	for _, m := range out {
-		assert.NotContains(t, m.Content, "## Example output shape",
-			"reasoning pass must not render a schema example — examples bleed example content into the model's generated output")
-	}
+		// Layer 1: prose example, Cacheable=true
+		assert.Equal(t, RoleUser, out[0].Role)
+		assert.True(t, out[0].Cacheable,
+			"example layer is Cacheable=true for per-agent cross-iteration caching")
+		assert.Contains(t, out[0].Content, "## Example output shape")
+		assert.Contains(t, out[0].Content, "## domain_read")
+
+		// Middle: projected inputs verbatim
+		assert.Equal(t, in[0], out[1])
+		assert.Equal(t, in[1], out[2])
+
+		// Layer last: prose directive, Cacheable=false
+		assert.Equal(t, RoleUser, out[3].Role)
+		assert.Equal(t, ReasoningPassProseDirective, out[3].Content)
+		assert.False(t, out[3].Cacheable,
+			"directive is guidance not content; no cache value in marking it")
+	})
+
+	t.Run("without_prose_example", func(t *testing.T) {
+		out := buildReasoningPassMessages("", in)
+		require.Len(t, out, 3,
+			"empty exampleProse → no example layer; just inputs + directive")
+		assert.Equal(t, in[0], out[0])
+		assert.Equal(t, in[1], out[1])
+		assert.Equal(t, ReasoningPassProseDirective, out[2].Content)
+	})
 }
 
 // TestBuildFormatPassMessagesDoesNotIncludeProseDirective is the
