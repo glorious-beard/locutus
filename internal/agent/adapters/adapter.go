@@ -32,6 +32,15 @@ var (
 	ErrRateLimit    = errors.New("rate limited (429)")
 	ErrTimeout      = errors.New("generation timed out")
 	ErrIncompatible = errors.New("agent capabilities incompatible with provider")
+	// ErrRefusal classifies a provider-side content policy refusal
+	// (Anthropic's stop_reason=refusal; analogous shapes on other
+	// providers). The model declined to answer for safety reasons
+	// rather than failing transiently. errors.Is(err, ErrRefusal)
+	// matches RefusalError below. Pattern-matches as ErrIncompatible-
+	// adjacent in the executor: retry won't help (the model will
+	// refuse again on the same input) but fallback to a different
+	// provider/model might satisfy the request.
+	ErrRefusal = errors.New("provider refused the request on policy grounds")
 )
 
 // RateLimitError carries a provider's Retry-After hint when the 429
@@ -71,6 +80,49 @@ func (e *RateLimitError) Is(target error) bool {
 // pattern-match on provider-typed errors when they need richer
 // detail than the sentinel surface provides.
 func (e *RateLimitError) Unwrap() error { return e.cause }
+
+// RefusalError carries the structured stop_details a provider
+// surfaces when it refuses a request on policy grounds (Anthropic's
+// stop_reason=refusal with RefusalStopDetails since SDK v1.29). The
+// Category is the provider-named policy bucket (e.g. "cyber", "bio");
+// Explanation is the human-readable rationale when the provider
+// included one. Both can be empty when the provider refused without
+// classifying.
+//
+// errors.Is(err, ErrRefusal) returns true. The executor's fallback
+// walk advances to the next preference (a different model may not
+// have the same refusal pattern); RunWithRetry does NOT retry on
+// the same provider since the refusal is deterministic on the input.
+//
+// Surfaced separately from ErrIncompatible because operator-facing
+// trace forensics treat refusal as a content-driven outcome (the
+// user's input crossed a policy line) rather than a capability gap.
+// docs/debugging-traces.md walks the trace surfaces that consume
+// this distinction.
+type RefusalError struct {
+	Category    string
+	Explanation string
+}
+
+func (e *RefusalError) Error() string {
+	switch {
+	case e.Category != "" && e.Explanation != "":
+		return "provider refused (" + e.Category + "): " + e.Explanation
+	case e.Category != "":
+		return "provider refused (" + e.Category + ")"
+	case e.Explanation != "":
+		return "provider refused: " + e.Explanation
+	default:
+		return ErrRefusal.Error()
+	}
+}
+
+// Is makes errors.Is(err, ErrRefusal) return true so existing
+// fallback-eligibility checks can recognize refusals without
+// inspecting the typed struct directly.
+func (e *RefusalError) Is(target error) bool {
+	return target == ErrRefusal
+}
 
 // parseRetryAfterSeconds reads the Retry-After header and returns
 // the duration. Returns zero when the header is missing, non-

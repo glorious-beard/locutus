@@ -351,6 +351,22 @@ func (a *AnthropicAdapter) dispatch(ctx context.Context, params anthropicsdk.Mes
 		out.Content = text
 		out.Reasoning = reasoning
 		out.RawMessage = string(raw)
+
+		// Refusal handling (SDK v1.29+ structured stop_details).
+		// When the API stops the response on policy grounds, the
+		// content is empty (or unhelpful) and the caller needs a
+		// typed signal so the dispatcher's fallback walk can advance
+		// to a different provider/model rather than retry the same
+		// pick. Category / Explanation thread through to the trace
+		// recorder via the error string; the structured fields stay
+		// available to callers that type-assert on *RefusalError.
+		if msg.StopReason == anthropicsdk.StopReasonRefusal {
+			return finalizeRounds(out), &RefusalError{
+				Category:    string(msg.StopDetails.Category),
+				Explanation: msg.StopDetails.Explanation,
+			}
+		}
+
 		return finalizeRounds(out), nil
 	}
 
@@ -568,22 +584,36 @@ func dispatchAnthropicTools(ctx context.Context, registry []ToolDef, toolUses []
 
 // classifyAnthropicError translates the SDK's error shape into the
 // neutral sentinels the executor's retry layer pattern-matches.
+//
+// As of anthropic-sdk-go v1.38 the Error type carries a typed Type()
+// method returning the API-emitted error_type ("overloaded_error",
+// "rate_limit_error", "api_error", etc.) parsed from the response
+// envelope. The classifier dispatches on Type() first, then falls
+// back to HTTP-status matching for cases where the body didn't carry
+// a recognized type (network errors that produce a synthetic Error
+// without an envelope; truly unknown status). Type-based dispatch
+// disambiguates two cases the status-only path conflated: HTTP 500
+// today can mean either "overloaded_error" (server is busy, retry
+// will recover) or "api_error" (server-side bug, retry won't help).
 // Mapping:
 //
 //   - context-deadline / canceled → ErrTimeout
-//   - 429 → RateLimitError (Is-matches ErrRateLimit; carries
-//     Retry-After hint for the same-pick retry path)
-//   - 5xx (500, 502, 503, 504) → ErrTimeout — transient provider-side
-//     failures; the in-walk rotation and the outer RunWithRetry re-walk
-//     both apply.
-//   - any other status code (400, 401, 402, 403, 404, 413, ...) →
-//     ErrIncompatible. The fallback chain advances to the next
-//     preference but RunWithRetry doesn't loop: pounding on the same
-//     account-state failure (e.g. "credit balance too low" returned as
-//     a 400 invalid_request_error) wastes calls.
-//   - SDK error with no usable status (network refused, TLS) → also
-//     ErrIncompatible. The wrap preserves the original message text
-//     in the operator-facing error string.
+//   - rate_limit_error  (typically 429) → RateLimitError with the
+//     Retry-After hint for the same-pick retry path
+//   - overloaded_error  (typically 529 / 503) → ErrTimeout — retry
+//     fires; the server explicitly says capacity will recover
+//   - timeout_error     (typically 408 / 504) → ErrTimeout
+//   - api_error         (typically 500) → ErrIncompatible —
+//     server-side bug; retry pounds the same code path and wastes the
+//     budget. Fallback to the next provider preference.
+//   - invalid_request_error / authentication_error / permission_error
+//     / not_found_error / billing_error / unknown → ErrIncompatible.
+//     Fallback advances; RunWithRetry doesn't loop on account-state
+//     errors.
+//   - Status-only fallback for errors with no typed envelope:
+//       * 429 → RateLimitError
+//       * 500 / 502 / 503 / 504 → ErrTimeout (transient retry)
+//       * everything else → ErrIncompatible
 //
 // The previous default-branch behavior wrapped non-classified errors
 // as a plain fmt.Errorf, which broke the multi-provider fallback chain
@@ -598,16 +628,43 @@ func classifyAnthropicError(err error) error {
 	}
 	var apiErr *anthropicsdk.Error
 	if errors.As(err, &apiErr) {
+		// Type-based dispatch first (v1.38+ envelope parse). Falls
+		// through to status-based dispatch when the envelope didn't
+		// carry a recognized type ("" sentinel).
+		switch apiErr.Type() {
+		case anthropicsdk.ErrorTypeRateLimitError:
+			return rateLimitError(apiErr, err)
+		case anthropicsdk.ErrorTypeOverloadedError, anthropicsdk.ErrorTypeTimeoutError:
+			return fmt.Errorf("anthropic: %w (underlying: %s)", ErrTimeout, err.Error())
+		case anthropicsdk.ErrorTypeAPIError,
+			anthropicsdk.ErrorTypeInvalidRequestError,
+			anthropicsdk.ErrorTypeAuthenticationError,
+			anthropicsdk.ErrorTypePermissionError,
+			anthropicsdk.ErrorTypeNotFoundError,
+			anthropicsdk.ErrorTypeBillingError:
+			return fmt.Errorf("anthropic: %w (underlying: %s)", ErrIncompatible, err.Error())
+		}
+		// Status-only fallback for errors whose body didn't carry a
+		// typed envelope (truly unknown response shape; synthetic
+		// errors built without an envelope).
 		switch apiErr.StatusCode {
 		case http.StatusTooManyRequests:
-			var hint time.Duration
-			if apiErr.Response != nil {
-				hint = parseRetryAfterSeconds(apiErr.Response.Header)
-			}
-			return &RateLimitError{RetryAfter: hint, cause: err}
+			return rateLimitError(apiErr, err)
 		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			return fmt.Errorf("anthropic: %w (underlying: %s)", ErrTimeout, err.Error())
 		}
 	}
 	return fmt.Errorf("anthropic: %w (underlying: %s)", ErrIncompatible, err.Error())
+}
+
+// rateLimitError builds a RateLimitError carrying the Retry-After
+// hint from the response when present. Shared by the type-based
+// (rate_limit_error envelope) and status-based (HTTP 429) paths so
+// both surface the same retry-hint shape downstream.
+func rateLimitError(apiErr *anthropicsdk.Error, err error) error {
+	var hint time.Duration
+	if apiErr.Response != nil {
+		hint = parseRetryAfterSeconds(apiErr.Response.Header)
+	}
+	return &RateLimitError{RetryAfter: hint, cause: err}
 }

@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/openai/openai-go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeRequest / fakeResponse give the SDK Error.Error() implementations
@@ -68,10 +70,78 @@ func TestClassifyGeminiError_RateLimitStillWorks(t *testing.T) {
 	assert.ErrorIs(t, got, ErrRateLimit)
 }
 
+// anthropicErrorWithType builds an anthropic.Error whose Type()
+// returns the named envelope error_type. The errorType field is
+// internal to the SDK; the supported construction path is
+// UnmarshalJSON on the canonical envelope shape, which exercises the
+// same parse the production SDK runs after every API response.
+func anthropicErrorWithType(t *testing.T, status int, errorType string) *anthropic.Error {
+	t.Helper()
+	apiErr := &anthropic.Error{StatusCode: status, Request: fakeRequest(), Response: fakeResponse(status)}
+	envelope := []byte(`{"type":"error","error":{"type":"` + errorType + `","message":"synthetic"}}`)
+	if err := apiErr.UnmarshalJSON(envelope); err != nil {
+		t.Fatalf("unmarshal synthetic anthropic error envelope: %v", err)
+	}
+	return apiErr
+}
+
+// TestClassifyAnthropicError_TypedDispatch verifies the v1.38+ typed
+// path: each error_type the API emits maps to its expected sentinel.
+// The overloaded_error vs api_error split is the load-bearing case
+// — both can surface as HTTP 500 today, but overloaded means retry
+// will recover (server is busy) while api_error means a server-side
+// bug and retry just pounds the same code path.
+func TestClassifyAnthropicError_TypedDispatch(t *testing.T) {
+	cases := []struct {
+		errorType string
+		want      error
+		desc      string
+	}{
+		{"rate_limit_error", ErrRateLimit, "rate_limit_error → RateLimitError (carries Retry-After hint)"},
+		{"overloaded_error", ErrTimeout, "overloaded_error → ErrTimeout (server says capacity will recover; retry fires)"},
+		{"timeout_error", ErrTimeout, "timeout_error → ErrTimeout (transient; retry fires)"},
+		{"api_error", ErrIncompatible, "api_error → ErrIncompatible (server-side bug; retry won't help, fallback to next provider)"},
+		{"invalid_request_error", ErrIncompatible, "invalid_request_error → ErrIncompatible (e.g. credit balance too low)"},
+		{"authentication_error", ErrIncompatible, "authentication_error → ErrIncompatible"},
+		{"permission_error", ErrIncompatible, "permission_error → ErrIncompatible"},
+		{"not_found_error", ErrIncompatible, "not_found_error → ErrIncompatible"},
+		{"billing_error", ErrIncompatible, "billing_error → ErrIncompatible"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.errorType, func(t *testing.T) {
+			// Use a generic 500 status to isolate the type-dispatch
+			// path from the status fallback. The classifier should
+			// route on Type() regardless of what the status says.
+			apiErr := anthropicErrorWithType(t, http.StatusInternalServerError, tc.errorType)
+			got := classifyAnthropicError(apiErr)
+			assert.ErrorIs(t, got, tc.want, tc.desc)
+		})
+	}
+}
+
+// TestClassifyAnthropicError_TypedRateLimitPreservesRetryAfter
+// verifies the typed rate_limit_error path still extracts the
+// Retry-After hint from the response header — the previous
+// status-only path read the header off apiErr.Response; the typed
+// path must keep that behaviour or the same-pick retry loses its
+// throttle hint.
+func TestClassifyAnthropicError_TypedRateLimitPreservesRetryAfter(t *testing.T) {
+	apiErr := anthropicErrorWithType(t, http.StatusTooManyRequests, "rate_limit_error")
+	apiErr.Response.Header = http.Header{"Retry-After": []string{"42"}}
+	got := classifyAnthropicError(apiErr)
+	var rle *RateLimitError
+	require.ErrorAs(t, got, &rle, "rate_limit_error must classify as RateLimitError")
+	assert.Equal(t, 42*time.Second, rle.RetryAfter, "Retry-After header must thread through to RateLimitError.RetryAfter")
+}
+
 // TestClassifyAnthropicError_GatewayTimeout: Anthropic's typed
 // *Error carries StatusCode. A 504 must classify as ErrTimeout so
 // the executor walks the fallback chain instead of returning the
 // raw API error.
+//
+// This locks in the status-only fallback path: when the response
+// body carries no typed envelope (synthetic errors; truly unknown
+// payloads), classification falls through to HTTP-status matching.
 func TestClassifyAnthropicError_GatewayTimeout(t *testing.T) {
 	apiErr := &anthropic.Error{StatusCode: http.StatusGatewayTimeout, Request: fakeRequest(), Response: fakeResponse(http.StatusGatewayTimeout)}
 	got := classifyAnthropicError(apiErr)
