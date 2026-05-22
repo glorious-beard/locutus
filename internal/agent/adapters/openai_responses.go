@@ -125,7 +125,7 @@ func (a *OpenAIResponsesAdapter) requiresThinkingSchemaSplit(req Request) bool {
 func (a *OpenAIResponsesAdapter) runSplit(ctx context.Context, req Request) (*Response, error) {
 	reasoningReq := req
 	reasoningReq.OutputSchema = nil
-	reasoningReq.Messages = buildReasoningPassMessages(req.FormatExampleProse, req.Messages)
+	reasoningReq.Messages = buildReasoningPassMessages(req.Messages)
 	reasoning, err := a.runOnce(ctx, reasoningReq, RecordedRoleReason)
 	if err != nil {
 		return reasoning, fmt.Errorf("openai split reason: %w", err)
