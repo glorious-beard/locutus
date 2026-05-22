@@ -218,6 +218,20 @@ type PlanningState struct {
 	// naturally; new axes get added).
 	AxesOpen []OpenAxis `json:"-"`
 
+	// AxisSurveys carries the per-axis CandidateList output from the
+	// DJ-132 spec_candidate_survey pre-step. Keyed by OpenAxis.ID. The
+	// candidate-survey step runs as a per-axis fanout BEFORE the
+	// decisions step on initial dispatch; the survey's merge handler
+	// populates this map keyed by the axis ID it dispatched on, and
+	// projectOpenAxis reads it on the immediately-following decisions
+	// step so the elaborator sees a pre-populated candidate list to
+	// pick from. Replaced on each iteration when fresh surveys run;
+	// empty on revise dispatches (survey is initial-only). nil when
+	// the survey didn't run, errored, or returned empty — the
+	// elaborator's projection falls through to its own enumeration in
+	// that case.
+	AxisSurveys map[string]CandidateList `json:"-"`
+
 	// NewNodesFromScout tracks the current iteration's new feature /
 	// strategy nodes from ScoutBrief.NewNodes. Consumed by the
 	// narrative-elaborator fanout's Fanout closure. Replaced on each
@@ -424,6 +438,16 @@ func snapshotPlanningState(s *PlanningState) PlanningState {
 		out.AxisRevisionCount = make(map[string]int, len(s.AxisRevisionCount))
 		for k, v := range s.AxisRevisionCount {
 			out.AxisRevisionCount[k] = v
+		}
+	}
+	if len(s.AxisSurveys) > 0 {
+		out.AxisSurveys = make(map[string]CandidateList, len(s.AxisSurveys))
+		for k, v := range s.AxisSurveys {
+			cl := CandidateList{}
+			if len(v.Candidates) > 0 {
+				cl.Candidates = append([]SurveyedCandidate(nil), v.Candidates...)
+			}
+			out.AxisSurveys[k] = cl
 		}
 	}
 	if len(s.DecidedAxesByIter) > 0 {

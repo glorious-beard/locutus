@@ -445,15 +445,48 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 		thisIter := ic.IterationIndex
 		return []WorkflowStep[PlanningState]{
 			{
+				// candidate-survey (DJ-132): fanout per OpenAxis. Runs
+				// BEFORE the decisions step on the initial-dispatch
+				// path. Each call enumerates the candidate space for
+				// one axis (fast tier, grounded); the merge stores the
+				// CandidateList keyed by axis ID on
+				// state.AxisSurveys. projectOpenAxis then renders the
+				// per-axis surveyed candidate list as a section in the
+				// elaborator's input so the elaborator's initial
+				// alternatives slice starts pre-populated.
+				//
+				// Skipped naturally on iterations with no open axes
+				// (hasOpenAxes is false) and on revise dispatches
+				// (revises use the separate revise-decisions step
+				// which dispatches by concern, not axis).
+				ID:          "candidate-survey",
+				Agents:      []string{"spec_candidate_survey"},
+				Parallel:    true,
+				Conditional: hasOpenAxes,
+				Fanout:      fanoutOpenAxes,
+				Project:     projectCandidateSurvey,
+				Merge:       mergeCandidateSurveys,
+			},
+			{
 				// decisions: fanout per OpenAxis. The decision-elaborator
 				// researches and commits one decision per axis; the
 				// merge appends to state.RawProposal.Decisions[],
 				// records DecidedAxesByIter for cycle detection, and
 				// appends newly-minted decision IDs to NewNodesFromScout
 				// entries that surfaced the axis.
+				//
+				// DependsOn:candidate-survey so the survey's merge has
+				// populated state.AxisSurveys before projectOpenAxis
+				// reads it for the per-axis projection. The dependency
+				// is at the step level (decisions waits for the entire
+				// survey fanout to merge), so per-axis sequencing
+				// (survey for A → elaborator for A) is enforced by
+				// the merged AxisSurveys map being a complete
+				// snapshot before any decisions call dispatches.
 				ID:          "decisions",
 				Agents:      []string{"spec_decision_elaborator"},
 				Parallel:    true,
+				DependsOn:   []string{"candidate-survey"},
 				Conditional: hasOpenAxes,
 				Fanout:      fanoutOpenAxes,
 				Project:     projectOpenAxis,

@@ -1014,6 +1014,125 @@ func computeAffectedNodes(state *PlanningState, newDecisionIDs []string) []strin
 	return out
 }
 
+// mergeCandidateSurveys parses each spec_candidate_survey output as a
+// CandidateList and stores it in state.AxisSurveys keyed by the
+// OpenAxis ID the call was dispatched on (DJ-132). The axis ID is read
+// off RoundResult.FanoutItem (the JSON-marshaled OpenAxis the fanout
+// dispatcher set on the call). The map is reset at the start of every
+// merge call so stale surveys from prior iterations don't leak through
+// when the next iteration's open-axis set changes.
+//
+// Malformed responses (parse failure, empty candidates) are dropped
+// silently — the elaborator's projection falls through to its own
+// enumeration when no survey is present for an axis, identical to the
+// pre-DJ-132 behaviour. The reversal criterion (a) on DJ-132 is the
+// signal that survey coverage is too thin; logging silently keeps the
+// workflow degradable rather than failing the run on a survey misfire.
+func mergeCandidateSurveys(s *PlanningState, results []RoundResult) {
+	if s == nil {
+		return
+	}
+	// Reset every iteration. Empty or partially-failed iterations
+	// land an empty map so projectOpenAxis sees no survey for any
+	// axis and the elaborator runs as it did pre-DJ-132.
+	s.AxisSurveys = nil
+	if len(results) == 0 {
+		return
+	}
+	out := make(map[string]CandidateList, len(results))
+	for _, r := range results {
+		if r.Err != nil || strings.TrimSpace(r.Output) == "" {
+			continue
+		}
+		if strings.TrimSpace(r.FanoutItem) == "" {
+			slog.Warn("mergeCandidateSurveys: survey result has empty FanoutItem; cannot correlate to axis", "step", r.StepID)
+			continue
+		}
+		var axis OpenAxis
+		if err := json.Unmarshal([]byte(r.FanoutItem), &axis); err != nil {
+			slog.Warn("mergeCandidateSurveys: skipping survey with malformed FanoutItem", "error", err)
+			continue
+		}
+		axisID := strings.TrimSpace(axis.ID)
+		if axisID == "" {
+			slog.Warn("mergeCandidateSurveys: survey FanoutItem missing axis ID")
+			continue
+		}
+		var list CandidateList
+		if err := json.Unmarshal([]byte(r.Output), &list); err != nil {
+			slog.Warn("mergeCandidateSurveys: skipping malformed survey output", "axis", axisID, "error", err)
+			continue
+		}
+		if len(list.Candidates) == 0 {
+			// Empty candidates is a degenerate response; treat it as
+			// no survey for this axis so the elaborator falls through.
+			slog.Warn("mergeCandidateSurveys: survey returned no candidates; falling through to elaborator's own enumeration", "axis", axisID)
+			continue
+		}
+		out[axisID] = list
+	}
+	if len(out) > 0 {
+		s.AxisSurveys = out
+	}
+}
+
+// projectCandidateSurvey builds the spec_candidate_survey's user
+// message. Per-call inputs: GOALS.md + scout brief (for the axis's
+// initial framing via technology_options + the project context the
+// survey filters against) + the in-flight manifest (for existing
+// decisions that constrain the candidate space on adjacent axes) +
+// the OpenAxis being surveyed in full.
+//
+// Mirrors projectOpenAxis's shape (same prefix structure) so the
+// per-axis dispatch carries equivalent context to both calls. The
+// survey's prompt does enumeration with the same scoping inputs the
+// elaborator will later use for judgment.
+func projectCandidateSurvey(snap StateSnapshot[PlanningState]) []Message {
+	st := snap.State
+	var prefix strings.Builder
+	prefix.WriteString(st.Prompt)
+	if st.ScoutBrief != "" {
+		if formatted := formatScoutBrief(st.ScoutBrief); formatted != "" {
+			prefix.WriteString("\n\n## Scout brief\n\n")
+			prefix.WriteString(formatted)
+		}
+	}
+	if rendered := renderManifestForProjection(&st); rendered != "" {
+		prefix.WriteString("\n\n## In-flight spec manifest (use spec_get to fetch full content of any node)\n\n")
+		prefix.WriteString(rendered)
+	}
+
+	var suffix strings.Builder
+	suffix.WriteString("## Open axis to survey\n\n")
+	if snap.FanoutItem == "" {
+		suffix.WriteString("(missing — fanout did not populate FanoutItem)\n")
+	} else {
+		var axis OpenAxis
+		if err := json.Unmarshal([]byte(snap.FanoutItem), &axis); err != nil {
+			suffix.WriteString(snap.FanoutItem)
+		} else {
+			fmt.Fprintf(&suffix, "- **ID:** `%s`\n- **Description:** %s\n", axis.ID, axis.Description)
+			if len(axis.SourceEvidence) > 0 {
+				suffix.WriteString("- **Source evidence:**\n")
+				for _, ev := range axis.SourceEvidence {
+					fmt.Fprintf(&suffix, "  - %s\n", ev)
+				}
+			}
+			if len(axis.SurfacedBy) > 0 {
+				suffix.WriteString("- **Surfaced by:**\n")
+				for _, sb := range axis.SurfacedBy {
+					fmt.Fprintf(&suffix, "  - %s\n", sb)
+				}
+			}
+		}
+	}
+
+	return []Message{
+		{Role: "user", Content: prefix.String(), Cacheable: true},
+		{Role: "user", Content: suffix.String()},
+	}
+}
+
 // mergeDecisions parses each decision-elaborator output as a
 // RawDecisionProposal and either appends it (first-author dispatch
 // path) or replaces an existing decision in-place by axis-ID
@@ -1685,7 +1804,16 @@ func projectScout(snap StateSnapshot[PlanningState]) []Message {
 // Per-call inputs: GOALS.md + scout brief (for technology_options /
 // watch_outs / implicit_assumptions context) + the in-flight manifest
 // (DJ-125 Phase 4 — sibling settled decisions, axes in flight, flagged
-// concerns) + the OpenAxis being decided in full.
+// concerns) + the OpenAxis being decided in full + the Candidate List
+// section from the DJ-132 pre-survey when present for this axis.
+//
+// DJ-132: when state.AxisSurveys carries an entry keyed by the axis's
+// ID, render it as a Candidate List section between the manifest and
+// the open-axis block. The elaborator's prompt assumes the section's
+// presence on initial dispatch; absent entries (revise dispatches —
+// the revise projection uses projectReviseDecision, not this one — or
+// survey misfires) fall through to the elaborator's own enumeration,
+// identical to the pre-DJ-132 behaviour.
 func projectOpenAxis(snap StateSnapshot[PlanningState]) []Message {
 	st := snap.State
 	var prefix strings.Builder
@@ -1703,6 +1831,7 @@ func projectOpenAxis(snap StateSnapshot[PlanningState]) []Message {
 
 	var suffix strings.Builder
 	suffix.WriteString("## Open axis to decide\n\n")
+	var axisID string
 	if snap.FanoutItem == "" {
 		suffix.WriteString("(missing — fanout did not populate FanoutItem)\n")
 	} else {
@@ -1710,6 +1839,7 @@ func projectOpenAxis(snap StateSnapshot[PlanningState]) []Message {
 		if err := json.Unmarshal([]byte(snap.FanoutItem), &axis); err != nil {
 			suffix.WriteString(snap.FanoutItem)
 		} else {
+			axisID = strings.TrimSpace(axis.ID)
 			fmt.Fprintf(&suffix, "- **ID:** `%s`\n- **Description:** %s\n", axis.ID, axis.Description)
 			if len(axis.SourceEvidence) > 0 {
 				suffix.WriteString("- **Source evidence:**\n")
@@ -1723,6 +1853,14 @@ func projectOpenAxis(snap StateSnapshot[PlanningState]) []Message {
 					fmt.Fprintf(&suffix, "  - %s\n", sb)
 				}
 			}
+		}
+	}
+
+	if survey, ok := st.AxisSurveys[axisID]; ok && len(survey.Candidates) > 0 {
+		suffix.WriteString("\n## Candidate list (surveyed for this axis)\n\n")
+		suffix.WriteString("A pre-survey enumerated the candidate space for this axis (DJ-132). Pick from this list and author proper rationale; write `rejected_because` for each unpicked candidate; cite each. You may surface additional candidates beyond the survey when the axis warrants — the survey is a starting point, not an exhaustive set.\n\n")
+		for _, c := range survey.Candidates {
+			fmt.Fprintf(&suffix, "- **%s** — %s\n", c.Name, c.FirstGlanceFit)
 		}
 	}
 

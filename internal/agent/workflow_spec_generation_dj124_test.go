@@ -73,8 +73,24 @@ func setupSpecGenFixtureDJ124(t *testing.T) specio.FS {
 		".borg/agents/spec_strategy_elaborator.md",
 		[]byte(minAgentMD("spec_strategy_elaborator", "planning", "balanced", "RawStrategyProposal")),
 		0o644))
+	// DJ-132 candidate-survey pre-step. Fast tier in production; the
+	// minAgentMD shape doesn't care about tier — the mock LLM
+	// substitutes the call response, the AgentDef just needs to
+	// declare the schema so BuildAgentInput wires the strict-mode
+	// output correctly.
+	require.NoError(t, fs.WriteFile(
+		".borg/agents/spec_candidate_survey.md",
+		[]byte(minAgentMD("spec_candidate_survey", "enumeration", "fast", "CandidateList")),
+		0o644))
 	return fs
 }
+
+// emptyCandidateListResp is the smallest CandidateList shape that
+// passes the schema's minItems=3 floor. Used as the default survey
+// response for DJ-124 tests that don't specifically assert against
+// the survey's threading — they only need a non-empty survey so the
+// merge fires and the decisions step's projection compiles cleanly.
+const emptyCandidateListResp = `{"candidates":[{"name":"option-a","first_glance_fit":"first-glance fit for option-a."},{"name":"option-b","first_glance_fit":"first-glance fit for option-b."},{"name":"option-c","first_glance_fit":"first-glance fit for option-c."}]}`
 
 // TestSpecGenerationWorkflowDispatchOrder drives the new workflow with
 // a single open axis + a single new node on iter 0, then a converged
@@ -139,6 +155,7 @@ func TestSpecGenerationWorkflowDispatchOrder(t *testing.T) {
 
 	mock := NewMockExecutor(
 		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: iter0Scout, Model: "m"}},
+		MockResponse{AgentID: "spec_candidate_survey", Response: &AgentOutput{Content: emptyCandidateListResp, Model: "m"}},
 		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decisionForDataStore, Model: "m"}},
 		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featureNarrative, Model: "m"}},
 		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
@@ -153,18 +170,19 @@ func TestSpecGenerationWorkflowDispatchOrder(t *testing.T) {
 	require.NoError(t, err)
 
 	calls := mock.Calls()
-	require.GreaterOrEqual(t, len(calls), 6, "expected at least 6 dispatches across the DJ-129 round shape")
+	require.GreaterOrEqual(t, len(calls), 7, "expected at least 7 dispatches with the DJ-132 candidate-survey pre-step in the loop")
 	agentOrder := make([]string, 0, len(calls))
 	for _, c := range calls {
 		agentOrder = append(agentOrder, c.Def.ID)
 	}
 
 	assert.Equal(t, "spec_scout", agentOrder[0], "iter-0 scout fires first")
-	assert.Equal(t, "spec_decision_elaborator", agentOrder[1], "decisions step fires after scout")
-	assert.Equal(t, "spec_feature_elaborator", agentOrder[2], "narrative step fires after decisions")
-	assert.Equal(t, "spec_reconciler", agentOrder[3], "reconcile fires after narrative")
-	assert.Equal(t, "spec_critic_elaborator", agentOrder[4], "critique dispatches the parametric critic")
-	assert.Equal(t, "spec_scout", agentOrder[5], "next-iter scout fires after critique")
+	assert.Equal(t, "spec_candidate_survey", agentOrder[1], "DJ-132 candidate-survey pre-step fires after scout, before decisions")
+	assert.Equal(t, "spec_decision_elaborator", agentOrder[2], "decisions step fires after candidate-survey")
+	assert.Equal(t, "spec_feature_elaborator", agentOrder[3], "narrative step fires after decisions")
+	assert.Equal(t, "spec_reconciler", agentOrder[4], "reconcile fires after narrative")
+	assert.Equal(t, "spec_critic_elaborator", agentOrder[5], "critique dispatches the parametric critic")
+	assert.Equal(t, "spec_scout", agentOrder[6], "next-iter scout fires after critique")
 }
 
 // TestConditionalNarrativeDispatchOnlyTouchesAffected drives a scout
