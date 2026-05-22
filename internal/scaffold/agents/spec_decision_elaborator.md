@@ -74,6 +74,21 @@ The two sentinel excerpts above are reproduced verbatim from `justify_researcher
 
 Elaborate the decision into the sections below. Take them in order; each one describes one piece of the decision body.
 
+## Initial dispatch with candidate list
+
+When the user message includes a **Candidate list** section, a pre-survey enumerated the candidate space for this axis (DJ-132). The list carries 3-10 entries, each with a name and a one-sentence first-glance fit. Your job on initial dispatch shifts from "discover the candidates and pick" to "pick from these candidates and author proper rationale."
+
+Work the candidate list like this:
+
+1. **Pick one candidate as the chosen option.** Read each surveyed candidate's first-glance fit; weigh each against GOALS.md, the scout brief, and the existing spec graph (read adjacent decisions via `spec_get` and `spec_search`). One candidate is the chosen option; commit to it. The committed candidate's name becomes the basis for the decision's `id` slug; its first-glance fit is your starting point for the `rationale` (which you'll deepen with grounded per-candidate research).
+2. **Every unpicked surveyed candidate becomes an alternative entry.** For each candidate you did not pick, emit an `alternatives` entry with `name` matching the surveyed name, `rationale` naming the candidate's first-glance advantages (the survey's `first_glance_fit` is a starting point you may extend), `rejected_because` naming the specific reason this candidate lost on this project's constraints, and `citations` grounding the rejection reasoning in real sources. The schema's `minItems=1` per alternative's citations applies here — fabricated rejection prose is the failure mode this discipline guards against.
+3. **You may surface additional candidates beyond the survey when the axis warrants.** The survey is a starting point, not an exhaustive set. If web search surfaces a candidate the survey missed (a niche vendor, a recently-announced product, a category-defining open-source project the survey overlooked), add it to your alternatives. Add it as the chosen option if it's the right fit, even though the survey didn't list it.
+4. **You may rule out a surveyed candidate before authoring it as a full alternative.** When a candidate the survey listed is clearly out of scope on a GOALS.md hard constraint (e.g. a paid SaaS on a strict no-recurring-cost project), naming the rule-out in the `rejected_because` of a brief alternative entry is honest engagement; silently dropping the candidate is not. Emit the alternative entry with the GOALS-clause citation as the structural record.
+
+The candidate list section's presence means the elaborator's task narrows from "research the option space" to "judge among pre-surveyed options + extend if warranted + author grounded rationale." Initial alternatives carry 5-10 entries (one chosen + every unpicked surveyed candidate + any candidates you added beyond the survey); single-candidate decisions are valid only when the axis is genuinely narrow.
+
+When the **Candidate list** section is absent (revise dispatches, axes where the survey misfired), you do the enumeration yourself per the existing field-by-field discipline below. The schema's `minItems=1` floor still applies; surface every candidate a reasonable architect would weigh on this axis.
+
 ### id
 
 A stable slug derived from the chosen option, prefixed `dec-`, lowercase, hyphen-separated, three to five words (e.g. `dec-postgres-oltp-store`, `dec-aws-cognito-auth`, `dec-stm32h743-mcu`). The reconciler may suffix with `-2` / `-3` if collisions occur; you pick the natural slug.

@@ -251,6 +251,97 @@ func TestScoutPromptDescribesAxesAndConvergence(t *testing.T) {
 		"spec_scout.md must describe the convergence judge — the converged flag drives the loop's exit condition")
 }
 
+// TestDecisionElaboratorPromptDescribesCandidateListSection locks in
+// DJ-132 Phase 3: spec_decision_elaborator.md gains an "Initial
+// dispatch with candidate list" section describing how to engage
+// with the survey output. Without explicit prompt coverage of the
+// new input block the elaborator falls back to its prior commit-mode
+// enumeration discipline and the survey's effect doesn't materialize.
+//
+// The test asserts on the load-bearing pieces of the new section:
+//
+//   - the section heading exists,
+//   - the elaborator engages every unpicked surveyed candidate as an
+//     alternative (the structural condition for the pre-populated
+//     alternatives slice DJ-132 was designed to produce),
+//   - the elaborator may surface candidates beyond the survey
+//     (anti-anchoring; reversal criterion (c) on DJ-132 is the
+//     failure mode this guidance addresses).
+func TestDecisionElaboratorPromptDescribesCandidateListSection(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	text := string(body)
+
+	assert.Contains(t, text, "Candidate list",
+		"spec_decision_elaborator.md must describe the Candidate list input block the DJ-132 projection injects on initial dispatch")
+	assert.Contains(t, text, "Initial dispatch with candidate list",
+		"spec_decision_elaborator.md must carry the Initial dispatch with candidate list section heading — the section is where DJ-132's elaborator-side discipline lives")
+
+	// Every unpicked surveyed candidate becomes an alternative — the
+	// load-bearing structural condition for the pre-populated
+	// alternatives slice DJ-132 is designed to produce.
+	assert.Contains(t, text, "unpicked",
+		"spec_decision_elaborator.md must say every unpicked surveyed candidate becomes an alternative entry")
+
+	// Anti-anchoring: the elaborator may surface candidates beyond
+	// the survey when the axis warrants. Reversal criterion (c) is
+	// the failure mode this guidance addresses (elaborator anchors
+	// so hard on the survey it stops considering missed candidates).
+	containsAntiAnchoring := strings.Contains(text, "beyond the survey") ||
+		strings.Contains(text, "additional candidates") ||
+		strings.Contains(text, "candidates the survey missed")
+	assert.True(t, containsAntiAnchoring,
+		"spec_decision_elaborator.md must explicitly permit the elaborator to add candidates beyond the survey (DJ-132 anti-anchoring; reversal criterion (c))")
+
+	// The candidate-list-absent fallthrough must be documented so
+	// revise dispatches and survey-misfire axes don't leave the
+	// elaborator without instructions.
+	assert.Contains(t, text, "absent",
+		"spec_decision_elaborator.md must describe what to do when the Candidate list section is absent (revise dispatches; survey misfires)")
+}
+
+// TestCandidateSurveyAgentScaffoldedWithFastTierGroundedFrontmatter
+// locks in DJ-132 Phase 1: spec_candidate_survey.md must ship with the
+// scaffold, declare fast-tier providers across the three deployers,
+// keep grounding on (load-bearing for currency + hallucination
+// prevention), declare thinking off (enumeration is not a reasoning
+// task), and bind to output_schema: CandidateList. The frontmatter
+// contract is structurally part of DJ-132's mechanism: a survey that
+// runs on the strong tier wastes budget; one without grounding
+// regresses to training-data-only enumeration with hallucinated /
+// stale candidates; one with the wrong schema bypasses the elaborator's
+// downstream projection wiring.
+func TestCandidateSurveyAgentScaffoldedWithFastTierGroundedFrontmatter(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	body, err := fsys.ReadFile(".borg/agents/spec_candidate_survey.md")
+	require.NoError(t, err, "read .borg/agents/spec_candidate_survey.md")
+	text := string(body)
+
+	assert.Contains(t, text, "id: spec_candidate_survey",
+		"frontmatter must declare id: spec_candidate_survey")
+	assert.Contains(t, text, "output_schema: CandidateList",
+		"frontmatter must bind output_schema: CandidateList — the survey emits the registered CandidateList shape")
+	assert.Contains(t, text, "tier: fast",
+		"frontmatter must declare fast-tier model preferences across providers (enumeration is discovery work; spending strong tier is wasted budget)")
+	assert.Contains(t, text, "grounding: true",
+		"frontmatter must keep grounding on — DJ-132 documents grounding as load-bearing for currency + hallucination prevention; training-data-only enumeration produces stale / invented candidates")
+	assert.Contains(t, text, "thinking: off",
+		"frontmatter must declare thinking off — enumeration is not a deep reasoning task; thinking on doubles cost without improving quality")
+
+	// The prompt must frame enumeration-vs-judgment explicitly so the
+	// task framing is unambiguous; this is the structural condition
+	// DJ-132 exists to enforce, not a stylistic note.
+	assert.Contains(t, text, "enumerate",
+		"prompt must explicitly frame the task as enumeration (DJ-132 cognitive-task separation)")
+	assert.Contains(t, text, "not judge",
+		"prompt must explicitly tell the survey not to judge — judgment is the elaborator's job, mixing it in re-creates the task conflation the survey exists to break")
+}
+
 func TestScaffoldCreatesDirectories(t *testing.T) {
 	fsys := specio.NewMemFS()
 	err := scaffold.Scaffold(fsys, "test-project")
