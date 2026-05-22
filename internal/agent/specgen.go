@@ -238,6 +238,31 @@ type CriticIssue struct {
 	RelatedDecisionIDs []string                `json:"related_decision_ids,omitempty" jsonschema:"description=Decision IDs (starting 'dec-') this issue targets — the critic's structured surfacing of which decisions need revision. Merged with the regex-extracted set in mergeCriticIssues; the critic's list wins on conflict. Empty when the issue spans the whole proposal rather than a specific decision."`
 }
 
+// CandidateList is the structured output of the spec_candidate_survey
+// agent (DJ-132). One survey runs per axis BEFORE the decision-
+// elaborator on the initial-elaboration path; the elaborator receives
+// the surveyed candidates as a pre-populated starting point so its
+// initial alternatives slice begins with 6-10 grounded entries rather
+// than the 1-2 it would otherwise commit to in commit-mode.
+//
+// The output is intentionally flat: name + first-glance fit per
+// candidate, no judgments, no rationale, no citations on entries.
+// Judgment is the elaborator's job; mixing it into the survey re-
+// creates the enumeration/judgment task conflation the survey exists
+// to break.
+type CandidateList struct {
+	Candidates []SurveyedCandidate `json:"candidates" jsonschema:"description=The enumerated candidates for this axis. Each entry names one real product or pattern the elaborator could pick from; surfaces 6-10 entries on well-trodden axes (databases; frontend frameworks; auth; observability) and 3-5 on specialized axes. Only entries you actually find via web search belong here — do not invent candidates to hit a count.,minItems=3"`
+}
+
+// SurveyedCandidate is one entry in a CandidateList — a flat,
+// judgment-free record. The schema deliberately omits rationale and
+// citations: the elaborator owns judgment downstream; the survey owns
+// enumeration. See DJ-132 for the cognitive-task separation pattern.
+type SurveyedCandidate struct {
+	Name           string `json:"name" jsonschema:"description=The candidate's concrete product or pattern name as a noun phrase (e.g. 'Postgres with PostGIS'; 'Auth0'; 'Vercel Next.js App Router'; 'Aurora Serverless v2'). Names a real; current; verifiable product or architectural shape — not a category ('a database'; 'a frontend framework'). Avoid versions when the version is not the load-bearing fact ('Postgres' beats 'Postgres 16.2'); include versions when the candidate is specifically a version-locked option ('Java 21 LTS')."`
+	FirstGlanceFit string `json:"first_glance_fit" jsonschema:"description=One complete sentence naming this candidate's primary first-glance fit for the axis — what makes it worth weighing without committing to whether it should win. A noun phrase like 'Mature geospatial extension; team familiarity with the SQL dialect.' or 'Managed; per-MAU pricing; turnkey React SDK.' States advantages neutrally; does not judge whether the candidate should be picked. The elaborator does the picking; you do the enumeration."`
+}
+
 // CriticCounterproposal is one entry in a CriticIssue's enumerated
 // counterproposal menu (DJ-128). Each counterproposal is a concrete
 // alternative the critic commits to: a specific vendor, configuration,

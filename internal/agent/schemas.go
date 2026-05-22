@@ -303,6 +303,34 @@ func init() {
 	//   - reuse_existing  → required: kind, sources, existing_id
 	RegisterSchemaOverride("ReconciliationVerdict", buildReconciliationVerdictSchema())
 
+	// CandidateList example payload (DJ-132): the per-axis enumeration
+	// the spec_candidate_survey agent emits. Example uses descriptive
+	// prose with real-looking candidates for a database-engine axis so
+	// the schema-skeleton failure mode doesn't fire on placeholder
+	// tokens. Six entries matches the prompt's 6-10 target on well-
+	// trodden axes.
+	RegisterSchema("CandidateList", CandidateList{
+		Candidates: []SurveyedCandidate{{
+			Name:           "Postgres with PostGIS",
+			FirstGlanceFit: "Mature relational engine with first-class geospatial extension and JSONB column type the analytics roadmap depends on.",
+		}, {
+			Name:           "MySQL with the spatial extension",
+			FirstGlanceFit: "Common default with broad ecosystem familiarity; spatial type supported but less mature than PostGIS.",
+		}, {
+			Name:           "Aurora Serverless v2 (Postgres-compatible)",
+			FirstGlanceFit: "Managed elastic-ACU Postgres at the operational layer; absorbs ops burden the small team cannot carry.",
+		}, {
+			Name:           "Supabase Pro Postgres",
+			FirstGlanceFit: "Managed Postgres with bundled connection pooling and daily backups at a flat per-month tier.",
+		}, {
+			Name:           "Neon serverless Postgres",
+			FirstGlanceFit: "Branchable Postgres-compatible managed service with autoscaling compute and storage-compute separation.",
+		}, {
+			Name:           "Single-instance RDS Postgres on reserved capacity",
+			FirstGlanceFit: "Predictable cost ceiling at small instance sizes; full Postgres feature set without serverless complexity.",
+		}},
+	})
+
 	// CriticIssues example payload (DJ-128): a structured cost-lens
 	// critique of a Postgres OLTP decision with two enumerated
 	// counterproposals carrying argument + citation discipline. The
