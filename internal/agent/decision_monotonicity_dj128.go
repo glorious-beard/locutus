@@ -29,13 +29,102 @@ import (
 	"github.com/chetan/locutus/internal/spec"
 )
 
+// preservePriorAlternatives folds missing prior alternatives back
+// into revised.Alternatives, preserving their original content
+// (Name, Rationale, RejectedBecause, Citations) and stamping the
+// deliberation-log metadata (RejectedAtIteration,
+// RejectedByConcernText) only when not already populated. Called from
+// mergeDecisions' replace branches AFTER demote-and-fold and
+// REPLACING the previous validate-then-reject discipline.
+//
+// The motivation is the fifth winplan re-run trace: the elaborator
+// (on balanced Gemini) repeatedly emitted revisions that dropped
+// prior alternatives (e.g., Neon, access_audit_logs) even though
+// the prompt mandated "alternatives strictly grow" and the
+// monotonicity validator rejected those revisions wholesale. The
+// rejection threw away the elaborator's good work (Flip judgments,
+// new counterproposal engagement, rationale updates) along with the
+// drop, forcing the next iteration to re-do everything and
+// frequently re-drop the same alternatives — oscillating without
+// converging. Five revisions of dec-supabase-postgres-persistence in
+// that trace failed this way.
+//
+// The new discipline: take the elaborator's revision as-is for the
+// content fields it cares about (chosen / rationale / citations /
+// new alternatives), and let the merge layer mechanically preserve
+// any prior alternatives the elaborator omitted. Preservation by
+// code, not prompt discipline — exactly the kind of structural rule
+// LLMs are unreliable at and code is good at. The elaborator's job
+// shrinks accordingly: it focuses on engaging with counterproposals
+// and producing new content, not on enumerating the full prior
+// alternatives list.
+//
+// Returns the count of prior alternatives this helper folded back
+// (zero on a clean revise where the elaborator preserved them all).
+func preservePriorAlternatives(prior *RawDecisionProposal, revised *RawDecisionProposal, currentIter int) int {
+	if prior == nil || revised == nil {
+		return 0
+	}
+	existingNames := normalizedAlternativeNameSet(revised.Alternatives)
+	preserved := 0
+	for _, alt := range prior.Alternatives {
+		if nameInSet(alt.Name, existingNames) {
+			continue
+		}
+		// The elaborator dropped this alternative — fold it back
+		// with its content preserved. Citations slice is cloned to
+		// avoid aliasing the prior's underlying array (defensive;
+		// the merge function rewrites raw.Decisions in place and a
+		// later iteration mutating Citations would otherwise touch
+		// the prior's deliberation log).
+		fold := spec.Alternative{
+			Name:                  alt.Name,
+			Rationale:             alt.Rationale,
+			RejectedBecause:       alt.RejectedBecause,
+			Citations:             append([]spec.Citation(nil), alt.Citations...),
+			RejectedAtIteration:   alt.RejectedAtIteration,
+			RejectedByConcernText: alt.RejectedByConcernText,
+		}
+		// Stamp the deliberation-log fields when the prior didn't
+		// carry them (first-author alternatives lack the metadata;
+		// preservation is the first chance to record provenance).
+		if fold.RejectedAtIteration == 0 {
+			fold.RejectedAtIteration = currentIter
+		}
+		revised.Alternatives = append(revised.Alternatives, fold)
+		existingNames[normalizeName(alt.Name)] = struct{}{}
+		preserved++
+	}
+	return preserved
+}
+
+// recordPreservedAlternativesNotice appends an integrity-critic
+// concern naming the elaborator's omission of prior alternatives.
+// Not a hard failure — the merge folded them back — but the operator
+// sees that the elaborator dropped entries that the merge had to
+// preserve mechanically. Used for visibility, not enforcement.
+func recordPreservedAlternativesNotice(s *PlanningState, revisedID string, preserved int) {
+	if s == nil || preserved == 0 {
+		return
+	}
+	s.Concerns = append(s.Concerns, Concern{
+		AgentID:            "integrity_critic",
+		Severity:           "low",
+		Kind:               "integrity",
+		Status:             ConcernStatusOpen,
+		Text:               fmt.Sprintf("Revision of %s omitted %d prior alternative(s) from the deliberation log; merge auto-preserved them. The elaborator's emission focused on new content rather than enumerating the full prior alternatives slice, which is the expected discipline under the post-DJ-128 merge-side preservation. Surfaced here for operator visibility; no action required.", revisedID, preserved),
+		RelatedDecisionIDs: []string{revisedID},
+	})
+}
+
 // validateAlternativeMonotonicity reports whether a revise pass
 // preserved the deliberation log: every prior alternative still
 // appears in revised.Alternatives, AND the prior chosen option
-// appears (the demotion-on-flip discipline). Counterproposal coverage
-// is enforced separately by foldCounterproposalsAsAlternatives —
-// monotonicity is the structural floor; counterproposal-coverage is
-// the content-fidelity check.
+// appears (the demotion-on-flip discipline). Retained as a
+// diagnostic helper (tests use it to assert post-merge invariants);
+// no longer called from mergeDecisions' enforcement path —
+// preservePriorAlternatives replaces it. See that helper's doc for
+// the rationale.
 //
 // Returns nil on a clean revise; a descriptive error naming the
 // missing entry on shrinkage. Names are matched case-insensitively

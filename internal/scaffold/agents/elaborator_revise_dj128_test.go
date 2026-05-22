@@ -30,19 +30,31 @@ func reviseModeSection(t *testing.T) string {
 	return rest[:idx]
 }
 
-// TestDecisionElaboratorReviseModeRequiresAlternativeMonotonicity —
-// scaffolded prompt mandates the alternative-monotonicity discipline
-// by name; explicitly says the prior chosen option becomes an
-// alternative on revise.
-func TestDecisionElaboratorReviseModeRequiresAlternativeMonotonicity(t *testing.T) {
+// TestDecisionElaboratorReviseModeDescribesMergeSidePreservation —
+// scaffolded prompt frames alternatives preservation as a
+// merge-layer responsibility (post-fifth-winplan revision of DJ-128),
+// not an elaborator-discipline mandate. The elaborator is told it
+// doesn't need to enumerate every prior alternative — the merge
+// layer preserves them mechanically. This frees the elaborator to
+// focus on new content (chosen, new alternatives, rationale
+// updates) without the structural-bookkeeping burden that
+// previously caused balanced-tier models to oscillate during
+// revisions.
+func TestDecisionElaboratorReviseModeDescribesMergeSidePreservation(t *testing.T) {
 	body := reviseModeSection(t)
 	lower := strings.ToLower(body)
-	assert.Contains(t, lower, "alternative monotonicity",
-		"prompt must name the alternative-monotonicity discipline by name")
-	assert.Contains(t, lower, "every prior alternative appears",
-		"prompt must state the prior-alternatives-survive invariant")
-	assert.Contains(t, lower, "prior chosen option appears",
-		"prompt must state the prior-chosen-becomes-alternative invariant")
+	assert.Contains(t, lower, "merge layer preserves",
+		"prompt must tell the elaborator that the merge layer handles preservation")
+	assert.Contains(t, lower, "you don't need to enumerate every prior alternative",
+		"prompt must explicitly relieve the elaborator of the enumeration burden")
+	// Negative assertion: the old "alternatives strictly grow"
+	// mandate must NOT remain — its presence would reintroduce
+	// the structural-bookkeeping prompt burden the merge-side
+	// preservation is designed to retire.
+	assert.NotContains(t, lower, "alternatives strictly grow",
+		"the old 'alternatives strictly grow' mandate must be retired now that the merge layer preserves them")
+	assert.NotContains(t, lower, "rejected by the merge layer",
+		"the old rejected-by-merge-layer threat must be retired (merge no longer rejects on alternative omission)")
 }
 
 // TestDecisionElaboratorReviseModeDescribesFlipAndReject — prompt

@@ -1119,25 +1119,28 @@ func mergeDecisions(s *PlanningState, results []RoundResult) {
 			// queueDecisionRevisedEvent will re-capture the same set
 			// (independently) for the history event.
 			driving := drivingConcernsForDecision(s, priorID)
-			// DJ-128: enforce alternative monotonicity. The elaborator
-			// should produce the demoted prior chosen + the unpicked
-			// counterproposals as alternatives; the helpers below fill
-			// in defensively when it omits them. Order matters:
-			// demote-then-fold first (so monotonicity validation sees
-			// the auto-fold result), then validate.
+			// DJ-128 + post-fifth-winplan revision: alternative
+			// preservation is now mechanical at the merge boundary
+			// rather than a prompt-discipline mandate enforced by
+			// reject-on-violation. Three folds run in order:
+			//   1. demote prior chosen → alternative on Flip
+			//   2. fold critic counterproposals as alternatives
+			//   3. preserve any prior alternatives the elaborator
+			//      omitted (the new step; replaces the old
+			//      validate-then-reject path)
+			// The elaborator's prompt now says "you don't need to
+			// enumerate every prior alternative; the merge layer
+			// preserves them." It focuses on chosen + new
+			// alternatives + counterproposal engagement; structural
+			// preservation is the merge layer's job.
 			demotePriorChosenAsAlternative(&prior, &d, driving, currentIter)
 			foldedCount := foldCounterproposalsAsAlternatives(&d, driving, currentIter, prior.Title)
 			if foldedCount > 0 {
 				recordCounterproposalFoldNotice(s, priorID, foldedCount)
 			}
-			if err := validateAlternativeMonotonicity(prior, d); err != nil {
-				// Reject the revision: leave the prior in place and
-				// record an integrity-violation concern naming the
-				// elaborator's error. Skipping continues to the next
-				// result; the cap-trip terminal still fires on the
-				// shrunk-axis if the elaborator keeps shrinking.
-				recordMonotonicityViolation(s, priorID, err)
-				continue
+			preservedCount := preservePriorAlternatives(&prior, &d, currentIter)
+			if preservedCount > 0 {
+				recordPreservedAlternativesNotice(s, priorID, preservedCount)
 			}
 			raw.Decisions[idx] = d
 			replacedThisCall = append(replacedThisCall, priorID)
@@ -1180,14 +1183,16 @@ func mergeDecisions(s *PlanningState, results []RoundResult) {
 			}
 			d.ID = priorID
 			driving := drivingConcernsForDecision(s, priorID)
+			// Same merge-side preservation as the in-flight branch
+			// above; see that branch's comment for the rationale.
 			demotePriorChosenAsAlternative(&prior, &d, driving, currentIter)
 			foldedCount := foldCounterproposalsAsAlternatives(&d, driving, currentIter, prior.Title)
 			if foldedCount > 0 {
 				recordCounterproposalFoldNotice(s, priorID, foldedCount)
 			}
-			if err := validateAlternativeMonotonicity(prior, d); err != nil {
-				recordMonotonicityViolation(s, priorID, err)
-				continue
+			preservedCount := preservePriorAlternatives(&prior, &d, currentIter)
+			if preservedCount > 0 {
+				recordPreservedAlternativesNotice(s, priorID, preservedCount)
 			}
 			raw.Decisions = append(raw.Decisions, d)
 			usedIDs[priorID] = struct{}{}

@@ -4,6 +4,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/chetan/locutus/internal/spec"
@@ -80,10 +81,21 @@ func TestMergeDecisionsDemotesPriorChosenOption(t *testing.T) {
 		"demotion's RejectedBecause carries the picking counterproposal's Argument")
 }
 
-// TestMergeDecisionsRejectsAlternativeShrinking — a revision that
-// drops a prior alternative is rejected; the prior decision is left
-// in place and an integrity-violation concern is recorded.
-func TestMergeDecisionsRejectsAlternativeShrinking(t *testing.T) {
+// TestMergeDecisionsPreservesDroppedAlternatives — a revision that
+// omits a prior alternative is APPLIED (not rejected); the merge
+// layer folds the missing prior alternative back into the revised
+// alternatives slice so the deliberation log is preserved
+// mechanically.
+//
+// The prior pattern (reject-on-violation) caused the fifth winplan
+// re-run to oscillate: each revision dropped at least one
+// alternative; the rejection threw away the elaborator's Flip
+// judgments + new counterproposal engagement along with the drop;
+// next iteration the elaborator redid everything and frequently
+// re-dropped. Mechanical preservation at the merge layer ends the
+// oscillation — the elaborator's good work survives even when its
+// alternatives discipline slips.
+func TestMergeDecisionsPreservesDroppedAlternatives(t *testing.T) {
 	state := makePriorWithAlt(t, "Original X", "alt-B")
 	state.Concerns = []Concern{{
 		Status: ConcernStatusOpen, AgentID: "cost_critic", Severity: "high",
@@ -91,9 +103,10 @@ func TestMergeDecisionsRejectsAlternativeShrinking(t *testing.T) {
 		RelatedDecisionIDs: []string{"dec-x"},
 	}}
 
-	// Revision drops alt-B AND does not demote Original X — the helpers
-	// will add Original X (demote), but alt-B is gone for good unless
-	// the elaborator emits it. The validator rejects.
+	// Revision drops alt-B AND does not demote Original X. The
+	// demote-as-alternative helper adds Original X back; the new
+	// preservePriorAlternatives helper adds alt-B back. The
+	// elaborator's new alt-D is appended on top.
 	revised := RawDecisionProposal{
 		ID: "dec-x", Title: "Different chosen", Rationale: "v2", Confidence: 0.85,
 		Alternatives: []spec.Alternative{{
@@ -106,25 +119,49 @@ func TestMergeDecisionsRejectsAlternativeShrinking(t *testing.T) {
 	}
 	mergeDecisions(state, []RoundResult{makeDecisionResult(t, revised, 3)})
 
-	// Prior decision is unchanged in raw proposal.
+	// The revision IS applied — the new chosen Title takes effect.
 	var got RawSpecProposal
 	require.NoError(t, json.Unmarshal([]byte(state.RawProposal), &got))
 	require.Len(t, got.Decisions, 1)
-	assert.Equal(t, "Original X", got.Decisions[0].Title,
-		"rejected revision must leave the prior decision intact")
+	d := got.Decisions[0]
+	assert.Equal(t, "Different chosen", d.Title,
+		"the revision applies (chosen Title is the elaborator's emission)")
 
-	// An integrity_critic concern names the elaborator's monotonicity error.
-	var found bool
+	// The union of alternatives lands: alt-D (elaborator emission)
+	// + Original X (demoted prior chosen) + alt-B (preserved prior
+	// alternative).
+	names := make(map[string]bool, len(d.Alternatives))
+	for _, alt := range d.Alternatives {
+		names[alt.Name] = true
+	}
+	assert.True(t, names["alt-D"], "elaborator's new alternative present")
+	assert.True(t, names["Original X"], "prior chosen demoted to alternatives")
+	assert.True(t, names["alt-B"], "prior alternative preserved by merge layer")
+	assert.Len(t, d.Alternatives, 3, "union of (new + demoted + preserved) = 3 entries")
+
+	// An integrity_critic notice records the preservation for
+	// operator visibility — not a hard violation, but the operator
+	// sees that the elaborator dropped entries the merge had to
+	// preserve.
+	var noticed bool
 	for _, c := range state.Concerns {
-		if c.AgentID == "integrity_critic" && c.Kind == "integrity" {
-			found = true
-			assert.Contains(t, c.Text, "monotonicity",
-				"the integrity concern names the discipline that was violated")
-			assert.Contains(t, c.Text, "alt-B",
-				"the concern names the dropped alternative")
+		if c.AgentID == "integrity_critic" && c.Kind == "integrity" &&
+			containsAll(c.Text, "omitted", "prior alternative", "auto-preserved") {
+			noticed = true
+			assert.Equal(t, "low", c.Severity,
+				"preservation notice is informational, not high-severity")
 		}
 	}
-	assert.True(t, found, "an integrity_critic concern must be recorded on monotonicity violation")
+	assert.True(t, noticed, "a low-severity integrity notice records the merge-side preservation")
+}
+
+func containsAll(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }
 
 // TestMergeDecisionsFoldsRejectedCounterproposalsAsAlternatives —

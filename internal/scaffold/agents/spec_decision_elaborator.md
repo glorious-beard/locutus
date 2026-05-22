@@ -161,17 +161,19 @@ In addition to Flip and Reject, three legacy revision shapes still occur — a s
 - **Cross-decision contradiction.** The prior decision committed to a choice that conflicts with another decision in the graph. Use `spec_get` on each related decision ID from the findings to read the full body of the conflicting sibling; pick a chosen option in the revision that is coherent with the manifest's in-flight state of that sibling. When the contradicting sibling is also being revised this iteration (both flagged in the same critic finding set), the manifest shows the sibling's in-flight state; choose to be coherent with the direction the sibling's revision is converging on.
 - **Hallucinated citation.** The prior cites a source the auditor cannot verify (e.g. a GOALS.md excerpt that doesn't appear in the file). Drop the hallucinated citation; reground the rationale on whatever real sources exist. When grounded research can't reach the load-bearing fact, follow the literal-sentinel pattern from the search-failure-modes section above and set `confidence` low to reflect the limited evidence.
 
-## Alternative monotonicity
+## Alternatives — what you author, what the merge preserves
 
-Alternatives strictly grow across revisions. The deliberation log in `alternatives` is the durable record of what was considered and why — reviewers and future iterations read it to avoid re-litigating settled rejections. The discipline:
+The `alternatives` slice is the durable deliberation log: every option weighed across the decision's lifetime, with the reason each lost out. Reviewers and future iterations read it to avoid re-litigating settled rejections.
 
-- Every prior alternative appears in the revised alternatives. Match by `name` — a revision that drops an existing alternative is rejected by the merge layer.
-- On Flip: the prior chosen option appears in `alternatives` as a demoted entry; every rejected counterproposal also appears.
-- On Reject: every counterproposal appears as a new alternative entry.
+**You don't need to enumerate every prior alternative in your output.** The merge layer preserves prior alternatives automatically — any entry from the prior decision that you don't repeat carries forward unchanged into the revised slice. Focus your `alternatives` emission on what's new or what's changing:
+
+- **On Flip** (you picked a counterproposal as the new chosen option): emit the prior chosen option as an alternative entry (the merge folds it in defensively if you forget, but writing it yourself gives you control over the `rejected_because`); emit every other counterproposal you weighed as an alternative entry. The prior alternatives that weren't part of this round's deliberation are preserved by the merge — don't list them.
+- **On Reject** (you kept the prior chosen option): emit every counterproposal as a new alternative entry. The prior alternatives carry forward via the merge — don't list them.
+- **Updating an existing alternative's `rejected_because`** (the critic raised a new argument against an option you already weighed): emit the alternative entry by its prior `name` with the updated `rejected_because`. The merge matches by name and patches your update onto the existing entry rather than appending a duplicate.
 
 Critic counterproposals that land as alternatives carry the critic's `argument` verbatim as the alternative's `rationale` and the critic's `citations` verbatim — the spec preserves the critic's case alongside your response. The picked counterproposal's argument also folds into the new decision's `rationale` so a reader sees the case the critic made and the case you accepted from it.
 
-When a counterproposal's option matches an existing alternative's name (the critic surfaced an option you already weighed), preserve the existing alternative's entry — update the `rejected_because` to engage with the critic's new argument if it adds anything, otherwise leave it intact. Do not create a duplicate entry.
+Mechanical preservation at the merge layer means your job is engaging with counterproposals and producing new content, not maintaining a list across iterations. Trying to enumerate the full prior alternatives slice on every revise (the discipline this prompt previously required) tended to cause two failure modes simultaneously: revisions dropped prior entries despite the mandate, and revisions consumed elaborator attention on bookkeeping rather than on substantive engagement with the critic's argument. Letting the merge layer own preservation frees the elaborator from both.
 
 ## Preserve identifiers verbatim
 
