@@ -21,9 +21,11 @@ Authoritative design lives in the [Decision Journal](DECISION_JOURNAL.md) (the p
 ```mermaid
 graph TD
     Start(["locutus refine / import"]) --> Scout0["spec_scout: initial gap analysis"]
-    Scout0 --> Decisions
+    Scout0 --> CandidateSurvey
 
     subgraph loop ["Convergence iteration loop"]
+        CandidateSurvey["candidate-survey step (fanout per OpenAxis)"]
+        CandidateSurveyDone["merge into state.AxisSurveys"]
         Decisions["decisions step (fanout per OpenAxis)"]
         DecisionsDone["merge into RawProposal.Decisions"]
         Narrative["narrative step (fanout per affected node)"]
@@ -35,6 +37,8 @@ graph TD
         CritiqueDone["merge into state.Concerns"]
         ScoutTail["spec_scout: re-judge convergence"]
 
+        CandidateSurvey -- "spec_candidate_survey, one call per axis" --> CandidateSurveyDone
+        CandidateSurveyDone --> Decisions
         Decisions -- "spec_decision_elaborator, one call per axis" --> DecisionsDone
         DecisionsDone --> Narrative
         Narrative -- "spec_feature_elaborator or spec_strategy_elaborator" --> NarrativeDone
@@ -46,7 +50,7 @@ graph TD
         CritiqueDone --> ScoutTail
     end
 
-    ScoutTail -- "converged false, budget remaining" --> Decisions
+    ScoutTail -- "converged false, budget remaining" --> CandidateSurvey
     ScoutTail -- "converged true" --> Persist["Integrity-revise gate (spec_architect via reviseForIntegrity)"]
     ScoutTail -- "budget exhausted" --> Failed(["Convergence failed: history event written"])
 
@@ -60,8 +64,8 @@ graph TD
     classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
 
     class Scout0,Reconcile,ScoutTail,Persist agent
-    class Decisions,Narrative,Revise,Critique fanout
-    class DecisionsDone,NarrativeDone,ReviseDone,CritiqueDone merge
+    class CandidateSurvey,Decisions,Narrative,Revise,Critique fanout
+    class CandidateSurveyDone,DecisionsDone,NarrativeDone,ReviseDone,CritiqueDone merge
     class Failed terminal
     class Done done
 
@@ -95,9 +99,27 @@ Four coupled jobs in a single pass:
 
 The `converged` flag drives the convergence gate. True exactly when `axes_open` is empty AND every concern has effective status `stale`/`addressed`/`wontfix`. False keeps the loop running until budget exhausts.
 
+### `spec_candidate_survey`
+
+Per-axis enumeration agent that runs BEFORE `spec_decision_elaborator` on the initial-elaboration path. One survey call per `axes_open` entry; surveys + elaborators dispatch in two sequential parallel steps (per-axis ordering is enforced by the candidate-survey step's merge populating `state.AxisSurveys` before the decisions step projects its inputs).
+
+| Field | Value |
+|---|---|
+| Output schema | `CandidateList` (flat: name + first_glance_fit per `SurveyedCandidate`; schema `minItems=3`) |
+| Model tier | Fast (Haiku 4.5 / Flash-Lite / gpt-5-mini) |
+| Thinking | `off` |
+| Grounding | `true` (web search; load-bearing for currency + hallucination prevention) |
+| Governing DJs | [DJ-132](DECISION_JOURNAL.md#dj-132) (enumeration-vs-judgment separation; per-axis pre-step before the decision-elaborator) |
+
+The agent's job per axis: search the candidate space (broad enumeration queries like `"managed Postgres alternatives 2026"`; constraint-narrowed queries when GOALS.md filters the set; adjacent-decision-narrowed queries when a sibling decision already commits to a stack); verify each candidate is real, current, and viable; emit a flat 6-10 entry list on well-trodden axes (3-5 on specialized ones) with each entry carrying only the candidate's name and a one-sentence first-glance fit. Judgment is the elaborator's job downstream; the survey only enumerates.
+
+The survey runs **on initial dispatch only**, not on revises (DJ-132 design decision #1). Revises engage with critic findings + the prior decision's alternatives slice; the survey enumeration would duplicate work and is structurally absent on the revise path. The elaborator's projection (`projectOpenAxis`) reads `state.AxisSurveys` keyed by axis ID; revise dispatches go through `projectReviseDecision` and never see the candidate list.
+
+Grounding is load-bearing for this agent, not supplementary — DJ-132 documents that training-data-only enumeration produces hallucinated vendors and stale candidates. Web search forces every entry to resolve to a real, current source. See [docs/agent-conventions.md](agent-conventions.md)'s "Enumeration agents" section for the prompt-discipline pattern this agent exemplifies.
+
 ### `spec_decision_elaborator`
 
-Authors decisions per axis. Runs in two modes from the same .md file: **first-author** (initial dispatch per `axes_open` entry) and **revise** (re-dispatch per critic concern targeting an existing decision under [DJ-126](DECISION_JOURNAL.md#dj-126)).
+Authors decisions per axis. Runs in two modes from the same .md file: **first-author** (initial dispatch per `axes_open` entry, with a pre-survey candidate list when DJ-132's `spec_candidate_survey` ran upstream) and **revise** (re-dispatch per critic concern targeting an existing decision under [DJ-126](DECISION_JOURNAL.md#dj-126)).
 
 | Field | Value |
 |---|---|
@@ -105,9 +127,11 @@ Authors decisions per axis. Runs in two modes from the same .md file: **first-au
 | Model tier | Strong |
 | Thinking | `on` |
 | Grounding | `true` |
-| Governing DJs | [DJ-124](DECISION_JOURNAL.md#dj-124) (per-axis dispatch), [DJ-126](DECISION_JOURNAL.md#dj-126) (revise mode), [DJ-128](DECISION_JOURNAL.md#dj-128) (deliberation log + counterproposal discipline) |
+| Governing DJs | [DJ-124](DECISION_JOURNAL.md#dj-124) (per-axis dispatch), [DJ-126](DECISION_JOURNAL.md#dj-126) (revise mode), [DJ-128](DECISION_JOURNAL.md#dj-128) (deliberation log + counterproposal discipline), [DJ-132](DECISION_JOURNAL.md#dj-132) (candidate-list-aware initial mode) |
 
 The agent's job per axis: research the option set (web search + spec_search of existing decisions on adjacent axes), pick one, justify with grounded citations, and weigh every alternative with grounded `rejected_because` reasoning. The alternatives slice carries the durable deliberation log; the schema enforces `minItems=1` per alternative's citations to prevent fabricated rejection prose.
+
+Under DJ-132, when the initial-dispatch projection injects a `Candidate list` section (`spec_candidate_survey` ran upstream and populated `state.AxisSurveys` for this axis), the elaborator's task narrows from "discover the candidates and pick" to "pick from these surveyed candidates + author proper rationale + write `rejected_because` for each unpicked + cite each." Every unpicked surveyed candidate becomes an alternative entry; the elaborator may surface additional candidates beyond the survey when the axis warrants (anti-anchoring against the survey's coverage gaps). On axes where no survey ran (revise dispatches; survey misfires), the elaborator falls through to its own enumeration as before.
 
 Revise mode addresses critic findings with structured counterproposals. The elaborator either:
 
@@ -193,10 +217,6 @@ Post-workflow integrity-revise gate. Runs OUTSIDE the convergence loop — after
 The cap is small (`MaxIntegrityRetries = 2`) because a model that fails twice in a row to repair structural integrity is unlikely to comply on the third try. Failure surfaces as a typed `IntegrityViolationError` carrying the warnings + the last attempt's output, so the operator can inspect what the architect produced and decide whether to re-run, switch model tier, or hand-edit.
 
 In current traces, the architect rarely runs — most council convergence produces structurally clean spec proposals because the merge functions guarantee referential integrity at the workflow layer. The architect is a backstop, not a hot path.
-
-### Pending agents
-
-- **`spec_candidate_survey`** ([DJ-132](DECISION_JOURNAL.md#dj-132), proposed): per-axis enumeration agent that would run BEFORE `spec_decision_elaborator` on initial dispatch. Fast tier, grounded, emits a flat `CandidateList` (name + first-glance fit per candidate). Separates enumeration from judgment so the decision elaborator's initial alternatives slice starts populated with 6-10 candidates instead of 2-3. Not yet implemented.
 
 ## Convergence semantics
 

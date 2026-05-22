@@ -197,6 +197,47 @@ Walking the model through the JSON shape (Field A is X, Field B is Y, …)
 mirrors the schema and reinforces the structure. Anti-pattern lists fight
 the schema by giving the model material to autocomplete.
 
+### Enumeration agents
+
+When an agent's job is exhaustive option-surfacing — surveying the
+candidate space for a decision, mining the related work for a research
+brief, naming every API consumer affected by a refactor — the prompt
+explicitly frames the task as enumeration, not judgment. The two
+disciplines compete for attention budget; one prompt can't do both
+well, which is why DJ-130 (reasoning/formatting split) and DJ-132
+(enumeration/judgment split) exist. The conventions for enumeration
+agents follow from that framing:
+
+- **Output schema is flat — no rationale, no citations on entries, no
+  judgments.** Each entry carries only the fields the downstream
+  judgment-agent needs to weigh it (typically name + first-glance
+  fit). Mixing rationale into the survey re-creates the task
+  conflation the survey was meant to break.
+- **Grounding is load-bearing for currency + hallucination
+  prevention.** Training-data-only enumeration produces invented
+  vendors and stale candidates (Heroku free tier, Parse
+  pre-acquisition). Web search forces every entry to resolve to a
+  real, current source. Enumeration is one of the few agent roles
+  where grounding is structural rather than supplementary.
+- **The prompt explicitly says "enumerate, don't judge."** Positive
+  framing on the task; the model can't autocomplete a discipline you
+  haven't named. Judgment-task vocabulary ("pick the best", "weigh
+  the trade-offs") in an enumeration prompt invites the model to do
+  judgment too, which crowds out enumeration breadth.
+- **The schema's `minItems` is a floor, not a target.** Set it
+  conservatively (3-5) so genuinely-narrow axes can pass; aim higher
+  in the prompt (6-10 on well-trodden spaces). Padding-prevention
+  belongs in the prompt — "only enumerate candidates you actually
+  find via search; don't invent to hit a count" — not in the schema,
+  because the schema can't tell the difference between real and
+  padded entries.
+- **`thinking: off` in the frontmatter.** Enumeration is discovery,
+  not reasoning. The work is "search broadly and list what you find";
+  extended thinking doesn't make a list longer or more accurate, just
+  more expensive.
+
+The canonical example is `spec_candidate_survey` ([DJ-132](DECISION_JOURNAL.md#dj-132)) — runs per-axis before the decision-elaborator on the initial-elaboration path, emits a flat `CandidateList` of 6-10 entries, feeds into the elaborator's projection as a pre-populated candidate set.
+
 ## When you're tempted to add an anti-pattern list
 
 Stop and ask: is the failure caused by the model not knowing the rule, or

@@ -44,6 +44,15 @@ Concretely:
 
 The per-deployer `format_providers:` rotation in `models.yaml` is retired — each adapter handles its own provider's fast tier for the format pass, no cross-provider rotation. A stale `format_providers:` block left in a user-edited `models.yaml` is silently ignored by the parser.
 
+## Cognitive Task Separation (DJ-130 + DJ-132)
+
+When one LLM call is asked to do two cognitive tasks that conflict in the attention budget, separate them into sequential calls that each focus on one task. The principle shows up at two layers:
+
+- **DJ-130 separates reasoning from formatting at the adapter layer.** A thinking-on agent with a strict-mode schema dispatches as two SDK round-trips: a reasoning pass (thinking on, schema cleared, tools + grounding kept) and a format pass (thinking off, schema set, tools stripped, fast-tier). The split prevents thinking-output corruption in structured fields and keeps reasoning attention from being crowded out by JSON-shape attention.
+- **DJ-132 separates enumeration from judgment at the workflow layer.** The decision-elaboration fanout gains a per-axis `spec_candidate_survey` pre-step (fast tier, grounded) that enumerates the candidate space; the decision-elaborator runs after with the candidate list as input and spends its attention budget on judgment. The split prevents commit-mode attention from crowding out exhaustive option-space exploration; initial alternatives slices ship with 6-10 entries instead of 1-2.
+
+Both are instances of the same pattern. Future cognitive-task conflations should be diagnosed with the same lens: is one LLM call carrying two tasks whose attention demands fight each other? If yes, split into sequential calls. The cost of an extra call amortizes against the avoided work the cross-task-suppression was previously generating.
+
 ## Command Surface
 
 The verb set splits into 8 mutating/operational verbs plus 2 read-only deliberation aids (DJ-101).
