@@ -21,24 +21,34 @@ Authoritative design lives in the [Decision Journal](DECISION_JOURNAL.md) (the p
 ```mermaid
 graph TD
     Start(["locutus refine / import"]) --> Scout0["spec_scout: initial gap analysis"]
-    Scout0 --> Decisions["decisions step (fanout per OpenAxis)"]
+    Scout0 --> Decisions
 
-    Decisions -- "spec_decision_elaborator, one call per axis" --> DecisionsDone["merge into RawProposal.Decisions"]
-    DecisionsDone --> Narrative["narrative step (fanout per affected node)"]
+    subgraph loop ["Convergence iteration loop"]
+        Decisions["decisions step (fanout per OpenAxis)"]
+        DecisionsDone["merge into RawProposal.Decisions"]
+        Narrative["narrative step (fanout per affected node)"]
+        NarrativeDone["merge into RawProposal.Features and Strategies"]
+        Revise["revise-decisions step (fanout per concern with related decision)"]
+        ReviseDone["merge updated decisions in-place"]
+        Reconcile["spec_reconciler: field-map RawProposal to SpecProposal, plus integrity_critic synthetic check"]
+        Critique["critique step (fanout per CritiqueDimension)"]
+        CritiqueDone["merge into state.Concerns"]
+        ScoutTail["spec_scout: re-judge convergence"]
 
-    Narrative -- "spec_feature_elaborator or spec_strategy_elaborator" --> NarrativeDone["merge into RawProposal.Features and Strategies"]
-    NarrativeDone --> Revise["revise-decisions step (fanout per concern with related decision)"]
-
-    Revise -- "spec_decision_elaborator in revise mode" --> ReviseDone["merge updated decisions in-place"]
-    ReviseDone --> Reconcile["spec_reconciler: field-map RawProposal to SpecProposal, plus integrity_critic synthetic check"]
-
-    Reconcile --> Critique["critique step (fanout per CritiqueDimension)"]
-    Critique -- "spec_critic_elaborator, one call per dimension" --> CritiqueDone["merge into state.Concerns"]
-    CritiqueDone --> ScoutTail["spec_scout: re-judge convergence"]
+        Decisions -- "spec_decision_elaborator, one call per axis" --> DecisionsDone
+        DecisionsDone --> Narrative
+        Narrative -- "spec_feature_elaborator or spec_strategy_elaborator" --> NarrativeDone
+        NarrativeDone --> Revise
+        Revise -- "spec_decision_elaborator in revise mode" --> ReviseDone
+        ReviseDone --> Reconcile
+        Reconcile --> Critique
+        Critique -- "spec_critic_elaborator, one call per dimension" --> CritiqueDone
+        CritiqueDone --> ScoutTail
+    end
 
     ScoutTail -- "converged false, budget remaining" --> Decisions
     ScoutTail -- "converged true" --> Persist["Integrity-revise gate (spec_architect via reviseForIntegrity)"]
-    ScoutTail -- "budget exhausted" --> Failed["Convergence failed: history event written"]
+    ScoutTail -- "budget exhausted" --> Failed(["Convergence failed: history event written"])
 
     Persist -- "integrity violations remain" --> Failed
     Persist -- "clean" --> Done(["Persist to .borg/spec/"])
@@ -54,6 +64,8 @@ graph TD
     class DecisionsDone,NarrativeDone,ReviseDone,CritiqueDone merge
     class Failed terminal
     class Done done
+
+    style loop fill:#fefce8,stroke:#a8a29e,stroke-width:1.5px,color:#713f12
 ```
 
 Each step's actual dispatch shape depends on the agent's frontmatter `thinking` + `output_schema` combination — see the [DJ-130](DECISION_JOURNAL.md#dj-130) split discipline. Thinking-on schema-bearing agents (scout, elaborators, critic, reconciler) dispatch as two SDK round-trips per logical call (reasoning pass → format pass); thinking-off agents dispatch as one. The diagram shows logical agent calls; the per-step folders under `.locutus/sessions/.../calls/` carry the actual SDK-call detail.
