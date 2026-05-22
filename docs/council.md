@@ -19,41 +19,29 @@ Authoritative design lives in the [Decision Journal](DECISION_JOURNAL.md) (the p
 ## Workflow shape
 
 ```mermaid
-flowchart TD
-    Start([locutus refine / import]) --> Scout0[spec_scout<br/>initial gap analysis]
-    Scout0 --> Decisions
+graph TD
+    Start(["locutus refine / import"]) --> Scout0["spec_scout: initial gap analysis"]
+    Scout0 --> Decisions["decisions step (fanout per OpenAxis)"]
 
-    subgraph iter [Convergence iteration loop]
-        direction TB
-        Decisions{{decisions step<br/>fanout per OpenAxis}}
-        Decisions -->|spec_decision_elaborator<br/>one call per axis| DecisionsDone[merge into<br/>RawProposal.Decisions]
-        DecisionsDone --> Narrative
+    Decisions -- "spec_decision_elaborator, one call per axis" --> DecisionsDone["merge into RawProposal.Decisions"]
+    DecisionsDone --> Narrative["narrative step (fanout per affected node)"]
 
-        Narrative{{narrative step<br/>fanout per affected node}}
-        Narrative -->|spec_feature_elaborator<br/>or spec_strategy_elaborator| NarrativeDone[merge into<br/>RawProposal.Features/Strategies]
-        NarrativeDone --> Revise
+    Narrative -- "spec_feature_elaborator or spec_strategy_elaborator" --> NarrativeDone["merge into RawProposal.Features and Strategies"]
+    NarrativeDone --> Revise["revise-decisions step (fanout per concern with related decision)"]
 
-        Revise{{revise-decisions step<br/>fanout per concern with related decision}}
-        Revise -->|spec_decision_elaborator<br/>in revise mode| ReviseDone[merge updated<br/>decisions in-place]
-        ReviseDone --> Reconcile
+    Revise -- "spec_decision_elaborator in revise mode" --> ReviseDone["merge updated decisions in-place"]
+    ReviseDone --> Reconcile["spec_reconciler: field-map RawProposal to SpecProposal, plus integrity_critic synthetic check"]
 
-        Reconcile[spec_reconciler<br/>field-map RawProposal → SpecProposal<br/>+ integrity_critic synthetic check]
-        Reconcile --> Critique
+    Reconcile --> Critique["critique step (fanout per CritiqueDimension)"]
+    Critique -- "spec_critic_elaborator, one call per dimension" --> CritiqueDone["merge into state.Concerns"]
+    CritiqueDone --> ScoutTail["spec_scout: re-judge convergence"]
 
-        Critique{{critique step<br/>fanout per CritiqueDimension}}
-        Critique -->|spec_critic_elaborator<br/>one call per dimension| CritiqueDone[merge into<br/>state.Concerns]
-        CritiqueDone --> ScoutTail
+    ScoutTail -- "converged false, budget remaining" --> Decisions
+    ScoutTail -- "converged true" --> Persist["Integrity-revise gate (spec_architect via reviseForIntegrity)"]
+    ScoutTail -- "budget exhausted" --> Failed["Convergence failed: history event written"]
 
-        ScoutTail[spec_scout<br/>re-judge convergence]
-    end
-
-    ScoutTail -->|converged: false<br/>+ budget remaining| Decisions
-    ScoutTail -->|converged: true| Persist
-    ScoutTail -->|budget exhausted| Failed
-
-    Persist[Integrity-revise gate<br/>spec_architect via reviseForIntegrity]
-    Persist -->|integrity violations remain| Failed[Convergence failed<br/>history event written]
-    Persist -->|clean| Done([Persist to .borg/spec/])
+    Persist -- "integrity violations remain" --> Failed
+    Persist -- "clean" --> Done(["Persist to .borg/spec/"])
 
     classDef agent fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef fanout fill:#fef3c7,stroke:#d97706,color:#78350f
