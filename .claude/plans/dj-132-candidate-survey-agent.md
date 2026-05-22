@@ -112,16 +112,20 @@ Recorded in chat 2026-05-22; settled before this plan went to implementation.
 
 ## Phase 4 — Documentation
 
-**Goal:** CLAUDE.md gains a paragraph on the enumeration-vs-judgment separation as a council architecture principle. `docs/agent-conventions.md` gains a section on the "enumeration agent" pattern.
+**Goal:** CLAUDE.md gains a paragraph on the enumeration-vs-judgment separation as a council architecture principle. `docs/agent-conventions.md` gains a section on the "enumeration agent" pattern. `docs/council.md` gains the new agent's per-step position in the Mermaid diagram + a full per-agent reference entry.
 
 **Files expected to change:**
 
 - [CLAUDE.md](../../CLAUDE.md) — new paragraph in the LLM section: "Cognitive task separation. DJ-130 separated reasoning from formatting at the adapter layer. DJ-132 separates enumeration from judgment at the workflow layer. Both are instances of: when one LLM call is asked to do two cognitive tasks that conflict in the attention budget, separate them into sequential calls that each focus on one task."
 - [docs/agent-conventions.md](../../docs/agent-conventions.md) — new section "Enumeration agents": when an agent's job is exhaustive option-surfacing, the prompt explicitly frames the task as enumeration (not judgment); output schema is flat (no rationale/citations/judgments on entries); grounding is load-bearing for currency + hallucination prevention.
+- [docs/council.md](../../docs/council.md) — two changes:
+    1. **Workflow diagram (Mermaid).** Add a per-axis `spec_candidate_survey` step before the `decisions` fanout. Shape it as a fanout node (same hex color class as the other fanout steps). Edges: scout's `axes_open` → survey fanout (parallel across axes), then per-axis `survey-i → decisions-i` sequential into the elaborator. Keep the diagram conservative for VS Code preview compatibility (no `direction TB` inside subgraphs; quoted single-line labels; square-bracket shapes; classDef styling).
+    2. **Per-agent reference.** Promote the existing "Pending agents" entry for `spec_candidate_survey` into a full per-agent reference block alongside `spec_decision_elaborator`. Include: output schema (`CandidateList`), model tier (fast), thinking (off), grounding (true — load-bearing for currency + hallucination prevention), governing DJ (DJ-132), and design notes (enumerate-don't-judge framing; flat output; runs initial dispatch only, not on revises).
+    3. The "Pending agents" subsection either retires entirely (if no other pending agents remain at that point) or shrinks to whatever new pending entries DJ-133+ introduce.
 
-**Verification:** `go test ./... -count=1 -race` clean; `go vet ./...` clean.
+**Verification:** `go test ./... -count=1 -race` clean; `go vet ./...` clean. Manually verify `docs/council.md`'s Mermaid diagram renders in both Mermaid Playground and VS Code preview (the council.md file currently uses a conservative Mermaid subset for compatibility; the survey-step addition must preserve that).
 
-**Estimated:** 1-2 hours.
+**Estimated:** 2-3 hours.
 
 ## Phase 5 — Validation against winplan re-run
 

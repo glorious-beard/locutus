@@ -4175,6 +4175,7 @@ The revise path is unchanged: revises engage with critic findings and the existi
 - **Documentation:**
     - `CLAUDE.md` gains a paragraph on the enumeration-vs-judgment separation as a council architecture principle (parallel to DJ-130's reasoning-vs-formatting separation). Both are instances of "when one LLM call is asked to do two cognitive tasks that conflict in the attention budget, separate them."
     - `docs/agent-conventions.md` gains a section on the "enumeration agent" pattern: when an agent's job is exhaustive option-surfacing, the prompt explicitly frames the task as enumeration (not judgment); output schema is flat (no rationale/citations/judgments on entries); grounding is load-bearing for currency + hallucination prevention.
+    - `docs/council.md` updates: workflow diagram gains the per-axis `spec_candidate_survey` pre-step before the `decisions` fanout (one survey call per axis, in parallel with sibling surveys, then per-axis sequential into the elaborator); pending-agents section's `spec_candidate_survey` entry moves up into the main per-agent reference block as a full entry alongside `spec_decision_elaborator` (covering output schema, model tier, thinking, grounding, governing DJ, design notes).
 
 **Reversal criteria.** Revert if:
 
