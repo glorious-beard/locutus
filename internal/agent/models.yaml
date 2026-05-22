@@ -31,43 +31,43 @@ providers:
   anthropic:
     fast:
       model: claude-haiku-4-5-20251001
-      max_output_tokens: 8192
+      max_output_tokens: 16384
       concurrent_requests: 10
     balanced:
       model: claude-sonnet-4-6
-      max_output_tokens: 16384
+      max_output_tokens: 65536
       concurrent_requests: 12
     strong:
       model: claude-opus-4-7
-      max_output_tokens: 32768
+      max_output_tokens: 65536
       concurrent_requests: 8
 
   googleai:
     fast:
-      model: gemini-3.1-flash-lite-preview
+      model: gemini-3.1-flash-lite
       max_output_tokens: 16384
       concurrent_requests: 10
     balanced:
-      model: gemini-3-flash-preview
-      max_output_tokens: 32768
-      concurrent_requests: 12
+      model: gemini-3.5-flash
+      max_output_tokens: 65536
+      concurrent_requests: 8
     strong:
-      model: gemini-3.1-pro-preview
+      model: gemini-3.5-flash
       max_output_tokens: 65536
       concurrent_requests: 8
 
   openai:
     fast:
-      model: gpt-5-mini
-      max_output_tokens: 8192
+      model: gpt-5.4-nano
+      max_output_tokens: 16384
       concurrent_requests: 10
     balanced:
-      model: gpt-5
-      max_output_tokens: 16384
+      model: gpt-5.5
+      max_output_tokens: 32768
       concurrent_requests: 12
     strong:
-      model: o3-pro
-      max_output_tokens: 32768
+      model: gpt-5.5-pro
+      max_output_tokens: 65536
       concurrent_requests: 8
 
 # DJ-130 retired the dispatcher-side `format_providers:` rotation
