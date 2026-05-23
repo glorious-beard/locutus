@@ -9,6 +9,8 @@ import (
 	selfupdate "github.com/creativeprojects/go-selfupdate"
 
 	"github.com/chetan/locutus/internal/agent"
+	"github.com/chetan/locutus/internal/history"
+	"github.com/chetan/locutus/internal/migrate"
 	"github.com/chetan/locutus/internal/prereqs"
 	"github.com/chetan/locutus/internal/scaffold"
 	"github.com/chetan/locutus/internal/specio"
@@ -102,7 +104,19 @@ func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 		printResetReport(report)
 	}
 
-	// 4. Run prerequisite checks. Implicit when --offline is not set;
+	// 4. Run one-shot on-disk migrations. DJ-133 renames every
+	// persisted `dec-<chosen-option>` to `dec-<primary-axis>` and
+	// rewrites incoming references. Idempotent — a graph that's
+	// already fully axis-shaped is a no-op. Runs when we have a
+	// project FS to migrate (either --reset or a prereq pass is going
+	// to run).
+	if c.Reset || c.shouldRunPrereqs() {
+		if err := runOnDiskMigrations(); err != nil {
+			return err
+		}
+	}
+
+	// 5. Run prerequisite checks. Implicit when --offline is not set;
 	// opt-in via --check-pre-reqs when --offline is set (the dev
 	// compile-and-run loop).
 	if c.shouldRunPrereqs() {
@@ -111,6 +125,46 @@ func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 		}
 	}
 
+	return nil
+}
+
+// runOnDiskMigrations executes one-shot migrations against the project
+// spec graph. Currently the only migration is DJ-133's decision-id
+// rename (every dec-<chosen-option> ↦ dec-<primary-axis>); idempotent
+// across runs, so it's safe to invoke on every update with a project
+// FS. Surfaces the per-decision rename log + a count summary so the
+// operator sees what landed.
+func runOnDiskMigrations() error {
+	fsys, _, err := projectFS()
+	if err != nil {
+		return fmt.Errorf("update migrations: %w", err)
+	}
+	historian := history.NewHistorian(fsys, ".borg/history")
+	res, err := migrate.MigrateDecisionIDs(fsys, historian)
+	if err != nil {
+		return fmt.Errorf("decision-id migration (DJ-133): %w", err)
+	}
+	if len(res.Renamed) == 0 {
+		return nil
+	}
+	fmt.Printf("DJ-133 decision-id migration: renamed %d decision(s).\n", len(res.Renamed))
+	for _, r := range res.Renamed {
+		composite := ""
+		if r.Composite {
+			composite = fmt.Sprintf(" (composite — secondary axes %v not reflected in id)", r.Axes[1:])
+		}
+		fmt.Printf("  - %s → %s%s\n", r.OldID, r.NewID, composite)
+		refsTouched := len(r.FeaturesRewritten) + len(r.StrategiesRewritten) + len(r.DecisionsInfluencedBy) + len(r.ApproachesRewritten)
+		if refsTouched > 0 {
+			fmt.Printf("    rewrote %d incoming reference(s) across features/strategies/decisions/approaches\n", refsTouched)
+		}
+	}
+	for _, s := range res.Skipped {
+		if s.Reason == "already-axis-shaped" {
+			continue // not interesting on the operator's surface
+		}
+		fmt.Printf("  - skipped %s (%s)\n", s.ID, s.Reason)
+	}
 	return nil
 }
 
