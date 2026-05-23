@@ -247,6 +247,21 @@ Identifiers name the *question* a spec node answers; content fields name the *an
 
 The agent-prompt implication: when an LLM agent author asks "where does the id come from?", the answer is usually "from the structural input the dispatcher gave you (the axis for a decision, the title for a feature)" — not "from the choice you're about to make." Prompts that frame the id as derived from the agent's own deliberation invite Flip-drift; prompts that frame it as copied from a structural input keep ids durable. The DJ-133 elaborator prompt is the canonical example of the latter framing.
 
+### Tool descriptions live in registration, not prompts
+
+When a prompt references a tool the agent can call (spec_list_manifest, spec_get, spec_search, future write tools), the prompt's job is **workflow guidance**: when to reach for the tool, what question it answers in the current task, how the result feeds the next step. The prompt's job is **not** to describe what the tool does or what fields its output carries — that belongs in the `ToolDef.Description` and `InputSchema.properties[].description` passed to `RegisterSpecTools` (or its sibling registration call for non-spec tools).
+
+The rule:
+
+- **Workflow phrases stay in the prompt.** *"Walk the manifest before grading concerns."* *"Issue one `spec_get` with every id you'll need from the open concerns + axes lists — sequential single-id calls cost rounds against the tool-loop cap."* *"Use `spec_search` for topic-scoped lookups when you don't know the id."* These name when and why the model should reach for a tool in the context of the agent's task; that context only exists in the prompt.
+- **Tool-behavior text moves to registration.** *"Each manifest entry carries an `origin` field (`settled` / `proposed`) and a `working` flag…"* belongs in `ToolDef.Description` for `spec_list_manifest`, not in every prompt that mentions the tool. *"Returns the full JSON of N spec nodes by id; partial-result shape `{found, missing}`…"* belongs in `ToolDef.Description` for `spec_get`. *"Free-text query, optional kind filter, default limit 20…"* belongs in `InputSchema.properties[].description` for `spec_search`. The model reads tool descriptions on every call; duplicating them in the prompt is bloat that travels into the cache on every dispatch.
+
+**Why this matters beyond cleanliness.** Tool registration is the single canonical source for tool semantics; the prompt is one of N consumers. When the prompt re-describes the tool, the two surfaces drift — a field added at registration (the `origin` tag was added in commit [`eb51a14`](https://github.com/chetan/locutus/commit/eb51a14)) doesn't automatically reach the prompt, and old prompt text that contradicts the new registration confuses the model. Caught in the May 2026 winplan run where the scout's prompt described an older `origin`-less manifest shape while registration had already updated; the model split attention between the two stories.
+
+**The audit question for prompt edits.** When adding or reviewing a prompt that mentions a tool, ask: *"is this WHEN-to-use, or WHAT-the-tool-does?"* WHEN-to-use stays. WHAT-the-tool-does moves to the registration call (or already lives there and the prompt text is redundant). The audit is mechanical — walk the prompt, classify every sentence about a tool. It takes minutes per file and prevents the drift class entirely.
+
+The DJ-134 prompt sweep is the first systematic application of this rule across the council; expect future prompt edits to honor it from the start.
+
 ## When you're tempted to add an anti-pattern list
 
 Stop and ask: is the failure caused by the model not knowing the rule, or
