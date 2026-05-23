@@ -267,6 +267,60 @@ func TestScoutPromptDescribesAxesAndConvergence(t *testing.T) {
 //   - the elaborator may surface candidates beyond the survey
 //     (anti-anchoring; reversal criterion (c) on DJ-132 is the
 //     failure mode this guidance addresses).
+// TestSpecToolPromptsDescribeUnifiedView locks in the corrected
+// wording across the council-aware agent prompts. The prior text
+// claimed `spec_list_manifest` and `spec_get` "continue to read the
+// persisted spec graph on disk; only spec_search is redirected to
+// the in-flight surface during the council" — false since DJ-125
+// Phase 3 swapped all three. The mis-information caused models to
+// discount valid spec_get results during the trace pathology that
+// motivated the May 2026 follow-up fixes, and contributed to tool-
+// loop exhaustion on Gemini 3.5 Flash.
+//
+// The corrected wording must:
+//
+//   - state that all three tools return a unified view during a
+//     council run (in-flight + persisted),
+//   - describe the per-entry origin / working fields the manifest
+//     now carries,
+//   - tell the model what to do when spec_get returns not-found
+//     (pick from the inlined id list rather than guessing variants).
+func TestSpecToolPromptsDescribeUnifiedView(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	for _, agent := range []string{
+		"spec_decision_elaborator",
+		"spec_feature_elaborator",
+		"spec_strategy_elaborator",
+		"spec_candidate_survey",
+	} {
+		t.Run(agent, func(t *testing.T) {
+			body, err := fsys.ReadFile(".borg/agents/" + agent + ".md")
+			require.NoError(t, err)
+			text := string(body)
+
+			// Negative: the stale wording is gone.
+			assert.NotContains(t, text, "continue to read the persisted spec graph on disk",
+				"%s must not carry the stale claim that spec_list_manifest and spec_get only read the persisted graph — DJ-125 Phase 3 swapped all three onto the in-flight overlay", agent)
+			assert.NotContains(t, text, "only `spec_search` is redirected",
+				"%s must not carry the stale 'only spec_search is redirected' claim", agent)
+
+			// Positive: the corrected unified-view language.
+			containsUnifiedClaim := strings.Contains(text, "all three tools") ||
+				strings.Contains(text, "all three return a view") ||
+				strings.Contains(text, "unified view") ||
+				strings.Contains(text, "unified spec graph")
+			assert.True(t, containsUnifiedClaim,
+				"%s must state that all three tools return a unified view of in-flight + persisted during a council run", agent)
+			assert.Contains(t, text, "origin",
+				"%s must describe the per-entry origin field (settled / proposed)", agent)
+			assert.Contains(t, text, "working",
+				"%s must describe the per-entry working flag", agent)
+		})
+	}
+}
+
 func TestDecisionElaboratorPromptDescribesCandidateListSection(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))

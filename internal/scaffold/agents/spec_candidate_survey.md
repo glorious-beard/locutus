@@ -29,11 +29,11 @@ You receive as user messages:
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via three tools:
+The unified spec graph is available via three tools — during a council run, all three return a view of the in-flight proposal AND the persisted spec on disk, with the same id resolving the same way through every tool:
 
-- `spec_list_manifest()` — compact index of every persisted node. Scan this to see what's already committed before deciding which candidates to surface; an adjacent-axis decision narrows the viable candidate set on yours.
-- `spec_get(id)` — full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`). Useful when an adjacent decision is the load-bearing context for understanding your axis's candidate space.
-- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Use this to find a sibling decision that already constrains your axis (`spec_search("compute platform", kind: "decision")` before surveying an `oltp-store` axis surfaces whether the platform commitment is already in flight).
+- `spec_list_manifest()` — compact index of every node. Each entry carries an `origin` field (`settled` for on-disk nodes from prior refines, `proposed` for nodes the council added this iteration) and a `working` flag (true when a fanout dispatch is rewriting the node right now). Scan this to see what's already committed before deciding which candidates to surface; an adjacent-axis decision narrows the viable candidate set on yours.
+- `spec_get(id)` — full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`). Useful when an adjacent decision is the load-bearing context for understanding your axis's candidate space. On a not-found error the response inlines every id of the same kind; pick from that list rather than guessing variant slugs.
+- `spec_search(query, kind?, limit?)` — ranked top-N nodes matching a free-text query (BM25 over title/summary/body). Use this to find a sibling decision that already constrains your axis (`spec_search("compute platform", kind: "decision")` before surveying an `oltp-store` axis surfaces whether the platform commitment is already in flight).
 
 Skip these tool calls when the existing-spec flag is absent — every tool call costs a round-trip and greenfield runs have nothing to find.
 

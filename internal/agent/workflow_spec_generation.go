@@ -954,6 +954,12 @@ func mergeScoutBrief(s *PlanningState, results []RoundResult) {
 	// (c-<index>); unknown ids are logged and skipped — convergence
 	// treats them as still-open per ConcernDisposition documentation.
 	applyConcernDispositions(s, brief.ConcernDispositions)
+
+	// AxesOpen / NewNodesFromScout / Concerns just changed — refresh
+	// the in-flight store's working-signals view so the next
+	// downstream agent's spec_list_manifest call surfaces the correct
+	// per-entry Working flag.
+	refreshWorkingSignals(s)
 }
 
 // applyConcernDispositions writes scout-graded dispositions onto
@@ -1186,6 +1192,10 @@ func mergeCriticIssues(s *PlanningState, results []RoundResult) {
 	// no LLM call. Runs after appendIntegrityFindings so integrity
 	// concerns are eligible for staleness too.
 	mechanicalDisposeConcerns(s)
+	// Concerns just changed — refresh the in-flight store's working-
+	// signals so the next agent's spec_list_manifest call shows the
+	// correct Working flag for decisions / nodes the critic targets.
+	refreshWorkingSignals(s)
 }
 
 // newConcernFromCriticIssue constructs a Concern from a structured
@@ -1505,8 +1515,15 @@ func rebuildInFlightIndex(s *PlanningState) {
 	// its own copy of RawProposal and serves the manifest/get tools off
 	// it. Update is cheap (just a pointer swap under a write lock); the
 	// parse happens lazily inside the tool handler.
+	//
+	// The working-signals refresh that follows lets ListManifest
+	// derive SpecManifestEntry.Working per entry from the live
+	// AxesOpen / NewNodesFromScout / open-concern state. Refreshed on
+	// every merge so the model's view of "which nodes are mid-
+	// rewrite" stays current as the council progresses.
 	if s.InFlightSpecStore != nil {
 		s.InFlightSpecStore.Update(s.RawProposal)
+		s.InFlightSpecStore.SetWorkingSignals(computeWorkingSignals(s))
 	}
 	if s.InFlightIndex == nil || s.RawProposal == "" {
 		return
@@ -1515,4 +1532,102 @@ func rebuildInFlightIndex(s *PlanningState) {
 		slog.Warn("in-flight spec_search: rebuild failed; council continues with stale index",
 			"error", err)
 	}
+}
+
+// refreshWorkingSignals updates the in-flight store's per-entry
+// Working signal without touching the RawProposal-derived ListManifest
+// content. Cheap; safe to call from any merge that mutates
+// AxesOpen / NewNodesFromScout / Concerns (the three inputs
+// computeWorkingSignals reads) without simultaneously updating the
+// in-flight proposal. mergeScoutBrief and mergeCriticIssues are the
+// load-bearing callers — both reshape the working-set without
+// re-writing RawProposal, so they don't go through rebuildInFlightIndex
+// but still need the working-signals view to stay current.
+func refreshWorkingSignals(s *PlanningState) {
+	if s == nil || s.InFlightSpecStore == nil {
+		return
+	}
+	s.InFlightSpecStore.SetWorkingSignals(computeWorkingSignals(s))
+}
+
+// computeWorkingSignals derives the per-entry "is this node being
+// rewritten right now?" signal set from PlanningState. Reads four
+// existing fields:
+//
+//   - AxesOpen: scout-surfaced open axes. Decisions whose axes[]
+//     intersects this set are being authored or revised by the
+//     decision-elaborator dispatch.
+//   - NewNodesFromScout: features and strategies the scout
+//     introduced this iteration; their narrative hasn't landed yet.
+//   - Concerns: open critic findings carry RelatedDecisionIDs
+//     directly (revise-decisions dispatch will target those ids) and
+//     mention node ids inline via idRefRegex (re-narrative dispatch
+//     will pick them up through computeAffectedNodes).
+//
+// This is a conservative approximation, not a perfectly precise
+// "currently mid-dispatch" signal. The dispatch lifecycle isn't
+// instrumented; the heuristic is "would the next workflow step
+// rewrite this node?" — which catches the dominant cases (new
+// authoring, critic-driven revision) without needing orchestrator-
+// side step-state tracking. Future work could narrow this to "a
+// dispatch is currently executing against this id" via per-step
+// instrumentation, at the cost of a coarser-grained read path.
+func computeWorkingSignals(s *PlanningState) workingSignals {
+	sig := workingSignals{}
+	if s == nil {
+		return sig
+	}
+
+	if len(s.AxesOpen) > 0 {
+		sig.OpenAxisIDs = make(map[string]struct{}, len(s.AxesOpen))
+		for _, a := range s.AxesOpen {
+			id := strings.TrimSpace(a.ID)
+			if id != "" {
+				sig.OpenAxisIDs[id] = struct{}{}
+			}
+		}
+	}
+
+	if len(s.NewNodesFromScout) > 0 {
+		sig.NewNodeIDs = make(map[string]struct{}, len(s.NewNodesFromScout))
+		for _, n := range s.NewNodesFromScout {
+			id := strings.TrimSpace(n.ID)
+			if id != "" {
+				sig.NewNodeIDs[id] = struct{}{}
+			}
+		}
+	}
+
+	if len(s.Concerns) > 0 {
+		decIDs := make(map[string]struct{})
+		nodeIDs := make(map[string]struct{})
+		for i := range s.Concerns {
+			c := &s.Concerns[i]
+			if effectiveConcernStatus(c) != ConcernStatusOpen {
+				continue
+			}
+			for _, did := range c.RelatedDecisionIDs {
+				did = strings.TrimSpace(did)
+				if did != "" {
+					decIDs[did] = struct{}{}
+				}
+			}
+			// Mirror computeAffectedNodes's regex-based node detection
+			// so the manifest's Working flag agrees with what the next
+			// narrative dispatch will pick up.
+			for _, m := range idRefRegex.FindAllString(c.Text, -1) {
+				if strings.HasPrefix(m, "feat-") || strings.HasPrefix(m, "strat-") {
+					nodeIDs[m] = struct{}{}
+				}
+			}
+		}
+		if len(decIDs) > 0 {
+			sig.OpenConcernDecisionIDs = decIDs
+		}
+		if len(nodeIDs) > 0 {
+			sig.OpenConcernNodeMatches = nodeIDs
+		}
+	}
+
+	return sig
 }

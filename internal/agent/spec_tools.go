@@ -70,12 +70,55 @@ type SpecManifest struct {
 // short so the manifest stays scannable but long enough that the
 // reconciler can usually decide reuse vs. mint-new without a
 // follow-up spec_get.
+//
+// Origin and Working tell the model what state this entry is in:
+//
+//   - Origin == OriginSettled: the node lives on disk under
+//     `.borg/spec/` from a prior refine / assimilate run. Its body is
+//     authoritative and the council isn't rewriting it (unless an
+//     iteration revise dispatch picks it up, in which case Working
+//     flips to true).
+//   - Origin == OriginProposed: the node was authored or modified by
+//     the council in this iteration. Lives in the in-flight proposal;
+//     hasn't been persisted to `.borg/spec/` yet. The convergence loop
+//     may revise it in subsequent iterations.
+//   - Working == true: a fanout step is rewriting this node right now
+//     (the scout reopened its axis; an open critic concern targets it;
+//     it's a new scout-surfaced node whose narrative hasn't landed
+//     yet). The body the model is reading is about to change, so
+//     downstream agents should not commit citations or acceptance
+//     criteria against this body without re-checking on the next
+//     iteration. Decisions are stable across Flips at the ID level
+//     under DJ-133 (axis-as-ID), so Working applies to body content
+//     only — not to ID stability for decisions.
+//
+// Outside a council run (cmd-layer spec_list_manifest from `locutus
+// status`, etc.) Origin defaults to OriginSettled and Working stays
+// false — the on-disk graph is the only source visible and nothing is
+// in flight.
 type SpecManifestEntry struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Kind    string `json:"kind,omitempty"`
-	Summary string `json:"summary,omitempty"`
+	ID      string             `json:"id"`
+	Title   string             `json:"title"`
+	Kind    string             `json:"kind,omitempty"`
+	Summary string             `json:"summary,omitempty"`
+	Origin  SpecManifestOrigin `json:"origin"`
+	Working bool               `json:"working,omitempty"`
 }
+
+// SpecManifestOrigin classifies where a manifest entry lives.
+type SpecManifestOrigin string
+
+const (
+	// OriginSettled marks entries from the on-disk persisted graph
+	// (`.borg/spec/`). The body is committed and won't change unless
+	// a subsequent iteration's revise dispatch picks it up.
+	OriginSettled SpecManifestOrigin = "settled"
+	// OriginProposed marks entries the council added or modified in
+	// the current iteration. The in-flight body is the authoritative
+	// view; the on-disk graph (if any matching ID) is stale relative
+	// to it.
+	OriginProposed SpecManifestOrigin = "proposed"
+)
 
 // summaryMaxRunes caps the per-entry summary length. ~200 chars
 // keeps the full manifest comfortably under a few KB even with 100
@@ -112,6 +155,7 @@ func BuildSpecManifest(fsys specio.FS) SpecManifest {
 				ID:      p.Object.ID,
 				Title:   p.Object.Title,
 				Summary: summaryOrFallback(p.Object.Summary, p.Object.Description),
+				Origin:  OriginSettled,
 			})
 		}
 	}
@@ -126,6 +170,7 @@ func BuildSpecManifest(fsys specio.FS) SpecManifest {
 				Title:   p.Object.Title,
 				Kind:    string(p.Object.Kind),
 				Summary: summaryOrFallback(p.Object.Summary, p.Body),
+				Origin:  OriginSettled,
 			})
 		}
 	}
@@ -139,6 +184,7 @@ func BuildSpecManifest(fsys specio.FS) SpecManifest {
 				ID:      p.Object.ID,
 				Title:   p.Object.Title,
 				Summary: summaryOrFallback(p.Object.Summary, p.Object.Rationale),
+				Origin:  OriginSettled,
 			})
 		}
 	}
@@ -152,6 +198,7 @@ func BuildSpecManifest(fsys specio.FS) SpecManifest {
 				ID:      p.Object.ID,
 				Title:   p.Object.Title,
 				Summary: summaryOrFallback(p.Object.Summary, p.Object.Description),
+				Origin:  OriginSettled,
 			})
 		}
 	}
@@ -169,6 +216,7 @@ func BuildSpecManifest(fsys specio.FS) SpecManifest {
 				ID:      obj.ID,
 				Title:   obj.Title,
 				Summary: summaryOrFallback(obj.Summary, body),
+				Origin:  OriginSettled,
 			})
 		}
 	}

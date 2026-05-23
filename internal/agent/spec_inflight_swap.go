@@ -18,6 +18,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -76,6 +77,40 @@ type InFlightSpecStore struct {
 	mu          sync.RWMutex
 	rawProposal string
 	existing    *ExistingSpec
+	// workingSignals derive SpecManifestEntry.Working for tool callers
+	// reading the in-flight manifest. Populated by the workflow's
+	// merge helpers via SetWorkingSignals — captures the live
+	// AxesOpen / NewNodesFromScout / open-concern related-decision-IDs
+	// so the manifest renderer can flag entries the council is
+	// actively rewriting in this iteration. Empty / nil signals → no
+	// entry is flagged as Working (the field omits from JSON via
+	// omitempty), preserving the pre-DJ-125 behaviour.
+	workingSignals workingSignals
+}
+
+// workingSignals carries the minimal live state the in-flight
+// manifest needs to derive SpecManifestEntry.Working without coupling
+// to the full PlanningState. Updated by the workflow's merge
+// closures after every state mutation that changes which nodes are
+// candidates for revision this iteration.
+//
+// Decisions are working when:
+//   - any axis in the decision's axes[] is in OpenAxisIDs (the scout
+//     reopened the axis; an elaborator dispatch will revise the
+//     decision), OR
+//   - any open concern's related_decision_ids names this decision id
+//     (a revise-decisions dispatch will fire on it this iteration).
+//
+// Features and strategies are working when:
+//   - the node id is in NewNodeIDs (newly introduced by the scout
+//     this iter; narrative dispatch hasn't landed yet), OR
+//   - any open concern's text mentions this node id (a re-narrative
+//     pass will fire on it through the affected-nodes computation).
+type workingSignals struct {
+	OpenAxisIDs            map[string]struct{}
+	NewNodeIDs             map[string]struct{}
+	OpenConcernDecisionIDs map[string]struct{}
+	OpenConcernNodeMatches map[string]struct{}
 }
 
 // NewInFlightSpecStore returns an empty store. SetState (or Update)
@@ -110,16 +145,31 @@ func (s *InFlightSpecStore) Update(rawProposal string) {
 	s.mu.Unlock()
 }
 
-// snapshot grabs the current rawProposal + existing under the read
-// lock so the per-tool builders can release the lock before doing the
-// (potentially slower) parse.
-func (s *InFlightSpecStore) snapshot() (string, *ExistingSpec) {
+// SetWorkingSignals updates the live working-signal capture used by
+// ListManifest to derive SpecManifestEntry.Working. Called by the
+// workflow's merge closures after any state mutation that changes
+// the set of nodes the council is mid-rewriting. Passing zero-value
+// signals (all maps nil) clears the working flag for every entry —
+// useful at council teardown to leave the store in a clean state.
+func (s *InFlightSpecStore) SetWorkingSignals(sig workingSignals) {
 	if s == nil {
-		return "", nil
+		return
+	}
+	s.mu.Lock()
+	s.workingSignals = sig
+	s.mu.Unlock()
+}
+
+// snapshot grabs the current rawProposal + existing + working
+// signals under the read lock so the per-tool builders can release
+// the lock before doing the (potentially slower) parse.
+func (s *InFlightSpecStore) snapshot() (string, *ExistingSpec, workingSignals) {
+	if s == nil {
+		return "", nil, workingSignals{}
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.rawProposal, s.existing
+	return s.rawProposal, s.existing, s.workingSignals
 }
 
 // ListManifest builds an on-disk-shape SpecManifest from the in-flight
@@ -128,7 +178,7 @@ func (s *InFlightSpecStore) snapshot() (string, *ExistingSpec) {
 // that node). The shape matches BuildSpecManifest(fsys) so the tool
 // surface stays uniform.
 func (s *InFlightSpecStore) ListManifest() (SpecManifest, error) {
-	raw, existing := s.snapshot()
+	raw, existing, sig := s.snapshot()
 	manifest := SpecManifest{}
 
 	var prop RawSpecProposal
@@ -138,6 +188,8 @@ func (s *InFlightSpecStore) ListManifest() (SpecManifest, error) {
 		}
 	}
 
+	// In-flight entries are OriginProposed and inherit a per-id
+	// Working flag computed from the live workingSignals.
 	seenFeatures := make(map[string]struct{}, len(prop.Features))
 	for _, f := range prop.Features {
 		if f.ID == "" {
@@ -148,6 +200,8 @@ func (s *InFlightSpecStore) ListManifest() (SpecManifest, error) {
 			ID:      f.ID,
 			Title:   f.Title,
 			Summary: summaryOrFallback(f.Summary, f.Description),
+			Origin:  OriginProposed,
+			Working: sig.isNodeWorking(f.ID),
 		})
 	}
 	seenStrategies := make(map[string]struct{}, len(prop.Strategies))
@@ -161,6 +215,8 @@ func (s *InFlightSpecStore) ListManifest() (SpecManifest, error) {
 			Title:   st.Title,
 			Kind:    st.Kind,
 			Summary: summaryOrFallback(st.Summary, st.Body),
+			Origin:  OriginProposed,
+			Working: sig.isNodeWorking(st.ID),
 		})
 	}
 	seenDecisions := make(map[string]struct{}, len(prop.Decisions))
@@ -173,9 +229,16 @@ func (s *InFlightSpecStore) ListManifest() (SpecManifest, error) {
 			ID:      d.ID,
 			Title:   d.Title,
 			Summary: summaryOrFallback(d.Summary, d.Rationale),
+			Origin:  OriginProposed,
+			Working: sig.isDecisionWorking(d.ID, d.Axes),
 		})
 	}
 
+	// On-disk entries that didn't dedupe against the in-flight set
+	// land as OriginSettled. Working stays false unless an open
+	// concern targets the id — a revise-decisions dispatch may still
+	// pick up a settled-on-disk decision when its critic finding fires
+	// against it.
 	if existing != nil {
 		for _, f := range existing.Features {
 			if _, dup := seenFeatures[f.ID]; dup {
@@ -185,6 +248,8 @@ func (s *InFlightSpecStore) ListManifest() (SpecManifest, error) {
 				ID:      f.ID,
 				Title:   f.Title,
 				Summary: summaryOrFallback(f.Summary, f.Description),
+				Origin:  OriginSettled,
+				Working: sig.isNodeWorking(f.ID),
 			})
 		}
 		for _, st := range existing.Strategies {
@@ -196,6 +261,8 @@ func (s *InFlightSpecStore) ListManifest() (SpecManifest, error) {
 				Title:   st.Title,
 				Kind:    string(st.Kind),
 				Summary: summaryOrFallback(st.Summary, ""),
+				Origin:  OriginSettled,
+				Working: sig.isNodeWorking(st.ID),
 			})
 		}
 		for _, d := range existing.Decisions {
@@ -206,6 +273,8 @@ func (s *InFlightSpecStore) ListManifest() (SpecManifest, error) {
 				ID:      d.ID,
 				Title:   d.Title,
 				Summary: summaryOrFallback(d.Summary, d.Rationale),
+				Origin:  OriginSettled,
+				Working: sig.isDecisionWorking(d.ID, d.Axes),
 			})
 		}
 		for _, a := range existing.Approaches {
@@ -213,6 +282,7 @@ func (s *InFlightSpecStore) ListManifest() (SpecManifest, error) {
 				ID:      a.ID,
 				Title:   a.Title,
 				Summary: strings.TrimSpace(a.Summary),
+				Origin:  OriginSettled,
 			})
 		}
 	}
@@ -220,11 +290,64 @@ func (s *InFlightSpecStore) ListManifest() (SpecManifest, error) {
 	return manifest, nil
 }
 
+// isDecisionWorking reports whether a decision is being rewritten in
+// the current iteration. True when any of the decision's axes is in
+// the scout's open-axis set (an elaborator dispatch will revise the
+// id-preserved decision on that axis) OR any open critic concern's
+// related_decision_ids names this id (a revise-decisions dispatch
+// will fire on it).
+func (w workingSignals) isDecisionWorking(id string, axes []string) bool {
+	if len(w.OpenAxisIDs) > 0 {
+		for _, a := range axes {
+			if _, hit := w.OpenAxisIDs[a]; hit {
+				return true
+			}
+		}
+	}
+	if len(w.OpenConcernDecisionIDs) > 0 {
+		if _, hit := w.OpenConcernDecisionIDs[id]; hit {
+			return true
+		}
+	}
+	return false
+}
+
+// isNodeWorking reports whether a feature / strategy / approach is
+// being rewritten in the current iteration. True when the id is in
+// NewNodeIDs (newly introduced by the scout this iter; narrative
+// dispatch hasn't landed yet) OR any open critic concern's text
+// mentions this id (a re-narrative pass on the affected-nodes set
+// will fire on it).
+func (w workingSignals) isNodeWorking(id string) bool {
+	if len(w.NewNodeIDs) > 0 {
+		if _, hit := w.NewNodeIDs[id]; hit {
+			return true
+		}
+	}
+	if len(w.OpenConcernNodeMatches) > 0 {
+		if _, hit := w.OpenConcernNodeMatches[id]; hit {
+			return true
+		}
+	}
+	return false
+}
+
 // GetSpec looks the id up in the in-flight proposal first, then the
-// loaded existing snapshot. Returns a not-found error pointing the
-// model at spec_list_manifest when neither carries the id; mirrors
-// LookupSpecNode's recovery shape so prompts that worked with the
-// on-disk tool still work with the in-flight one.
+// loaded existing snapshot.
+//
+// Not-found recovery: rather than redirect the model to a separate
+// spec_list_manifest call, the error message inlines the kind-matched
+// manifest (every id of the requested prefix, with its title) so the
+// model has the candidate set in one round. Inlining was a deliberate
+// response to a Gemini 3.5 Flash tool-loop pathology where the model
+// would confabulate plausibly-named ids and spin the tool-use loop
+// chasing them; surfacing the real id space in the error message
+// breaks the spiral by giving the model a bounded, authoritative
+// pick list instead of an open-ended invitation to guess.
+//
+// The kind is inferred from the id prefix (feat-, strat-, dec-,
+// bug-, app-). Malformed or empty ids produce an error with no
+// manifest inlined since the kind is undetermined.
 func (s *InFlightSpecStore) GetSpec(id string) (json.RawMessage, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -234,7 +357,7 @@ func (s *InFlightSpecStore) GetSpec(id string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("spec_get: id %q is malformed (expected kebab-case with prefix feat-, strat-, dec-, bug-, or app-)", id)
 	}
 
-	raw, existing := s.snapshot()
+	raw, existing, _ := s.snapshot()
 
 	if strings.TrimSpace(raw) != "" {
 		var prop RawSpecProposal
@@ -251,7 +374,62 @@ func (s *InFlightSpecStore) GetSpec(id string) (json.RawMessage, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("spec_get: no node with id %q in the in-flight proposal or the loaded existing snapshot (call spec_list_manifest to see available ids)", id)
+	// Not found: build the not-found error with the kind-matched
+	// manifest inlined so the model can recover in one round.
+	avail := s.availableIDsForKind(id)
+	if len(avail) == 0 {
+		return nil, fmt.Errorf("spec_get: no node with id %q (no nodes of this kind exist in the in-flight proposal or the loaded existing snapshot)", id)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "spec_get: no node with id %q. Available ids of this kind (%d):", id, len(avail))
+	for _, e := range avail {
+		b.WriteString("\n  - ")
+		b.WriteString(e.ID)
+		if t := strings.TrimSpace(e.Title); t != "" {
+			b.WriteString(" — ")
+			b.WriteString(t)
+		}
+	}
+	b.WriteString("\nPick one of the ids above; do not guess at variant slugs.")
+	return nil, errors.New(b.String())
+}
+
+// availableIDsForKind returns every entry in the in-flight + existing
+// graph whose id shares the requested id's prefix. Used by GetSpec's
+// not-found path to inline the candidate set in the error message.
+// The returned slice carries ID + Title only — Summary / Origin /
+// Working are deliberately omitted to keep the error message
+// scannable; the model can call spec_list_manifest if it needs the
+// richer view.
+func (s *InFlightSpecStore) availableIDsForKind(requestedID string) []SpecManifestEntry {
+	manifest, err := s.ListManifest()
+	if err != nil {
+		return nil
+	}
+	switch {
+	case strings.HasPrefix(requestedID, "feat-"):
+		return stripToIDTitle(manifest.Features)
+	case strings.HasPrefix(requestedID, "strat-"):
+		return stripToIDTitle(manifest.Strategies)
+	case strings.HasPrefix(requestedID, "dec-"):
+		return stripToIDTitle(manifest.Decisions)
+	case strings.HasPrefix(requestedID, "bug-"):
+		return stripToIDTitle(manifest.Bugs)
+	case strings.HasPrefix(requestedID, "app-"):
+		return stripToIDTitle(manifest.Approaches)
+	}
+	return nil
+}
+
+// stripToIDTitle returns a copy of the entries carrying only ID and
+// Title — used by GetSpec's not-found error message to keep the
+// inlined pick list compact.
+func stripToIDTitle(in []SpecManifestEntry) []SpecManifestEntry {
+	out := make([]SpecManifestEntry, len(in))
+	for i, e := range in {
+		out[i] = SpecManifestEntry{ID: e.ID, Title: e.Title}
+	}
+	return out
 }
 
 // lookupInFlightByID returns the JSON payload for one raw-proposal
