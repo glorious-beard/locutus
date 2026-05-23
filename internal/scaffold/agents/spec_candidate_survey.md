@@ -35,7 +35,7 @@ The unified spec graph is available via three tools — during a council run, al
 - `spec_get(id)` — full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`). Useful when an adjacent decision is the load-bearing context for understanding your axis's candidate space. On a not-found error the response inlines every id of the same kind; pick from that list rather than guessing variant slugs.
 - `spec_search(query, kind?, limit?)` — ranked top-N nodes matching a free-text query (BM25 over title/summary/body). Use this to find a sibling decision that already constrains your axis (`spec_search("compute platform", kind: "decision")` before surveying an `oltp-store` axis surfaces whether the platform commitment is already in flight).
 
-Skip these tool calls when the existing-spec flag is absent — every tool call costs a round-trip and greenfield runs have nothing to find.
+Reach for these tools when an adjacent decision in the current spec graph could narrow the candidate space for your axis (an existing `compute-platform` commitment narrows database options to AWS-native; an existing data-residency commitment narrows identity providers to EU-resident); skip them when you've already seen the relevant context in the prompt's manifest section.
 
 # Web search for current candidates
 

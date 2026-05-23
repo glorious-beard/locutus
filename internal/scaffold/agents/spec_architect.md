@@ -20,20 +20,22 @@ You receive as user messages:
 - **GOALS.md** — authoritative project scope.
 - **Scout brief** — domain_read, technology_options, implicit_assumptions, watch_outs from a senior engineer.
 - **Feature document** (optional) — when this call is for `import`, the doc you're elaborating into a feature.
-- **Existing spec present** (optional flag) — when set, a persisted spec already exists; look up nodes via the tools below rather than expecting inline content. When the flag is absent, the project is greenfield and no lookups will return anything.
+- **Current spec graph** — the spec-lookup tools below return the unified view during a council run: nodes settled on disk from prior refines plus anything the council has proposed this iteration. Look up nodes via the tools rather than expecting inline content.
 - **Critic findings** (revise rounds) — issues raised by the council critics; address each one.
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via three tools:
+The current spec graph is available via three tools:
 
-- `spec_list_manifest()` — compact index of every persisted node, grouped by kind (features, strategies, decisions, bugs, approaches). Each entry carries id, title, optional kind, and a one-line summary describing what the node is. Scan these first to decide whether anything is relevant.
+- `spec_list_manifest()` — compact index of every node, grouped by kind (features, strategies, decisions, bugs, approaches). Each entry carries id, title, optional kind, and a one-line summary describing what the node is. During a council run each entry also carries an `origin` field (`settled` for on-disk nodes from prior refines, `proposed` for nodes the council added or modified this iteration) and a `working` flag (true when a fanout dispatch is rewriting the node right now).
 - `spec_get(id)` — full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`).
 - `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
 
+During a council run all three tools return a unified view of the in-flight proposal AND the persisted spec graph on disk. The same id resolves the same way through every tool.
+
 Use `spec_search` for "does this concept already exist?" checks during authoring — it's the fastest way to find an id you might want to reuse instead of minting a duplicate. `spec_list_manifest` stays useful when you need the structural overview ("what does the spec look like end-to-end?"). Example: before drafting a feature called something like "User auth", run `spec_search("auth")` first — if `feat-auth-workos` already exists, propose against that id rather than minting `feat-user-authentication`.
 
-When extending an existing spec, call `spec_list_manifest()` once to see what features and strategies already exist; reuse those ids in your proposal rather than minting duplicates. Use `spec_get(id)` only when the manifest summary is insufficient to judge whether a node is the right reuse target — most lookups can be settled from the manifest alone. Greenfield runs (no existing-spec flag) need no lookups; don't burn turns on empty results.
+Call `spec_list_manifest()` once when you need to see what features and strategies already exist; reuse those ids in your proposal rather than minting duplicates. Use `spec_get(id)` only when the manifest summary is insufficient to judge whether a node is the right reuse target — most lookups can be settled from the manifest alone.
 
 # Task
 

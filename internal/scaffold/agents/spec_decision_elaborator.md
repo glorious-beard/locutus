@@ -25,7 +25,7 @@ You receive as user messages:
 - **Scout brief** — `domain_read`, `technology_options`, `implicit_assumptions`, `watch_outs`. The `technology_options` entry for this axis (when present) is the scout's candidate list — a starting point, not a final answer; you may add candidates or rule any of them out with grounded reasoning.
 - **Open axis to decide** — one `OpenAxis` entry from the scout's `axes_open`: `id` (stable slug like `auth-provider` or `compute-platform`), `description` (one sentence stating the question this axis poses), `source_evidence` (verbatim text excerpts from goals/features/strategies that surfaced the axis), `surfaced_by` (the spec node IDs whose content surfaced this axis — goals, features, strategies).
 - **Existing decisions** (optional) — decisions already committed in the graph on adjacent axes. Read them via the spec-lookup tools below to understand what your decision must remain consistent with. Do not re-author them.
-- **Existing spec present** flag — when set, persisted nodes exist on disk and the spec-lookup tools below are available. When absent, the project is greenfield and the tools return empty.
+- **Current spec graph** — the spec-lookup tools below return the unified view during a council run: nodes settled on disk from prior refines plus anything the council has proposed this iteration (including sibling decisions just committed by the per-axis elaborator dispatch).
 
 # Spec-lookup tools
 

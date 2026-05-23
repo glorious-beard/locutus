@@ -28,7 +28,7 @@ You receive as user messages:
 - **Outline** — the full list of features and strategies in this proposal (titles + summaries only). Use this for situational awareness — what features depend on this strategy, what sibling strategies exist alongside it.
 - **Strategy to elaborate** — the specific outline item you're elaborating: id, title, kind, summary. Pre-existing strategies carry the id from the persisted graph; new strategies carry the id the scout minted under `new_nodes`.
 - **Pre-populated decision-ID list** — the `decisions` slice for this strategy, already populated by the workflow. The scout's decision-mapper pass contributes existing-decision IDs (decisions in the graph whose `axes` intersect the axes this strategy surfaces); the workflow appends the new-decision IDs minted by the per-axis decision-elaborator this iteration. The list is AUTHORITATIVE — you copy it verbatim into your output.
-- **Existing spec present** flag — when set, persisted nodes exist on disk and the spec-lookup tools below are available. When absent, the project is greenfield and the tools return empty.
+- **Current spec graph** — the spec-lookup tools below return the unified view during a council run: nodes settled on disk from prior refines plus anything the council has proposed this iteration.
 
 The pre-populated decision-ID list is the sole source of truth for the `decisions` field on your output. You do not add IDs, you do not remove IDs, you do not invent IDs.
 

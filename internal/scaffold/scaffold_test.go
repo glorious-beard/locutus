@@ -321,6 +321,82 @@ func TestSpecToolPromptsDescribeUnifiedView(t *testing.T) {
 	}
 }
 
+// TestCouncilAwareAgentsHaveNoGreenfieldEmptyPriming locks in the
+// follow-up fix to the May 2026 trace pathology: the model on Gemini
+// 3.5 Flash misread populated tool results as "empty manifest"
+// because several agent prompts primed it to expect emptiness on
+// "greenfield" runs. The priming was incorrect — `locutus refine` can
+// run against a project with prior persisted commitments at any time,
+// and even on a brand-new project the council's iter-1 commits land
+// in the in-flight overlay that subsequent iterations see.
+//
+// The corrected wording describes the tools as returning a UNIFIED
+// view (in-flight + persisted) with each entry carrying an `origin`
+// field. The negative assertions below guarantee the stale priming
+// language doesn't creep back across any council-aware agent.
+//
+// Companion to TestSpecToolPromptsDescribeUnifiedView — that test
+// asserts the load-bearing positive language across the four agents
+// with full tool-section templates; this test asserts the broader
+// negative across every council-aware agent, including the four
+// without the full template (reconciler, scout, architect, outliner).
+func TestCouncilAwareAgentsHaveNoGreenfieldEmptyPriming(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	// Every council-aware agent — runs inside the spec-generation
+	// council (not the adopt-time scout / gap_analyst, which operate
+	// on persisted-only context and where "greenfield → empty"
+	// remains accurate).
+	for _, agent := range []string{
+		"spec_decision_elaborator",
+		"spec_feature_elaborator",
+		"spec_strategy_elaborator",
+		"spec_candidate_survey",
+		"spec_reconciler",
+		"spec_scout",
+		"spec_architect",
+		"spec_outliner",
+	} {
+		t.Run(agent, func(t *testing.T) {
+			body, err := fsys.ReadFile(".borg/agents/" + agent + ".md")
+			require.NoError(t, err)
+			text := string(body)
+
+			// Negative: stale "greenfield → empty" priming is gone.
+			// These specific phrasings primed Gemini 3.5 Flash to
+			// discount populated manifest results in the May 2026
+			// trace; if they creep back any of three failure modes
+			// resurface (tool-loop spirals; manifest-discount reasoning;
+			// the model citing "the existing spec is empty" when the
+			// in-flight overlay has just-committed work).
+			for _, stale := range []string{
+				"manifest will be empty",
+				"Greenfield runs need no lookups",
+				"greenfield runs have nothing to find",
+				"snapshot of the existing spec",
+				"the project is greenfield and the tools return empty",
+				"the project is greenfield and no lookups will return anything",
+				"Greenfield runs (no existing-spec flag) need no lookups",
+			} {
+				assert.NotContains(t, text, stale,
+					"%s must not carry the stale '%s' priming — it tells the model to expect empty manifests when the unified in-flight + persisted view can be populated by prior commitments or by sibling council steps", agent, stale)
+			}
+
+			// Positive (low bar): some mention of the current spec
+			// graph being a unified or per-entry-tagged view, so the
+			// model knows the tools are useful even on initial-refine
+			// runs once iter-1 commits land.
+			containsUnifiedHint := strings.Contains(text, "unified view") ||
+				strings.Contains(text, "all three tools") ||
+				strings.Contains(text, "current spec graph") ||
+				strings.Contains(text, "origin")
+			assert.True(t, containsUnifiedHint,
+				"%s must mention the unified-view shape (the tools return both settled and proposed nodes) so the model doesn't fall back to 'tools return empty on greenfield' priors", agent)
+		})
+	}
+}
+
 func TestDecisionElaboratorPromptDescribesCandidateListSection(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
