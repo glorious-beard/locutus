@@ -28,15 +28,9 @@ You receive as a user message:
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via three tools:
+The `spec_list_manifest`, `spec_get`, and `spec_search` tools let you inspect the spec graph. The user message already inlines every Decision your prose must reflect; you almost never need these tools. The only case worth a lookup is when the parent prose explicitly references a sibling node by id (a feature pointing at `strat-frontend` by name in its description) and the recently changed Decisions don't make it obvious whether that reference is still accurate. Don't reach for the tools in the cascade path — speed matters, and the inputs you need are already in the message.
 
-- `spec_list_manifest()` — compact index of every persisted node with id, title, optional kind, and a one-line summary.
-- `spec_get(id)` — full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`).
-- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
-
-The user message already inlines every Decision your prose must reflect; you almost never need these tools. The only case worth a lookup is when the parent prose explicitly references a sibling node by id (a feature pointing at `strat-frontend` by name in its description) and the recently changed Decisions don't make it obvious whether that reference is still accurate. Don't reach for the tools in the cascade path — speed matters, and the inputs you need are already in the message.
-
-Use `spec_search` for reuse / collision checks against the existing graph — given a topic, it finds the few relevant decisions in one call instead of forcing you to scan the full manifest. `spec_list_manifest` is for full-graph enumeration when you need the structural overview. Before rewriting a node, `spec_search('<topic>')` to surface adjacent decisions the rewrite might invalidate.
+Use `spec_search` for reuse / collision checks against the existing graph — given a topic, it finds the few relevant decisions in one call instead of forcing you to scan the full manifest. Before rewriting a node, `spec_search('<topic>')` to surface adjacent decisions the rewrite might invalidate. When the rewrite legitimately depends on several sibling node bodies, batch their ids into one `spec_get` call.
 
 # Task
 

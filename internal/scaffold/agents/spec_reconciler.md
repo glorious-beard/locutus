@@ -31,15 +31,9 @@ You receive as user messages:
 
 - **Raw proposal** — features and strategies, each with inline decisions. Inline decisions have no IDs.
 
-The persisted spec on disk is available via three tools (no longer inlined into your prompt):
+The `spec_list_manifest`, `spec_get`, and `spec_search` tools are available for inspecting the spec graph during reconciliation. The raw proposal remains your primary input; reach for the tools when a candidate `reuse_existing` action depends on matching against a settled-or-proposed node.
 
-- `spec_list_manifest()` — returns a compact index of every persisted spec node grouped by kind (features, strategies, decisions, bugs, approaches), with id + title + one-line summary per entry.
-- `spec_get(id)` — returns the full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`).
-- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
-
-Use these tools when you need to check whether a proposal's inline decision matches an existing one (the `reuse_existing` action). During a council run all three tools return a unified view of the in-flight proposal AND the persisted spec graph on disk — each manifest entry carries an `origin` field (`settled` for on-disk nodes from prior refines, `proposed` for nodes the council added this iteration) and a `working` flag (true when a fanout dispatch is actively rewriting the node). The raw proposal remains your primary input; reach for the tools when a candidate `reuse_existing` action depends on matching against a settled-or-proposed node.
-
-Use `spec_search` for reuse / collision checks against the current spec graph — given a topic, it finds the few relevant decisions in one call instead of forcing you to scan the full manifest. `spec_list_manifest` is for full-graph enumeration when you need the structural overview. For the `reuse_existing` action, `spec_search` is the right tool: `spec_search('<inline decision headline>')` returns the top candidate ids ranked by topical similarity — much faster than scanning the whole manifest to find a match.
+Use `spec_search` for reuse / collision checks — given a topic (e.g. an inline decision's headline), it finds the few relevant decisions in one call without scanning the full manifest. `spec_list_manifest` is for full-graph enumeration when you need the structural overview. When one cluster's decision matches multiple candidate ids you want to inspect, batch them into one `spec_get` call rather than fetching each in sequence — sequential single-id calls across N candidates burn tool-loop rounds.
 
 In-flight inline-decision ids surfaced in `spec_search` hits are transient (the assembler reassigns them downstream) so cite hits by title and substance when reasoning about a cluster — useful as a sanity check that a dedupe hypothesis you're forming reflects every parallel commitment on the axis, not only the two visible in one action's `sources`.
 

@@ -31,15 +31,11 @@ You receive as a user message:
 
 # Tools
 
-You have access to spec-navigation tools when the user message leaves ambiguity worth resolving before committing to a body:
+The `spec_list_manifest`, `spec_get`, and `spec_search` tools let you inspect the spec graph when the user message leaves ambiguity worth resolving before committing to a body. Use `spec_list_manifest` to scan for sibling approaches, related strategies, or other decisions in the same area. When the supersession motivation cites several sibling decisions or strategies not in the message, or the parent's prose references multiple nodes by id, batch the ids into one `spec_get` call.
 
-- `spec_list_manifest()` — returns a compact index of every persisted spec node (features, strategies, decisions, bugs, approaches) with id, title, and a one-line summary. Use this to scan for sibling approaches, related strategies, or other decisions in the same area.
-- `spec_get(id)` — returns the full JSON of one spec node by id (`feat-`, `strat-`, `dec-`, `bug-`, or `app-`). Use this after the manifest narrows you to a node whose detail you need.
-- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
+The user message is the primary brief and is usually sufficient. Reach for the tools when the supersession motivation cites siblings not in the message, when the parent's prose references nodes by id you need to inspect, or when judging an artifact's role requires reading another approach. Don't go on fishing expeditions — every tool call costs a round-trip.
 
-The user message is the primary brief and is usually sufficient. Reach for the tools when the supersession motivation cites a sibling decision or strategy not in the message, when the parent's prose references nodes by id you need to inspect, or when judging an artifact's role requires reading another approach. Don't go on fishing expeditions — every tool call costs a round-trip.
-
-Use `spec_search` for reuse / collision checks against the existing graph — given a topic, it finds the few relevant decisions in one call instead of forcing you to scan the full manifest. `spec_list_manifest` is for full-graph enumeration when you need the structural overview. When regenerating an invalidated approach, `spec_search('<feature topic>' or '<key decision topic>')` to confirm the regenerated body is consistent with the latest decisions in the area.
+Use `spec_search` for reuse / collision checks against the existing graph — given a topic, it finds the few relevant decisions in one call instead of forcing you to scan the full manifest. When regenerating an invalidated approach, `spec_search('<feature topic>' or '<key decision topic>')` to confirm the regenerated body is consistent with the latest decisions in the area.
 
 # Task
 

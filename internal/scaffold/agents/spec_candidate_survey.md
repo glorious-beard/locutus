@@ -29,11 +29,7 @@ You receive as user messages:
 
 # Spec-lookup tools
 
-The unified spec graph is available via three tools — during a council run, all three return a view of the in-flight proposal AND the persisted spec on disk, with the same id resolving the same way through every tool:
-
-- `spec_list_manifest()` — compact index of every node. Each entry carries an `origin` field (`settled` for on-disk nodes from prior refines, `proposed` for nodes the council added this iteration) and a `working` flag (true when a fanout dispatch is rewriting the node right now). Scan this to see what's already committed before deciding which candidates to surface; an adjacent-axis decision narrows the viable candidate set on yours.
-- `spec_get(id)` — full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`). Useful when an adjacent decision is the load-bearing context for understanding your axis's candidate space. On a not-found error the response inlines every id of the same kind; pick from that list rather than guessing variant slugs.
-- `spec_search(query, kind?, limit?)` — ranked top-N nodes matching a free-text query (BM25 over title/summary/body). Use this to find a sibling decision that already constrains your axis (`spec_search("compute platform", kind: "decision")` before surveying an `oltp-store` axis surfaces whether the platform commitment is already in flight).
+The `spec_list_manifest`, `spec_get`, and `spec_search` tools let you inspect the spec graph. Use `spec_list_manifest` to scan what's already committed before deciding which candidates to surface; an adjacent-axis decision narrows the viable candidate set on yours. Use `spec_search` to find a sibling decision that already constrains your axis (`spec_search("compute platform", kind: "decision")` before surveying an `oltp-store` axis surfaces whether the platform commitment is already in flight). When several candidate adjacent-axis ids look load-bearing, batch them into one `spec_get` call rather than fetching each in sequence.
 
 Reach for these tools when an adjacent decision in the current spec graph could narrow the candidate space for your axis (an existing `compute-platform` commitment narrows database options to AWS-native; an existing data-residency commitment narrows identity providers to EU-resident); skip them when you've already seen the relevant context in the prompt's manifest section.
 

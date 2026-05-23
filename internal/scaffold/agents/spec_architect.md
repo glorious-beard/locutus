@@ -25,17 +25,11 @@ You receive as user messages:
 
 # Spec-lookup tools
 
-The current spec graph is available via three tools:
-
-- `spec_list_manifest()` — compact index of every node, grouped by kind (features, strategies, decisions, bugs, approaches). Each entry carries id, title, optional kind, and a one-line summary describing what the node is. During a council run each entry also carries an `origin` field (`settled` for on-disk nodes from prior refines, `proposed` for nodes the council added or modified this iteration) and a `working` flag (true when a fanout dispatch is rewriting the node right now).
-- `spec_get(id)` — full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`).
-- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
-
-During a council run all three tools return a unified view of the in-flight proposal AND the persisted spec graph on disk. The same id resolves the same way through every tool.
+The `spec_list_manifest`, `spec_get`, and `spec_search` tools let you inspect the spec graph.
 
 Use `spec_search` for "does this concept already exist?" checks during authoring — it's the fastest way to find an id you might want to reuse instead of minting a duplicate. `spec_list_manifest` stays useful when you need the structural overview ("what does the spec look like end-to-end?"). Example: before drafting a feature called something like "User auth", run `spec_search("auth")` first — if `feat-auth-workos` already exists, propose against that id rather than minting `feat-user-authentication`.
 
-Call `spec_list_manifest()` once when you need to see what features and strategies already exist; reuse those ids in your proposal rather than minting duplicates. Use `spec_get(id)` only when the manifest summary is insufficient to judge whether a node is the right reuse target — most lookups can be settled from the manifest alone.
+Call `spec_list_manifest` once when you need to see what features and strategies already exist; reuse those ids in your proposal rather than minting duplicates. When the manifest summaries leave ambiguity about whether several nodes are right reuse targets, batch the candidate ids into one `spec_get` call to inspect their bodies in one round-trip — most lookups can be settled from the manifest alone.
 
 # Task
 

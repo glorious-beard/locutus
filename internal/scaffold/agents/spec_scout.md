@@ -22,7 +22,7 @@ You do four coupled jobs in a single pass:
 
 # Context
 
-You receive GOALS.md, optionally a feature/design document, and access to the current spec graph via the `spec_list_manifest`, `spec_get`, and `spec_search` tools. During a council run these tools return a unified view of the in-flight proposal AND the persisted spec graph on disk — each manifest entry carries an `origin` field (`settled` for on-disk nodes from prior refines, `proposed` for nodes the council added this iteration) and a `working` flag (true when a fanout dispatch is actively rewriting the node). On iterations beyond the first you also receive prior critic findings the loop is still working through. What you surface drives the workflow controller's dispatch on the next round.
+You receive GOALS.md, optionally a feature/design document, and access to the current spec graph via the `spec_list_manifest`, `spec_get`, and `spec_search` tools. On iterations beyond the first you also receive prior critic findings the loop is still working through. What you surface drives the workflow controller's dispatch on the next round.
 
 # Convergence target
 
@@ -98,7 +98,7 @@ Known footguns; integration costs; vendor lock-in; or hidden complexity the deci
 
 ### axes_open
 
-This is the load-bearing section of what you surface. An axis is "open" when **no decision in the current spec graph carries that axis ID among its axes** — counting both `settled` decisions (on-disk from prior refines) and `proposed` decisions (committed by the council this iteration). Walk the manifest (via `spec_list_manifest` then `spec_get` for any whose summary suggests they might cover an axis you'd surface) and form the set of already-covered axis IDs. Every axis you'd surface that isn't in that set belongs in `axes_open`.
+This is the load-bearing section of what you surface. An axis is "open" when **no decision in the current spec graph carries that axis ID among its axes**, counting both already-settled decisions and decisions the council added this iteration. Call `spec_list_manifest` to see the full decision index; for any whose summary suggests they might cover an axis you'd surface, batch the relevant ids into one `spec_get` call to inspect their bodies. Every axis you'd surface that isn't already covered belongs in `axes_open`.
 
 Each entry carries:
 
@@ -207,7 +207,7 @@ Grade `wontfix` only when the tradeoff is one a reasonable engineering team woul
 
 Grading `still_open` is honest reporting — the loop continues another iteration so the gap can close. A `still_open` disposition pairs with `converged: false`; the convergence rule expects every concern to be `stale`, `addressed`, or `wontfix` before the loop exits.
 
-The grading discipline matters: a premature `addressed` causes the loop to exit on a still-broken proposal, and an over-conservative `still_open` causes the loop to thrash. Look at the proposal's actual content (use `spec_get(id)` to fetch any node body you need to inspect) before disposing each concern.
+The grading discipline matters: a premature `addressed` causes the loop to exit on a still-broken proposal, and an over-conservative `still_open` causes the loop to thrash. Look at the proposal's actual content before disposing each concern. Enumerate every node id you'll need to inspect across the open concerns up front — both the `RelatedDecisionIDs` on each concern and any node ids the concern text mentions — and issue one batched `spec_get` call with the full id list. Single-id-at-a-time fetching across N concerns burns tool-loop rounds the council doesn't have to spare.
 
 Surface no dispositions when no concerns are still `open` after the mechanical pre-pass. The convergence rule reads the dispositioned state.
 

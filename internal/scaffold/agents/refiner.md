@@ -29,15 +29,9 @@ You receive as a user message:
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via three tools:
+The `spec_list_manifest`, `spec_get`, and `spec_search` tools let you inspect the spec graph. The user message already inlines the applicable Decisions for THIS parent — the common case. Reach for the tools only when the refinement intent cites a sibling node (another feature, a strategy this feature depends on) the intent author assumes context for, and the inlined Decisions don't cover it. Don't go on fishing expeditions — every tool call costs a round-trip.
 
-- `spec_list_manifest()` — compact index of every persisted node with id, title, optional kind, and a one-line summary.
-- `spec_get(id)` — full JSON of one node by id (`feat-`, `strat-`, `dec-`, `bug-`, `app-`).
-- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
-
-The user message already inlines the applicable Decisions for THIS parent — the common case. Reach for the tools only when the refinement intent cites a sibling node (another feature, a strategy this feature depends on) the intent author assumes context for, and the inlined Decisions don't cover it. Don't go on fishing expeditions — every tool call costs a round-trip.
-
-Use `spec_search` for reuse / collision checks against the existing graph — given a topic, it finds the few relevant decisions in one call instead of forcing you to scan the full manifest. `spec_list_manifest` is for full-graph enumeration when you need the structural overview. When a refine target's brief references a topic, `spec_search('<topic>')` to find adjacent decisions that should be checked for consistency before rewriting.
+Use `spec_search` for reuse / collision checks against the existing graph — given a topic, it finds the few relevant decisions in one call instead of forcing you to scan the full manifest. When a refine target's brief references a topic, `spec_search('<topic>')` to find adjacent decisions that should be checked for consistency before rewriting. When several sibling ids look load-bearing for the refine, batch them into one `spec_get` call.
 
 # Task
 

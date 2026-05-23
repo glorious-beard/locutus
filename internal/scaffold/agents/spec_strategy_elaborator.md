@@ -34,17 +34,9 @@ The pre-populated decision-ID list is the sole source of truth for the `decision
 
 # Spec-lookup tools
 
-The persisted spec on disk is available via three tools:
+The `spec_list_manifest`, `spec_get`, and `spec_search` tools let you inspect the spec graph. Your primary usage pattern is one batched `spec_get` call with every decision ID from the pre-populated decision-ID list — fetching all of them in one round-trip rather than per-id sequential calls. Read each cited decision's title, summary, rationale, and chosen technology, then author a body that names that technology in domain terms and explains the system-wide consequences. The strategy's body names the commitment; the cited decisions justify it; the two must agree.
 
-- `spec_list_manifest()` — compact index of every persisted node grouped by kind (features, strategies, decisions, bugs, approaches). Each entry carries id, title, optional kind, and a one-line summary. Scan this to decide what's relevant before fetching full content.
-- `spec_get(id)` — full JSON of one node by id (prefix-routed: `feat-`, `strat-`, `dec-`, `bug-`, `app-`).
-- `spec_search(query, kind?, limit?)` — ranked top-N spec nodes matching a free-text query (BM25 over title/summary/body). Optional `kind` filter (`feature` | `strategy` | `decision` | `bug` | `approach`), optional `limit` (default 20, max 100). Returns `hits` + `total_matches` so you can tell when results are truncated. Phrases via double quotes (`"row level security"`); trailing-`*` prefix queries also work (`auth*`).
-
-Your primary usage pattern is `spec_get(decision_id)` for each ID in the pre-populated decision-ID list. Read each cited decision's title, summary, rationale, and chosen technology, then author a body that names that technology in domain terms and explains the system-wide consequences. The strategy's body names the commitment; the cited decisions justify it; the two must agree.
-
-During a council run, **all three tools** (`spec_list_manifest`, `spec_get`, `spec_search`) return a unified view of the in-flight proposal AND the persisted spec graph on disk. The same id resolves the same way through every tool — sibling decisions just-committed by the per-axis elaborator dispatch are visible to `spec_get` and `spec_list_manifest` immediately, not just to `spec_search`. Each manifest entry carries an `origin` field (`settled` for on-disk nodes from prior refines, `proposed` for nodes the council added or modified this iteration) and a `working` flag (true when a fanout dispatch is actively rewriting the node — its body is about to change). Use `spec_search` briefly to find sibling strategies whose bodies share semantic territory so your prose composes rather than contradicts (e.g. an observability strategy and a deployment strategy both speak to logging; quick `spec_search("logging")` surfaces the sibling so the two strategies stay consistent).
-
-When `spec_get` returns a not-found error during a council run, the error message inlines every id of the same kind that exists in the unified graph. Pick from that list rather than guessing variant slugs — the council's id namespace is bounded by what the scout actually surfaced.
+Use `spec_search` briefly to find sibling strategies whose bodies share semantic territory so your prose composes rather than contradicts (e.g. an observability strategy and a deployment strategy both speak to logging; quick `spec_search("logging")` surfaces the sibling so the two strategies stay consistent).
 
 # Task
 
@@ -91,6 +83,6 @@ Copy the pre-populated decision-ID list from your input verbatim. The list is de
 - **Honor GOALS.md as a HARD CONSTRAINT.** Any technology, framework, or architectural shape it names is non-negotiable. The body and cited decisions must remain compatible with GOALS.md.
 - **Honor the outline's kind.** A strategy outlined as `quality` has a quality-flavored body; a strategy outlined as `foundational` names the foundational technology. Do not repurpose the kind.
 - **Summary and body are distinct fields.** Summary is one sentence (the what in one line); body is one or two paragraphs (the commitment plus system-wide consequences). Two fields, two distinct contents.
-- **Narrative is consistent with cited decisions.** A body that names a technology that contradicts the cited decisions is rejected by the critic downstream. Read each cited decision's title and chosen technology via `spec_get` before authoring the body, and phrase the prose so the technology names flow from the cited decisions.
+- **Narrative is consistent with cited decisions.** A body that names a technology that contradicts the cited decisions is rejected by the critic downstream. Fetch every cited decision in one batched `spec_get` call before authoring the body, and phrase the prose so the technology names flow from the cited decisions.
 
 <!-- TODO(Stage C, DJ-124 Phase 5): revise-mode dispatch will re-enter at the workflow layer; revisit whether this prompt needs an address-cluster branch when that lands. -->
