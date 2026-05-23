@@ -163,10 +163,12 @@ func TestRegenerateInvalidatedApproaches_AgentReturnsEmptyBodyRejected(t *testin
 func TestRegenerateInvalidatedApproaches_ReActToolPath(t *testing.T) {
 	fs := fixtureRegenerate(t, "evt-supersede-react")
 	registry := agent.NewToolRegistry()
-	// MemFS — pass nil backend to skip spec_search registration
-	// (Bluge backing is OS-bound or in-memory but neither belongs
-	// here). This test exercises spec_list_manifest only.
-	agent.RegisterSpecTools(registry, fs, nil, nil, nil)
+	// DJ-134: register tools against the unified SpecStore.
+	store, err := agent.NewSpecStore(fs)
+	if err != nil {
+		t.Fatalf("NewSpecStore: %v", err)
+	}
+	agent.RegisterSpecTools(registry, store)
 
 	finalBody := "ReAct-pathed body — forward: WorkOS; backward: delete legacy auth"
 	finalPayload, err := json.Marshal(agent.RegenerateApproachResult{

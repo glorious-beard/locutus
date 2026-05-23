@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -183,13 +182,16 @@ func TestSearchSpecNodes_KindFilter(t *testing.T) {
 	assert.Equal(t, string(spec.KindDecision), scoped.Hits[0].Kind)
 }
 
-// TestRegisterSpecTools_RegistersSpecSearch confirms the new tool lands in
-// the registry alongside the existing two.
-func TestRegisterSpecTools_RegistersSpecSearch(t *testing.T) {
-	root, fsys := specSearchFixture(t)
-	backend := openSearchBackend(t, fsys, root)
+// TestRegisterSpecTools_RegistersAllThree confirms that registering
+// against a SpecStore exposes spec_list_manifest, spec_get, and
+// spec_search in the registry. Under DJ-134 the store is mandatory;
+// no nil-backend variant exists.
+func TestRegisterSpecTools_RegistersAllThree(t *testing.T) {
+	_, fsys := specSearchFixture(t)
+	store, err := NewSpecStore(fsys)
+	require.NoError(t, err)
 	registry := NewToolRegistry()
-	RegisterSpecTools(registry, fsys, backend, nil, nil)
+	RegisterSpecTools(registry, store)
 
 	for _, name := range []string{ToolNameSpecListManifest, ToolNameSpecGet, ToolNameSpecSearch} {
 		_, ok := registry.Resolve(name)
@@ -197,150 +199,18 @@ func TestRegisterSpecTools_RegistersSpecSearch(t *testing.T) {
 	}
 }
 
-// TestRegisterSpecTools_NilBackendSkipsSpecSearch confirms the MemFS /
-// test path: a nil backend leaves spec_list_manifest and spec_get
-// registered but omits spec_search rather than registering a handler
-// that errors on every call.
-func TestRegisterSpecTools_NilBackendSkipsSpecSearch(t *testing.T) {
-	_, fsys := specSearchFixture(t)
+// TestRegisterSpecTools_NilStoreIsNoop confirms that calling
+// RegisterSpecTools with a nil store leaves the registry empty —
+// defensive: a caller that constructed the store-less harness
+// shouldn't get a registry with non-functional tools.
+func TestRegisterSpecTools_NilStoreIsNoop(t *testing.T) {
 	registry := NewToolRegistry()
-	RegisterSpecTools(registry, fsys, nil, nil, nil)
+	RegisterSpecTools(registry, nil)
 
 	_, ok := registry.Resolve(ToolNameSpecListManifest)
-	assert.True(t, ok, "spec_list_manifest must register without a backend")
+	assert.False(t, ok, "nil store: no tools should register")
 	_, ok = registry.Resolve(ToolNameSpecGet)
-	assert.True(t, ok, "spec_get must register without a backend")
+	assert.False(t, ok)
 	_, ok = registry.Resolve(ToolNameSpecSearch)
-	assert.False(t, ok, "spec_search must be omitted when backend is nil")
-}
-
-// fakeBackend is a programmable search.Backend used to confirm that
-// the spec_search tool dispatches against whichever backend was wired
-// at registration time (not a hardcoded on-disk path). Records the
-// last (query, opts) it received so the test can assert handoff.
-type fakeBackend struct {
-	hits  []search.Hit
-	total int
-	err   error
-
-	lastQuery string
-	lastOpts  search.Options
-	calls     int
-}
-
-func (f *fakeBackend) Search(query string, opts search.Options) ([]search.Hit, int, error) {
-	f.calls++
-	f.lastQuery = query
-	f.lastOpts = opts
-	return f.hits, f.total, f.err
-}
-
-// TestSpecSearchToolUsesProvidedBackend confirms the agent-facing
-// spec_search tool dispatches to the search.Backend supplied at
-// registration time. The fake records the call shape; the test
-// asserts every value the tool forwards (query, kind, limit, Explain).
-// This is the seam DJ-123 Phase 2 introduces — the on-disk Index and
-// the in-flight InFlightIndex both satisfy Backend and are
-// interchangeable at this surface.
-func TestSpecSearchToolUsesProvidedBackend(t *testing.T) {
-	root, fsys := specSearchFixture(t)
-	// Plant one decision so summaryByID has something to attach to
-	// the synthetic hit; the backend itself is a fake, so this is just
-	// for the summary-lookup join.
-	writeSearchDecision(t, fsys, "dec-stub-target",
-		"Stub target", "Authored summary for the stub target.",
-		"Rationale for the stub target.")
-
-	backend := &fakeBackend{
-		hits: []search.Hit{{
-			ID:    "dec-stub-target",
-			Kind:  string(spec.KindDecision),
-			Title: "Stub target",
-			Score: 1.5,
-		}},
-		total: 1,
-	}
-
-	registry := NewToolRegistry()
-	RegisterSpecTools(registry, fsys, backend, nil, nil)
-
-	def, ok := registry.Resolve(ToolNameSpecSearch)
-	require.True(t, ok, "spec_search must register when a backend is wired")
-
-	args, err := json.Marshal(SpecSearchInput{Query: "alpha", Kind: "decision", Limit: 7})
-	require.NoError(t, err)
-	resultJSON, err := def.Handler(context.Background(), args)
-	require.NoError(t, err)
-	_ = root
-
-	var result SpecSearchResult
-	require.NoError(t, json.Unmarshal(resultJSON, &result))
-
-	require.Equal(t, 1, backend.calls, "tool must invoke the wired backend exactly once")
-	assert.Equal(t, "alpha", backend.lastQuery, "query must pass through verbatim")
-	assert.Equal(t, "decision", backend.lastOpts.Kind, "kind filter must pass through")
-	assert.Equal(t, 7, backend.lastOpts.Limit, "limit must pass through after clamp")
-	assert.True(t, backend.lastOpts.Explain, "Explain must be set so per-field diagnostics surface to the agent")
-
-	require.Len(t, result.Hits, 1)
-	assert.Equal(t, "dec-stub-target", result.Hits[0].ID)
-	assert.Equal(t, "Authored summary for the stub target.", result.Hits[0].Summary,
-		"summary must come from BuildSpecManifest(fsys), not the backend")
-	assert.Equal(t, 1, result.TotalMatches)
-}
-
-// TestSpecSearchToolUsesInFlightBackend exercises the in-memory
-// InFlightIndex through the agent-facing tool surface end-to-end.
-// First end-to-end test of the in-flight tool path (DJ-123 Phase 2):
-// the same registry call site, the same tool descriptor, the same
-// SpecSearchInput / SpecSearchResult JSON shape — only the backend
-// differs from the on-disk integration tests above.
-func TestSpecSearchToolUsesInFlightBackend(t *testing.T) {
-	_, fsys := specSearchFixture(t)
-
-	backend, err := search.NewInFlightIndex()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = backend.Close() })
-
-	raw := `{
-		"features": [
-			{
-				"id": "feat-inflight-auth",
-				"title": "In-flight authentication feature",
-				"summary": "Council-stage feature for authentication redesign.",
-				"description": "Re-platform onto WorkOS so authentication is delegated to a managed provider.",
-				"acceptance_criteria": ["users sign in via WorkOS"],
-				"decisions": []
-			}
-		],
-		"strategies": []
-	}`
-	require.NoError(t, backend.Rebuild(raw))
-
-	registry := NewToolRegistry()
-	RegisterSpecTools(registry, fsys, backend, nil, nil)
-
-	def, ok := registry.Resolve(ToolNameSpecSearch)
-	require.True(t, ok, "spec_search must register when an in-flight backend is wired")
-
-	args, err := json.Marshal(SpecSearchInput{Query: "authentication"})
-	require.NoError(t, err)
-	resultJSON, err := def.Handler(context.Background(), args)
-	require.NoError(t, err)
-
-	var result SpecSearchResult
-	require.NoError(t, json.Unmarshal(resultJSON, &result))
-
-	require.NotEmpty(t, result.Hits, "in-flight index must surface the planted feature")
-	assert.Equal(t, "feat-inflight-auth", result.Hits[0].ID)
-	assert.Equal(t, "In-flight authentication feature", result.Hits[0].Title)
-	assert.Equal(t, string(spec.KindFeature), result.Hits[0].Kind)
-	// Summary lookup is currently joined against the on-disk manifest
-	// (Phase 3 will revisit). The in-flight-only id is absent there,
-	// so the summary string is empty — that's the documented Phase 2
-	// shape, not a bug. Asserted explicitly so a future Phase 3
-	// behaviour change shows up as a failing test rather than a
-	// silent improvement.
-	assert.Equal(t, "", result.Hits[0].Summary,
-		"in-flight ids absent from .borg/spec/ get empty summary in Phase 2")
+	assert.False(t, ok)
 }

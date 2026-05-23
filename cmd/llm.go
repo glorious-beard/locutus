@@ -10,7 +10,6 @@ import (
 
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/agent/adapters"
-	"github.com/chetan/locutus/internal/search"
 	"github.com/chetan/locutus/internal/specio"
 )
 
@@ -195,36 +194,21 @@ func registerSpecToolsOnce(inner agent.AgentExecutor, fsys specio.FS, projectRoo
 		return nil
 	}
 	specToolsOnce.Do(func() {
-		// Open the on-disk Bluge index once at registration time per
-		// DJ-123 Phase 2: spec_search now dispatches against a wired
-		// search.Backend instead of opening + closing the index on
-		// every call. The handle's Close is a no-op for the on-disk
-		// path (memWriter is nil); we let the process retain it for
-		// its lifetime.
-		idx, err := search.Open(fsys, projectRoot)
+		// DJ-134: one in-process spec store backs every RAG tool
+		// (spec_list_manifest, spec_get, spec_search) AND the council's
+		// in-flight reads/writes. NewSpecStore loads .borg/spec/ once
+		// at startup, opens the in-memory Bluge index, and serves all
+		// three tools through one mutex-protected surface. The store
+		// is registered with the executor (council reaches it via
+		// SpecStore() through the wrapper chain) and with the tool
+		// registry (RegisterSpecTools binds handlers to it).
+		store, err := agent.NewSpecStore(fsys)
 		if err != nil {
-			specToolsErr = fmt.Errorf("open spec search index: %w", err)
+			specToolsErr = fmt.Errorf("open spec store: %w", err)
 			return
 		}
-		// DJ-123 Phase 3: wrap the on-disk index in a swappable so
-		// GenerateSpec can push a council-scoped *search.InFlightIndex
-		// in for the duration of a run and restore the disk backend
-		// at the end. The tool registration sees the swappable as its
-		// search.Backend, so every spec_search call routes through
-		// whichever delegate is current.
-		//
-		// DJ-125 Phase 3: wrap the on-disk manifest/get default in
-		// matching swappables so all three RAG tools share the same
-		// swap-and-restore lifecycle. The council pushes an
-		// InFlightSpecStore in for the run.
-		swap := agent.NewSwappableSpecSearch(idx)
-		exec.SetSpecSearch(swap)
-		defaultProvider := agent.NewFSSpecProvider(fsys)
-		listSwap := agent.NewSwappableSpecListManifest(defaultProvider)
-		getSwap := agent.NewSwappableSpecGet(defaultProvider)
-		exec.SetSpecListManifest(listSwap)
-		exec.SetSpecGet(getSwap)
-		agent.RegisterSpecTools(exec.Tools(), fsys, swap, listSwap, getSwap)
+		exec.SetSpecStore(store)
+		agent.RegisterSpecTools(exec.Tools(), store)
 	})
 	return specToolsErr
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/chetan/locutus/internal/executor"
 	"github.com/chetan/locutus/internal/history"
+	"github.com/chetan/locutus/internal/spec"
 )
 
 // specLoopTemplateID is the TemplateID stamped on every step the
@@ -1506,48 +1507,103 @@ func deriveCritiqueKind(r RoundResult) string {
 	return critiqueKindFor(r.AgentID)
 }
 
-// agents see ONLY the in-flight proposal, never the persisted graph).
+// syncStoreFromState reconciles the council's RawProposal-backed
+// working buffer with the SpecStore (DJ-134). Called by every merge
+// helper after a RawProposal mutation so tool dispatches see a
+// consistent in-flight view. Steps:
+//
+//  1. Parse RawProposal into the typed RawSpecProposal shape.
+//  2. Put each parsed feature/strategy/decision into the store as
+//     OriginProposed (Put is idempotent on identical ids; replaces
+//     the body when re-emitted).
+//  3. Recompute the per-entry Working flag from AxesOpen /
+//     NewNodesFromScout / open-concern state and apply via
+//     ClearWorking + MarkWorking.
+//
+// No-op when state.Store is nil (mocks that don't opt in; non-
+// council callers). The legacy in-flight-index name is preserved
+// here because mergeReconciledProposal and friends call it under
+// that name; the body is the new store-syncing logic.
 func rebuildInFlightIndex(s *PlanningState) {
-	if s == nil {
+	if s == nil || s.Store == nil {
 		return
 	}
-	// DJ-125: refresh the RAG list/get overlay first — the store keeps
-	// its own copy of RawProposal and serves the manifest/get tools off
-	// it. Update is cheap (just a pointer swap under a write lock); the
-	// parse happens lazily inside the tool handler.
-	//
-	// The working-signals refresh that follows lets ListManifest
-	// derive SpecManifestEntry.Working per entry from the live
-	// AxesOpen / NewNodesFromScout / open-concern state. Refreshed on
-	// every merge so the model's view of "which nodes are mid-
-	// rewrite" stays current as the council progresses.
-	if s.InFlightSpecStore != nil {
-		s.InFlightSpecStore.Update(s.RawProposal)
-		s.InFlightSpecStore.SetWorkingSignals(computeWorkingSignals(s))
-	}
-	if s.InFlightIndex == nil || s.RawProposal == "" {
+	if s.RawProposal == "" {
+		// No proposal yet — clear working flags so the store doesn't
+		// carry stale working state across iteration boundaries.
+		s.Store.ClearWorking()
 		return
 	}
-	if err := s.InFlightIndex.Rebuild(s.RawProposal); err != nil {
-		slog.Warn("in-flight spec_search: rebuild failed; council continues with stale index",
-			"error", err)
+	var prop RawSpecProposal
+	if err := json.Unmarshal([]byte(s.RawProposal), &prop); err != nil {
+		slog.Warn("syncStoreFromState: RawProposal parse failed; store may be stale", "error", err)
+		return
 	}
+	for _, f := range prop.Features {
+		if f.ID == "" {
+			continue
+		}
+		body := spec.Feature{
+			ID:                 f.ID,
+			Title:              f.Title,
+			Summary:            f.Summary,
+			Description:        f.Description,
+			AcceptanceCriteria: f.AcceptanceCriteria,
+		}
+		if err := s.Store.Put(KindFeature, f.ID, body, OriginProposed); err != nil {
+			slog.Warn("syncStoreFromState: feature Put failed", "id", f.ID, "error", err)
+		}
+	}
+	for _, st := range prop.Strategies {
+		if st.ID == "" {
+			continue
+		}
+		body := spec.Strategy{
+			ID:      st.ID,
+			Title:   st.Title,
+			Summary: st.Summary,
+			Kind:    spec.StrategyKind(st.Kind),
+		}
+		if err := s.Store.Put(KindStrategy, st.ID, body, OriginProposed); err != nil {
+			slog.Warn("syncStoreFromState: strategy Put failed", "id", st.ID, "error", err)
+		}
+	}
+	for _, d := range prop.Decisions {
+		if d.ID == "" {
+			continue
+		}
+		body := spec.Decision{
+			ID:           d.ID,
+			Title:        d.Title,
+			Summary:      d.Summary,
+			Rationale:    d.Rationale,
+			Confidence:   d.Confidence,
+			Alternatives: d.Alternatives,
+			Axes:         d.Axes,
+			SurfacedBy:   d.SurfacedBy,
+		}
+		if err := s.Store.Put(KindDecision, d.ID, body, OriginProposed); err != nil {
+			slog.Warn("syncStoreFromState: decision Put failed", "id", d.ID, "error", err)
+		}
+	}
+	refreshWorkingSignals(s)
 }
 
-// refreshWorkingSignals updates the in-flight store's per-entry
-// Working signal without touching the RawProposal-derived ListManifest
-// content. Cheap; safe to call from any merge that mutates
-// AxesOpen / NewNodesFromScout / Concerns (the three inputs
-// computeWorkingSignals reads) without simultaneously updating the
-// in-flight proposal. mergeScoutBrief and mergeCriticIssues are the
-// load-bearing callers — both reshape the working-set without
-// re-writing RawProposal, so they don't go through rebuildInFlightIndex
-// but still need the working-signals view to stay current.
+// refreshWorkingSignals recomputes the per-entry Working flag from
+// the council's live AxesOpen / NewNodesFromScout / open-concern
+// state and applies via ClearWorking + MarkWorking. Cheap; safe to
+// call from any merge that mutates the working-set inputs without
+// simultaneously updating RawProposal. mergeScoutBrief and
+// mergeCriticIssues are the load-bearing callers.
 func refreshWorkingSignals(s *PlanningState) {
-	if s == nil || s.InFlightSpecStore == nil {
+	if s == nil || s.Store == nil {
 		return
 	}
-	s.InFlightSpecStore.SetWorkingSignals(computeWorkingSignals(s))
+	s.Store.ClearWorking()
+	workingIDs := computeWorkingIDs(s)
+	if len(workingIDs) > 0 {
+		s.Store.MarkWorking(workingIDs)
+	}
 }
 
 // computeWorkingSignals derives the per-entry "is this node being
@@ -1572,62 +1628,74 @@ func refreshWorkingSignals(s *PlanningState) {
 // side step-state tracking. Future work could narrow this to "a
 // dispatch is currently executing against this id" via per-step
 // instrumentation, at the cost of a coarser-grained read path.
-func computeWorkingSignals(s *PlanningState) workingSignals {
-	sig := workingSignals{}
+func computeWorkingIDs(s *PlanningState) []string {
 	if s == nil {
-		return sig
+		return nil
+	}
+	working := make(map[string]struct{})
+
+	// New scout-introduced nodes whose narrative hasn't landed yet —
+	// directly id-addressed.
+	for _, n := range s.NewNodesFromScout {
+		id := strings.TrimSpace(n.ID)
+		if id != "" {
+			working[id] = struct{}{}
+		}
 	}
 
-	if len(s.AxesOpen) > 0 {
-		sig.OpenAxisIDs = make(map[string]struct{}, len(s.AxesOpen))
+	// Open concerns name decision ids directly and feature/strategy
+	// ids via the prose regex. Both surfaces feed working.
+	for i := range s.Concerns {
+		c := &s.Concerns[i]
+		if effectiveConcernStatus(c) != ConcernStatusOpen {
+			continue
+		}
+		for _, did := range c.RelatedDecisionIDs {
+			did = strings.TrimSpace(did)
+			if did != "" {
+				working[did] = struct{}{}
+			}
+		}
+		for _, m := range idRefRegex.FindAllString(c.Text, -1) {
+			if strings.HasPrefix(m, "feat-") || strings.HasPrefix(m, "strat-") {
+				working[m] = struct{}{}
+			}
+		}
+	}
+
+	// Decisions whose axes intersect AxesOpen — the elaborator dispatch
+	// is about to revise them this iteration. Parse RawProposal once to
+	// recover each decision's axes (the store could expose this but the
+	// merge helpers already do the parse work).
+	if len(s.AxesOpen) > 0 && s.RawProposal != "" {
+		openAxes := make(map[string]struct{}, len(s.AxesOpen))
 		for _, a := range s.AxesOpen {
 			id := strings.TrimSpace(a.ID)
 			if id != "" {
-				sig.OpenAxisIDs[id] = struct{}{}
+				openAxes[id] = struct{}{}
 			}
 		}
-	}
-
-	if len(s.NewNodesFromScout) > 0 {
-		sig.NewNodeIDs = make(map[string]struct{}, len(s.NewNodesFromScout))
-		for _, n := range s.NewNodesFromScout {
-			id := strings.TrimSpace(n.ID)
-			if id != "" {
-				sig.NewNodeIDs[id] = struct{}{}
-			}
-		}
-	}
-
-	if len(s.Concerns) > 0 {
-		decIDs := make(map[string]struct{})
-		nodeIDs := make(map[string]struct{})
-		for i := range s.Concerns {
-			c := &s.Concerns[i]
-			if effectiveConcernStatus(c) != ConcernStatusOpen {
-				continue
-			}
-			for _, did := range c.RelatedDecisionIDs {
-				did = strings.TrimSpace(did)
-				if did != "" {
-					decIDs[did] = struct{}{}
-				}
-			}
-			// Mirror computeAffectedNodes's regex-based node detection
-			// so the manifest's Working flag agrees with what the next
-			// narrative dispatch will pick up.
-			for _, m := range idRefRegex.FindAllString(c.Text, -1) {
-				if strings.HasPrefix(m, "feat-") || strings.HasPrefix(m, "strat-") {
-					nodeIDs[m] = struct{}{}
+		if len(openAxes) > 0 {
+			var prop RawSpecProposal
+			if err := json.Unmarshal([]byte(s.RawProposal), &prop); err == nil {
+				for _, d := range prop.Decisions {
+					for _, ax := range d.Axes {
+						if _, hit := openAxes[ax]; hit {
+							working[d.ID] = struct{}{}
+							break
+						}
+					}
 				}
 			}
 		}
-		if len(decIDs) > 0 {
-			sig.OpenConcernDecisionIDs = decIDs
-		}
-		if len(nodeIDs) > 0 {
-			sig.OpenConcernNodeMatches = nodeIDs
-		}
 	}
 
-	return sig
+	if len(working) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(working))
+	for id := range working {
+		out = append(out, id)
+	}
+	return out
 }

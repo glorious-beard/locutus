@@ -42,21 +42,12 @@ type MockExecutor struct {
 	calls     []MockCall
 	pos       int
 
-	// specSearch is the optional SwappableSpecSearch the mock exposes
-	// to specSearchSwap so tests can drive GenerateSpec end-to-end and
-	// observe the council-scoped swap-and-restore behaviour without
-	// constructing a real *Executor + adapter set. Nil by default; set
-	// via SetSpecSearch only in tests that exercise the in-flight
-	// spec_search wiring (DJ-123).
-	specSearch *SwappableSpecSearch
-
-	// specListManifest / specGet mirror specSearch for the DJ-125
-	// list/get RAG-tool swappables. Tests that drive GenerateSpec
-	// end-to-end and want to observe the in-flight redirection set
-	// these via SetSpecListManifest / SetSpecGet; otherwise the
-	// council's manifest/get swap path no-ops on the mock.
-	specListManifest *SwappableSpecListManifest
-	specGet          *SwappableSpecGet
+	// specStore is the unified spec store (DJ-134) the mock exposes
+	// through SpecStore() so tests can drive GenerateSpec end-to-end
+	// against an in-memory store without constructing a real *Executor
+	// + adapter set. Nil by default; set via SetSpecStore only in
+	// tests that exercise the RAG-tool surface.
+	specStore *SpecStore
 }
 
 // NewMockExecutor creates a MockExecutor with the given scripted
@@ -143,22 +134,12 @@ func (m *MockExecutor) Reset(responses ...MockResponse) {
 	m.pos = 0
 }
 
-// SetSpecSearch wires the swappable spec_search backend the council
-// path swaps in and out via specSearchSwap. Test-only; production wires
-// the swappable through *Executor.SetSpecSearch.
-func (m *MockExecutor) SetSpecSearch(s *SwappableSpecSearch) { m.specSearch = s }
+// SetSpecStore wires the unified spec store (DJ-134) so tests can
+// drive GenerateSpec end-to-end against an in-memory store. Test-only;
+// production wires the store through *Executor.SetSpecStore.
+func (m *MockExecutor) SetSpecStore(s *SpecStore) { m.specStore = s }
 
-// SpecSearch returns the wired swappable, or nil when none was set.
-// Satisfies the structural interface specSearchSwap looks for so a
-// MockExecutor can exercise the in-flight swap-and-restore path without
-// a real *Executor.
-func (m *MockExecutor) SpecSearch() *SwappableSpecSearch { return m.specSearch }
-
-// SetSpecListManifest / SpecListManifest mirror SetSpecSearch /
-// SpecSearch for the DJ-125 spec_list_manifest swappable.
-func (m *MockExecutor) SetSpecListManifest(s *SwappableSpecListManifest) { m.specListManifest = s }
-func (m *MockExecutor) SpecListManifest() *SwappableSpecListManifest     { return m.specListManifest }
-
-// SetSpecGet / SpecGet do the same for spec_get.
-func (m *MockExecutor) SetSpecGet(s *SwappableSpecGet) { m.specGet = s }
-func (m *MockExecutor) SpecGet() *SwappableSpecGet     { return m.specGet }
+// SpecStore returns the wired store, or nil when none was set.
+// Satisfies the structural interface the council's wrapper-chain
+// lookup uses to find the store.
+func (m *MockExecutor) SpecStore() *SpecStore { return m.specStore }

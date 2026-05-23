@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/chetan/locutus/internal/history"
-	"github.com/chetan/locutus/internal/search"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
 )
@@ -322,85 +321,25 @@ func GenerateSpec(ctx context.Context, exec AgentExecutor, fsys specio.FS, req S
 // them on a single slog.Info line so the DJ-123 reversal criterion (a)
 // threshold (>25% empty) can be measured from operator-side logs.
 //
-// The summary is intentionally a single log line rather than a new
-// session-trace file: the per-call records live on the collector for
-// in-process consumers (tests, future operator surfaces); the
-// reversal-criteria threshold reads only the aggregate, which is what
-// surfaces here.
+// specStoreFromExec returns the *SpecStore wired on the underlying
+// AgentExecutor, or nil when none was wired (mocks that don't opt
+// into the store surface). Returning nil keeps the council path
+// additive — when the wiring is absent, GenerateSpec runs without
+// the store transaction lifecycle, identical to no-store behaviour.
 //
-// Per-agent breakdown is deliberately absent: the calling-agent
-// identity isn't plumbed into the spec_search handler, and the
-// aggregate rate is what feeds the reversal criterion regardless of
-// which elaborator issued the queries.
-func logSpecSearchAggregate(m *SpecSearchMetrics) {
-	if m == nil {
-		return
-	}
-	agg := m.Aggregate()
-	if agg.TotalCalls == 0 {
-		// No spec_search activity this run — emit a minimal note so
-		// the audit trail still shows the council was instrumented,
-		// just nothing fired. Cheaper than a structured zero-row.
-		slog.Info("spec_search metrics: no calls this run", "dj", "DJ-123")
-		return
-	}
-	slog.Info("spec_search metrics for council run",
-		"dj", "DJ-123",
-		"total_calls", agg.TotalCalls,
-		"completed_calls", agg.CompletedCalls,
-		"empty_calls", agg.EmptyCalls,
-		"error_calls", agg.ErrorCalls,
-		"empty_rate", agg.EmptyRate,
-		"reversal_threshold", SpecSearchEmptyRateThreshold,
-		"above_threshold", agg.EmptyRate > SpecSearchEmptyRateThreshold,
-	)
-}
-
-// specSearchSwap returns the SwappableSpecSearch wired on the
-// underlying AgentExecutor, or nil when none was wired (CLI path that
-// failed to open the on-disk index; mocks that don't opt into the swap
-// surface). Returning nil keeps the council path additive — when the
-// wiring is absent, GenerateSpec runs without the in-flight index,
-// identical to the pre-DJ-123 behaviour.
-//
-// Detection is via a small structural interface rather than a concrete
-// *Executor assertion: both production *Executor and a test-extended
-// MockExecutor satisfy it, so the swap-and-restore path can be driven
-// end-to-end from tests without spinning up real adapters.
-func specSearchSwap(exec AgentExecutor) *SwappableSpecSearch {
+// Detection is via a small structural interface rather than a
+// concrete *Executor assertion: production *Executor, LoggingExecutor,
+// NotifyingExecutor, and test-extended MockExecutor all satisfy it.
+// The wrapper-pass-through pattern reaches the inner *Executor's
+// store through any wrapper that forwards SpecStore() (DJ-134).
+func specStoreFromExec(exec AgentExecutor) *SpecStore {
 	p, ok := exec.(interface {
-		SpecSearch() *SwappableSpecSearch
+		SpecStore() *SpecStore
 	})
 	if !ok || p == nil {
 		return nil
 	}
-	return p.SpecSearch()
-}
-
-// specListManifestSwap mirrors specSearchSwap for the DJ-125
-// spec_list_manifest swappable. Returns nil when the executor doesn't
-// expose one (mocks that don't opt in; CLI paths that failed to wire
-// the registry); the council degrades to the on-disk default in that
-// case, identical to pre-DJ-125 behaviour.
-func specListManifestSwap(exec AgentExecutor) *SwappableSpecListManifest {
-	p, ok := exec.(interface {
-		SpecListManifest() *SwappableSpecListManifest
-	})
-	if !ok || p == nil {
-		return nil
-	}
-	return p.SpecListManifest()
-}
-
-// specGetSwap is the spec_get counterpart.
-func specGetSwap(exec AgentExecutor) *SwappableSpecGet {
-	p, ok := exec.(interface {
-		SpecGet() *SwappableSpecGet
-	})
-	if !ok || p == nil {
-		return nil
-	}
-	return p.SpecGet()
+	return p.SpecStore()
 }
 
 // readSpecGateBudget returns the iteration cap for the spec-council
@@ -512,74 +451,34 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 		copy(state.Imported, req.Imported)
 	}
 
-	// DJ-125 Phase 3: wire the in-flight overlay for the RAG list/get
-	// tools. The InFlightSpecStore carries the current RawProposal +
-	// the loaded state.Existing snapshot; the council's merge helpers
-	// call inflightStore.Update on every RawProposal mutation so the
-	// next agent's spec_list_manifest / spec_get call sees the freshest
-	// proposal. Outside the council the swappables fall back to the
-	// fsys-backed default provider (wired at registration in cmd/llm.go).
+	// DJ-134: open a transaction on the unified spec store so
+	// council-side merges land in memory as OriginProposed, visible
+	// to tool dispatches through the store's read API. The merge
+	// helpers call syncStoreFromRawProposal(state) after each
+	// RawProposal mutation so the store's typed entries stay aligned
+	// with the council's in-memory working buffer.
 	//
-	// Swappables come from the same executor the spec_search swap pulls
-	// from; mock executors that don't expose them no-op without breaking
-	// the council.
-	var inflightStore *InFlightSpecStore
-	if listSwap := specListManifestSwap(exec); listSwap != nil {
-		inflightStore = NewInFlightSpecStore()
-		inflightStore.SetState("", req.Existing)
-		prevList := listSwap.Swap(inflightStore)
-		state.InFlightSpecStore = inflightStore
-		defer listSwap.Swap(prevList)
-	}
-	if getSwap := specGetSwap(exec); getSwap != nil {
-		if inflightStore == nil {
-			inflightStore = NewInFlightSpecStore()
-			inflightStore.SetState("", req.Existing)
-			state.InFlightSpecStore = inflightStore
+	// The transaction is always rolled back at council end: disk
+	// persistence stays with the downstream cmd-layer in this DJ-134
+	// phase. The store's role here is purely read-side — making
+	// in-flight content visible to spec_* tool dispatches during the
+	// council. A future cleanup collapses the cmd-layer's persistence
+	// onto store.Commit, at which point this defer flips conditionally.
+	//
+	// The store comes from the executor's SpecStore() accessor;
+	// the wrapper chain (LoggingExecutor → NotifyingExecutor) passes
+	// it through; mock executors that don't opt in degrade gracefully.
+	store := specStoreFromExec(exec)
+	if store != nil {
+		if err := store.Begin(); err != nil {
+			return nil, fmt.Errorf("spec-generation council: begin store transaction: %w", err)
 		}
-		prevGet := getSwap.Swap(inflightStore)
-		defer getSwap.Swap(prevGet)
-	}
-
-	// DJ-123 Phase 3: wire a council-scoped in-flight Bluge index over
-	// RawProposal so spec_search calls from council agents return hits
-	// against the emerging proposal (not the persisted .borg/spec/
-	// graph). The on-disk index is restored on completion via the
-	// deferred Swap below. Swappable comes from the production
-	// *Executor; mock executors in tests don't provide it, and the
-	// council degrades gracefully to no in-flight search (existing
-	// behaviour).
-	if swap := specSearchSwap(exec); swap != nil {
-		inflight, err := search.NewInFlightIndex()
-		if err != nil {
-			slog.Warn("in-flight spec_search: index init failed; council proceeds without it",
-				"error", err)
-		} else {
-			prev := swap.Swap(inflight)
-			state.InFlightIndex = inflight
-			// DJ-123 Phase 5: install a council-scoped SpecSearchMetrics
-			// collector for the duration of the run. The spec_search
-			// tool handler records one entry per call into it; the
-			// deferred aggregate log at council end surfaces total
-			// calls + empty-result rate, which feeds the DJ-123
-			// reversal criterion (a) threshold (>25% empty means
-			// BM25-only is no longer viable on the in-flight surface).
-			metrics := &SpecSearchMetrics{}
-			swap.SetMetrics(metrics)
-			defer func() {
-				// Restore the disk backend at function exit so
-				// subsequent CLI verbs (and any caller that reuses this
-				// Executor) get the production corpus back. The
-				// integrity-revise loop below runs BEFORE this defer
-				// fires, so the architect's repair retries still see the
-				// in-flight index — intentional, since the repair
-				// operates on the proposal that's still in flight.
-				swap.Swap(prev)
-				swap.SetMetrics(nil)
-				_ = inflight.Close()
-				logSpecSearchAggregate(metrics)
-			}()
-		}
+		state.Store = store
+		defer func() {
+			if rbErr := store.Rollback(); rbErr != nil {
+				slog.Warn("spec-generation council: rollback failed", "error", rbErr)
+			}
+		}()
 	}
 
 	if _, err := RunCouncil(ctx, executor, state); err != nil {

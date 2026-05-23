@@ -145,23 +145,14 @@ type Executor struct {
 	adapters    map[ProviderName]adapters.Adapter
 	concurrency *ConcurrencyManager
 	tools       *ToolRegistry
-	// specSearch is the swappable spec_search backend wired by cmd/llm.go
-	// at registration time. GenerateSpec reaches for it (via a type
-	// assertion on AgentExecutor) to push a *search.InFlightIndex in at
-	// council start and restore the disk backend at council end. Nil
-	// when no spec_search backend was wired — mock executors in tests
-	// never need this, and the council path falls back to running
-	// without in-flight swap when nil.
-	specSearch *SwappableSpecSearch
-
-	// specListManifest / specGet are the DJ-125 counterparts to
-	// specSearch — RAG-tool swappables for spec_list_manifest and
-	// spec_get. Same lifecycle: production wires the on-disk
-	// fsSpecProvider at registration time; GenerateSpec pushes an
-	// InFlightSpecStore in for the duration of a council run so all
-	// three RAG tools see the in-flight RawProposal.
-	specListManifest *SwappableSpecListManifest
-	specGet          *SwappableSpecGet
+	// specStore is the unified in-process spec graph (DJ-134) the
+	// RAG tools (spec_list_manifest, spec_get, spec_search) dispatch
+	// against. cmd/llm.go constructs it at startup and registers it
+	// with both the executor and the tool registry; the council holds
+	// a transaction open across the run via Begin / Commit / Rollback.
+	// Nil for mock executors in tests that don't exercise the RAG
+	// surface — handlers tolerate that path by short-circuiting.
+	specStore *SpecStore
 }
 
 // NewExecutor wires up an Executor with the given adapter set, model
@@ -199,32 +190,19 @@ func NewExecutor(cfg *ModelConfig, providers DetectedProviders, adapterSet []ada
 // construction without a circular dependency.
 func (e *Executor) Tools() *ToolRegistry { return e.tools }
 
-// SetSpecSearch captures the swappable spec_search backend wired by
-// cmd/llm.go after the on-disk index is opened. GenerateSpec reads it
-// back via SpecSearch() and pushes a council-scoped in-flight index in
-// for the duration of a run. Safe to call exactly once at startup;
-// re-setting at runtime is supported but not used (the swap path uses
-// SwappableSpecSearch.Swap directly).
-func (e *Executor) SetSpecSearch(s *SwappableSpecSearch) { e.specSearch = s }
+// SetSpecStore captures the unified in-process spec store (DJ-134)
+// the executor exposes to the council and the tool registry.
+// cmd/llm.go constructs the store once at startup and registers it
+// here; GenerateSpec opens a transaction on it at council start.
+// Nil for mock executors in tests that don't exercise the RAG surface.
+func (e *Executor) SetSpecStore(s *SpecStore) { e.specStore = s }
 
-// SpecSearch returns the wired spec_search swappable, or nil when
-// nothing was wired (mock executor in tests; CLI path that failed to
-// open the on-disk index). GenerateSpec checks for nil before swapping
-// — a missing swappable degrades the council gracefully to "no
-// in-flight spec_search" rather than crashing.
-func (e *Executor) SpecSearch() *SwappableSpecSearch { return e.specSearch }
-
-// SetSpecListManifest / SpecListManifest mirror the spec_search wiring
-// for the DJ-125 spec_list_manifest tool. cmd/llm.go installs the
-// swappable at registration time; GenerateSpec swaps the in-flight
-// provider in at council start and restores the on-disk provider at
-// council end.
-func (e *Executor) SetSpecListManifest(s *SwappableSpecListManifest) { e.specListManifest = s }
-func (e *Executor) SpecListManifest() *SwappableSpecListManifest     { return e.specListManifest }
-
-// SetSpecGet / SpecGet do the same for spec_get.
-func (e *Executor) SetSpecGet(s *SwappableSpecGet) { e.specGet = s }
-func (e *Executor) SpecGet() *SwappableSpecGet     { return e.specGet }
+// SpecStore returns the wired store, or nil when none was registered.
+// The wrapper executors (LoggingExecutor, NotifyingExecutor) expose a
+// matching SpecStore() accessor so the council can reach through the
+// wrapper chain to find the store without each wrapper needing to
+// know about it.
+func (e *Executor) SpecStore() *SpecStore { return e.specStore }
 
 // Providers reports which provider SDKs the executor was
 // initialized with. Used by the CLI's startup banner.

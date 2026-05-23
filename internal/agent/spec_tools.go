@@ -29,7 +29,6 @@ import (
 	"path"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/chetan/locutus/internal/agent/adapters"
 	"github.com/chetan/locutus/internal/search"
@@ -529,11 +528,14 @@ func truncate(s string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "…"
 }
 
-// SpecGetInput is the tool input shape for spec_get. A struct (not
-// a bare string) so the tool's JSON-schema is a stable object shape
-// the model can target.
+// SpecGetInput is the tool input shape for spec_get. IDs is plural
+// by design: spec_get fetches a batch in one call so an agent that
+// needs N node bodies (e.g. the scout grading several open concerns
+// at once) pays one round-trip against the tool-loop cap rather
+// than N (DJ-134). There is no scalar-id variant of the tool — the
+// shape itself forces batching.
 type SpecGetInput struct {
-	ID string `json:"id"`
+	IDs []string `json:"ids"`
 }
 
 // Spec-tool names exported so frontmatter parsers and tests can
@@ -731,40 +733,27 @@ func summaryByID(m SpecManifest) map[string]string {
 }
 
 // RegisterSpecTools registers spec_list_manifest, spec_get, and
-// (optionally) spec_search against the given tool registry. fsys is
-// captured by closure so spec_list_manifest and spec_get read from the
-// same filesystem the rest of Locutus operates on (OSFS in production,
-// MemFS in tests).
-//
-// backend is the read-side seam for spec_search (DJ-123 Phase 2): pass
-// a *search.Index opened against the project root for the on-disk
-// production path, a *search.InFlightIndex for in-flight council
-// searches, or nil to skip the spec_search registration entirely
-// (MemFS / pure-manifest test contexts where no Bluge backend exists).
-//
-// DJ-125 Phase 3 generalises the swap pattern to all three RAG tools:
-// spec_list_manifest and spec_get also dispatch through a swappable
-// (SwappableSpecListManifest, SwappableSpecGet). cmd/llm.go constructs
-// the swappables once at registration time with on-disk-backed default
-// providers; GenerateSpec pushes an InFlightSpecStore in at council
-// start and restores the disk-backed defaults at council end.
-//
-// listManifest / get may be nil — in that case the registration falls
-// back to the legacy on-disk-only path (BuildSpecManifest / LookupSpecNode
-// invoked directly per call). This preserves the existing test-time
-// behaviour where callers don't construct the swappables.
+// spec_search against the given tool registry. The store carries the
+// unified in-process spec graph (DJ-134) — every tool handler
+// dispatches against it. cmd/llm.go constructs the store at startup,
+// registers it on the executor via SetSpecStore, and passes it here.
 //
 // The registration is idempotent at the registry level —
 // re-registering the same name overrides the prior entry. Callers
 // gate on a sync.Once so the production path runs exactly once per
 // process.
-func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, backend search.Backend, listManifest *SwappableSpecListManifest, get *SwappableSpecGet) {
-	if registry == nil || fsys == nil {
+//
+// Tool descriptions stay in the registration call (per the
+// agent-conventions rule introduced alongside DJ-134): system prompts
+// state when/why to call each tool; the registered description states
+// what the tool does and what its result shape carries.
+func RegisterSpecTools(registry *ToolRegistry, store *SpecStore) {
+	if registry == nil || store == nil {
 		return
 	}
 	registry.Register(adapters.ToolDef{
 		Name:        ToolNameSpecListManifest,
-		Description: "Returns a compact index of every spec node grouped by kind (features, strategies, decisions, bugs, approaches). Each entry carries id, title, optional kind (strategies), and a one-line summary truncated to ~200 chars. Use this to navigate the spec graph without dumping every node's full content. During a spec-generation council run, returns the in-flight proposal (plus the loaded existing snapshot); outside a council run, returns the persisted graph at .borg/spec/.",
+		Description: "Returns a compact index of every spec node grouped by kind (features, strategies, decisions, bugs, approaches). Each entry carries id, title, optional kind (for strategies), a one-line summary truncated to ~200 chars, an `origin` field (`settled` for nodes loaded from .borg/spec/ on session start, `in_flight` for nodes added or revised by the council this iteration), and a `working` flag (true when a fanout dispatch is actively rewriting the node — its body may change before the next read). Use this to navigate the spec graph without dumping every node's full content; pair it with spec_get when you need bodies.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"properties":           map[string]any{},
@@ -772,40 +761,29 @@ func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, backend search.Ba
 			"additionalProperties": false,
 		},
 		Handler: TypedHandler(func(ctx context.Context, _ struct{}) (SpecManifest, error) {
-			if listManifest != nil {
-				return listManifest.ListManifest()
-			}
-			return BuildSpecManifest(fsys), nil
+			return store.ListManifest(), nil
 		}),
 	})
 	registry.Register(adapters.ToolDef{
 		Name:        ToolNameSpecGet,
-		Description: "Returns the full JSON of one spec node by id. The kind is inferred from the id prefix (feat-, strat-, dec-, bug-, app-). Use this AFTER spec_list_manifest narrows you to a candidate id you need to inspect in detail. During a spec-generation council run, looks the id up in the in-flight proposal (with fallback to the loaded existing snapshot); outside a council run, reads from .borg/spec/.",
+		Description: "Returns the full bodies of N spec nodes by id in one call. Input is `{ids: [string]}` — an array of ids; passing a single id is valid as a one-element array. Output is `{results, available_ids?, working?}`: `results` is `{id: {status, body?, working?, reason?}}` with every requested id present exactly once. status is `settled` (id resolved on-disk-loaded body), `in_flight` (id resolved in-memory council-proposed body), or `missing` (id couldn't be resolved — reason names the failure). For misses, `available_ids` carries the per-kind id catalogue (e.g. `{decision: [\"dec-a\",\"dec-b\"]}`) surfaced once per kind regardless of how many ids of that kind missed. PREFER one batched call over N sequential single-id calls — sequential calls cost rounds against the tool-loop cap; one batched call costs one round regardless of id count.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"id": map[string]any{
-					"type":        "string",
-					"description": "Spec node id with a known prefix (feat-, strat-, dec-, bug-, app-).",
+				"ids": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Array of spec node ids with known prefixes (feat-, strat-, dec-, bug-, app-). Pass every id you need in one call.",
+					"minItems":    1,
 				},
 			},
-			"required":             []any{"id"},
+			"required":             []any{"ids"},
 			"additionalProperties": false,
 		},
-		Handler: TypedHandler(func(ctx context.Context, in SpecGetInput) (json.RawMessage, error) {
-			if get != nil {
-				return get.GetSpec(in.ID)
-			}
-			return LookupSpecNode(fsys, in.ID)
+		Handler: TypedHandler(func(ctx context.Context, in SpecGetInput) (SpecGetResult, error) {
+			return store.GetSpec(in.IDs), nil
 		}),
 	})
-	if backend == nil {
-		// No spec-search backend wired (MemFS test contexts, or a CLI
-		// path that couldn't open the on-disk index): skip the
-		// spec_search registration rather than register a handler that
-		// errors on every call.
-		return
-	}
 	registry.Register(adapters.ToolDef{
 		Name:        ToolNameSpecSearch,
 		Description: SpecSearchToolDescription,
@@ -830,52 +808,27 @@ func RegisterSpecTools(registry *ToolRegistry, fsys specio.FS, backend search.Ba
 			"additionalProperties": false,
 		},
 		Handler: TypedHandler(func(ctx context.Context, in SpecSearchInput) (SpecSearchResult, error) {
-			start := time.Now()
-			result, err := SearchSpecNodes(fsys, backend, in)
-			recordSpecSearchCall(backend, in, result, err, time.Since(start))
-			return result, err
+			limit := in.Limit
+			if limit <= 0 || limit > specSearchAgentMaxLimit {
+				limit = specSearchAgentDefaultLimit
+			}
+			opts := search.Options{Kind: in.Kind, Limit: limit}
+			hits, total, err := store.Search(in.Query, opts)
+			if err != nil {
+				return SpecSearchResult{}, err
+			}
+			result := SpecSearchResult{TotalMatches: total}
+			for _, h := range hits {
+				result.Hits = append(result.Hits, SpecSearchHit{
+					ID:    h.ID,
+					Title: h.Title,
+					Kind:  h.Kind,
+					Score: h.Score,
+				})
+			}
+			return result, nil
 		}),
 	})
-}
-
-// recordSpecSearchCall captures one spec_search invocation into the
-// council-scoped SpecSearchMetrics collector (DJ-123 Phase 5). The
-// collector lives on the SwappableSpecSearch the council wires at run
-// start; outside a council run the swap carries no collector and this
-// function is a cheap nil-check no-op. Backends that aren't the
-// council swappable (e.g. test paths passing a raw *search.Index) are
-// skipped — instrumentation is council-scoped by design.
-//
-// Status: "success" when hits came back, "empty" when the backend
-// returned no hits (the agent's tool response was an empty Hits
-// array), "error" when the backend call failed. The DJ-123 reversal
-// criterion (a) >25% empty-result threshold reads only the "empty"
-// status; errors are excluded from the rate denominator.
-func recordSpecSearchCall(backend search.Backend, in SpecSearchInput, result SpecSearchResult, err error, elapsed time.Duration) {
-	swap, ok := backend.(*SwappableSpecSearch)
-	if !ok {
-		return
-	}
-	m := swap.Metrics()
-	if m == nil {
-		return
-	}
-	record := SpecSearchCallRecord{
-		Query:  in.Query,
-		TookMs: elapsed.Milliseconds(),
-	}
-	if err != nil {
-		record.Status = "error"
-		record.ErrorText = err.Error()
-	} else {
-		record.HitCount = len(result.Hits)
-		if record.HitCount == 0 {
-			record.Status = "empty"
-		} else {
-			record.Status = "success"
-		}
-	}
-	m.Record(record)
 }
 
 // SpecSearchToolDescription documents the tool surface — what it

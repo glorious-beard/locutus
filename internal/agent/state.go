@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/chetan/locutus/internal/executor"
-	"github.com/chetan/locutus/internal/search"
 )
 
 // ConcernStatus is the disposition of a Concern across iterations of
@@ -327,29 +326,17 @@ type PlanningState struct {
 	// the dispatch with a corrected new_nodes[].decisions[]).
 	DanglingReferences []string `json:"-"`
 
-	// InFlightIndex is the council-scoped Bluge index over the current
-	// RawProposal (DJ-123 Phase 3). Set by GenerateSpec at council
-	// start and torn down at council end; nil on non-council
-	// PlanningState consumers (assimilation, refine, etc.). The merge
-	// functions that mutate RawProposal call rebuildInFlightIndex(s)
-	// after the write so the next agent that fires spec_search sees
-	// the latest proposal.
+	// Store is the unified spec store (DJ-134) the council reads and
+	// writes through. Set by GenerateSpec from the wrapper-chain's
+	// SpecStore() accessor at run start; the council opens a
+	// transaction on it via Begin / Commit / Rollback. The merge
+	// helpers call syncStoreFromRawProposal(s) after every RawProposal
+	// mutation so the store's typed entries stay aligned with the
+	// council's in-memory working buffer.
 	//
-	// Pointer is shared across the deep-copied snapshots — Snapshot
-	// copies the slices on PlanningState but the index handle itself
-	// is concurrent-safe (Rebuild serialises against in-flight Search
-	// under an RWMutex inside search.InFlightIndex).
-	InFlightIndex *search.InFlightIndex `json:"-"`
-
-	// InFlightSpecStore is the council-scoped overlay that backs the
-	// DJ-125 spec_list_manifest and spec_get tools while a run is in
-	// flight. Set by GenerateSpec at council start; torn down (via the
-	// deferred swap back) at council end. The same merge helpers that
-	// call rebuildInFlightIndex also call InFlightSpecStore.Update so
-	// every RAG tool sees a consistent view of the in-flight proposal.
-	// Pointer-shared across snapshots like InFlightIndex; its internal
-	// RWMutex serialises tool reads against merge-side writes.
-	InFlightSpecStore *InFlightSpecStore `json:"-"`
+	// Pointer-shared across snapshots; the store's internal RWMutex
+	// serialises tool reads against merge-side writes.
+	Store *SpecStore `json:"-"`
 }
 
 // ImportedContent is one external document admitted into the spec

@@ -84,54 +84,17 @@ func (n *NotifyingExecutor) Run(ctx context.Context, def AgentDef, input AgentIn
 	return out, err
 }
 
-// SpecSearch passes the inner executor's spec_search swappable
-// through. NotifyingExecutor doesn't own a swappable itself — it's
-// a sink-emission wrapper. The pass-through is load-bearing for
-// council runs: specgen.go's specSearchSwap helper type-asserts the
-// outer AgentExecutor to find the swappable, and the cmd-layer
-// wraps the production *Executor in NotifyingExecutor (via
-// withProgressSink). Without this method on the wrapper the
-// assertion fails silently and the council never applies its
-// in-flight overlay swap, leaving spec_search / spec_list_manifest /
-// spec_get tool handlers pointed at the FS-backed default for the
-// entire run.
-//
-// See LoggingExecutor.SpecSearch for the latency history and the
-// failure mode this method (and its SpecListManifest / SpecGet
-// siblings below) closes.
-func (n *NotifyingExecutor) SpecSearch() *SwappableSpecSearch {
+// SpecStore passes the inner executor's *SpecStore through.
+// NotifyingExecutor is a sink-emission wrapper and doesn't own a
+// store itself; the council reaches through the wrapper chain to
+// find the store and open a transaction on it at run start.
+// See LoggingExecutor.SpecStore for the DJ-134 rationale.
+func (n *NotifyingExecutor) SpecStore() *SpecStore {
 	if n == nil || n.Inner == nil {
 		return nil
 	}
-	if p, ok := n.Inner.(interface{ SpecSearch() *SwappableSpecSearch }); ok {
-		return p.SpecSearch()
-	}
-	return nil
-}
-
-// SpecListManifest passes the inner executor's spec_list_manifest
-// swappable through. See SpecSearch above for the load-bearing
-// rationale.
-func (n *NotifyingExecutor) SpecListManifest() *SwappableSpecListManifest {
-	if n == nil || n.Inner == nil {
-		return nil
-	}
-	if p, ok := n.Inner.(interface {
-		SpecListManifest() *SwappableSpecListManifest
-	}); ok {
-		return p.SpecListManifest()
-	}
-	return nil
-}
-
-// SpecGet passes the inner executor's spec_get swappable through.
-// See SpecSearch above for the load-bearing rationale.
-func (n *NotifyingExecutor) SpecGet() *SwappableSpecGet {
-	if n == nil || n.Inner == nil {
-		return nil
-	}
-	if p, ok := n.Inner.(interface{ SpecGet() *SwappableSpecGet }); ok {
-		return p.SpecGet()
+	if p, ok := n.Inner.(interface{ SpecStore() *SpecStore }); ok {
+		return p.SpecStore()
 	}
 	return nil
 }
