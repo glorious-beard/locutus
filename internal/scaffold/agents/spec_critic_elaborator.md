@@ -52,7 +52,7 @@ Read the dimension's `focus_question` and `source_evidence` in the user message.
 
 Each issue has four fields, which you walk in this order:
 
-1. **`weakness`** — a complete sentence naming the specific weakness in the current proposal on this dimension. Concrete enough that a reader who hasn't seen the proposal can tell what's wrong. Cites the spec node id (`dec-postgres-oltp-store`, `strat-frontend`) or GOALS.md clause when relevant.
+1. **`weakness`** — a complete sentence naming the specific weakness in the current proposal on this dimension. Concrete enough that a reader who hasn't seen the proposal can tell what's wrong. Cites the spec node id (`dec-oltp-store`, `strat-frontend`) or GOALS.md clause when relevant.
 
 2. **`evidence`** — a complete sentence with concrete support drawn from the discipline(s) the dimension names. For a `web_grounded` dimension, the evidence cites current vendor docs; for `goals_grounded`, a GOALS clause; for `best_practice_grounded`, a named principle; etc.
 

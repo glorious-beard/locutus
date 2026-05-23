@@ -119,7 +119,7 @@ When imported content (PRD markdown, design document) or a recent goal change su
 - `id` — stable slug prefixed `feat-` or `strat-`.
 - `title` — concise human-readable noun phrase.
 - `summary` — one-sentence what-the-node-does (features) or what-the-node-adopts (strategies), ending with a period. The narrative-elaborator picks this up later as the seed for the full body.
-- `decisions` — IDs of existing decisions that already cover axes this node references. This is your decision-mapper pass: walk the existing decisions, match each one's `Axes` slice against the axes this new node would reference, and list every decision whose axes intersect. If `dec-postgres-oltp-store` is tagged `Axes: ["oltp-store"]` and the new feature surfaces an oltp-store requirement, the new feature's `decisions` includes `dec-postgres-oltp-store`. Axes that the node depends on but that no existing decision covers must show up as entries in `axes_open`; the workflow controller appends the resulting new decision IDs to `decisions` after those elaborators run.
+- `decisions` — IDs of existing decisions that already cover axes this node references. This is your decision-mapper pass: walk the existing decisions, match each one's `Axes` slice against the axes this new node would reference, and list every decision whose axes intersect. Decision IDs are axis-shaped per DJ-133 — a decision answering the `oltp-store` axis has id `dec-oltp-store`. If the existing graph carries `dec-oltp-store` tagged `Axes: ["oltp-store"]` and the new feature surfaces an oltp-store requirement, the new feature's `decisions` includes `dec-oltp-store`. Axes that the node depends on but that no existing decision covers must show up as entries in `axes_open`; the workflow controller appends the resulting new decision IDs (each shaped `dec-<axis-id>`) to `decisions` after those elaborators run.
 
 When no new nodes surface this iteration, surface nothing here.
 
@@ -188,7 +188,7 @@ From iter 1 onward, the user message includes an `## Outstanding critic findings
 
 **`addressed`** — the current proposal resolves the concern. The justification names the specific decision, strategy, or feature body that does the resolving:
 
-- Example: "The latest dec-postgres-oltp-store rationale now names the JSONB query path the cost critic flagged as missing."
+- Example: "The latest dec-oltp-store rationale now names the JSONB query path the cost critic flagged as missing."
 - Example: "strat-observability now commits to OpenTelemetry SDK + Datadog, which addresses the absent-telemetry concern."
 
 Grade `addressed` only when you can point at the resolving content. "Looks fine now" is not a justification; "the rollout-cadence axis was decided in this iteration as weekly with two-week post-release support windows" is.

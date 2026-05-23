@@ -82,7 +82,7 @@ When the user message includes a **Candidate list** section, a pre-survey enumer
 
 Work the candidate list like this:
 
-1. **Pick one candidate as the chosen option.** Read each surveyed candidate's first-glance fit; weigh each against GOALS.md, the scout brief, and the existing spec graph (read adjacent decisions via `spec_get` and `spec_search`). One candidate is the chosen option; commit to it. The committed candidate's name becomes the basis for the decision's `id` slug; its first-glance fit is your starting point for the `rationale` (which you'll deepen with grounded per-candidate research).
+1. **Pick one candidate as the chosen option.** Read each surveyed candidate's first-glance fit; weigh each against GOALS.md, the scout brief, and the existing spec graph (read adjacent decisions via `spec_get` and `spec_search`). One candidate is the chosen option; commit to it. Its first-glance fit is your starting point for the `rationale` (which you'll deepen with grounded per-candidate research); the chosen option's name lands in `title` / `summary`, not in the `id` — the id mirrors the axis (see `### id` below).
 2. **Every unpicked surveyed candidate becomes an alternative entry.** For each candidate you did not pick, emit an `alternatives` entry with `name` matching the surveyed name, `rationale` naming the candidate's first-glance advantages (the survey's `first_glance_fit` is a starting point you may extend), `rejected_because` naming the specific reason this candidate lost on this project's constraints, and `citations` grounding the rejection reasoning in real sources. The schema's `minItems=1` per alternative's citations applies here — fabricated rejection prose is the failure mode this discipline guards against.
 3. **You may surface additional candidates beyond the survey when the axis warrants.** The survey is a starting point, not an exhaustive set. If web search surfaces a candidate the survey missed (a niche vendor, a recently-announced product, a category-defining open-source project the survey overlooked), add it to your alternatives. Add it as the chosen option if it's the right fit, even though the survey didn't list it.
 4. **You may rule out a surveyed candidate before authoring it as a full alternative.** When a candidate the survey listed is clearly out of scope on a GOALS.md hard constraint (e.g. a paid SaaS on a strict no-recurring-cost project), naming the rule-out in the `rejected_because` of a brief alternative entry is honest engagement; silently dropping the candidate is not. Emit the alternative entry with the GOALS-clause citation as the structural record.
@@ -93,7 +93,9 @@ When the **Candidate list** section is absent (revise dispatches, axes where the
 
 ### id
 
-A stable slug derived from the chosen option, prefixed `dec-`, lowercase, hyphen-separated, three to five words (e.g. `dec-postgres-oltp-store`, `dec-aws-cognito-auth`, `dec-stm32h743-mcu`). The reconciler may suffix with `-2` / `-3` if collisions occur; you pick the natural slug.
+Copy the input axis ID verbatim, prefixed `dec-`. The axis ID comes from the `OpenAxis.id` field in your input — you mint nothing. Examples: axis `oltp-store` → id `dec-oltp-store`; axis `auth-provider` → id `dec-auth-provider`; axis `database-and-spatial-storage` → id `dec-database-and-spatial-storage`.
+
+The id names the **question** the decision answers (the axis). The chosen option's name lives in `title` and `summary`; the reasoning lives in `rationale`. Decoupling the id from the chosen option means a later revision that picks a different chosen option (a Flip) does not change the id — back-references from features and strategies stay byte-stable, and the deliberation log in `alternatives` carries the prior chosen option as the demoted entry. The persistence layer relies on this mirror: a revise dispatch's incoming `id` is matched against existing decisions by exact-string equality.
 
 ### summary
 
@@ -135,7 +137,7 @@ Sources backing the chosen path — `minItems=1` per the schema. The same six-ki
 
 ### axes
 
-The foundational axis IDs this decision answers. Required, `minItems=1`. The dominant case is a single entry mirroring the input axis ID verbatim. Multiple entries are appropriate only when the axis is genuinely composite — for example, a `compute-platform` decision that necessarily commits a `deployment-target` (choosing AWS ECS Fargate commits both the compute choice and the AWS-region deployment target). When you emit multiple axes, explain the composite framing in `rationale` so reviewers understand why the decision spans them.
+The foundational axis IDs this decision answers. Required, `minItems=1`. The dominant case is a single entry mirroring the input axis ID verbatim — the same axis whose `id` field drives the decision's `id`. Multiple entries are appropriate only when the axis is genuinely composite — for example, a `compute-platform` decision that necessarily commits a `deployment-target` (choosing AWS ECS Fargate commits both the compute choice and the AWS-region deployment target). For composite axes the primary axis (i.e. `axes[0]`) drives the `id` (so the slug stays unambiguous); every axis the decision spans still travels through `axes[]`. When you emit multiple axes, explain the composite framing in `rationale` so reviewers understand why the decision spans them.
 
 ### surfaced_by
 
@@ -148,7 +150,7 @@ The spec node IDs (goal / feature / strategy) that surfaced this axis. Mirrors t
 - `goals` — `reference: "GOALS.md"`, `excerpt: "verbatim quoted text from the source"`. The excerpt is the load-bearing field; copy the actual line(s) from GOALS.md verbatim. Optional `span` for the section heading.
 - `doc` — `reference: "<doc path>"`, `excerpt: "verbatim quoted text"`. Optional `span`.
 - `best_practice` — `reference: "<precise named principle>"` like "12-factor app: stateless processes" or "Google SRE Book: error budgets" or "RFC 7231 Section 6.5". Just kind+reference; omit `excerpt` (named principles speak for themselves).
-- `spec_node` — `reference: "<node-id>"` like "strat-frontend" or "dec-postgres-oltp-store". Just kind+reference; omit `excerpt`.
+- `spec_node` — `reference: "<node-id>"` like "strat-frontend" or "dec-oltp-store". Just kind+reference; omit `excerpt`.
 - `scout_brief` — `reference: "scout_brief: <field>"` where `<field>` is one of `domain_read`, `technology_options`, `implicit_assumptions`, `watch_outs`. `excerpt: "verbatim copy of the relevant scout claim"`. The scout brief is the project's grounded survey output; cite it directly when a decision rests on a fact the scout surfaced. The excerpt is mandatory — it preserves grounded provenance after the survey artifact is gone.
 - `web` — `reference: "<URL>"`, `excerpt: "verbatim quote from the retrieved page"`. The excerpt is mandatory because web pages change after retrieval; the verbatim quote keeps the citation durable. Use this kind for grounded-research citations and for the sentinel excerpts on search-failure modes.
 
@@ -196,9 +198,9 @@ Mechanical preservation at the merge layer means your job is engaging with count
 
 Four further mandates round out the revise pass:
 
-- **Preserve `axes` verbatim from the prior decision.** The axis IDs are the dispatch key the workflow uses to recognize your output as a replacement of the prior decision (the merge step matches incoming axes against existing decisions' axes). Copy each axis ID character-for-character. A revision that changes the axes is treated as a first-author decision on a new axis, which leaves the prior decision unrevised in the graph.
+- **Preserve `axes` verbatim from the prior decision.** Copy each axis ID character-for-character. The axes record what question the decision answers; a revision is still answering the same question. The persisted decision keeps every axis the prior carried.
 - **Preserve `surfaced_by` verbatim from the prior decision** for the same back-reference reason that applies in first-author mode — the `explain` and `justify` verbs walk the graph in both directions.
-- **Preserve the prior `id`** by copying it verbatim into the output's `id` field. The workflow's replace-by-axis-ID match keeps the back-references intact when the id is preserved; downstream features and strategies hold references to that id.
+- **Preserve the prior `id`** by copying it verbatim into the output's `id` field. The id IS the axis-derived slug (per `### id`); preserving it lets the merge step recognise your output as a replacement of the prior decision via exact-string id-match. Downstream features and strategies hold references to that id and stay byte-stable across the revise pass.
 - **The new rationale acknowledges the prior commitment and names every finding it addresses.** A reader of the rationale should understand that the council reconsidered and revised in response to each finding — not that the council never made the prior choice, and not that any finding was silently dropped. The rationale names which counterproposals were engaged with and whether the revision was a Flip or a Reject; the alternatives slice carries the durable per-option deliberation.
 
 `spec_search` and `spec_get` on related decision IDs are the canonical inputs for understanding the conflicting context when the findings name siblings. Skip those tool calls when the findings stand on their own (e.g. a single-decision factual error or a hallucinated citation that's local to the prior).

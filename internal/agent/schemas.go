@@ -49,17 +49,17 @@ func init() {
 	// Spec-generation council outputs (agents in
 	// internal/scaffold/agents/spec_*.md and *_critic.md).
 	//
-	// ScoutBrief example payload (DJ-124 Phase 2): a coherent
-	// political-organizing campaign-software domain that exercises
-	// every field. AxesOpen carries one uncovered axis (the auth
-	// provider), NewNodes carries a new feature surfaced from an
-	// imagined PRD with its decisions[] pre-populated from an existing
-	// 'dec-postgres-oltp-store' covering the data-store axis, and
-	// Converged is false because the loop still has the auth-provider
-	// axis to close. The descriptive prose throughout keeps the
-	// schema-skeleton failure mode (the prompt-doc renderer leaking
-	// example values into the model's output) from triggering on
-	// placeholder tokens.
+	// ScoutBrief example payload (DJ-124 Phase 2; refreshed under DJ-133
+	// for axis-as-ID conventions): a coherent political-organizing
+	// campaign-software domain that exercises every field. AxesOpen
+	// carries one uncovered axis (the auth provider), NewNodes carries
+	// a new feature surfaced from an imagined PRD with its decisions[]
+	// pre-populated from an existing 'dec-oltp-store' (axis-shaped id
+	// per DJ-133) covering the oltp-store axis, and Converged is false
+	// because the loop still has the auth-provider axis to close. The
+	// descriptive prose throughout keeps the schema-skeleton failure
+	// mode (the prompt-doc renderer leaking example values into the
+	// model's output) from triggering on placeholder tokens.
 	RegisterSchema("ScoutBrief", ScoutBrief{
 		DomainRead:        "Campaign software for political organizing at the state-house and federal levels. The primary users are field organizers running voter-contact programs (turf cutting, canvasser scheduling, lit-drop tracking) and the campaign managers reading their reporting. The central capability is real-time visibility into voter-contact attempts plotted against the win number for each district.",
 		TechnologyOptions: []string{
@@ -91,7 +91,7 @@ func init() {
 			ID:        "feat-realtime-turf-dashboard",
 			Title:     "Real-time turf dashboard",
 			Summary:   "Campaign managers see live progress against the per-district win number with voter-contact attempts plotted on a turf map.",
-			Decisions: []string{"dec-postgres-oltp-store"},
+			Decisions: []string{"dec-oltp-store"},
 		}},
 		CritiqueDimensions: []CritiqueDimension{{
 			ID:             "cost-ceiling-coverage",
@@ -111,7 +111,7 @@ func init() {
 		ConcernDispositions: []ConcernDisposition{{
 			ConcernID:     "c-2",
 			Disposition:   "addressed",
-			Justification: "The latest dec-postgres-oltp-store rationale now names the JSONB query path that the cost critic flagged as missing.",
+			Justification: "The latest dec-oltp-store rationale now names the JSONB query path that the cost critic flagged as missing.",
 		}},
 		Converged: false,
 	})
@@ -123,7 +123,7 @@ func init() {
 	// this into the SpecProposal downstream agents and persistence
 	// consume.
 	exampleRawDecision := RawDecisionProposal{
-		ID:                 "dec-postgres-oltp-store",
+		ID:                 "dec-oltp-store",
 		Summary:            "Adopt Postgres over MySQL for the OLTP store.",
 		Title:              "OLTP store engine",
 		Rationale:          "Postgres offers richer transactional guarantees and the JSONB column type the analytics workload depends on, while MySQL's storage-engine pluralism is irrelevant to the project's single-node deployment posture.",
@@ -154,7 +154,7 @@ func init() {
 			Summary:     "One-sentence what-the-feature-does, ending with a period.",
 			Title:       "Real-time dashboard",
 			Description: "What the feature does in one paragraph.",
-			Decisions:   []string{"dec-postgres-oltp-store"},
+			Decisions:   []string{"dec-oltp-store"},
 		}},
 		Strategies: []RawStrategyProposal{{
 			ID:        "strat-data-platform",
@@ -162,7 +162,7 @@ func init() {
 			Title:     "Data platform",
 			Kind:      "foundational",
 			Body:      "Prose body of the strategy.",
-			Decisions: []string{"dec-postgres-oltp-store"},
+			Decisions: []string{"dec-oltp-store"},
 		}},
 		Decisions: []RawDecisionProposal{exampleRawDecision},
 	})
@@ -221,7 +221,7 @@ func init() {
 		Summary:     "One-sentence what-the-feature-does, ending with a period.",
 		Title:       "Real-time dashboard",
 		Description: "What the feature does in one paragraph.",
-		Decisions:   []string{"dec-postgres-oltp-store"},
+		Decisions:   []string{"dec-oltp-store"},
 	})
 
 	RegisterSchema("RawStrategyProposal", RawStrategyProposal{
@@ -230,7 +230,7 @@ func init() {
 		Title:     "Data platform",
 		Kind:      "foundational",
 		Body:      "Prose body of the strategy.",
-		Decisions: []string{"dec-postgres-oltp-store"},
+		Decisions: []string{"dec-oltp-store"},
 	})
 
 	// RawDecisionProposal is the per-axis output shape of DJ-124's
@@ -238,9 +238,10 @@ func init() {
 	// domain vocabulary (a database-engine choice grounded in a
 	// GOALS.md clause and a vendor doc) so the schema-skeleton
 	// failure mode the prompt-doc renderer can prime does not trigger
-	// on placeholder tokens.
+	// on placeholder tokens. The id is the primary axis prefixed `dec-`
+	// per DJ-133: axis 'oltp-store' → id 'dec-oltp-store'.
 	RegisterSchema("RawDecisionProposal", RawDecisionProposal{
-		ID:                 "dec-postgres-oltp-store",
+		ID:                 "dec-oltp-store",
 		Summary:            "Adopt Postgres over MySQL for the OLTP store.",
 		Title:              "OLTP store engine",
 		Rationale:          "Postgres offers richer transactional guarantees and the JSONB column type the analytics workload depends on, while MySQL's storage-engine pluralism is irrelevant to the project's single-node deployment posture.",
@@ -340,7 +341,7 @@ func init() {
 	// model's output) doesn't fire on this surface.
 	RegisterSchema("CriticIssues", CriticIssues{
 		Issues: []CriticIssue{{
-			Weakness: "The dec-postgres-oltp-store rationale commits to Aurora Serverless v2 but does not engage with the $150/mo steady-state ceiling in GOALS §3.",
+			Weakness: "The dec-oltp-store rationale commits to Aurora Serverless v2 but does not engage with the $150/mo steady-state ceiling in GOALS §3.",
 			Evidence: "GOALS §3 names a $150/mo infrastructure ceiling for the first 12 months; the rationale cites Aurora Serverless v2's elastic ACU pricing without naming the expected steady-state ACU floor.",
 			Counterproposals: []CriticCounterproposal{{
 				Option:   "Single-instance RDS Postgres on a t4g.small reserved instance",
@@ -364,7 +365,7 @@ func init() {
 					Excerpt:   "Pro: $25/mo includes 8GB database storage, daily backups, and PgBouncer connection pooling.",
 				}},
 			}},
-			RelatedDecisionIDs: []string{"dec-postgres-oltp-store"},
+			RelatedDecisionIDs: []string{"dec-oltp-store"},
 		}},
 	})
 
