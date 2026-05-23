@@ -247,17 +247,32 @@ type PlanningState struct {
 	//
 	// Key format: axis ID. Value: iteration index when the axis was
 	// first decided.
+	//
+	// Post-DJ-133 invariant: axis IDs are equivalent to decision IDs
+	// stripped of the `dec-` prefix (the elaborator copies axis ID
+	// into decision.id verbatim), so this map's key set is structurally
+	// 1:1 with the decision IDs in RawProposal. Kept as a separate map
+	// from LockedDecisionIDs for forensic clarity — the field's role
+	// is "axes the council has committed a decision on" regardless of
+	// whether that decision then got locked.
 	DecidedAxesByIter map[string]int `json:"-"`
 
 	// AxisRevisionCount tracks how many times each axis has been
 	// revised across iterations. Incremented by mergeDecisions every
-	// time a replace-by-axis-ID match fires on the axis. Consumed by
+	// time a replace-by-ID match fires (DJ-133 simplified the match
+	// semantics; pre-DJ-133 this was replace-by-axis-ID). Consumed by
 	// the scout spawner's per-axis revision-count cap: when any axis
 	// reaches the cap (default 3; env override
 	// LOCUTUS_DECISION_REVISION_CAP), the loop force-terminates with a
 	// convergence_revision_capped DJ-103 event naming the capped axes.
 	// Per-axis counting means revising dec-X three times and dec-Y
 	// once doesn't terminate at cap=3 — the revisions are independent.
+	//
+	// Post-DJ-133 the keys are axis IDs (structurally equivalent to
+	// decision IDs stripped of the `dec-` prefix). The map name still
+	// reads "axis" because the cap semantics are per-axis (the
+	// question the decision answers), not per-iteration-of-a-named
+	// decision.
 	//
 	// Distinct from DecidedAxesByIter (which records first-author
 	// commits): this map records revise-side activity. The two
@@ -280,6 +295,12 @@ type PlanningState struct {
 	// subsequent revise dispatches, AND by the SpecProposal projection
 	// so persisted decisions carry the Locked flag downstream.
 	// Set, not slice, so membership lookup is O(1) in the filter path.
+	//
+	// Post-DJ-133: decision IDs are axis-shaped (dec-<axis-id>), so
+	// the keys here are equivalent to "dec-<key from DecidedAxesByIter
+	// / AxisRevisionCount>". The three maps are kept separate for
+	// forensic clarity even though their key sets overlap by
+	// construction.
 	LockedDecisionIDs map[string]struct{} `json:"-"`
 
 	// DJ-129: dimension tracking for the dimension-driven critic

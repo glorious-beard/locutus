@@ -1135,28 +1135,41 @@ func projectCandidateSurvey(snap StateSnapshot[PlanningState]) []Message {
 
 // mergeDecisions parses each decision-elaborator output as a
 // RawDecisionProposal and either appends it (first-author dispatch
-// path) or replaces an existing decision in-place by axis-ID
-// intersection (DJ-126 revise dispatch path).
+// path) or replaces an existing decision in-place by ID match (revise
+// dispatch path).
 //
-// Axis-intersection match semantics:
-//   - Zero existing decisions intersect the incoming axes → append.
-//     This is the first-author path; the scout dispatched on an open
-//     axis and the elaborator committed the first decision on it.
-//   - Exactly one existing decision intersects → REPLACE in-place.
-//     The existing decision's ID is preserved (so feature/strategy
-//     references don't break); body, rationale, alternatives, and
-//     citations are overwritten by the revision. The replacement also
-//     marks every open concern whose RelatedDecisionIDs contains the
-//     preserved ID as Status=addressed (with a justification noting
-//     the revision).
-//   - More than one existing decision intersects → ambiguous. The
-//     workflow records an integrity-violation concern naming the
-//     ambiguous axis set and skips the replacement; the scout's next
-//     pass surfaces it for operator review.
+// ID match semantics (DJ-133):
+//   - Under DJ-133 the elaborator copies the axis ID verbatim into
+//     incoming.ID (per its prompt's "### id" section), so revise
+//     dispatches arrive with incoming.ID equal to the prior decision's
+//     ID. Match is exact-string equality:
+//
+//   - incoming.ID matches an in-flight decision's ID → REPLACE in
+//     place. Body, rationale, alternatives, and citations are
+//     overwritten by the revision; the merge-layer preservation
+//     helpers (demote prior chosen / fold counterproposals / preserve
+//     prior alternatives) carry the deliberation log forward. Every
+//     open concern whose RelatedDecisionIDs contains the preserved ID
+//     is marked Status=addressed.
+//   - incoming.ID matches an existing-graph decision's ID → append the
+//     revision under the existing ID. The persisted node is replaced
+//     at GenerateSpec persist time when the raw proposal carries the
+//     revised body at the same ID.
+//   - No match → first-author append. The incoming ID is preserved as
+//     authored; mintDecisionID is the defensive fallback for the
+//     degenerate case where the elaborator left ID empty or somehow
+//     produced a duplicate slug (shouldn't happen under the axis-as-ID
+//     contract, but the slug-mint fallback keeps the merge robust to
+//     prompt drift).
+//
+// The pre-DJ-133 axis-intersection match retired with the elaborator's
+// slug-from-chosen mint logic; the ambiguous-revision integrity
+// concern retired with it (two decisions sharing the same axis now
+// have the same ID by construction, which the persisted-graph
+// integrity check surfaces as a duplicate-ID violation downstream).
 //
 // Idempotent — calling twice with the same results produces the same
-// final state (duplicate IDs after axis-replace are no-ops; duplicate
-// axis records preserve the earliest iter index).
+// final state.
 func mergeDecisions(s *PlanningState, results []RoundResult) {
 	if s == nil || len(results) == 0 {
 		return
@@ -1208,25 +1221,36 @@ func mergeDecisions(s *PlanningState, results []RoundResult) {
 			continue
 		}
 
-		// DJ-126: axis-intersection match. matches is the list of
-		// in-flight decision indices whose Axes intersect with the
-		// incoming axes; existingMatches is the parallel list of
-		// existing-graph ids.
-		matches, existingMatches := axisIntersectionMatches(raw.Decisions, s.Existing, d.Axes)
-		totalMatches := len(matches) + len(existingMatches)
+		// DJ-133: replace-by-ID. The elaborator copies the axis ID
+		// verbatim into incoming.ID (per its prompt's "### id"
+		// section); revise dispatches arrive with incoming.ID equal to
+		// the prior decision's ID. Match by exact string equality
+		// against the in-flight proposal first, then against the
+		// persisted graph.
+		incomingID := strings.TrimSpace(d.ID)
+		matchedInFlight := -1
+		var matchedExistingID string
+		if incomingID != "" {
+			for i, prior := range raw.Decisions {
+				if prior.ID == incomingID {
+					matchedInFlight = i
+					break
+				}
+			}
+			if matchedInFlight < 0 && s.Existing != nil {
+				for _, ed := range s.Existing.Decisions {
+					if ed.ID == incomingID {
+						matchedExistingID = ed.ID
+						break
+					}
+				}
+			}
+		}
 
 		switch {
-		case totalMatches > 1:
-			// Ambiguous: incoming axes intersect multiple existing
-			// decisions. Record an integrity-violation concern naming
-			// the axes; skip the replacement so the scout's next
-			// pass can surface the ambiguity for operator review.
-			recordAmbiguousRevisionConcern(s, &d, matches, existingMatches, raw.Decisions)
-			continue
-
-		case len(matches) == 1:
+		case matchedInFlight >= 0:
 			// Replace an in-flight decision in place.
-			idx := matches[0]
+			idx := matchedInFlight
 			prior := raw.Decisions[idx]
 			priorID := prior.ID
 			d.ID = priorID
@@ -1284,13 +1308,13 @@ func mergeDecisions(s *PlanningState, results []RoundResult) {
 			markConcernsAddressedByRevision(s, priorID, &d, currentIter)
 			continue
 
-		case len(existingMatches) == 1:
-			// The intersecting decision lives in the persisted graph
+		case matchedExistingID != "":
+			// The matched decision lives in the persisted graph
 			// (state.Existing) — append the revision under the existing
 			// id rather than appending a duplicate. The persisted node
 			// itself is replaced at GenerateSpec persist time when the
 			// raw proposal carries the revised version under the same id.
-			priorID := existingMatches[0]
+			priorID := matchedExistingID
 			var prior RawDecisionProposal
 			if s.Existing != nil {
 				for _, ed := range s.Existing.Decisions {
@@ -1400,87 +1424,6 @@ func mergeDecisions(s *PlanningState, results []RoundResult) {
 	// concerns flagged. Re-run the mechanical dispose pass so the
 	// scout's next pass sees those concerns as stale rather than open.
 	mechanicalDisposeConcerns(s)
-}
-
-// axisIntersectionMatches finds existing decisions whose Axes intersect
-// the incoming axes set. Returns parallel slices: in-flight matches
-// (indices into inFlight) and existing-graph matches (decision IDs from
-// existing). DJ-126 replace-by-axis-ID merge logic dispatches on the
-// total match count returned here.
-//
-// An empty incomingAxes returns no matches (a decision with no axes is
-// degenerate and is handled by the first-author append path).
-func axisIntersectionMatches(inFlight []RawDecisionProposal, existing *ExistingSpec, incomingAxes []string) (inFlightIdx []int, existingIDs []string) {
-	if len(incomingAxes) == 0 {
-		return nil, nil
-	}
-	incomingSet := make(map[string]struct{}, len(incomingAxes))
-	for _, a := range incomingAxes {
-		a = strings.TrimSpace(a)
-		if a == "" {
-			continue
-		}
-		incomingSet[a] = struct{}{}
-	}
-	if len(incomingSet) == 0 {
-		return nil, nil
-	}
-	for i, d := range inFlight {
-		for _, a := range d.Axes {
-			if _, ok := incomingSet[strings.TrimSpace(a)]; ok {
-				inFlightIdx = append(inFlightIdx, i)
-				break
-			}
-		}
-	}
-	if existing != nil {
-		for _, d := range existing.Decisions {
-			for _, a := range d.Axes {
-				if _, ok := incomingSet[strings.TrimSpace(a)]; ok {
-					existingIDs = append(existingIDs, d.ID)
-					break
-				}
-			}
-		}
-	}
-	return inFlightIdx, existingIDs
-}
-
-// recordAmbiguousRevisionConcern appends an integrity-violation concern
-// when a revise dispatch's incoming axes intersect more than one
-// existing decision. This is rare in practice (a well-formed graph has
-// non-overlapping axes per decision) but signals a real architectural
-// issue when it happens — two prior decisions claim coverage of the
-// same axis. The scout's next pass surfaces it for operator review.
-//
-// The recorded concern carries RelatedDecisionIDs naming every
-// intersecting prior so the operator can see the ambiguous set
-// without re-running the merge.
-func recordAmbiguousRevisionConcern(s *PlanningState, d *RawDecisionProposal, inFlightIdx []int, existingIDs []string, inFlight []RawDecisionProposal) {
-	if s == nil {
-		return
-	}
-	relatedIDs := make([]string, 0, len(inFlightIdx)+len(existingIDs))
-	for _, i := range inFlightIdx {
-		if i >= 0 && i < len(inFlight) {
-			relatedIDs = append(relatedIDs, inFlight[i].ID)
-		}
-	}
-	relatedIDs = append(relatedIDs, existingIDs...)
-	axesLabel := strings.Join(d.Axes, ", ")
-	s.Concerns = append(s.Concerns, Concern{
-		AgentID:            "integrity_critic",
-		Severity:           "high",
-		Kind:               "integrity",
-		Status:             ConcernStatusOpen,
-		Text:               fmt.Sprintf("Revision of axis set [%s] is ambiguous: %d existing decisions intersect these axes (%s). Operator review required to identify the canonical decision before the revision can replace anything.", axesLabel, len(relatedIDs), strings.Join(relatedIDs, ", ")),
-		RelatedDecisionIDs: relatedIDs,
-		RelatedAxisIDs:     append([]string(nil), d.Axes...),
-	})
-	slog.Warn("mergeDecisions: ambiguous revision skipped",
-		"axes", d.Axes,
-		"intersecting_decisions", relatedIDs,
-		"incoming_id", d.ID)
 }
 
 // incrementAxisRevisionCounts bumps state.AxisRevisionCount for each

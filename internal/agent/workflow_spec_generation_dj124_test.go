@@ -846,16 +846,17 @@ func makeDecisionResult(t *testing.T, d RawDecisionProposal, iter int) RoundResu
 	}
 }
 
-// TestMergeDecisionsReplacesWhenAxesIntersectExactlyOne is the canonical
-// DJ-126 happy path: an in-flight proposal carries dec-X on axes [a,b];
-// a revise dispatch returns a new RawDecisionProposal whose axes
-// intersect [a]. The merge replaces dec-X in place — id preserved, body
-// overwritten.
-func TestMergeDecisionsReplacesWhenAxesIntersectExactlyOne(t *testing.T) {
+// TestMergeDecisions_MatchesPriorByID is the canonical DJ-133 happy
+// path: an in-flight proposal carries dec-x; a revise dispatch returns
+// a new RawDecisionProposal with the same id (the elaborator copies
+// the axis ID verbatim per DJ-133's prompt contract). The merge
+// replaces dec-x in place — id preserved, body overwritten — without
+// any axis-intersection inspection (the retired pre-DJ-133 path).
+func TestMergeDecisions_MatchesPriorByID(t *testing.T) {
 	prior := RawDecisionProposal{
-		ID:        "dec-x",
-		Title:     "Original X",
-		Rationale: "old rationale",
+		ID:         "dec-x",
+		Title:      "Original X",
+		Rationale:  "old rationale",
 		Confidence: 0.5,
 		Alternatives: []spec.Alternative{{
 			Name: "alt-old", Rationale: "old", RejectedBecause: "old",
@@ -880,12 +881,12 @@ func TestMergeDecisionsReplacesWhenAxesIntersectExactlyOne(t *testing.T) {
 	}
 
 	revised := RawDecisionProposal{
-		// The elaborator may emit a different id (or the same one);
-		// the merge preserves the prior id regardless. Use a different
-		// id here to exercise the preservation guarantee.
-		ID:        "dec-x-revised",
-		Title:     "Revised X",
-		Rationale: "corrected rationale",
+		// DJ-133: the elaborator copies the axis ID verbatim, so the
+		// revise dispatch's id matches the prior decision's id exactly.
+		// The merge identifies the replace target via string equality.
+		ID:         "dec-x",
+		Title:      "Revised X",
+		Rationale:  "corrected rationale",
 		Confidence: 0.9,
 		// DJ-128: revised alternatives include the prior alt-old AND
 		// the prior chosen "Original X" (demoted) AND a new alt-new.
@@ -902,8 +903,8 @@ func TestMergeDecisionsReplacesWhenAxesIntersectExactlyOne(t *testing.T) {
 			Name: "Original X", Rationale: "old chosen path", RejectedBecause: "factual error",
 			Citations: []spec.Citation{{Kind: "web", Reference: "https://old", Excerpt: "old"}},
 		}},
-		Citations: []spec.Citation{{Kind: "web", Reference: "https://new", Excerpt: "new"}},
-		Axes:      []string{"axis-a"}, // intersects prior's [a,b] on axis-a
+		Citations:  []spec.Citation{{Kind: "web", Reference: "https://new", Excerpt: "new"}},
+		Axes:       []string{"axis-a"},
 		SurfacedBy: []string{"feat-x"},
 	}
 	mergeDecisions(state, []RoundResult{makeDecisionResult(t, revised, 2)})
@@ -968,63 +969,62 @@ func TestMergeDecisionsAppendsWhenNoAxisIntersection(t *testing.T) {
 	assert.ElementsMatch(t, []string{"dec-x", "dec-y"}, ids)
 }
 
-// TestMergeDecisionsRecordsAmbiguityWhenMultipleExistingMatch covers
-// the integrity-violation path: two existing decisions both claim
-// axis-a; an incoming proposal with axes=[a] would have to pick which
-// to replace. Plan §Phase 3: record an integrity-violation concern,
-// skip the replacement.
-func TestMergeDecisionsRecordsAmbiguityWhenMultipleExistingMatch(t *testing.T) {
-	d1 := RawDecisionProposal{
-		ID: "dec-x", Title: "X", Rationale: "r", Confidence: 0.8,
+// TestMergeDecisions_DuplicateIDReplacesInPlace — DJ-133's structural
+// replacement for TestMergeDecisionsRecordsAmbiguityWhenMultipleExistingMatch.
+// Under the retired axis-intersection match, two existing decisions
+// on the same axis with different chosen-option-shaped ids produced
+// an `ambiguous` integrity violation. Under DJ-133 axis-as-ID makes
+// that scenario impossible by construction: two decisions on the same
+// axis necessarily share the same id, which the persisted-graph
+// integrity check surfaces as a duplicate-ID violation downstream.
+//
+// What CAN happen here at the merge layer is the normal revise path —
+// an incoming decision whose id matches a prior is replaced in place.
+// This test pins that down so a future regression doesn't accidentally
+// re-introduce an ambiguity path.
+func TestMergeDecisions_DuplicateIDReplacesInPlace(t *testing.T) {
+	prior := RawDecisionProposal{
+		ID: "dec-axis-a", Title: "Original", Rationale: "r", Confidence: 0.8,
 		Alternatives: []spec.Alternative{{Name: "alt", Rationale: "r", RejectedBecause: "r",
 			Citations: []spec.Citation{{Kind: "web", Reference: "https://x", Excerpt: "e"}}}},
 		Citations: []spec.Citation{{Kind: "goals", Reference: "GOALS.md", Excerpt: "e"}},
 		Axes:      []string{"axis-a"}, SurfacedBy: []string{"feat-x"},
 	}
-	d2 := RawDecisionProposal{
-		ID: "dec-y", Title: "Y", Rationale: "r", Confidence: 0.8,
-		Alternatives: []spec.Alternative{{Name: "alt", Rationale: "r", RejectedBecause: "r",
-			Citations: []spec.Citation{{Kind: "web", Reference: "https://y", Excerpt: "e"}}}},
-		Citations: []spec.Citation{{Kind: "goals", Reference: "GOALS.md", Excerpt: "e"}},
-		Axes:      []string{"axis-a"}, SurfacedBy: []string{"feat-y"}, // also claims axis-a
-	}
-	rawWithBoth, err := json.Marshal(RawSpecProposal{Decisions: []RawDecisionProposal{d1, d2}})
+	rawWithPrior, err := json.Marshal(RawSpecProposal{Decisions: []RawDecisionProposal{prior}})
 	require.NoError(t, err)
-
-	state := &PlanningState{RawProposal: string(rawWithBoth)}
+	state := &PlanningState{RawProposal: string(rawWithPrior)}
 
 	incoming := RawDecisionProposal{
-		ID: "dec-revised", Title: "Revised", Rationale: "new", Confidence: 0.9,
-		Alternatives: []spec.Alternative{{Name: "alt", Rationale: "r", RejectedBecause: "r",
-			Citations: []spec.Citation{{Kind: "web", Reference: "https://r", Excerpt: "e"}}}},
+		// Same id as prior — the elaborator copies the axis ID
+		// verbatim, so a revise dispatch on axis-a arrives with
+		// id=dec-axis-a.
+		ID: "dec-axis-a", Title: "Revised", Rationale: "new", Confidence: 0.9,
+		Alternatives: []spec.Alternative{
+			{Name: "alt", Rationale: "r", RejectedBecause: "r",
+				Citations: []spec.Citation{{Kind: "web", Reference: "https://r", Excerpt: "e"}}},
+			{Name: "Original", Rationale: "old chosen", RejectedBecause: "new analysis",
+				Citations: []spec.Citation{{Kind: "goals", Reference: "GOALS.md", Excerpt: "e"}}},
+		},
 		Citations:  []spec.Citation{{Kind: "goals", Reference: "GOALS.md", Excerpt: "e"}},
 		Axes:       []string{"axis-a"},
 		SurfacedBy: []string{"feat-x"},
 	}
 	mergeDecisions(state, []RoundResult{makeDecisionResult(t, incoming, 2)})
 
-	// Neither decision was replaced; the proposal still has the original two.
 	var got RawSpecProposal
 	require.NoError(t, json.Unmarshal([]byte(state.RawProposal), &got))
-	require.Len(t, got.Decisions, 2, "ambiguous match must skip the replacement; proposal carries both originals")
-	assert.Equal(t, "X", got.Decisions[0].Title, "first original unchanged")
-	assert.Equal(t, "Y", got.Decisions[1].Title, "second original unchanged")
+	require.Len(t, got.Decisions, 1, "id-equality match must replace in-place, not append")
+	assert.Equal(t, "dec-axis-a", got.Decisions[0].ID)
+	assert.Equal(t, "Revised", got.Decisions[0].Title, "body is overwritten by the revision")
 
-	// An integrity-violation concern was recorded naming the ambiguous set.
-	require.NotEmpty(t, state.Concerns, "an integrity-violation concern must be recorded when the revision is ambiguous")
-	var found *Concern
-	for i := range state.Concerns {
-		if state.Concerns[i].AgentID == "integrity_critic" {
-			found = &state.Concerns[i]
-			break
-		}
+	// DJ-133 retired the ambiguous-revision integrity concern — its
+	// trigger condition is unreachable under axis-as-ID. The merge
+	// must not emit an integrity_critic concern from a normal
+	// replace path.
+	for _, c := range state.Concerns {
+		assert.NotEqual(t, "integrity_critic", c.AgentID,
+			"DJ-133: the ambiguous-revision integrity concern path is retired; the merge must not emit it from a normal replace-by-ID path")
 	}
-	require.NotNil(t, found, "an integrity_critic concern must be present")
-	assert.Equal(t, "high", found.Severity)
-	assert.Equal(t, "integrity", found.Kind)
-	assert.ElementsMatch(t, []string{"dec-x", "dec-y"}, found.RelatedDecisionIDs,
-		"the concern names every ambiguous prior so the scout's next pass sees the full intersection")
-	assert.Contains(t, found.Text, "axis-a", "the concern names the ambiguous axis")
 }
 
 // TestMergeDecisionsMarksDrivingConcernAddressed locks in the
@@ -1068,7 +1068,11 @@ func TestMergeDecisionsMarksDrivingConcernAddressed(t *testing.T) {
 	}
 
 	revised := RawDecisionProposal{
-		ID: "dec-cloudwatch", Title: "Adopt CloudWatch", Rationale: "revised",
+		// DJ-133: the revise dispatch's id matches the prior decision's id
+		// verbatim (the elaborator copies the axis ID through). The
+		// chosen-option flip from Datadog to CloudWatch shows up in
+		// title / rationale; the id stays stable.
+		ID: "dec-datadog", Title: "Adopt CloudWatch", Rationale: "revised",
 		Confidence: 0.85,
 		// DJ-128: revised alternatives preserve the prior alternative
 		// "alt" AND demote the prior chosen "Adopt Datadog" — the
@@ -1511,7 +1515,10 @@ func TestDecisionRevisedEventIncludesDrivingConcern(t *testing.T) {
 		},
 	}
 	revised := RawDecisionProposal{
-		ID: "dec-cloudwatch", Title: "CloudWatch", Rationale: "switched",
+		// DJ-133: id mirrors the prior decision's id verbatim (the
+		// elaborator copies the axis ID through). Title / rationale
+		// carry the chosen-option flip.
+		ID: "dec-datadog", Title: "CloudWatch", Rationale: "switched",
 		Confidence: 0.85,
 		// DJ-128: revised alternatives preserve every prior alternative
 		// (alt) AND demote the prior chosen (Datadog v0). Without
