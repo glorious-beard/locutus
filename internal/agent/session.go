@@ -1234,3 +1234,63 @@ func startHeartbeat(role, model string, started time.Time) (stop func()) {
 // Recorder exposes the underlying recorder so callers can read the
 // session id / path for log messages.
 func (l *LoggingExecutor) Recorder() *SessionRecorder { return l.recorder }
+
+// SpecSearch passes the inner executor's spec_search swappable
+// through. LoggingExecutor doesn't own a swappable itself — it's a
+// trace-recording wrapper. The pass-through is load-bearing for
+// council runs: specgen.go's specSearchSwap helper type-asserts the
+// outer AgentExecutor to find the swappable; without this method on
+// the wrapper the assertion fails silently and the council never
+// applies its in-flight overlay swap, leaving the tool handler
+// pointed at the FS-backed default for the entire run.
+//
+// The same applies to SpecListManifest and SpecGet below. Together
+// these three methods reach the *Executor through the wrapper chain
+// (NotifyingExecutor → LoggingExecutor → *Executor) so the council's
+// in-flight overlay actually becomes visible to spec_search /
+// spec_list_manifest / spec_get tool calls during a refine.
+//
+// Latent since DJ-125 Phase 3: the swappable pattern was added then,
+// but LoggingExecutor was never updated to pass it through. Pre-
+// Gemini-3.5-Flash models tended to read the projection's manifest
+// section from the prompt rather than calling spec_list_manifest
+// directly, so the bypassed-overlay tool handler returning empty
+// went undetected. Gemini 3.5 Flash aggressively calls the tool,
+// surfaced the empty-manifest reports across iter-1 reconciler /
+// scout / narrative dispatches on the May 2026 winplan traces.
+func (l *LoggingExecutor) SpecSearch() *SwappableSpecSearch {
+	if l == nil || l.inner == nil {
+		return nil
+	}
+	if p, ok := l.inner.(interface{ SpecSearch() *SwappableSpecSearch }); ok {
+		return p.SpecSearch()
+	}
+	return nil
+}
+
+// SpecListManifest passes the inner executor's spec_list_manifest
+// swappable through. See SpecSearch above for the load-bearing
+// rationale.
+func (l *LoggingExecutor) SpecListManifest() *SwappableSpecListManifest {
+	if l == nil || l.inner == nil {
+		return nil
+	}
+	if p, ok := l.inner.(interface {
+		SpecListManifest() *SwappableSpecListManifest
+	}); ok {
+		return p.SpecListManifest()
+	}
+	return nil
+}
+
+// SpecGet passes the inner executor's spec_get swappable through.
+// See SpecSearch above for the load-bearing rationale.
+func (l *LoggingExecutor) SpecGet() *SwappableSpecGet {
+	if l == nil || l.inner == nil {
+		return nil
+	}
+	if p, ok := l.inner.(interface{ SpecGet() *SwappableSpecGet }); ok {
+		return p.SpecGet()
+	}
+	return nil
+}
