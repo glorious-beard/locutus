@@ -255,6 +255,8 @@ When the council misbehaves, the operator-facing diagnostic surfaces are:
 - **History events** under `.borg/history/evt-*.json`, the durable record of what the council decided across runs. `convergence_failed`, `convergence_stuck`, `convergence_revision_capped`, `decision_revised`, `decision_locked` events name the council's terminal judgments.
 - **The persisted spec** under `.borg/spec/` is the source of truth for what landed. Each decision's `alternatives[]` slice carries the durable deliberation log; reviewers and future iterations read it to avoid re-litigating settled rejections.
 
+The in-process spec graph during a council run is the unified `SpecStore` (DJ-134) at `internal/agent/spec_store.go`. All three RAG tools (spec_list_manifest, spec_get, spec_search) dispatch against it; settled-vs-proposed disposition is tagged per entry. An `spec_*` tool returning unexpected data during a council run means either the council didn't `Begin` a transaction on the store (the wrapper-chain `SpecStore()` accessor returned nil somewhere) or the merge helpers' sync-from-RawProposal step skipped a node — both visible in per-step YAMLs.
+
 See [docs/debugging-traces.md](debugging-traces.md) for the operational guide to walking these surfaces when investigating a council failure.
 
 ## Schema discipline
