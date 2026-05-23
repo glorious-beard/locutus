@@ -32,8 +32,61 @@ type CallRecorder interface {
 // flushes the call's response (or error) to disk. Idempotent on nil so
 // adapters can `defer handle.Finish(resp, err)` without nil-checking
 // when the recorder isn't wired (test fixtures, ad-hoc calls).
+//
+// BeginToolCall opens a sub-record for one client-dispatched tool
+// invocation within this SDK round-trip. The recorder mutates the
+// per-call YAML to inline the tool call's name + input + output
+// (truncated) + timing so an operator reading the trace sees what
+// the model asked for and what it got back without correlating
+// against a separate file. callID discriminates parallel tool calls
+// the model emitted in the same round.
 type CallHandle interface {
 	Finish(resp *Response, err error)
+	BeginToolCall(ctx context.Context, name string, callID string, input []byte, started time.Time) ToolCallHandle
+}
+
+// ToolCallHandle is one in-flight tool dispatch's recorder bookkeeping.
+// Finish stamps the output (or error) + timing onto the parent call's
+// tool-call slice and reflushes the per-call YAML. Idempotent on nil.
+type ToolCallHandle interface {
+	Finish(output []byte, err error)
+}
+
+// noopHandle satisfies ToolCallHandle when no recorder is wired. Lets
+// dispatch helpers call Finish unconditionally without nil-checking
+// at every error branch.
+type noopHandle struct{}
+
+// Finish is a no-op so dispatchXTools can defer Finish without
+// branching on whether a recorder was wired.
+func (noopHandle) Finish([]byte, error) {}
+
+// runRecordedTool invokes a tool's Handler under both an OTel span
+// and a recorder sub-record. Returns the handler's raw output (or
+// error). dispatchAnthropicTools / dispatchGeminiTools /
+// dispatchOpenAITools all funnel through here so the per-provider
+// dispatch logic stays focused on packaging the result for the
+// provider's wire shape, while the cross-cutting concerns (span,
+// recording, timing) land in one place.
+//
+// The span carries tool.name + call.id; the recorder entry carries
+// input + output + status + timing. Both close on return regardless
+// of handler outcome — error paths still emit a closed span and a
+// finalized recorder entry so the trace surfaces failed calls.
+func runRecordedTool(ctx context.Context, handle CallHandle, def ToolDef, callID string, input []byte) ([]byte, error) {
+	started := time.Now()
+	callCtx, span := startToolCallSpan(ctx, def.Name, callID)
+	defer span.End()
+	var th ToolCallHandle = noopHandle{}
+	if handle != nil {
+		th = handle.BeginToolCall(callCtx, def.Name, callID, input, started)
+	}
+	out, err := def.Handler(callCtx, input)
+	th.Finish(out, err)
+	if err != nil {
+		recordToolCallError(span, err)
+	}
+	return out, err
 }
 
 // Recorded sub-call role labels. Adapters pass one of these as the
@@ -77,6 +130,29 @@ func WithCallRecorder(ctx context.Context, r CallRecorder) context.Context {
 // preserves that behaviour for ad-hoc callers).
 func CallRecorderFromContext(ctx context.Context) CallRecorder {
 	if v, ok := ctx.Value(callRecorderContextKey{}).(CallRecorder); ok {
+		return v
+	}
+	return nil
+}
+
+// callHandleContextKey carries the active SDK-call's CallHandle so
+// dispatchXTools (called from inside the SDK round-trip) can open
+// tool-call sub-records without each dispatch function having to
+// thread the handle through its signature.
+type callHandleContextKey struct{}
+
+// WithCallHandle returns a context carrying h so downstream
+// tool-dispatch helpers can open sub-records under the current
+// per-SDK-call YAML.
+func WithCallHandle(ctx context.Context, h CallHandle) context.Context {
+	return context.WithValue(ctx, callHandleContextKey{}, h)
+}
+
+// CallHandleFromContext returns the CallHandle set via WithCallHandle,
+// or nil when none was set (ad-hoc callers; tests; legacy paths).
+// dispatchXTools tolerates nil — recording skips silently.
+func CallHandleFromContext(ctx context.Context) CallHandle {
+	if v, ok := ctx.Value(callHandleContextKey{}).(CallHandle); ok {
 		return v
 	}
 	return nil

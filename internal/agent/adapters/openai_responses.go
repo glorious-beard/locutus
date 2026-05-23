@@ -86,6 +86,9 @@ func (a *OpenAIResponsesAdapter) runOnce(ctx context.Context, req Request, role 
 	var handle CallHandle
 	if rec := CallRecorderFromContext(ctx); rec != nil {
 		handle = rec.Begin(ctx, role, req.Model, req, time.Now())
+		// Push the handle onto ctx so dispatchOpenAITools can open
+		// per-tool-call sub-records.
+		ctx = WithCallHandle(ctx, handle)
 	}
 	resp, err := a.runInner(ctx, req)
 	annotateGenAISpan(span, resp)
@@ -411,6 +414,7 @@ func dispatchOpenAITools(ctx context.Context, registry []ToolDef, calls []openAI
 	for _, t := range registry {
 		byName[t.Name] = t
 	}
+	handle := CallHandleFromContext(ctx)
 	results := make([]responses.ResponseInputItemUnionParam, 0, len(calls))
 	for _, call := range calls {
 		if err := ctx.Err(); err != nil {
@@ -418,6 +422,15 @@ func dispatchOpenAITools(ctx context.Context, registry []ToolDef, calls []openAI
 		}
 		def, ok := byName[call.name]
 		if !ok {
+			callCtx, span := startToolCallSpan(ctx, call.name, call.callID)
+			unknownErr := fmt.Errorf("tool %q not registered", call.name)
+			recordToolCallError(span, unknownErr)
+			var th ToolCallHandle = noopHandle{}
+			if handle != nil {
+				th = handle.BeginToolCall(callCtx, call.name, call.callID, []byte(call.arguments), time.Now())
+			}
+			th.Finish(nil, unknownErr)
+			span.End()
 			results = append(results, responses.ResponseInputItemUnionParam{
 				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 					CallID: call.callID,
@@ -426,7 +439,7 @@ func dispatchOpenAITools(ctx context.Context, registry []ToolDef, calls []openAI
 			})
 			continue
 		}
-		out, err := def.Handler(ctx, json.RawMessage(call.arguments))
+		out, err := runRecordedTool(ctx, handle, def, call.callID, []byte(call.arguments))
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, ErrTimeout

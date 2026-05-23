@@ -122,6 +122,10 @@ func (a *AnthropicAdapter) runOnce(ctx context.Context, req Request, role string
 	var handle CallHandle
 	if rec := CallRecorderFromContext(ctx); rec != nil {
 		handle = rec.Begin(ctx, role, req.Model, req, time.Now())
+		// Push the handle onto ctx so dispatchAnthropicTools can open
+		// per-tool-call sub-records without threading the handle
+		// through every signature on the dispatch path.
+		ctx = WithCallHandle(ctx, handle)
 	}
 	params := buildAnthropicMessageNewParams(req)
 	resp, err := a.dispatch(ctx, params, req)
@@ -557,6 +561,7 @@ func dispatchAnthropicTools(ctx context.Context, registry []ToolDef, toolUses []
 	for _, t := range registry {
 		byName[t.Name] = t
 	}
+	handle := CallHandleFromContext(ctx)
 	results := make([]anthropicsdk.ContentBlockParamUnion, 0, len(toolUses))
 	for _, tu := range toolUses {
 		if err := ctx.Err(); err != nil {
@@ -564,11 +569,23 @@ func dispatchAnthropicTools(ctx context.Context, registry []ToolDef, toolUses []
 		}
 		def, ok := byName[tu.Name]
 		if !ok {
+			// Record the unknown-tool failure under a span so the
+			// trace surfaces it as a tool-call error even when the
+			// handler never ran.
+			callCtx, span := startToolCallSpan(ctx, tu.Name, tu.ID)
+			unknownErr := fmt.Errorf("tool %q not registered", tu.Name)
+			recordToolCallError(span, unknownErr)
+			var th ToolCallHandle = noopHandle{}
+			if handle != nil {
+				th = handle.BeginToolCall(callCtx, tu.Name, tu.ID, tu.Input, time.Now())
+			}
+			th.Finish(nil, unknownErr)
+			span.End()
 			results = append(results, anthropicsdk.NewToolResultBlock(tu.ID,
 				fmt.Sprintf(`{"error": "tool %q not registered"}`, tu.Name), true))
 			continue
 		}
-		out, err := def.Handler(ctx, tu.Input)
+		out, err := runRecordedTool(ctx, handle, def, tu.ID, tu.Input)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, ErrTimeout

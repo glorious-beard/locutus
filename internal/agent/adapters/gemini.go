@@ -99,6 +99,9 @@ func (g *GeminiAdapter) runOnce(ctx context.Context, req Request, role string) (
 	var handle CallHandle
 	if rec := CallRecorderFromContext(ctx); rec != nil {
 		handle = rec.Begin(ctx, role, req.Model, req, time.Now())
+		// Push the handle onto ctx so dispatchGeminiTools can open
+		// per-tool-call sub-records.
+		ctx = WithCallHandle(ctx, handle)
 	}
 	resp, err := g.runInner(ctx, req)
 	annotateGenAISpan(span, resp)
@@ -488,6 +491,7 @@ func dispatchGeminiTools(ctx context.Context, registry []ToolDef, calls []*genai
 	for _, t := range registry {
 		byName[t.Name] = t
 	}
+	handle := CallHandleFromContext(ctx)
 	parts := make([]*genai.Part, 0, len(calls))
 	for _, call := range calls {
 		if err := ctx.Err(); err != nil {
@@ -495,6 +499,15 @@ func dispatchGeminiTools(ctx context.Context, registry []ToolDef, calls []*genai
 		}
 		def, ok := byName[call.Name]
 		if !ok {
+			callCtx, span := startToolCallSpan(ctx, call.Name, call.ID)
+			unknownErr := fmt.Errorf("tool %q not registered", call.Name)
+			recordToolCallError(span, unknownErr)
+			var th ToolCallHandle = noopHandle{}
+			if handle != nil {
+				th = handle.BeginToolCall(callCtx, call.Name, call.ID, nil, time.Now())
+			}
+			th.Finish(nil, unknownErr)
+			span.End()
 			parts = append(parts, &genai.Part{FunctionResponse: &genai.FunctionResponse{
 				ID:       call.ID,
 				Name:     call.Name,
@@ -504,6 +517,18 @@ func dispatchGeminiTools(ctx context.Context, registry []ToolDef, calls []*genai
 		}
 		input, err := json.Marshal(call.Args)
 		if err != nil {
+			// Input marshalling failure happens before the handler
+			// runs; emit a closed span + recorder entry so the trace
+			// still surfaces the failed call.
+			callCtx, span := startToolCallSpan(ctx, call.Name, call.ID)
+			marshalErr := fmt.Errorf("marshal input: %w", err)
+			recordToolCallError(span, marshalErr)
+			var th ToolCallHandle = noopHandle{}
+			if handle != nil {
+				th = handle.BeginToolCall(callCtx, call.Name, call.ID, nil, time.Now())
+			}
+			th.Finish(nil, marshalErr)
+			span.End()
 			parts = append(parts, &genai.Part{FunctionResponse: &genai.FunctionResponse{
 				ID:       call.ID,
 				Name:     call.Name,
@@ -511,7 +536,7 @@ func dispatchGeminiTools(ctx context.Context, registry []ToolDef, calls []*genai
 			}})
 			continue
 		}
-		out, err := def.Handler(ctx, input)
+		out, err := runRecordedTool(ctx, handle, def, call.ID, input)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, ErrTimeout

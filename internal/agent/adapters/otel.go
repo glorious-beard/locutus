@@ -1,7 +1,11 @@
 package adapters
 
 import (
+	"context"
+
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -28,6 +32,38 @@ const adapterTracerName = "github.com/chetan/locutus/internal/agent/adapters"
 // noisier, so we skip when the underlying counter is zero. Same
 // principle for response.id — only Anthropic exposes a stable id we
 // can pass through today.
+// startToolCallSpan opens a child span on the current provider.generate
+// span carrying the tool-call's identity. The span name is "tool.call";
+// per-name filtering uses the gen_ai.tool.name attribute (OTel GenAI
+// semantic convention) so trace queries can pivot on tool identity
+// without parsing span names. callID discriminates parallel calls the
+// model emitted in the same round.
+//
+// Returned ctx carries the child span context; callers defer span.End()
+// after the handler returns and call recordToolCallError when the
+// handler errored so the span surfaces as red in trace UIs.
+func startToolCallSpan(ctx context.Context, name, callID string) (context.Context, oteltrace.Span) {
+	return otel.Tracer(adapterTracerName).Start(ctx, "tool.call",
+		oteltrace.WithAttributes(
+			attribute.String("gen_ai.tool.name", name),
+			attribute.String("gen_ai.tool.call.id", callID),
+		),
+	)
+}
+
+// recordToolCallError stamps the span with an error status + the
+// classified error category so trace UIs surface failed tool calls
+// as red without forcing the operator to inspect the attached error
+// event. The handler's error is also appended via RecordError for
+// operators that want the message body.
+func recordToolCallError(span oteltrace.Span, err error) {
+	if span == nil || err == nil || !span.IsRecording() {
+		return
+	}
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
+}
+
 func annotateGenAISpan(span oteltrace.Span, resp *Response) {
 	if resp == nil || !span.IsRecording() {
 		return

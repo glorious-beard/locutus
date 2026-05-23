@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -379,26 +380,56 @@ type recordedCitation struct {
 	Snippet string `yaml:"snippet,omitempty"`
 }
 
-// recordedToolCall is one server-side tool invocation surfaced in the
-// session trace. Mirrors agent.ToolCall with YAML tags so a per-call
-// file shows the query plus its outcome inline:
+// recordedToolCall is one tool invocation surfaced in the session
+// trace. Two shapes coexist on this struct:
+//
+//   - Server-side tools (Anthropic web_search): Name + Query +
+//     Status + optional ErrorCode. The provider runs the tool and
+//     returns its outcome inline; the adapter surfaces the query
+//     and its status so auditors can identify ungrounded claims:
 //
 //	tool_calls:
 //	  - name: web_search
 //	    query: "TanStack Start production ready stable release 2025"
 //	    status: error
-//	  - name: web_search
-//	    query: "Next.js App Router cold start GCP Cloud Run performance 2024 2025"
-//	    status: success
 //
-// Auditors reading a trace can immediately identify queries that
-// returned no evidence — claims attributed to those queries should be
-// treated as ungrounded regardless of what the model wrote.
+//   - Client-side dispatched tools (spec_*, future write tools):
+//     Name + CallID + Input (the raw args JSON the model emitted) +
+//     Output (the handler's return value, truncated) + timing +
+//     optional Error. The CallID discriminates parallel calls the
+//     model issued in the same round:
+//
+//	tool_calls:
+//	  - name: spec_get
+//	    call_id: toolu_01ABC...
+//	    input: '{"ids":["dec-oltp-store","dec-compute-platform"]}'
+//	    output: '{"results":{"dec-oltp-store":{...}}}'
+//	    status: success
+//	    started_at: "2026-05-23T15:42:01Z"
+//	    duration_ms: 4
+//
+// Auditors reading a trace can see what the model asked for and what
+// it got back without correlating against a separate file.
 type recordedToolCall struct {
 	Name      string `yaml:"name"`
+	CallID    string `yaml:"call_id,omitempty"`
 	Query     string `yaml:"query,omitempty"`
-	Status    string `yaml:"status"`
-	ErrorCode string `yaml:"error_code,omitempty"`
+	// Input / Output are typed as `any` (not raw JSON strings) so the
+	// YAML marshaler walks the structure natively — operators reading
+	// a trace see nested keys rather than a JSON-string-inside-YAML-
+	// scalar. Same rationale as SpecGetEntry.Body under DJ-134:
+	// store the decoded structure once and let the encoder render it.
+	// The recorder bridge unmarshals json.RawMessage into a generic
+	// any before assigning; an unparseable payload falls back to the
+	// raw string form so the bytes still surface for forensics.
+	Input       any    `yaml:"input,omitempty"`
+	Output      any    `yaml:"output,omitempty"`
+	Status      string `yaml:"status"`
+	ErrorCode   string `yaml:"error_code,omitempty"`
+	Error       string `yaml:"error,omitempty"`
+	StartedAt   string `yaml:"started_at,omitempty"`
+	CompletedAt string `yaml:"completed_at,omitempty"`
+	DurationMs  int64  `yaml:"duration_ms,omitempty"`
 }
 
 type recordedMessage struct {
@@ -555,7 +586,13 @@ type callHandle struct {
 	index    int
 	filePath string
 	started  time.Time
-	call     recordedCall
+	// mu guards call against concurrent tool-call recording. Tool
+	// dispatches inside one SDK round-trip are serial today (every
+	// adapter's dispatchXTools iterates calls sequentially), but the
+	// mutex insulates against future parallel-dispatch refactors and
+	// against the recorder's own background-flush in flush().
+	mu   sync.Mutex
+	call recordedCall
 
 	stepRef *stepHandle
 	callID  string
@@ -705,6 +742,86 @@ func (h *callHandle) finishAt(out *AgentOutput, callErr error, completedAt time.
 	h.recorder.mu.Lock()
 	delete(h.recorder.inFlight, h.index)
 	h.recorder.mu.Unlock()
+}
+
+// toolCallRecorderHandle is the per-tool-call sub-record. It holds
+// a pointer to the parent call's tool-call entry (by index) so
+// Finish can mutate it in place and reflush the YAML. Idempotent
+// on nil so dispatch helpers can defer Finish without nil-checking.
+type toolCallRecorderHandle struct {
+	parent *callHandle
+	idx    int
+}
+
+// Finish stamps the output, error, and timing onto the parent's
+// tool-call slice entry and reflushes the per-call YAML. The output
+// is unmarshaled into a generic any so the YAML marshaler renders it
+// natively rather than embedding a JSON string; an unparseable
+// payload falls back to the raw string form so the bytes still
+// surface for forensics.
+func (t *toolCallRecorderHandle) Finish(output []byte, err error) {
+	if t == nil || t.parent == nil {
+		return
+	}
+	completedAt := time.Now()
+	t.parent.mu.Lock()
+	if t.idx < 0 || t.idx >= len(t.parent.call.ToolCalls) {
+		t.parent.mu.Unlock()
+		return
+	}
+	entry := &t.parent.call.ToolCalls[t.idx]
+	entry.CompletedAt = completedAt.Format(time.RFC3339)
+	if entry.StartedAt != "" {
+		if started, perr := time.Parse(time.RFC3339, entry.StartedAt); perr == nil {
+			entry.DurationMs = completedAt.Sub(started).Milliseconds()
+		}
+	}
+	if err != nil {
+		entry.Status = "error"
+		entry.Error = err.Error()
+	} else {
+		entry.Status = "success"
+		entry.Output = decodeToolPayload(output)
+	}
+	t.parent.mu.Unlock()
+	if ferr := t.parent.flush(); ferr != nil {
+		slog.Warn("session recorder: tool-call finish flush failed",
+			"session", t.parent.recorder.manifest.SessionID, "index", t.parent.index, "error", ferr)
+	}
+}
+
+// decodeToolPayload turns the handler's JSON payload into a generic
+// any so the YAML marshaler can render it as nested keys. Falls back
+// to the raw string when the bytes don't parse as JSON — that's the
+// shape pre-DJ-134 traces had and is still legible for forensic
+// inspection. Empty / nil input returns nil so the omitempty YAML
+// tag drops the field entirely.
+func decodeToolPayload(p []byte) any {
+	if len(p) == 0 {
+		return nil
+	}
+	var decoded any
+	if err := json.Unmarshal(p, &decoded); err == nil {
+		return decoded
+	}
+	return string(p)
+}
+
+// beginToolCallEntry appends a partial tool-call entry to the parent
+// call's slice and returns the entry's index. Called from the
+// adapter-facing bridge when the model's tool dispatch begins; the
+// returned index lets the matching Finish mutate the same entry.
+func (h *callHandle) beginToolCallEntry(name, callID string, input []byte, started time.Time) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.call.ToolCalls = append(h.call.ToolCalls, recordedToolCall{
+		Name:      name,
+		CallID:    callID,
+		Input:     decodeToolPayload(input),
+		Status:    "in_progress",
+		StartedAt: started.Format(time.RFC3339),
+	})
+	return len(h.call.ToolCalls) - 1
 }
 
 // stepHandle is the parent-step bookkeeping LoggingExecutor.Run opens
@@ -941,6 +1058,25 @@ func (b *callHandleBridge) Finish(resp *adapters.Response, err error) {
 	out := agentOutputFromAdapterResponse(resp)
 	b.child.Finish(out, err)
 }
+
+// BeginToolCall opens a sub-record for one tool dispatch under the
+// current SDK call. Returns a ToolCallHandle the dispatch helper
+// Finishes with the handler's output (or error) when the tool
+// returns. Nil-safe — a nil bridge or nil child produces a no-op
+// handle so dispatch helpers can call BeginToolCall unconditionally.
+func (b *callHandleBridge) BeginToolCall(ctx context.Context, name, callID string, input []byte, started time.Time) adapters.ToolCallHandle {
+	if b == nil || b.child == nil {
+		return noopToolCallHandle{}
+	}
+	idx := b.child.beginToolCallEntry(name, callID, input, started)
+	return &toolCallRecorderHandle{parent: b.child, idx: idx}
+}
+
+// noopToolCallHandle satisfies adapters.ToolCallHandle for nil-bridge
+// paths so dispatch helpers don't need a nil check around Finish.
+type noopToolCallHandle struct{}
+
+func (noopToolCallHandle) Finish([]byte, error) {}
 
 // agentOutputFromAdapterResponse is a local subset of the projection
 // in executor.outputFromResponse, narrowed to what the per-call
