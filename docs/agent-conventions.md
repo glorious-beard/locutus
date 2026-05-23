@@ -238,6 +238,15 @@ agents follow from that framing:
 
 The canonical example is `spec_candidate_survey` ([DJ-132](DECISION_JOURNAL.md#dj-132)) — runs per-axis before the decision-elaborator on the initial-elaboration path, emits a flat `CandidateList` of 6-10 entries, feeds into the elaborator's projection as a pre-populated candidate set.
 
+### Stable identifiers vs. current content
+
+Identifiers name the *question* a spec node answers; content fields name the *answer*. The two have different lifecycle requirements: ids must stay byte-stable across revisions so backreferences don't drift, while content (title, body, rationale, chosen-option) is rewritten freely as the decision evolves. Conflating them — building the id out of the current answer — makes the id drift whenever the answer changes, which then forces the workflow to compensate (axis-intersection match, ambiguity detection, etc.). The convention pushes the compensation work back into the schema:
+
+- **Decisions** name their axis. The id is `dec-<axis-id>` (DJ-133); the chosen option lives in `title` / `chosen_option`. A Flip changes the body, not the id. The elaborator copies the axis ID verbatim into the output's `id` field — no slug-from-chosen derivation.
+- **Features and strategies** are slug-from-title-or-summary today. The convention applies in spirit (the id names a stable handle; description changes are revisions, not new nodes) but the slug derivation is content-based because there is no "axis" abstraction at that layer — the title IS the question the node answers. This is acceptable because feature / strategy titles don't drift the way a decision's chosen option does.
+
+The agent-prompt implication: when an LLM agent author asks "where does the id come from?", the answer is usually "from the structural input the dispatcher gave you (the axis for a decision, the title for a feature)" — not "from the choice you're about to make." Prompts that frame the id as derived from the agent's own deliberation invite Flip-drift; prompts that frame it as copied from a structural input keep ids durable. The DJ-133 elaborator prompt is the canonical example of the latter framing.
+
 ## When you're tempted to add an anti-pattern list
 
 Stop and ask: is the failure caused by the model not knowing the rule, or

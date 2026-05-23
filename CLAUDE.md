@@ -8,6 +8,7 @@ Locutus — a Go CLI and MCP server that acts as an autonomous project manager f
 
 ## Sources of Truth
 
+- **Decision IDs are axis-shaped (DJ-133).** Every decision's `id` equals `dec-` followed by the primary axis ID it answers verbatim (axis `oltp-store` → `dec-oltp-store`). The id names the *question*; `title`, `chosen_option`, and `rationale` carry the human-readable *answer*. A revision that flips the chosen option keeps the same id — backreferences from features, strategies, and approaches stay byte-stable across Flips. The merge step matches revise dispatches against prior decisions by exact id equality (the retired pre-DJ-133 path matched by axis intersection).
 - `docs/DECISION_JOURNAL.md` — architectural decisions with rationale, alternatives considered, and reversals. Authoritative design record.
 - `.claude/plans/` — active implementation plans (current consolidation work is in `verb-set-phase-{a,b,c,d}.md`). Copy to `docs/plans/` once a phase stabilises.
 - `docs/agent-conventions.md` — documented anti-patterns and conventions for agent prompt files. **Read this before editing or creating any file under `internal/scaffold/agents/`.** It captures lessons we've re-learned multiple times (anti-pattern priming, thinking-leakage, schema-skeleton placeholders) and the prefer-positive-phrasing + push-constraints-to-schema-tags patterns that replace them.
