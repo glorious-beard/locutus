@@ -58,7 +58,7 @@ func NewGeminiAdapter(ctx context.Context) (*GeminiAdapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gemini client: %w", err)
 	}
-	return &GeminiAdapter{client: c, maxToolRounds: 10}, nil
+	return &GeminiAdapter{client: c, maxToolRounds: 100}, nil
 }
 
 // Provider returns the canonical name for this adapter.

@@ -21,10 +21,14 @@ const specLoopTemplateID = "spec_loop"
 
 // defaultSpecGateBudget is the per-gate iteration cap when neither the
 // gate step's own Budget nor the workflow's DefaultGateBudget is set.
-// Mirrors the plan: 5 iterations is roomy for a council that's making
-// real progress and tight enough that runaway prompts surface as a
-// failure rather than silently burning model time.
-const defaultSpecGateBudget = 5
+// 20 iterations gives a council on a complex spec graph (winplan-sized:
+// 10+ axes, 4-8 critic concerns per iter) room to converge without
+// hitting the cap on legitimate work, while still surfacing genuinely
+// runaway prompts (oscillation, axis-recurrence) before they burn
+// excessive model time. The recurrence-threshold check (force-terminate
+// after 3 iterations against the same axis) catches the failure modes
+// the lower budget previously caught earlier.
+const defaultSpecGateBudget = 20
 
 // recurrenceTerminationThreshold caps how many iterations the same
 // (deliverable, axis) pair can appear in gate verdicts before the

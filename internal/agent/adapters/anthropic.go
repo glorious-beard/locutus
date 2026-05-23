@@ -62,7 +62,7 @@ func NewAnthropicAdapter() (*AnthropicAdapter, error) {
 		option.WithAPIKey(key),
 		option.WithRequestTimeout(anthropicRequestTimeout),
 	)
-	return &AnthropicAdapter{client: &c, maxToolRounds: 10}, nil
+	return &AnthropicAdapter{client: &c, maxToolRounds: 100}, nil
 }
 
 // Provider returns the canonical name for this adapter.

@@ -39,7 +39,7 @@ func NewOpenAIResponsesAdapter() (*OpenAIResponsesAdapter, error) {
 		return nil, fmt.Errorf("OPENAI_API_KEY not set")
 	}
 	c := openai.NewClient(option.WithAPIKey(key))
-	return &OpenAIResponsesAdapter{client: &c, maxToolRounds: 10}, nil
+	return &OpenAIResponsesAdapter{client: &c, maxToolRounds: 100}, nil
 }
 
 // Provider returns the canonical name for this adapter.
