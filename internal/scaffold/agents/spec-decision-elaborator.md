@@ -1,5 +1,5 @@
 ---
-id: spec_decision_elaborator
+id: spec-decision-elaborator
 thinking: on
 role: planning
 models:
@@ -62,7 +62,7 @@ Three failure modes for search must be reported distinctly — do not paper over
 
 3. **Search succeeded.** The tool returned relevant pages. Emit `kind: "web"` citations with `reference` set to the URL you actually grounded against and `excerpt` set to a verbatim quote from the page that supports the claim. The excerpt is mandatory for web citations because web pages change after retrieval; the verbatim quote keeps the citation durable.
 
-The two sentinel excerpts above are reproduced verbatim from `justify_researcher.md` — operators have tooling that grep-matches on those exact phrases to identify ungrounded findings. Match the phrasing character-for-character so the existing audit tooling continues to work.
+The two sentinel excerpts above are reproduced verbatim from `justify-researcher.md` — operators have tooling that grep-matches on those exact phrases to identify ungrounded findings. Match the phrasing character-for-character so the existing audit tooling continues to work.
 
 # Task
 

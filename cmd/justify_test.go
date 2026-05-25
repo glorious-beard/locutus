@@ -45,10 +45,10 @@ func TestJustifySoloDispatch(t *testing.T) {
 	assert.Contains(t, result.Markdown, brief.Defense)
 	assert.Contains(t, result.Markdown, "GOALS.md §1: build a thing")
 
-	// Exactly one call, made against spec_advocate.
+	// Exactly one call, made against spec-advocate.
 	calls := mock.Calls()
 	require.Len(t, calls, 1)
-	assert.Equal(t, "spec_advocate", calls[0].Def.ID)
+	assert.Equal(t, "spec-advocate", calls[0].Def.ID)
 	assert.Equal(t, "JustificationBrief", calls[0].Def.OutputSchema)
 
 	// User message includes the rendered explain output.
@@ -93,9 +93,9 @@ func TestJustifyAdversarialDispatch(t *testing.T) {
 	// Tagged responses so order doesn't matter and we can verify the
 	// challenger fires first, then researcher, then advocate.
 	mock := agent.NewMockExecutor(
-		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge), Model: "test"}},
-		agent.MockResponse{AgentID: "justify_researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
-		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
+		agent.MockResponse{AgentID: "spec-challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge), Model: "test"}},
+		agent.MockResponse{AgentID: "justify-researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
+		agent.MockResponse{AgentID: "spec-advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
 	)
 
 	result, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "What about vendor lock-in?", nil)
@@ -121,9 +121,9 @@ func TestJustifyAdversarialDispatch(t *testing.T) {
 	// Three calls fired in order: challenger, researcher, advocate.
 	calls := mock.Calls()
 	require.Len(t, calls, 3)
-	assert.Equal(t, "spec_challenger", calls[0].Def.ID)
-	assert.Equal(t, "justify_researcher", calls[1].Def.ID)
-	assert.Equal(t, "spec_advocate", calls[2].Def.ID)
+	assert.Equal(t, "spec-challenger", calls[0].Def.ID)
+	assert.Equal(t, "justify-researcher", calls[1].Def.ID)
+	assert.Equal(t, "spec-advocate", calls[2].Def.ID)
 	assert.Equal(t, "ResearchBrief", calls[1].Def.OutputSchema)
 	assert.Equal(t, "AdversarialDefense", calls[2].Def.OutputSchema)
 
@@ -166,9 +166,9 @@ func TestJustifyAdversarialBrokenDownSurfacesBreakingPoints(t *testing.T) {
 		BreakingPoints: []string{"need sharded write path"},
 	}
 	mock := agent.NewMockExecutor(
-		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge), Model: "test"}},
-		agent.MockResponse{AgentID: "justify_researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
-		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
+		agent.MockResponse{AgentID: "spec-challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge), Model: "test"}},
+		agent.MockResponse{AgentID: "justify-researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
+		agent.MockResponse{AgentID: "spec-advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
 	)
 
 	result, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "Does this scale?", nil)
@@ -198,9 +198,9 @@ func TestJustifyInvalidVerdictRejected(t *testing.T) {
 		Verdict:            "maybe", // invalid
 	}
 	mock := agent.NewMockExecutor(
-		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge), Model: "test"}},
-		agent.MockResponse{AgentID: "justify_researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
-		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
+		agent.MockResponse{AgentID: "spec-challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge), Model: "test"}},
+		agent.MockResponse{AgentID: "justify-researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research), Model: "test"}},
+		agent.MockResponse{AgentID: "spec-advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense), Model: "test"}},
 	)
 
 	_, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "challenge", nil)
@@ -211,7 +211,7 @@ func TestJustifyInvalidVerdictRejected(t *testing.T) {
 func TestJustifyEmptyChallengerConcerns(t *testing.T) {
 	fs := fixtureExplain(t)
 	mock := agent.NewMockExecutor(
-		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: `{"concerns":[]}`, Model: "test"}},
+		agent.MockResponse{AgentID: "spec-challenger", Response: &agent.AgentOutput{Content: `{"concerns":[]}`, Model: "test"}},
 	)
 	_, err := RunJustifyCommand(context.Background(), mock, fs, "dec-shared", "challenge", nil)
 	require.Error(t, err)

@@ -9,7 +9,7 @@ import (
 	"github.com/chetan/locutus/internal/spec"
 )
 
-// ChallengeSplit is the output of the justify_splitter agent. It
+// ChallengeSplit is the output of the justify-splitter agent. It
 // classifies a user's challenge against a parent node (strategy /
 // feature / bug / approach) into per-decision shards plus an
 // optional parent-prose shard for claims that engage the parent's
@@ -59,7 +59,7 @@ func init() {
 	})
 }
 
-// SplitterInput bundles the inputs the justify_splitter needs to
+// SplitterInput bundles the inputs the justify-splitter needs to
 // classify a user challenge across a parent's referenced decisions.
 type SplitterInput struct {
 	ParentID    string
@@ -90,7 +90,7 @@ type SplitterDecisionRef struct {
 // synthesizer.
 const splitterMaxAttempts = 3
 
-// InvokeSplitter runs the justify_splitter agent. Returns a
+// InvokeSplitter runs the justify-splitter agent. Returns a
 // ChallengeSplit with one shard per input decision in input order.
 // The caller drives fan-out by walking DecisionShards and dispatching
 // the per-decision flow only for shards with non-empty Shard text.
@@ -163,7 +163,7 @@ func validateSplit(split *ChallengeSplit, decisions []SplitterDecisionRef) error
 }
 
 // buildSplitterPrompt assembles the user message. The system prompt
-// (loaded from internal/scaffold/agents/justify_splitter.md) sets
+// (loaded from internal/scaffold/agents/justify-splitter.md) sets
 // the classification rules; this builder gives the splitter the
 // concrete inputs it classifies against.
 func buildSplitterPrompt(in SplitterInput) string {

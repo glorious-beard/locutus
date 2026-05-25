@@ -1,5 +1,5 @@
 ---
-id: spec_gate
+id: spec-gate
 thinking: on
 role: gate
 models:
@@ -11,7 +11,7 @@ output_schema: SpecGateVerdict
 ---
 
 <!-- DJ-124: retired from spec-generation workflow; preserved as reference. The
-     scout-driven loop folds the gate role into spec_scout: the scout's own
+     scout-driven loop folds the gate role into spec-scout: the scout's own
      ScoutBrief.Converged field drives the convergence decision, and the
      scout's gap-analyzer pass replaces the gate's open-dimensions enumeration. -->
 

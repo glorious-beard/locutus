@@ -1,5 +1,5 @@
 ---
-id: justify_synthesizer
+id: justify-synthesizer
 thinking: off
 role: synthesis
 models:

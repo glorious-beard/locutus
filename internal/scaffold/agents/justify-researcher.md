@@ -1,5 +1,5 @@
 ---
-id: justify_researcher
+id: justify-researcher
 thinking: on
 role: research
 models:

@@ -16,11 +16,11 @@ import (
 // the map to be populated for any non-RunItem paths it might hit.
 func adversarialAgentDefs() map[string]AgentDef {
 	return map[string]AgentDef{
-		"spec_advocate":       {ID: "spec_advocate", OutputSchema: "AdversarialDefense"},
-		"spec_challenger":     {ID: "spec_challenger", OutputSchema: "ChallengeBrief"},
-		"justify_researcher":  {ID: "justify_researcher", OutputSchema: "ResearchBrief"},
-		"justify_splitter":    {ID: "justify_splitter", OutputSchema: "ChallengeSplit"},
-		"justify_synthesizer": {ID: "justify_synthesizer", OutputSchema: "SynthesisVerdict"},
+		"spec-advocate":       {ID: "spec-advocate", OutputSchema: "AdversarialDefense"},
+		"spec-challenger":     {ID: "spec-challenger", OutputSchema: "ChallengeBrief"},
+		"justify-researcher":  {ID: "justify-researcher", OutputSchema: "ResearchBrief"},
+		"justify-splitter":    {ID: "justify-splitter", OutputSchema: "ChallengeSplit"},
+		"justify-synthesizer": {ID: "justify-synthesizer", OutputSchema: "SynthesisVerdict"},
 	}
 }
 
@@ -54,11 +54,11 @@ func TestJustifyAdversarialFanoutWorkflow_PhaseOrdering(t *testing.T) {
 	}
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "justify_splitter", Response: &AgentOutput{Content: marshalJSON(t, splitterPayload)}},
-		MockResponse{AgentID: "spec_challenger", Response: &AgentOutput{Content: marshalJSON(t, challengePayload)}},
-		MockResponse{AgentID: "justify_researcher", Response: &AgentOutput{Content: marshalJSON(t, researchPayload)}},
-		MockResponse{AgentID: "spec_advocate", Response: &AgentOutput{Content: marshalJSON(t, defensePayload)}},
-		MockResponse{AgentID: "justify_synthesizer", Response: &AgentOutput{Content: marshalJSON(t, synthesisPayload)}},
+		MockResponse{AgentID: "justify-splitter", Response: &AgentOutput{Content: marshalJSON(t, splitterPayload)}},
+		MockResponse{AgentID: "spec-challenger", Response: &AgentOutput{Content: marshalJSON(t, challengePayload)}},
+		MockResponse{AgentID: "justify-researcher", Response: &AgentOutput{Content: marshalJSON(t, researchPayload)}},
+		MockResponse{AgentID: "spec-advocate", Response: &AgentOutput{Content: marshalJSON(t, defensePayload)}},
+		MockResponse{AgentID: "justify-synthesizer", Response: &AgentOutput{Content: marshalJSON(t, synthesisPayload)}},
 	)
 
 	state := JustifyState{
@@ -67,11 +67,11 @@ func TestJustifyAdversarialFanoutWorkflow_PhaseOrdering(t *testing.T) {
 		ParentNodeMD:        "# `strat-x` — Test Strategy",
 		ParentBody:          "body prose",
 		Challenge:           "shard a",
-		AdvocateDef:         AgentDef{ID: "spec_advocate", OutputSchema: "AdversarialDefense"},
-		ChallengerDef:       AgentDef{ID: "spec_challenger", OutputSchema: "ChallengeBrief"},
-		ResearcherDef:       AgentDef{ID: "justify_researcher", OutputSchema: "ResearchBrief"},
-		SplitterDef:         AgentDef{ID: "justify_splitter", OutputSchema: "ChallengeSplit"},
-		SynthesizerDef:      AgentDef{ID: "justify_synthesizer", OutputSchema: "SynthesisVerdict"},
+		AdvocateDef:         AgentDef{ID: "spec-advocate", OutputSchema: "AdversarialDefense"},
+		ChallengerDef:       AgentDef{ID: "spec-challenger", OutputSchema: "ChallengeBrief"},
+		ResearcherDef:       AgentDef{ID: "justify-researcher", OutputSchema: "ResearchBrief"},
+		SplitterDef:         AgentDef{ID: "justify-splitter", OutputSchema: "ChallengeSplit"},
+		SynthesizerDef:      AgentDef{ID: "justify-synthesizer", OutputSchema: "SynthesisVerdict"},
 		DecisionRefs:        []SplitterDecisionRef{{ID: "dec-a", Title: "A"}},
 		PerDecisionMarkdown: map[string]string{"dec-a": "# dec-a\n\nA body"},
 		Dispatcher:          NewDispatcher(mock),
@@ -88,11 +88,11 @@ func TestJustifyAdversarialFanoutWorkflow_PhaseOrdering(t *testing.T) {
 
 	calls := mock.Calls()
 	require.Len(t, calls, 5, "fanout workflow fires 5 calls: splitter + challenger + researcher + advocate + synthesizer")
-	assert.Equal(t, "justify_splitter", calls[0].Def.ID, "classify must run first")
-	assert.Equal(t, "spec_challenger", calls[1].Def.ID, "per_decision starts with challenger")
-	assert.Equal(t, "justify_researcher", calls[2].Def.ID, "per_decision researcher follows challenger")
-	assert.Equal(t, "spec_advocate", calls[3].Def.ID, "per_decision advocate follows researcher")
-	assert.Equal(t, "justify_synthesizer", calls[4].Def.ID, "synthesize must run last")
+	assert.Equal(t, "justify-splitter", calls[0].Def.ID, "classify must run first")
+	assert.Equal(t, "spec-challenger", calls[1].Def.ID, "per_decision starts with challenger")
+	assert.Equal(t, "justify-researcher", calls[2].Def.ID, "per_decision researcher follows challenger")
+	assert.Equal(t, "spec-advocate", calls[3].Def.ID, "per_decision advocate follows researcher")
+	assert.Equal(t, "justify-synthesizer", calls[4].Def.ID, "synthesize must run last")
 
 	require.NotNil(t, state.Split, "classify merge must populate Split")
 	require.Len(t, state.PerDecisionResults, 1, "per_decision merge must populate one result per non-empty shard")
@@ -129,11 +129,11 @@ func TestJustifyAdversarialFanoutWorkflow_SkipsEmptyShards(t *testing.T) {
 	}
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "justify_splitter", Response: &AgentOutput{Content: marshalJSON(t, splitterPayload)}},
-		MockResponse{AgentID: "spec_challenger", Response: &AgentOutput{Content: marshalJSON(t, challengePayload)}},
-		MockResponse{AgentID: "justify_researcher", Response: &AgentOutput{Content: marshalJSON(t, researchPayload)}},
-		MockResponse{AgentID: "spec_advocate", Response: &AgentOutput{Content: marshalJSON(t, defensePayload)}},
-		MockResponse{AgentID: "justify_synthesizer", Response: &AgentOutput{Content: marshalJSON(t, synthesisPayload)}},
+		MockResponse{AgentID: "justify-splitter", Response: &AgentOutput{Content: marshalJSON(t, splitterPayload)}},
+		MockResponse{AgentID: "spec-challenger", Response: &AgentOutput{Content: marshalJSON(t, challengePayload)}},
+		MockResponse{AgentID: "justify-researcher", Response: &AgentOutput{Content: marshalJSON(t, researchPayload)}},
+		MockResponse{AgentID: "spec-advocate", Response: &AgentOutput{Content: marshalJSON(t, defensePayload)}},
+		MockResponse{AgentID: "justify-synthesizer", Response: &AgentOutput{Content: marshalJSON(t, synthesisPayload)}},
 	)
 
 	state := JustifyState{
@@ -141,11 +141,11 @@ func TestJustifyAdversarialFanoutWorkflow_SkipsEmptyShards(t *testing.T) {
 		NodeMarkdown:   "# strat-x",
 		ParentBody:     "body prose",
 		Challenge:      "challenge text",
-		AdvocateDef:    AgentDef{ID: "spec_advocate", OutputSchema: "AdversarialDefense"},
-		ChallengerDef:  AgentDef{ID: "spec_challenger", OutputSchema: "ChallengeBrief"},
-		ResearcherDef:  AgentDef{ID: "justify_researcher", OutputSchema: "ResearchBrief"},
-		SplitterDef:    AgentDef{ID: "justify_splitter", OutputSchema: "ChallengeSplit"},
-		SynthesizerDef: AgentDef{ID: "justify_synthesizer", OutputSchema: "SynthesisVerdict"},
+		AdvocateDef:    AgentDef{ID: "spec-advocate", OutputSchema: "AdversarialDefense"},
+		ChallengerDef:  AgentDef{ID: "spec-challenger", OutputSchema: "ChallengeBrief"},
+		ResearcherDef:  AgentDef{ID: "justify-researcher", OutputSchema: "ResearchBrief"},
+		SplitterDef:    AgentDef{ID: "justify-splitter", OutputSchema: "ChallengeSplit"},
+		SynthesizerDef: AgentDef{ID: "justify-synthesizer", OutputSchema: "SynthesisVerdict"},
 		DecisionRefs: []SplitterDecisionRef{
 			{ID: "dec-a", Title: "A"},
 			{ID: "dec-b", Title: "B"},
@@ -193,8 +193,8 @@ func TestJustifyAdversarialFanoutWorkflow_SynthesizeFiresWithProseOnly(t *testin
 	}
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "justify_splitter", Response: &AgentOutput{Content: marshalJSON(t, splitterPayload)}},
-		MockResponse{AgentID: "justify_synthesizer", Response: &AgentOutput{Content: marshalJSON(t, synthesisPayload)}},
+		MockResponse{AgentID: "justify-splitter", Response: &AgentOutput{Content: marshalJSON(t, splitterPayload)}},
+		MockResponse{AgentID: "justify-synthesizer", Response: &AgentOutput{Content: marshalJSON(t, synthesisPayload)}},
 	)
 
 	state := JustifyState{
@@ -202,11 +202,11 @@ func TestJustifyAdversarialFanoutWorkflow_SynthesizeFiresWithProseOnly(t *testin
 		NodeMarkdown:   "# strat-x",
 		ParentBody:     "body prose",
 		Challenge:      "challenge text",
-		AdvocateDef:    AgentDef{ID: "spec_advocate", OutputSchema: "AdversarialDefense"},
-		ChallengerDef:  AgentDef{ID: "spec_challenger", OutputSchema: "ChallengeBrief"},
-		ResearcherDef:  AgentDef{ID: "justify_researcher", OutputSchema: "ResearchBrief"},
-		SplitterDef:    AgentDef{ID: "justify_splitter", OutputSchema: "ChallengeSplit"},
-		SynthesizerDef: AgentDef{ID: "justify_synthesizer", OutputSchema: "SynthesisVerdict"},
+		AdvocateDef:    AgentDef{ID: "spec-advocate", OutputSchema: "AdversarialDefense"},
+		ChallengerDef:  AgentDef{ID: "spec-challenger", OutputSchema: "ChallengeBrief"},
+		ResearcherDef:  AgentDef{ID: "justify-researcher", OutputSchema: "ResearchBrief"},
+		SplitterDef:    AgentDef{ID: "justify-splitter", OutputSchema: "ChallengeSplit"},
+		SynthesizerDef: AgentDef{ID: "justify-synthesizer", OutputSchema: "SynthesisVerdict"},
 		DecisionRefs:   []SplitterDecisionRef{{ID: "dec-a", Title: "A"}},
 		PerDecisionMarkdown: map[string]string{
 			"dec-a": "# dec-a body",
@@ -248,7 +248,7 @@ func TestJustifyAdversarialFanoutWorkflow_SynthesizeSkippedWhenNothingToSynthesi
 	}
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "justify_splitter", Response: &AgentOutput{Content: marshalJSON(t, splitterPayload)}},
+		MockResponse{AgentID: "justify-splitter", Response: &AgentOutput{Content: marshalJSON(t, splitterPayload)}},
 	)
 
 	state := JustifyState{
@@ -256,11 +256,11 @@ func TestJustifyAdversarialFanoutWorkflow_SynthesizeSkippedWhenNothingToSynthesi
 		NodeMarkdown:   "# strat-x",
 		ParentBody:     "body prose",
 		Challenge:      "challenge text",
-		AdvocateDef:    AgentDef{ID: "spec_advocate", OutputSchema: "AdversarialDefense"},
-		ChallengerDef:  AgentDef{ID: "spec_challenger", OutputSchema: "ChallengeBrief"},
-		ResearcherDef:  AgentDef{ID: "justify_researcher", OutputSchema: "ResearchBrief"},
-		SplitterDef:    AgentDef{ID: "justify_splitter", OutputSchema: "ChallengeSplit"},
-		SynthesizerDef: AgentDef{ID: "justify_synthesizer", OutputSchema: "SynthesisVerdict"},
+		AdvocateDef:    AgentDef{ID: "spec-advocate", OutputSchema: "AdversarialDefense"},
+		ChallengerDef:  AgentDef{ID: "spec-challenger", OutputSchema: "ChallengeBrief"},
+		ResearcherDef:  AgentDef{ID: "justify-researcher", OutputSchema: "ResearchBrief"},
+		SplitterDef:    AgentDef{ID: "justify-splitter", OutputSchema: "ChallengeSplit"},
+		SynthesizerDef: AgentDef{ID: "justify-synthesizer", OutputSchema: "SynthesisVerdict"},
 		DecisionRefs: []SplitterDecisionRef{
 			{ID: "dec-a", Title: "A"},
 			{ID: "dec-b", Title: "B"},
@@ -387,20 +387,20 @@ func TestJustifySoloWorkflow_SingleStep(t *testing.T) {
 		ConditionsUnderWhichInvalid: []string{"if X changes"},
 	}
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_advocate", Response: &AgentOutput{Content: marshalJSON(t, briefPayload)}},
+		MockResponse{AgentID: "spec-advocate", Response: &AgentOutput{Content: marshalJSON(t, briefPayload)}},
 	)
 
 	state := JustifyState{
 		NodeID:       "dec-x",
 		NodeMarkdown: "# dec-x\n\nbody",
-		AdvocateDef:  AgentDef{ID: "spec_advocate", OutputSchema: "JustificationBrief"},
+		AdvocateDef:  AgentDef{ID: "spec-advocate", OutputSchema: "JustificationBrief"},
 		Dispatcher:   NewDispatcher(mock),
 	}
 
 	exec := &WorkflowExecutor[JustifyState]{
 		Executor: mock,
 		AgentDefs: map[string]AgentDef{
-			"spec_advocate": {ID: "spec_advocate", OutputSchema: "JustificationBrief"},
+			"spec-advocate": {ID: "spec-advocate", OutputSchema: "JustificationBrief"},
 		},
 		Workflow: JustifySoloWorkflow,
 	}
@@ -435,18 +435,18 @@ func TestJustifyAdversarialFallbackWorkflow_PhaseOrdering(t *testing.T) {
 	}
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_challenger", Response: &AgentOutput{Content: marshalJSON(t, challengePayload)}},
-		MockResponse{AgentID: "justify_researcher", Response: &AgentOutput{Content: marshalJSON(t, researchPayload)}},
-		MockResponse{AgentID: "spec_advocate", Response: &AgentOutput{Content: marshalJSON(t, defensePayload)}},
+		MockResponse{AgentID: "spec-challenger", Response: &AgentOutput{Content: marshalJSON(t, challengePayload)}},
+		MockResponse{AgentID: "justify-researcher", Response: &AgentOutput{Content: marshalJSON(t, researchPayload)}},
+		MockResponse{AgentID: "spec-advocate", Response: &AgentOutput{Content: marshalJSON(t, defensePayload)}},
 	)
 
 	state := JustifyState{
 		NodeID:        "dec-x",
 		NodeMarkdown:  "# dec-x\n\nbody",
 		Challenge:     "why",
-		AdvocateDef:   AgentDef{ID: "spec_advocate", OutputSchema: "AdversarialDefense"},
-		ChallengerDef: AgentDef{ID: "spec_challenger", OutputSchema: "ChallengeBrief"},
-		ResearcherDef: AgentDef{ID: "justify_researcher", OutputSchema: "ResearchBrief"},
+		AdvocateDef:   AgentDef{ID: "spec-advocate", OutputSchema: "AdversarialDefense"},
+		ChallengerDef: AgentDef{ID: "spec-challenger", OutputSchema: "ChallengeBrief"},
+		ResearcherDef: AgentDef{ID: "justify-researcher", OutputSchema: "ResearchBrief"},
 		Dispatcher:    NewDispatcher(mock),
 	}
 
@@ -461,9 +461,9 @@ func TestJustifyAdversarialFallbackWorkflow_PhaseOrdering(t *testing.T) {
 
 	calls := mock.Calls()
 	require.Len(t, calls, 3, "adversarial fallback fires exactly 3 calls")
-	assert.Equal(t, "spec_challenger", calls[0].Def.ID, "challenge runs first")
-	assert.Equal(t, "justify_researcher", calls[1].Def.ID, "research runs second")
-	assert.Equal(t, "spec_advocate", calls[2].Def.ID, "defend runs last")
+	assert.Equal(t, "spec-challenger", calls[0].Def.ID, "challenge runs first")
+	assert.Equal(t, "justify-researcher", calls[1].Def.ID, "research runs second")
+	assert.Equal(t, "spec-advocate", calls[2].Def.ID, "defend runs last")
 
 	require.NotNil(t, state.ChallengerOut)
 	require.NotNil(t, state.ResearcherOut)
@@ -501,18 +501,18 @@ func TestJustifyAdversarialFallbackWorkflow_PreservesToolOutcomes(t *testing.T) 
 	}
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_challenger", Response: &AgentOutput{Content: marshalJSON(t, challengePayload)}},
-		MockResponse{AgentID: "justify_researcher", Response: researchResp},
-		MockResponse{AgentID: "spec_advocate", Response: &AgentOutput{Content: marshalJSON(t, defensePayload)}},
+		MockResponse{AgentID: "spec-challenger", Response: &AgentOutput{Content: marshalJSON(t, challengePayload)}},
+		MockResponse{AgentID: "justify-researcher", Response: researchResp},
+		MockResponse{AgentID: "spec-advocate", Response: &AgentOutput{Content: marshalJSON(t, defensePayload)}},
 	)
 
 	state := JustifyState{
 		NodeID:        "dec-x",
 		NodeMarkdown:  "# dec-x",
 		Challenge:     "why",
-		AdvocateDef:   AgentDef{ID: "spec_advocate", OutputSchema: "AdversarialDefense"},
-		ChallengerDef: AgentDef{ID: "spec_challenger", OutputSchema: "ChallengeBrief"},
-		ResearcherDef: AgentDef{ID: "justify_researcher", OutputSchema: "ResearchBrief"},
+		AdvocateDef:   AgentDef{ID: "spec-advocate", OutputSchema: "AdversarialDefense"},
+		ChallengerDef: AgentDef{ID: "spec-challenger", OutputSchema: "ChallengeBrief"},
+		ResearcherDef: AgentDef{ID: "justify-researcher", OutputSchema: "ResearchBrief"},
 		Dispatcher:    NewDispatcher(mock),
 	}
 

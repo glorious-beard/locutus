@@ -55,14 +55,14 @@ func testMergeRawProposal(s *PlanningState, results []RoundResult) {
 // Production callers always go through SpecGenerationWorkflow.
 var testSpecGenWorkflow = &Workflow[PlanningState]{
 	Rounds: []WorkflowStep[PlanningState]{
-		{ID: "survey", Agents: []string{"spec_scout"}, Project: projectDefault, Merge: mergeScoutBrief},
-		{ID: "propose", Agents: []string{"spec_architect"}, DependsOn: []string{"survey"}, Project: projectPropose, Merge: testMergeRawProposal},
-		{ID: "reconcile", Agents: []string{"spec_reconciler"}, DependsOn: []string{"propose"}, Project: projectReconcile, Merge: mergeReconciledProposal},
+		{ID: "survey", Agents: []string{"spec-scout"}, Project: projectDefault, Merge: mergeScoutBrief},
+		{ID: "propose", Agents: []string{"spec-architect"}, DependsOn: []string{"survey"}, Project: projectPropose, Merge: testMergeRawProposal},
+		{ID: "reconcile", Agents: []string{"spec-reconciler"}, DependsOn: []string{"propose"}, Project: projectReconcile, Merge: mergeReconciledProposal},
 		// DJ-129: critique is a Fanout over scout-surfaced CritiqueDimensions
-		// dispatching the parametric spec_critic_elaborator.
-		{ID: "critique", Agents: []string{"spec_critic_elaborator"}, DependsOn: []string{"reconcile"}, Fanout: fanoutCritiqueDimensions, Project: projectCritiqueDimension, Merge: mergeCriticIssues},
-		{ID: "revise", Agents: []string{"spec_architect"}, DependsOn: []string{"critique"}, Conditional: testHasConcerns, Project: projectRevise, Merge: testMergeRawProposal},
-		{ID: "reconcile_revise", Agents: []string{"spec_reconciler"}, DependsOn: []string{"revise"}, Conditional: testHasConcerns, Project: projectReconcile, Merge: mergeReconciledProposal},
+		// dispatching the parametric spec-critic-elaborator.
+		{ID: "critique", Agents: []string{"spec-critic-elaborator"}, DependsOn: []string{"reconcile"}, Fanout: fanoutCritiqueDimensions, Project: projectCritiqueDimension, Merge: mergeCriticIssues},
+		{ID: "revise", Agents: []string{"spec-architect"}, DependsOn: []string{"critique"}, Conditional: testHasConcerns, Project: projectRevise, Merge: testMergeRawProposal},
+		{ID: "reconcile_revise", Agents: []string{"spec-reconciler"}, DependsOn: []string{"revise"}, Conditional: testHasConcerns, Project: projectReconcile, Merge: mergeReconciledProposal},
 	},
 	MaxRounds: 1,
 }
@@ -87,7 +87,7 @@ Test agent %s.
 // testSpecGenWorkflow expects. Tests pass this fs alongside
 // testSpecGenWorkflow to generateSpecWithWorkflow.
 //
-// DJ-129: spec_critic_elaborator replaces the fixed four critic
+// DJ-129: spec-critic-elaborator replaces the fixed four critic
 // agents (architect, devops, sre, cost) — the critique step is now
 // a fanout over scout-surfaced CritiqueDimensions.
 func setupSpecGenFixture(t *testing.T) specio.FS {
@@ -95,10 +95,10 @@ func setupSpecGenFixture(t *testing.T) specio.FS {
 	fs := specio.NewMemFS()
 	require.NoError(t, fs.MkdirAll(".borg/agents", 0o755))
 	for _, a := range []struct{ id, role, cap, schema string }{
-		{"spec_scout", "survey", "balanced", "ScoutBrief"},
-		{"spec_architect", "planning", "strong", "RawSpecProposal"},
-		{"spec_reconciler", "reconcile", "balanced", "ReconciliationVerdict"},
-		{"spec_critic_elaborator", "review", "balanced", "CriticIssues"},
+		{"spec-scout", "survey", "balanced", "ScoutBrief"},
+		{"spec-architect", "planning", "strong", "RawSpecProposal"},
+		{"spec-reconciler", "reconcile", "balanced", "ReconciliationVerdict"},
+		{"spec-critic-elaborator", "review", "balanced", "CriticIssues"},
 	} {
 		require.NoError(t, fs.WriteFile(
 			fmt.Sprintf(".borg/agents/%s.md", a.id),
@@ -112,7 +112,7 @@ func setupSpecGenFixture(t *testing.T) specio.FS {
 // rather than a wall of JSON.
 const (
 	// DJ-129: scoutResp surfaces a single CritiqueDimension so the
-	// critique fanout dispatches one spec_critic_elaborator call per
+	// critique fanout dispatches one spec-critic-elaborator call per
 	// iteration. The tests built on testSpecGenWorkflow expect the
 	// critic to fire (mock the criticEmpty / criticDangler shapes).
 	scoutResp     = `{"domain_read":"a project","technology_options":["x: a vs b"],"implicit_assumptions":["scale: 100k. Default: 1k concurrent"],"watch_outs":["x"],"critique_dimensions":[{"id":"architecture-coherence","lens":"architecture","focus_question":"Does the proposal hang together?","source_evidence":["GOALS.md describes the project"],"disciplines":["freeform"],"severity_floor":"medium"}]}`
@@ -219,7 +219,7 @@ func TestGenerateSpecBridgesEventsToSink(t *testing.T) {
 		"every agent started should pair with a completed in a clean run")
 	assert.GreaterOrEqual(t, agentStarted, 4,
 		"four agents (scout + proposer + reconciler + 1 critic-elaborator) should each emit started+completed under DJ-129")
-	for _, want := range []string{"spec_scout", "spec_architect", "spec_reconciler", "spec_critic_elaborator"} {
+	for _, want := range []string{"spec-scout", "spec-architect", "spec-reconciler", "spec-critic-elaborator"} {
 		assert.True(t, seenAgents[want], "expected events for agent %q", want)
 	}
 

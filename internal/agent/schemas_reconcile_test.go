@@ -18,7 +18,7 @@ import (
 // ReconciliationAction's permissive omitempty fields letting the
 // model emit dedupe actions without canonical — moves from
 // schema-layer enforcement to prompt + apply-time validation.
-// spec_reconciler.md documents the per-kind requirements; the
+// spec-reconciler.md documents the per-kind requirements; the
 // reconcile.go apply switch validates per-kind on receipt.
 func TestReconciliationVerdictFlatSchema(t *testing.T) {
 	schema, err := SchemaFor("ReconciliationVerdict")

@@ -1,5 +1,5 @@
 ---
-id: spec_outliner
+id: spec-outliner
 thinking: on
 role: planning
 models:

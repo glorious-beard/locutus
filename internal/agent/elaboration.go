@@ -6,7 +6,7 @@ package agent
 // reconciler from Phase 2 consumes the union of elaborated outputs
 // unchanged — only the call topology upstream of it changes.
 
-// Outline is the spec_outliner agent's output: feature and strategy
+// Outline is the spec-outliner agent's output: feature and strategy
 // titles + one-line summaries, no decisions, no detailed descriptions.
 // Used to drive the elaborate-fanout step (one per item) and to give
 // each elaborator situational awareness of the whole proposal's

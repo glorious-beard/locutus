@@ -37,7 +37,7 @@ import (
 // address. One finding may appear in at most one cluster.
 //
 // AgentID names the elaborator agent dispatched for this cluster:
-// "spec_feature_elaborator" or "spec_strategy_elaborator". Set by the
+// "spec-feature-elaborator" or "spec-strategy-elaborator". Set by the
 // mechanical pre-pass (from the matched id's prefix) or by post-
 // processing the clusterer's per-cluster `kind` field.
 //
@@ -100,8 +100,8 @@ var decRefRegex = regexp.MustCompile(`\bdec-[a-z0-9][a-z0-9-]*\b`)
 // MechanicalCluster groups concerns by id reference. Returns:
 //
 //   - clusters[]: one per existing node mentioned by id in any concern.
-//     AgentID is set from the id prefix (feat- → spec_feature_elaborator,
-//     strat- → spec_strategy_elaborator). NodeID is the matched id.
+//     AgentID is set from the id prefix (feat- → spec-feature-elaborator,
+//     strat- → spec-strategy-elaborator). NodeID is the matched id.
 //   - unmatched[]: the verbatim text of findings that mentioned no
 //     existing-node id. The LLM clusterer takes these.
 //
@@ -127,9 +127,9 @@ func MechanicalCluster(concerns []Concern, existingFeatureIDs, existingStrategyI
 	addToCluster := func(nodeID string, findingText string) {
 		c, ok := clusterByID[nodeID]
 		if !ok {
-			agentID := "spec_strategy_elaborator"
+			agentID := "spec-strategy-elaborator"
 			if strings.HasPrefix(nodeID, "feat-") {
-				agentID = "spec_feature_elaborator"
+				agentID = "spec-feature-elaborator"
 			}
 			c = &FindingCluster{
 				Topic:   nodeID,
@@ -209,9 +209,9 @@ func PromoteLLMClusters(raw string) []FindingCluster {
 			slog.Warn("promote LLM clusters: dropping cluster with no findings (likely placeholder)", "index", i, "topic", c.Topic)
 			continue
 		}
-		agentID := "spec_strategy_elaborator"
+		agentID := "spec-strategy-elaborator"
 		if strings.TrimSpace(c.Kind) == "feature" {
-			agentID = "spec_feature_elaborator"
+			agentID = "spec-feature-elaborator"
 		}
 		topic := strings.TrimSpace(c.Topic)
 		if topic == "" {

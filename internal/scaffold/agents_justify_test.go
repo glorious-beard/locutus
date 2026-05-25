@@ -9,15 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSpecAdvocate_HasGroundingDiscipline — the spec_advocate prompt
+// TestSpecAdvocate_HasGroundingDiscipline — the spec-advocate prompt
 // must carry the empty-research-case guidance. Brittle by design:
 // changes to the prompt should be deliberate, not silent regressions
 // to confabulation-friendly text. Tested here (against the embedded
 // scaffold copy) rather than in internal/agent because the prompt
 // lives on disk now per DJ-101 reversal.
 func TestSpecAdvocate_HasGroundingDiscipline(t *testing.T) {
-	def, err := LoadAgent(specio.NewMemFS(), "spec_advocate")
-	require.NoError(t, err, "embedded scaffold must include spec_advocate.md")
+	def, err := LoadAgent(specio.NewMemFS(), "spec-advocate")
+	require.NoError(t, err, "embedded scaffold must include spec-advocate.md")
 
 	prompt := def.SystemPrompt
 	flat := strings.Join(strings.Fields(prompt), " ")
@@ -54,8 +54,8 @@ func TestSpecAdvocate_HasGroundingDiscipline(t *testing.T) {
 // the rejected tokens). The schema description tags carry the
 // positive-form guidance instead.
 func TestSpecChallenger_BroadEvidenceSources(t *testing.T) {
-	def, err := LoadAgent(specio.NewMemFS(), "spec_challenger")
-	require.NoError(t, err, "embedded scaffold must include spec_challenger.md")
+	def, err := LoadAgent(specio.NewMemFS(), "spec-challenger")
+	require.NoError(t, err, "embedded scaffold must include spec-challenger.md")
 
 	flat := strings.Join(strings.Fields(def.SystemPrompt), " ")
 	flatLower := strings.ToLower(flat)
@@ -75,8 +75,8 @@ func TestSpecChallenger_BroadEvidenceSources(t *testing.T) {
 // from training data when the search tool errors or returns no
 // relevant results.
 func TestJustifyResearcher_HasAntiFallbackDirective(t *testing.T) {
-	def, err := LoadAgent(specio.NewMemFS(), "justify_researcher")
-	require.NoError(t, err, "embedded scaffold must include justify_researcher.md")
+	def, err := LoadAgent(specio.NewMemFS(), "justify-researcher")
+	require.NoError(t, err, "embedded scaffold must include justify-researcher.md")
 
 	flat := strings.Join(strings.Fields(def.SystemPrompt), " ")
 

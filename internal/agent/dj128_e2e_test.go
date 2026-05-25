@@ -50,7 +50,7 @@ func TestDJ128HappyPathConvergesViaFlipRevision(t *testing.T) {
 	historian := history.NewHistorian(osFS, ".borg/history")
 
 	// DJ-129: scout surfaces a cost dimension every iter; one
-	// spec_critic_elaborator call fires per iter.
+	// spec-critic-elaborator call fires per iter.
 	costDim := CritiqueDimension{
 		ID: "cost-ceiling-coverage", Lens: "cost",
 		FocusQuestion:  "Does the proposal fit the $150/mo ceiling?",
@@ -137,18 +137,18 @@ func TestDJ128HappyPathConvergesViaFlipRevision(t *testing.T) {
 	})
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
 		// iter-1: first-author + narrative + reconcile + critique + tail scout.
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decDatadog, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featMonitoring, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: costIssue, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: decDatadog, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: featMonitoring, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: costIssue, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 		// iter-2: revise fires; concern flips to addressed; tail scout converges.
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revFlip, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutConverged, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: revFlip, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutConverged, Model: "m"}},
 	)
 
 	wf := NewSpecGenerationWorkflow(historian, 5)
@@ -283,23 +283,23 @@ func TestDJ128CapAsCommitShipsWithLockedDecisions(t *testing.T) {
 	})
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
 		// iter-1
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decFirst, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featForObs, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: costPersists, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: decFirst, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: featForObs, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: costPersists, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 		// iter-2
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revV1, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: costPersists, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: revV1, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: costPersists, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 		// iter-3 (cap=2 fires after this revise)
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revV2, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: costPersists, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: revV2, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: costPersists, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 	)
 
 	wf := NewSpecGenerationWorkflow(historian, 10)
@@ -429,16 +429,16 @@ func TestDJ128RejectRevisionAddsCriticCounterproposalAsAlternative(t *testing.T)
 	})
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decDatadog, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featForObs, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: costIssue, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revReject, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutConverged, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: decDatadog, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: featForObs, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: costIssue, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: revReject, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutConverged, Model: "m"}},
 	)
 
 	wf := NewSpecGenerationWorkflow(historian, 5)

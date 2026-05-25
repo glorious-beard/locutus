@@ -121,7 +121,7 @@ type SpecGenRequest struct {
 	Sink EventSink
 }
 
-// ScoutBrief is the structured output of the spec_scout agent under
+// ScoutBrief is the structured output of the spec-scout agent under
 // DJ-124. The scout has three coupled responsibilities: domain survey
 // (the original four fields), gap analysis (axes_open[] surfaces
 // foundational axes no decision in the current graph covers), and
@@ -237,7 +237,7 @@ type CriticIssue struct {
 	RelatedDecisionIDs []string                `json:"related_decision_ids,omitempty" jsonschema:"description=Decision IDs (starting 'dec-') this issue targets — the critic's structured surfacing of which decisions need revision. Merged with the regex-extracted set in mergeCriticIssues; the critic's list wins on conflict. Empty when the issue spans the whole proposal rather than a specific decision."`
 }
 
-// CandidateList is the structured output of the spec_candidate_survey
+// CandidateList is the structured output of the spec-candidate-survey
 // agent (DJ-132). One survey runs per axis BEFORE the decision-
 // elaborator on the initial-elaboration path; the elaborator receives
 // the surveyed candidates as a pre-populated starting point so its
@@ -538,7 +538,7 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 		if len(warnings) == 0 {
 			return &proposal, nil
 		}
-		archDef, ok := agentDefs["spec_architect"]
+		archDef, ok := agentDefs["spec-architect"]
 		if !ok {
 			// No architect to repair with — surface the violations.
 			return nil, &IntegrityViolationError{
@@ -550,7 +550,7 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 		stepID := fmt.Sprintf("integrity-revise (%d/%d)", attempt+1, MaxIntegrityRetries)
 		events <- WorkflowEvent{
 			StepID:    stepID,
-			AgentID:   "spec_architect",
+			AgentID:   "spec-architect",
 			Status:    "started",
 			Message:   fmt.Sprintf("repairing %d dangling reference(s)", len(warnings)),
 			Timestamp: time.Now(),
@@ -559,7 +559,7 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 		if err != nil {
 			events <- WorkflowEvent{
 				StepID:    stepID,
-				AgentID:   "spec_architect",
+				AgentID:   "spec-architect",
 				Status:    "error",
 				Message:   err.Error(),
 				Timestamp: time.Now(),
@@ -568,7 +568,7 @@ func generateSpecWithWorkflow(ctx context.Context, exec AgentExecutor, fsys spec
 		}
 		events <- WorkflowEvent{
 			StepID:    stepID,
-			AgentID:   "spec_architect",
+			AgentID:   "spec-architect",
 			Status:    "completed",
 			Timestamp: time.Now(),
 		}

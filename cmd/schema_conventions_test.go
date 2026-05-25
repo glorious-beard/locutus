@@ -3,7 +3,7 @@ package cmd
 // TestSchemaDescriptionsAvoidPlaceholderPriming guards against the
 // anti-pattern documented in docs/agent-conventions.md: naming a
 // forbidden token in a jsonschema description primes the model to
-// emit exactly that token. We hit this with the spec_challenger
+// emit exactly that token. We hit this with the spec-challenger
 // agent — three description tags read "NOT a placeholder like
 // 'dummy' or 'TBD'", and the model emitted {"weakness":"dummy",
 // "evidence":"dummy","counterproposal":"dummy"} on its first call.
@@ -124,9 +124,9 @@ func TestAgentPromptsAvoidPlaceholderPriming(t *testing.T) {
 // bypass the registration check, and then fail loudly the first time
 // it's actually dispatched against a real model.
 //
-// This is the class of bug that surfaced when scout / backend_analyzer
-// / frontend_analyzer / infra_analyzer / gap_analyst / remediator /
-// preflight / llm_judge had been referencing types that didn't exist
+// This is the class of bug that surfaced when scout / backend-analyzer
+// / frontend-analyzer / infra-analyzer / gap-analyst / remediator /
+// preflight / llm-judge had been referencing types that didn't exist
 // in Go for months — the tests passed because the test fixtures used
 // minimal frontmatter without output_schema.
 func TestAgentSchemaReferencesResolve(t *testing.T) {

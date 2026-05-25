@@ -50,7 +50,7 @@ func TestMergeScoutBriefAppliesConcernDispositions(t *testing.T) {
 	briefJSON, err := json.Marshal(brief)
 	require.NoError(t, err)
 
-	mergeScoutBrief(state, []RoundResult{{AgentID: "spec_scout", Output: string(briefJSON)}})
+	mergeScoutBrief(state, []RoundResult{{AgentID: "spec-scout", Output: string(briefJSON)}})
 
 	assert.Equal(t, ConcernStatusAddressed, state.Concerns[0].Status)
 	assert.Equal(t, "Resolved by dec-new", state.Concerns[0].Justification)
@@ -78,7 +78,7 @@ func TestMergeScoutBriefSkipsUnknownConcernID(t *testing.T) {
 		},
 	}
 	briefJSON, _ := json.Marshal(brief)
-	mergeScoutBrief(state, []RoundResult{{AgentID: "spec_scout", Output: string(briefJSON)}})
+	mergeScoutBrief(state, []RoundResult{{AgentID: "spec-scout", Output: string(briefJSON)}})
 
 	assert.Equal(t, ConcernStatusAddressed, state.Concerns[0].Status)
 	assert.Equal(t, "in range", state.Concerns[0].Justification)
@@ -95,7 +95,7 @@ func TestScoutConvergenceRejectsConvergedWithOpenConcerns(t *testing.T) {
 	}
 	brief := ScoutBrief{Converged: true}
 	briefJSON, _ := json.Marshal(brief)
-	results := []RoundResult{{AgentID: "spec_scout", Output: string(briefJSON)}}
+	results := []RoundResult{{AgentID: "spec-scout", Output: string(briefJSON)}}
 	snap := StateSnapshot[PlanningState]{State: state}
 
 	spawn := scoutSpawnFor(0, 5, nil, nil)
@@ -117,7 +117,7 @@ func TestScoutConvergenceAcceptsConvergedAfterDispositions(t *testing.T) {
 	}
 	brief := ScoutBrief{Converged: true}
 	briefJSON, _ := json.Marshal(brief)
-	results := []RoundResult{{AgentID: "spec_scout", Output: string(briefJSON)}}
+	results := []RoundResult{{AgentID: "spec-scout", Output: string(briefJSON)}}
 	snap := StateSnapshot[PlanningState]{State: state}
 
 	spawn := scoutSpawnFor(0, 5, nil, nil)
@@ -128,10 +128,10 @@ func TestScoutConvergenceAcceptsConvergedAfterDispositions(t *testing.T) {
 }
 
 // TestScoutPromptDescribesConcernGrading reads the scaffolded
-// spec_scout.md prompt and asserts it teaches concern_dispositions
+// spec-scout.md prompt and asserts it teaches concern_dispositions
 // with all four disposition kinds in scope.
 func TestScoutPromptDescribesConcernGrading(t *testing.T) {
-	body, err := os.ReadFile("../scaffold/agents/spec_scout.md")
+	body, err := os.ReadFile("../scaffold/agents/spec-scout.md")
 	require.NoError(t, err)
 	text := strings.ToLower(string(body))
 	assert.Contains(t, text, "concern_dispositions")

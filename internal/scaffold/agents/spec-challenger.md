@@ -1,5 +1,5 @@
 ---
-id: spec_challenger
+id: spec-challenger
 thinking: on
 role: review
 models:

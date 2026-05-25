@@ -115,9 +115,9 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 	}
 	goalsBody, _ := readGoals(fsys)
 
-	advocate, err := scaffold.LoadAgent(fsys, "spec_advocate")
+	advocate, err := scaffold.LoadAgent(fsys, "spec-advocate")
 	if err != nil {
-		return nil, fmt.Errorf("load spec_advocate: %w", err)
+		return nil, fmt.Errorf("load spec-advocate: %w", err)
 	}
 
 	dispatcher := agent.NewDispatcher(llm)
@@ -134,7 +134,7 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 		}
 		exec := &agent.WorkflowExecutor[agent.JustifyState]{
 			Executor:  llm,
-			AgentDefs: map[string]agent.AgentDef{"spec_advocate": advocate},
+			AgentDefs: map[string]agent.AgentDef{"spec-advocate": advocate},
 			Workflow:  agent.JustifySoloWorkflow,
 		}
 		defer exec.BridgeToSink(sink)()
@@ -148,13 +148,13 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 
 	// Adversarial paths: load challenger + researcher; pick fanout
 	// vs. single-target by parent kind + decision presence.
-	challenger, err := scaffold.LoadAgent(fsys, "spec_challenger")
+	challenger, err := scaffold.LoadAgent(fsys, "spec-challenger")
 	if err != nil {
-		return nil, fmt.Errorf("load spec_challenger: %w", err)
+		return nil, fmt.Errorf("load spec-challenger: %w", err)
 	}
-	researcher, err := scaffold.LoadAgent(fsys, "justify_researcher")
+	researcher, err := scaffold.LoadAgent(fsys, "justify-researcher")
 	if err != nil {
-		return nil, fmt.Errorf("load justify_researcher: %w", err)
+		return nil, fmt.Errorf("load justify-researcher: %w", err)
 	}
 
 	// Decisions go through the single-target flow directly;
@@ -189,9 +189,9 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 		exec := &agent.WorkflowExecutor[agent.JustifyState]{
 			Executor: llm,
 			AgentDefs: map[string]agent.AgentDef{
-				"spec_advocate":      advocate,
-				"spec_challenger":    challenger,
-				"justify_researcher": researcher,
+				"spec-advocate":      advocate,
+				"spec-challenger":    challenger,
+				"justify-researcher": researcher,
 			},
 			Workflow: agent.JustifyAdversarialFallbackWorkflow,
 		}
@@ -213,13 +213,13 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 		return result, nil
 	}
 
-	splitter, err := scaffold.LoadAgent(fsys, "justify_splitter")
+	splitter, err := scaffold.LoadAgent(fsys, "justify-splitter")
 	if err != nil {
-		return nil, fmt.Errorf("load justify_splitter: %w", err)
+		return nil, fmt.Errorf("load justify-splitter: %w", err)
 	}
-	synthesizer, err := scaffold.LoadAgent(fsys, "justify_synthesizer")
+	synthesizer, err := scaffold.LoadAgent(fsys, "justify-synthesizer")
 	if err != nil {
-		return nil, fmt.Errorf("load justify_synthesizer: %w", err)
+		return nil, fmt.Errorf("load justify-synthesizer: %w", err)
 	}
 
 	fanState, err := buildFanoutState(loaded, stages, id, nodeMD, goalsBody, challenge, kind,
@@ -230,11 +230,11 @@ func RunJustifyCommand(ctx context.Context, llm agent.AgentExecutor, fsys specio
 	exec := &agent.WorkflowExecutor[agent.JustifyState]{
 		Executor: llm,
 		AgentDefs: map[string]agent.AgentDef{
-			"spec_advocate":       advocate,
-			"spec_challenger":     challenger,
-			"justify_researcher":  researcher,
-			"justify_splitter":    splitter,
-			"justify_synthesizer": synthesizer,
+			"spec-advocate":       advocate,
+			"spec-challenger":     challenger,
+			"justify-researcher":  researcher,
+			"justify-splitter":    splitter,
+			"justify-synthesizer": synthesizer,
 		},
 		Workflow: agent.JustifyAdversarialFanoutWorkflow,
 	}

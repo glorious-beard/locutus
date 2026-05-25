@@ -7,11 +7,11 @@ import (
 	"strings"
 )
 
-// SpecSummaryResult is the JSON shape the spec_summarizer agent
+// SpecSummaryResult is the JSON shape the spec-summarizer agent
 // returns. A single field — the one-sentence "what" description of a
 // spec node — consumed by the SummariesPresent prereq to fill the
 // Summary field on legacy nodes. Distinct from any "why" rationale
-// already on the node; see internal/scaffold/agents/spec_summarizer.md
+// already on the node; see internal/scaffold/agents/spec-summarizer.md
 // for the per-kind nuance the agent applies.
 type SpecSummaryResult struct {
 	Summary string `json:"summary" jsonschema:"description=One or two sentences describing what this spec node is — the conclusion / commitment / capability; not the framing. Ends with . ! or ?. Under 600 characters. Distinct from any 'why' rationale already on the node; this is the 'what' line that scanning agents read via spec_list_manifest. Empty / one-word output is a degenerate-output failure."`
@@ -23,7 +23,7 @@ func init() {
 	})
 }
 
-// InvokeSpecSummarizer runs the spec_summarizer agent against a single
+// InvokeSpecSummarizer runs the spec-summarizer agent against a single
 // node's content and returns the parsed result. The caller is
 // responsible for writing the Summary back to the node on disk.
 //

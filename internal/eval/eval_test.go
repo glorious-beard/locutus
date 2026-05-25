@@ -57,7 +57,7 @@ func TestLLMJudgePassing(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, metric)
 	assert.True(t, metric.Passed)
-	assert.Equal(t, "llm_judge", metric.EvaluatorName)
+	assert.Equal(t, "llm-judge", metric.EvaluatorName)
 	assert.InDelta(t, 0.92, metric.Confidence, 0.001)
 	assert.Contains(t, metric.Reasoning, "OAuth2")
 }
@@ -151,7 +151,7 @@ func TestRunnerRoutesByAssertionKind(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, metric.Passed)
-	assert.Equal(t, "llm_judge", metric.EvaluatorName)
+	assert.Equal(t, "llm-judge", metric.EvaluatorName)
 }
 
 func TestRunnerUnregisteredKindErrors(t *testing.T) {

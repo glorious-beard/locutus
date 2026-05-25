@@ -42,7 +42,7 @@ const defaultSpecGateBudget = 20
 // budget exhaustion with no diagnosis.
 const recurrenceTerminationThreshold = 3
 
-// SpecGateVerdict is the structured output of the spec_gate agent. The
+// SpecGateVerdict is the structured output of the spec-gate agent. The
 // gate reads the assembled ProposedSpec, GOALS.md, and any open concerns;
 // it returns Converged=true when the four-lifecycle-phases YES question
 // holds for every deliverable, or Converged=false plus a list of
@@ -84,7 +84,7 @@ type SpecGateVerdict struct {
 	OpenDimensions []OpenDimension `json:"open_dimensions" jsonschema:"description=One entry per still-unresolved axis. Empty array exactly when Converged is true. When Converged is false; every gap your reasoning identifies MUST appear here as a structured entry — putting gaps only in the reasoning sentence is rejected by the workflow."`
 }
 
-// OpenDimension is one structured gap the spec_gate identified. The
+// OpenDimension is one structured gap the spec-gate identified. The
 // fields are sized so downstream consumers (mergeGateVerdict, the next
 // iteration's revise prompt, the eventual CLI renderer) can act on
 // them without re-parsing prose:
@@ -170,7 +170,7 @@ func NewSpecGenerationWorkflow(historian *history.Historian, budget int) *Workfl
 		Rounds: []WorkflowStep[PlanningState]{
 			{
 				ID:      "scout",
-				Agents:  []string{"spec_scout"},
+				Agents:  []string{"spec-scout"},
 				Project: projectScout,
 				Merge:   mergeScoutBrief,
 				Budget:  budget,
@@ -186,7 +186,7 @@ func NewSpecGenerationWorkflow(historian *history.Historian, budget int) *Workfl
 // the gate's failure path can write a DJ-103 history event.
 var SpecGenerationWorkflow = NewSpecGenerationWorkflow(nil, defaultSpecGateBudget)
 
-// newSpecGateStep returns a WorkflowStep that runs the spec_gate agent
+// newSpecGateStep returns a WorkflowStep that runs the spec-gate agent
 // and drives the convergence loop via its Spawn callback. Used for
 // both the initial-graph gate (iter 0) and the gate stamped onto each
 // loop-template iteration. ID is the *base* step id — the agent-layer
@@ -200,7 +200,7 @@ var SpecGenerationWorkflow = NewSpecGenerationWorkflow(nil, defaultSpecGateBudge
 func newSpecGateStep(baseID string, myIter, budget int, loopTemplate func(executor.IterationContext) []WorkflowStep[PlanningState], historian *history.Historian) WorkflowStep[PlanningState] {
 	return WorkflowStep[PlanningState]{
 		ID:             baseID,
-		Agents:         []string{"spec_gate"},
+		Agents:         []string{"spec-gate"},
 		DependsOn:      []string{lastInitialStepBeforeGate(myIter)},
 		Project:        projectSpecGate,
 		Merge:          mergeGateVerdict,
@@ -243,7 +243,7 @@ func gateSpawnFor(myIter, budget int, loopTemplate func(executor.IterationContex
 	return func(_ context.Context, snap StateSnapshot[PlanningState], results []RoundResult) ([]WorkflowStep[PlanningState], []executor.Edge, error) {
 		verdict, err := parseSpecGateVerdict(results)
 		if err != nil {
-			return nil, nil, fmt.Errorf("spec_gate verdict at iter %d: %w", myIter, err)
+			return nil, nil, fmt.Errorf("spec-gate verdict at iter %d: %w", myIter, err)
 		}
 		if verdict.Converged {
 			return nil, nil, nil
@@ -309,7 +309,7 @@ func convergenceStuckTerminal(historian *history.Historian, snapState *PlanningS
 	stuckCopy := append([]string(nil), stuck...)
 	return WorkflowStep[PlanningState]{
 		ID:     terminalID,
-		Agents: []string{"spec_gate"},
+		Agents: []string{"spec-gate"},
 		RunItem: func(_ context.Context, _ StateSnapshot[PlanningState]) (string, error) {
 			if historian != nil {
 				evt := buildConvergenceStuckEvent(verdict, iter, snapshotSpec, concerns, stuckCopy)
@@ -333,7 +333,7 @@ func convergenceStuckTerminal(historian *history.Historian, snapState *PlanningS
 func buildConvergenceStuckEvent(verdict *SpecGateVerdict, iter int, snapshotSpec string, concerns []Concern, stuck []string) history.Event {
 	now := time.Now()
 	var rationale strings.Builder
-	fmt.Fprintf(&rationale, "spec_gate stuck at iter %d: %d axis/axes recurred %d+ times.\n\nStuck axes:",
+	fmt.Fprintf(&rationale, "spec-gate stuck at iter %d: %d axis/axes recurred %d+ times.\n\nStuck axes:",
 		iter+1, len(stuck), recurrenceTerminationThreshold)
 	for _, s := range stuck {
 		fmt.Fprintf(&rationale, "\n- %s", s)
@@ -420,7 +420,7 @@ func mergeDecisionsRecording(historian *history.Historian) func(*PlanningState, 
 //
 //	decisions → narrative → reconcile → critique → scout
 //
-// Decisions fanout dispatches one spec_decision_elaborator per axis in
+// Decisions fanout dispatches one spec-decision-elaborator per axis in
 // state.AxesOpen. Narrative fanout dispatches one elaborator
 // (feature or strategy, routed via the per-item agent_id) per affected
 // node — the set computed by computeAffectedNodes from changed
@@ -465,7 +465,7 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				// (revises use the separate revise-decisions step
 				// which dispatches by concern, not axis).
 				ID:          "candidate-survey",
-				Agents:      []string{"spec_candidate_survey"},
+				Agents:      []string{"spec-candidate-survey"},
 				Parallel:    true,
 				Conditional: hasOpenAxes,
 				Fanout:      fanoutOpenAxes,
@@ -489,7 +489,7 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				// the merged AxisSurveys map being a complete
 				// snapshot before any decisions call dispatches.
 				ID:          "decisions",
-				Agents:      []string{"spec_decision_elaborator"},
+				Agents:      []string{"spec-decision-elaborator"},
 				Parallel:    true,
 				DependsOn:   []string{"candidate-survey"},
 				Conditional: hasOpenAxes,
@@ -500,11 +500,11 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 			{
 				// narrative: fanout per affected node. The per-item
 				// agent_id discriminator routes each item to either
-				// spec_feature_elaborator or spec_strategy_elaborator;
+				// spec-feature-elaborator or spec-strategy-elaborator;
 				// the merge replaces (or appends) the matching entry in
 				// state.RawProposal.Features / Strategies.
 				ID:          "narrative",
-				Agents:      []string{"spec_feature_elaborator"},
+				Agents:      []string{"spec-feature-elaborator"},
 				Parallel:    true,
 				DependsOn:   []string{"decisions"},
 				Conditional: hasAffectedNodes,
@@ -516,7 +516,7 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				// revise-decisions (DJ-126): fanout per open concern
 				// with RelatedDecisionIDs that name a decision in the
 				// in-flight or existing graph. Each fanout item
-				// dispatches the spec_decision_elaborator in revise
+				// dispatches the spec-decision-elaborator in revise
 				// mode against one (concern, prior decision) pair; the
 				// merge function replaces the prior decision in-place
 				// by axis-ID intersection (Phase 3). Fires after
@@ -525,7 +525,7 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				// scout's next-iteration grading pass instead of
 				// triggering a revision.
 				ID:          "revise-decisions",
-				Agents:      []string{"spec_decision_elaborator"},
+				Agents:      []string{"spec-decision-elaborator"},
 				Parallel:    true,
 				DependsOn:   []string{"narrative"},
 				Conditional: hasReviseableConcerns,
@@ -534,7 +534,7 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				Merge:       decisionMerge,
 			},
 			{
-				// reconcile: spec_reconciler runs for API-layer schema
+				// reconcile: spec-reconciler runs for API-layer schema
 				// stability (the agent is still on disk and its strict-
 				// mode verdict must be a valid ReconciliationVerdict),
 				// but ApplyReconciliation ignores the verdict content
@@ -549,19 +549,19 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				// executor so this dependency is safe on iterations
 				// with no reviseable concerns.
 				ID:        "reconcile",
-				Agents:    []string{"spec_reconciler"},
+				Agents:    []string{"spec-reconciler"},
 				DependsOn: []string{"revise-decisions"},
 				Project:   projectReconcile,
 				Merge:     mergeReconciledProposal,
 			},
 			{
 				// DJ-129: critique is a Fanout over CritiqueDimensions
-				// the scout surfaces. One spec_critic_elaborator call
+				// the scout surfaces. One spec-critic-elaborator call
 				// per dimension. When the scout surfaces zero
 				// dimensions, the fanout fires zero items and the step
 				// becomes a no-op.
 				ID:        "critique",
-				Agents:    []string{"spec_critic_elaborator"},
+				Agents:    []string{"spec-critic-elaborator"},
 				DependsOn: []string{"reconcile"},
 				Fanout:    fanoutCritiqueDimensions,
 				Project:   projectCritiqueDimension,
@@ -574,7 +574,7 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 				// either expands the next iteration template or spawns
 				// a terminal step.
 				ID:        "scout",
-				Agents:    []string{"spec_scout"},
+				Agents:    []string{"spec-scout"},
 				DependsOn: []string{"critique"},
 				Project:   projectScout,
 				Merge:     mergeScoutBrief,
@@ -587,7 +587,7 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 }
 
 // parseSpecGateVerdict reads the SpecGateVerdict from the gate step's
-// results. spec_gate uses structured output so the agent's Output is
+// results. spec-gate uses structured output so the agent's Output is
 // the verdict's JSON; we tolerate (and surface) any decode failure as
 // an error so the spawner errors visibly rather than silently
 // treating the verdict as non-converged.
@@ -606,35 +606,35 @@ func convergenceLoopTemplate(historian *history.Historian, budget int) func(exec
 //     a verdict claiming both is contradictory and must not advance.
 func parseSpecGateVerdict(results []RoundResult) (*SpecGateVerdict, error) {
 	for _, r := range results {
-		if r.AgentID != "spec_gate" {
+		if r.AgentID != "spec-gate" {
 			continue
 		}
 		if r.Err != nil {
-			return nil, fmt.Errorf("spec_gate run failed: %w", r.Err)
+			return nil, fmt.Errorf("spec-gate run failed: %w", r.Err)
 		}
 		if strings.TrimSpace(r.Output) == "" {
-			return nil, fmt.Errorf("spec_gate returned empty output")
+			return nil, fmt.Errorf("spec-gate returned empty output")
 		}
 		var v SpecGateVerdict
 		if err := json.Unmarshal([]byte(r.Output), &v); err != nil {
-			return nil, fmt.Errorf("parse spec_gate verdict: %w (content=%q)", err, r.Output)
+			return nil, fmt.Errorf("parse spec-gate verdict: %w (content=%q)", err, r.Output)
 		}
 		if !v.Converged && len(v.OpenDimensions) == 0 {
 			return nil, fmt.Errorf(
-				"spec_gate verdict is degenerate: converged=false with open_dimensions empty. "+
+				"spec-gate verdict is degenerate: converged=false with open_dimensions empty. "+
 					"The gate must list every gap as an OpenDimension entry; putting them only in the reasoning sentence is rejected "+
 					"because the next iteration's revise has nothing to act on. Reasoning was: %s",
 				truncateForError(v.Reasoning))
 		}
 		if v.Converged && len(v.OpenDimensions) > 0 {
 			return nil, fmt.Errorf(
-				"spec_gate verdict is contradictory: converged=true with %d open_dimensions. "+
+				"spec-gate verdict is contradictory: converged=true with %d open_dimensions. "+
 					"A converged spec has no remaining gaps; either the gate should have returned converged=false, or the dimensions are not actual gaps",
 				len(v.OpenDimensions))
 		}
 		return &v, nil
 	}
-	return nil, fmt.Errorf("no spec_gate result in round")
+	return nil, fmt.Errorf("no spec-gate result in round")
 }
 
 // truncateForError returns s truncated to ~200 chars with an ellipsis
@@ -685,7 +685,7 @@ func mergeGateVerdict(s *PlanningState, results []RoundResult) {
 			topic = dim.Deliverable + ": " + dim.Axis
 		}
 		s.Concerns = append(s.Concerns, Concern{
-			AgentID:  "spec_gate",
+			AgentID:  "spec-gate",
 			Severity: "high",
 			Kind:     dim.Phase, // define / develop / deploy / support
 			Text:     dim.Reasoning,
@@ -693,7 +693,7 @@ func mergeGateVerdict(s *PlanningState, results []RoundResult) {
 		s.FindingClusters = append(s.FindingClusters, FindingCluster{
 			Topic:                   topic,
 			Findings:                []string{dim.Reasoning},
-			AgentID:                 "spec_strategy_elaborator",
+			AgentID:                 "spec-strategy-elaborator",
 			CurrentCommitmentQuoted: dim.CurrentCommitmentQuoted,
 		})
 		s.GateAxisRecurrence[gateAxisKey(dim)]++
@@ -727,8 +727,8 @@ func stuckAxes(s *PlanningState) []string {
 	return stuck
 }
 
-// projectSpecGate builds the prompt for the spec_gate agent. The
-// agent's system prompt (spec_gate.md) carries the YES-question
+// projectSpecGate builds the prompt for the spec-gate agent. The
+// agent's system prompt (spec-gate.md) carries the YES-question
 // framing; we hand it the assembled ProposedSpec and any open
 // concerns to grade.
 func projectSpecGate(snap StateSnapshot[PlanningState]) []Message {
@@ -767,7 +767,7 @@ func convergenceFailedTerminal(historian *history.Historian, snapState *Planning
 	concerns := append([]Concern(nil), snapState.Concerns...)
 	return WorkflowStep[PlanningState]{
 		ID:     terminalID,
-		Agents: []string{"spec_gate"},
+		Agents: []string{"spec-gate"},
 		RunItem: func(_ context.Context, _ StateSnapshot[PlanningState]) (string, error) {
 			if historian != nil {
 				evt := buildConvergenceFailedEvent(verdict, iter, budget, snapshotSpec, concerns)
@@ -790,7 +790,7 @@ func convergenceFailedTerminal(historian *history.Historian, snapState *Planning
 func buildConvergenceFailedEvent(verdict *SpecGateVerdict, iter, budget int, snapshotSpec string, concerns []Concern) history.Event {
 	now := time.Now()
 	var rationale strings.Builder
-	fmt.Fprintf(&rationale, "spec_gate verdict (iter %d/%d): %s", iter+1, budget, verdict.Reasoning)
+	fmt.Fprintf(&rationale, "spec-gate verdict (iter %d/%d): %s", iter+1, budget, verdict.Reasoning)
 	if len(verdict.OpenDimensions) > 0 {
 		rationale.WriteString("\n\nOpen dimensions:")
 		for _, d := range verdict.OpenDimensions {
@@ -825,7 +825,7 @@ func hasUnmatchedFindings(s *PlanningState) bool { return len(s.UnmatchedFinding
 func hasFindingClusters(s *PlanningState) bool { return len(s.FindingClusters) > 0 }
 
 // fanoutOutlineFeatures returns one raw-JSON OutlineFeature per outlined
-// feature. Each entry drives a per-element spec_feature_elaborator call.
+// feature. Each entry drives a per-element spec-feature-elaborator call.
 func fanoutOutlineFeatures(state *PlanningState) ([]string, error) {
 	if state == nil || state.Outline == "" {
 		return nil, nil
@@ -878,7 +878,7 @@ func fanoutFindingClusters(state *PlanningState) ([]string, error) {
 	return marshalFanoutItems(items)
 }
 
-// mergeScoutBrief stores the spec_scout's structured ScoutBrief output
+// mergeScoutBrief stores the spec-scout's structured ScoutBrief output
 // and (DJ-124) projects the gap-analyzer fields (AxesOpen, NewNodes)
 // onto state for the dispatch closures the next iteration template
 // consumes.
@@ -1026,7 +1026,7 @@ func parseConcernIDIndex(id string) (int, bool) {
 	return n, true
 }
 
-// mergeOutline stores the spec_outliner's Outline JSON. Stashed for the
+// mergeOutline stores the spec-outliner's Outline JSON. Stashed for the
 // downstream fanout (fanoutOutlineFeatures/Strategies reads it) and for
 // each elaborator's projection (sibling situational awareness).
 func mergeOutline(s *PlanningState, results []RoundResult) {
@@ -1440,7 +1440,7 @@ func mergeRevisedNodes(s *PlanningState, results []RoundResult) {
 // still proceed; the worst case is that one spec_search call returns
 // no hits until the next merge succeeds. The disk index is not the
 // fallback during the council (per DJ-123 resolved design question 3:
-// projectCritiqueDimension builds the spec_critic_elaborator's user
+// projectCritiqueDimension builds the spec-critic-elaborator's user
 // message for one fanout call (DJ-129). The prefix carries the
 // project context (GOALS + scout brief + in-flight manifest); the
 // suffix carries the dimension-specific framing (focus_question +

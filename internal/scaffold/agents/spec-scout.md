@@ -1,5 +1,5 @@
 ---
-id: spec_scout
+id: spec-scout
 thinking: on
 role: survey
 models:

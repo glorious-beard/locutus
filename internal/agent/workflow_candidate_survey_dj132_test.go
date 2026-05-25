@@ -76,13 +76,13 @@ func TestSurveyDispatchedBeforeElaboratorOnInitialPath(t *testing.T) {
 	})
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
-		MockResponse{AgentID: "spec_candidate_survey", Response: &AgentOutput{Content: survey, Model: "m"}},
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decision, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featureNarrative, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutConverged, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
+		MockResponse{AgentID: "spec-candidate-survey", Response: &AgentOutput{Content: survey, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: decision, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: featureNarrative, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutConverged, Model: "m"}},
 	)
 
 	wf := NewSpecGenerationWorkflow(nil, 5)
@@ -95,18 +95,18 @@ func TestSurveyDispatchedBeforeElaboratorOnInitialPath(t *testing.T) {
 	var surveyIdx, elabIdx int = -1, -1
 	for i, c := range calls {
 		switch c.Def.ID {
-		case "spec_candidate_survey":
+		case "spec-candidate-survey":
 			if surveyIdx == -1 {
 				surveyIdx = i
 			}
-		case "spec_decision_elaborator":
+		case "spec-decision-elaborator":
 			if elabIdx == -1 {
 				elabIdx = i
 			}
 		}
 	}
-	require.NotEqual(t, -1, surveyIdx, "expected at least one spec_candidate_survey call")
-	require.NotEqual(t, -1, elabIdx, "expected at least one spec_decision_elaborator call")
+	require.NotEqual(t, -1, surveyIdx, "expected at least one spec-candidate-survey call")
+	require.NotEqual(t, -1, elabIdx, "expected at least one spec-decision-elaborator call")
 	assert.Less(t, surveyIdx, elabIdx,
 		"DJ-132: the candidate-survey call must fire BEFORE the decision-elaborator on the initial-dispatch path")
 }
@@ -178,7 +178,7 @@ func TestRevisePathSkipsSurvey(t *testing.T) {
 		SurfacedBy: []string{"feat-realtime"},
 	}
 	item := reviseableConcernItem{
-		AgentID:       "spec_decision_elaborator",
+		AgentID:       "spec-decision-elaborator",
 		ID:            "rev:dec-postgres-oltp",
 		PriorDecision: priorDecision,
 		Concerns: []Concern{{
@@ -282,8 +282,8 @@ func TestMergeCandidateSurveysCorrelatesByAxisID(t *testing.T) {
 
 	s := &PlanningState{}
 	results := []RoundResult{
-		{AgentID: "spec_candidate_survey", FanoutItem: string(axisAJSON), Output: listA},
-		{AgentID: "spec_candidate_survey", FanoutItem: string(axisBJSON), Output: listB},
+		{AgentID: "spec-candidate-survey", FanoutItem: string(axisAJSON), Output: listA},
+		{AgentID: "spec-candidate-survey", FanoutItem: string(axisBJSON), Output: listB},
 	}
 	mergeCandidateSurveys(s, results)
 
@@ -313,7 +313,7 @@ func TestMergeCandidateSurveysResetsBetweenIterations(t *testing.T) {
 		},
 	}
 	mergeCandidateSurveys(s, []RoundResult{
-		{AgentID: "spec_candidate_survey", FanoutItem: string(axisAJSON), Output: listA},
+		{AgentID: "spec-candidate-survey", FanoutItem: string(axisAJSON), Output: listA},
 	})
 
 	require.NotContains(t, s.AxisSurveys, "axis-old",
@@ -340,11 +340,11 @@ func TestMergeCandidateSurveysTolerantOfPartialFailures(t *testing.T) {
 	s := &PlanningState{}
 	mergeCandidateSurveys(s, []RoundResult{
 		// Healthy result for axis-a.
-		{AgentID: "spec_candidate_survey", FanoutItem: string(axisAJSON), Output: listA},
+		{AgentID: "spec-candidate-survey", FanoutItem: string(axisAJSON), Output: listA},
 		// Error result for axis-b — merge skips.
-		{AgentID: "spec_candidate_survey", FanoutItem: string(axisBJSON), Err: assert.AnError},
+		{AgentID: "spec-candidate-survey", FanoutItem: string(axisBJSON), Err: assert.AnError},
 		// Malformed output for axis-c — merge skips.
-		{AgentID: "spec_candidate_survey", FanoutItem: string(axisCJSON), Output: "{not json"},
+		{AgentID: "spec-candidate-survey", FanoutItem: string(axisCJSON), Output: "{not json"},
 	})
 
 	require.Len(t, s.AxisSurveys, 1, "only the healthy result lands")

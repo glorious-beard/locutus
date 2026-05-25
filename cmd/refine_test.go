@@ -280,16 +280,16 @@ func TestRefineGoalsGeneratesSpecGraph(t *testing.T) {
 	}`
 
 	mock := agent.NewMockExecutor(
-		agent.MockResponse{AgentID: "spec_scout", Response: &agent.AgentOutput{Content: scout0, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_decision_elaborator", Response: &agent.AgentOutput{Content: decisionForFrontend, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_feature_elaborator", Response: &agent.AgentOutput{Content: featureNarrative, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_strategy_elaborator", Response: &agent.AgentOutput{Content: strategyNarrative, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_reconciler", Response: &agent.AgentOutput{Content: reconcileEmpty, Model: "m"}},
+		agent.MockResponse{AgentID: "spec-scout", Response: &agent.AgentOutput{Content: scout0, Model: "m"}},
+		agent.MockResponse{AgentID: "spec-decision-elaborator", Response: &agent.AgentOutput{Content: decisionForFrontend, Model: "m"}},
+		agent.MockResponse{AgentID: "spec-feature-elaborator", Response: &agent.AgentOutput{Content: featureNarrative, Model: "m"}},
+		agent.MockResponse{AgentID: "spec-strategy-elaborator", Response: &agent.AgentOutput{Content: strategyNarrative, Model: "m"}},
+		agent.MockResponse{AgentID: "spec-reconciler", Response: &agent.AgentOutput{Content: reconcileEmpty, Model: "m"}},
 		agent.MockResponse{AgentID: "architect_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 		agent.MockResponse{AgentID: "devops_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 		agent.MockResponse{AgentID: "sre_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 		agent.MockResponse{AgentID: "cost_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_scout", Response: &agent.AgentOutput{Content: scoutConverged, Model: "m"}},
+		agent.MockResponse{AgentID: "spec-scout", Response: &agent.AgentOutput{Content: scoutConverged, Model: "m"}},
 	)
 
 	result, err := RunRefineGoals(context.Background(), mock, fs, nil)

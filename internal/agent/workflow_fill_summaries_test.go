@@ -35,17 +35,17 @@ func TestFillSummariesWorkflow_WritesBackToJSONNodes(t *testing.T) {
 	featContent, _ := fs.ReadFile(".borg/spec/features/feat-dashboard.json")
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_summarizer", Response: &AgentOutput{
+		MockResponse{AgentID: "spec-summarizer", Response: &AgentOutput{
 			Content: marshalJSON(t, SpecSummaryResult{Summary: "Adopt Postgres for the OLTP store."}),
 		}},
-		MockResponse{AgentID: "spec_summarizer", Response: &AgentOutput{
+		MockResponse{AgentID: "spec-summarizer", Response: &AgentOutput{
 			Content: marshalJSON(t, SpecSummaryResult{Summary: "Operators view fleet status from a single dashboard."}),
 		}},
 	)
 
 	state := FillSummariesState{
 		FSys:          fs,
-		SummarizerDef: AgentDef{ID: "spec_summarizer", OutputSchema: "SpecSummaryResult"},
+		SummarizerDef: AgentDef{ID: "spec-summarizer", OutputSchema: "SpecSummaryResult"},
 		Dispatcher:    NewDispatcher(mock),
 		Missing: []MissingSummaryNode{
 			{Kind: "decision", ID: "dec-postgres", Path: ".borg/spec/decisions/dec-postgres", Content: string(decContent)},
@@ -55,7 +55,7 @@ func TestFillSummariesWorkflow_WritesBackToJSONNodes(t *testing.T) {
 
 	exec := &WorkflowExecutor[FillSummariesState]{
 		Executor:  mock,
-		AgentDefs: map[string]AgentDef{"spec_summarizer": {ID: "spec_summarizer"}},
+		AgentDefs: map[string]AgentDef{"spec-summarizer": {ID: "spec-summarizer"}},
 		Workflow:  FillSummariesWorkflow,
 	}
 
@@ -97,14 +97,14 @@ func TestFillSummariesWorkflow_WritesBackToApproach(t *testing.T) {
 	require.NoError(t, specio.SaveMarkdown(fs, ".borg/spec/approaches/app-fetch.md", app, "Build /api/dashboards."))
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_summarizer", Response: &AgentOutput{
+		MockResponse{AgentID: "spec-summarizer", Response: &AgentOutput{
 			Content: marshalJSON(t, SpecSummaryResult{Summary: "Implement the /api/dashboards GET endpoint."}),
 		}},
 	)
 
 	state := FillSummariesState{
 		FSys:          fs,
-		SummarizerDef: AgentDef{ID: "spec_summarizer", OutputSchema: "SpecSummaryResult"},
+		SummarizerDef: AgentDef{ID: "spec-summarizer", OutputSchema: "SpecSummaryResult"},
 		Dispatcher:    NewDispatcher(mock),
 		Missing: []MissingSummaryNode{
 			{Kind: "approach", ID: "app-fetch", Path: ".borg/spec/approaches/app-fetch.md", Content: "Build /api/dashboards."},
@@ -113,7 +113,7 @@ func TestFillSummariesWorkflow_WritesBackToApproach(t *testing.T) {
 
 	exec := &WorkflowExecutor[FillSummariesState]{
 		Executor:  mock,
-		AgentDefs: map[string]AgentDef{"spec_summarizer": {ID: "spec_summarizer"}},
+		AgentDefs: map[string]AgentDef{"spec-summarizer": {ID: "spec-summarizer"}},
 		Workflow:  FillSummariesWorkflow,
 	}
 
@@ -135,14 +135,14 @@ func TestFillSummariesWorkflow_EmptyMissingShortCircuits(t *testing.T) {
 
 	state := FillSummariesState{
 		FSys:          fs,
-		SummarizerDef: AgentDef{ID: "spec_summarizer"},
+		SummarizerDef: AgentDef{ID: "spec-summarizer"},
 		Dispatcher:    NewDispatcher(mock),
 		Missing:       nil,
 	}
 
 	exec := &WorkflowExecutor[FillSummariesState]{
 		Executor:  mock,
-		AgentDefs: map[string]AgentDef{"spec_summarizer": {ID: "spec_summarizer"}},
+		AgentDefs: map[string]AgentDef{"spec-summarizer": {ID: "spec-summarizer"}},
 		Workflow:  FillSummariesWorkflow,
 	}
 
@@ -162,14 +162,14 @@ func TestFillSummariesWorkflow_RecordsFailureOnEmptySummary(t *testing.T) {
 
 	// Agent returns empty summary -> runSummarizeOne records a failure.
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_summarizer", Response: &AgentOutput{
+		MockResponse{AgentID: "spec-summarizer", Response: &AgentOutput{
 			Content: marshalJSON(t, SpecSummaryResult{Summary: ""}),
 		}},
 	)
 
 	state := FillSummariesState{
 		FSys:          fs,
-		SummarizerDef: AgentDef{ID: "spec_summarizer", OutputSchema: "SpecSummaryResult"},
+		SummarizerDef: AgentDef{ID: "spec-summarizer", OutputSchema: "SpecSummaryResult"},
 		Dispatcher:    NewDispatcher(mock),
 		Missing: []MissingSummaryNode{
 			{Kind: "decision", ID: "dec-x", Path: ".borg/spec/decisions/dec-x", Content: "{}"},
@@ -178,7 +178,7 @@ func TestFillSummariesWorkflow_RecordsFailureOnEmptySummary(t *testing.T) {
 
 	exec := &WorkflowExecutor[FillSummariesState]{
 		Executor:  mock,
-		AgentDefs: map[string]AgentDef{"spec_summarizer": {ID: "spec_summarizer"}},
+		AgentDefs: map[string]AgentDef{"spec-summarizer": {ID: "spec-summarizer"}},
 		Workflow:  FillSummariesWorkflow,
 	}
 

@@ -1,5 +1,5 @@
 ---
-id: spec_architect
+id: spec-architect
 thinking: high
 role: planning
 models:

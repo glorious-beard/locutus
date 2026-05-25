@@ -22,11 +22,11 @@ func setupSpecFixture(t *testing.T) specio.FS {
 	require.NoError(t, fs.MkdirAll(".borg/spec/approaches", 0o755))
 	require.NoError(t, fs.MkdirAll(".borg/agents", 0o755))
 
-	// Seed the spec_summarizer agent in .borg/agents so scaffold.LoadAgent
+	// Seed the spec-summarizer agent in .borg/agents so scaffold.LoadAgent
 	// can find it. The fields are deliberately minimal — the workflow
 	// path is exercised end-to-end via the mock executor.
 	agentMD := []byte(`---
-id: spec_summarizer
+id: spec-summarizer
 role: summarization
 models:
   - {provider: anthropic, tier: fast}
@@ -36,7 +36,7 @@ output_schema: SpecSummaryResult
 
 Summarize one spec node.
 `)
-	require.NoError(t, fs.WriteFile(".borg/agents/spec_summarizer.md", agentMD, 0o644))
+	require.NoError(t, fs.WriteFile(".borg/agents/spec-summarizer.md", agentMD, 0o644))
 	return fs
 }
 
@@ -83,7 +83,7 @@ func TestEnsureSpecsContainSummaries_RegenFillsViaWorkflow(t *testing.T) {
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-x", dec, "body"))
 
 	mock := agent.NewMockExecutor(
-		agent.MockResponse{AgentID: "spec_summarizer", Response: &agent.AgentOutput{
+		agent.MockResponse{AgentID: "spec-summarizer", Response: &agent.AgentOutput{
 			Content: `{"summary":"Adopt X for the workload."}`,
 		}},
 	)
@@ -109,7 +109,7 @@ func TestEnsureSpecsContainSummaries_RegenReportsFailures(t *testing.T) {
 
 	// Agent returns empty summary -> workflow records failure.
 	mock := agent.NewMockExecutor(
-		agent.MockResponse{AgentID: "spec_summarizer", Response: &agent.AgentOutput{
+		agent.MockResponse{AgentID: "spec-summarizer", Response: &agent.AgentOutput{
 			Content: `{"summary":""}`,
 		}},
 	)

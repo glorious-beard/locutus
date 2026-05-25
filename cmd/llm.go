@@ -45,7 +45,7 @@ func getLLM() (agent.AgentExecutor, error) {
 // recordingLLMForMode when there's no per-call UI to take its place.
 //
 // Spec-lookup tools (spec_list_manifest / spec_get) are registered
-// against the executor's tool registry so the spec_reconciler agent
+// against the executor's tool registry so the spec-reconciler agent
 // can navigate the persisted spec lazily instead of inlining the
 // full ExistingSpec into its prompt. Registration is bound to fsys
 // so tool calls read from the same filesystem the rest of the

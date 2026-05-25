@@ -49,7 +49,7 @@ func scoutSpawnFor(myIter, budget int, loopTemplate func(executor.IterationConte
 	return func(_ context.Context, snap StateSnapshot[PlanningState], results []RoundResult) ([]WorkflowStep[PlanningState], []executor.Edge, error) {
 		brief, err := parseScoutBriefFromResults(results)
 		if err != nil {
-			return nil, nil, fmt.Errorf("spec_scout brief at iter %d: %w", myIter, err)
+			return nil, nil, fmt.Errorf("spec-scout brief at iter %d: %w", myIter, err)
 		}
 		// DJ-125 Phase 7: convergence is brief.Converged AND no
 		// concern is still open after the scout's dispositions land
@@ -79,7 +79,7 @@ func scoutSpawnFor(myIter, budget int, loopTemplate func(executor.IterationConte
 		}
 		if brief.Converged && openCount > 0 {
 			return nil, nil, fmt.Errorf(
-				"spec_scout claims converged=true at iter %d but %d concern(s) remain open after dispositions — the scout must dispose every open concern (addressed; wontfix) or report converged=false",
+				"spec-scout claims converged=true at iter %d but %d concern(s) remain open after dispositions — the scout must dispose every open concern (addressed; wontfix) or report converged=false",
 				myIter+1, openCount,
 			)
 		}
@@ -133,28 +133,28 @@ func scoutSpawnFor(myIter, budget int, loopTemplate func(executor.IterationConte
 	}
 }
 
-// parseScoutBriefFromResults pulls the first non-error spec_scout
+// parseScoutBriefFromResults pulls the first non-error spec-scout
 // result off the round and decodes it as a ScoutBrief. Surfaces decode
 // failures and missing results as errors so the spawner can attribute
 // them to the iteration.
 func parseScoutBriefFromResults(results []RoundResult) (*ScoutBrief, error) {
 	for _, r := range results {
-		if r.AgentID != "spec_scout" {
+		if r.AgentID != "spec-scout" {
 			continue
 		}
 		if r.Err != nil {
-			return nil, fmt.Errorf("spec_scout run failed: %w", r.Err)
+			return nil, fmt.Errorf("spec-scout run failed: %w", r.Err)
 		}
 		if strings.TrimSpace(r.Output) == "" {
-			return nil, fmt.Errorf("spec_scout returned empty output")
+			return nil, fmt.Errorf("spec-scout returned empty output")
 		}
 		var brief ScoutBrief
 		if err := json.Unmarshal([]byte(r.Output), &brief); err != nil {
-			return nil, fmt.Errorf("parse spec_scout brief: %w (content=%q)", err, r.Output)
+			return nil, fmt.Errorf("parse spec-scout brief: %w (content=%q)", err, r.Output)
 		}
 		return &brief, nil
 	}
-	return nil, fmt.Errorf("no spec_scout result in round")
+	return nil, fmt.Errorf("no spec-scout result in round")
 }
 
 // reopenedAxes returns the OpenAxis IDs that already appear in
@@ -190,7 +190,7 @@ func scoutConvergenceStuckTerminal(historian *history.Historian, snapState *Plan
 	reopenedCopy := append([]string(nil), reopened...)
 	return WorkflowStep[PlanningState]{
 		ID:     terminalID,
-		Agents: []string{"spec_scout"},
+		Agents: []string{"spec-scout"},
 		RunItem: func(_ context.Context, _ StateSnapshot[PlanningState]) (string, error) {
 			if historian != nil {
 				evt := buildScoutConvergenceStuckEvent(brief, iter, snapshotSpec, concerns, reopenedCopy)
@@ -215,7 +215,7 @@ func scoutConvergenceFailedTerminal(historian *history.Historian, snapState *Pla
 	concerns := append([]Concern(nil), snapState.Concerns...)
 	return WorkflowStep[PlanningState]{
 		ID:     terminalID,
-		Agents: []string{"spec_scout"},
+		Agents: []string{"spec-scout"},
 		RunItem: func(_ context.Context, _ StateSnapshot[PlanningState]) (string, error) {
 			if historian != nil {
 				evt := buildScoutConvergenceFailedEvent(brief, iter, budget, snapshotSpec, concerns)
@@ -270,7 +270,7 @@ func scoutConvergenceRevisionCappedTerminal(historian *history.Historian, snapSt
 	// handler has the same parameters the RunItem saw.
 	return WorkflowStep[PlanningState]{
 		ID:     terminalID,
-		Agents: []string{"spec_scout"},
+		Agents: []string{"spec-scout"},
 		RunItem: func(_ context.Context, _ StateSnapshot[PlanningState]) (string, error) {
 			// The RunItem path operates on a snapshot, not the
 			// orchestrator state; the Merge below applies the lock /
@@ -512,7 +512,7 @@ func buildScoutConvergenceRevisionCappedEvent(brief *ScoutBrief, iter, cap int, 
 func buildScoutConvergenceStuckEvent(brief *ScoutBrief, iter int, snapshotSpec string, concerns []Concern, reopened []string) history.Event {
 	now := time.Now()
 	var rationale strings.Builder
-	fmt.Fprintf(&rationale, "spec_scout reopened decided axes at iter %d.", iter+1)
+	fmt.Fprintf(&rationale, "spec-scout reopened decided axes at iter %d.", iter+1)
 	if len(reopened) > 0 {
 		rationale.WriteString("\n\nReopened axes:")
 		for _, r := range reopened {
@@ -543,7 +543,7 @@ func buildScoutConvergenceStuckEvent(brief *ScoutBrief, iter int, snapshotSpec s
 func buildScoutConvergenceFailedEvent(brief *ScoutBrief, iter, budget int, snapshotSpec string, concerns []Concern) history.Event {
 	now := time.Now()
 	var rationale strings.Builder
-	fmt.Fprintf(&rationale, "spec_scout did not converge within %d iteration(s); budget exhausted at iter %d.", budget, iter+1)
+	fmt.Fprintf(&rationale, "spec-scout did not converge within %d iteration(s); budget exhausted at iter %d.", budget, iter+1)
 	if len(brief.AxesOpen) > 0 {
 		rationale.WriteString("\n\nOpen axes at exhaustion:")
 		for _, a := range brief.AxesOpen {
@@ -768,7 +768,7 @@ func hasAffectedNodes(s *PlanningState) bool {
 }
 
 // fanoutOpenAxes returns one raw-JSON OpenAxis per entry in
-// state.AxesOpen. Each item drives one spec_decision_elaborator call.
+// state.AxesOpen. Each item drives one spec-decision-elaborator call.
 func fanoutOpenAxes(state *PlanningState) ([]string, error) {
 	if state == nil || len(state.AxesOpen) == 0 {
 		return nil, nil
@@ -864,7 +864,7 @@ func fanoutAffectedNodes(state *PlanningState) ([]string, error) {
 		if f, ok := featureByID[id]; ok {
 			fCopy := f
 			items = append(items, affectedNodeItem{
-				AgentID:         "spec_feature_elaborator",
+				AgentID:         "spec-feature-elaborator",
 				ID:              id,
 				Kind:            "feature",
 				ExistingFeature: &fCopy,
@@ -875,7 +875,7 @@ func fanoutAffectedNodes(state *PlanningState) ([]string, error) {
 		if s, ok := strategyByID[id]; ok {
 			sCopy := s
 			items = append(items, affectedNodeItem{
-				AgentID:          "spec_strategy_elaborator",
+				AgentID:          "spec-strategy-elaborator",
 				ID:               id,
 				Kind:             "strategy",
 				ExistingStrategy: &sCopy,
@@ -901,11 +901,11 @@ func fanoutAffectedNodes(state *PlanningState) ([]string, error) {
 func agentIDForKind(kind string) string {
 	switch strings.TrimSpace(strings.ToLower(kind)) {
 	case "strategy":
-		return "spec_strategy_elaborator"
+		return "spec-strategy-elaborator"
 	case "feature":
-		return "spec_feature_elaborator"
+		return "spec-feature-elaborator"
 	default:
-		return "spec_feature_elaborator"
+		return "spec-feature-elaborator"
 	}
 }
 
@@ -1014,7 +1014,7 @@ func computeAffectedNodes(state *PlanningState, newDecisionIDs []string) []strin
 	return out
 }
 
-// mergeCandidateSurveys parses each spec_candidate_survey output as a
+// mergeCandidateSurveys parses each spec-candidate-survey output as a
 // CandidateList and stores it in state.AxisSurveys keyed by the
 // OpenAxis ID the call was dispatched on (DJ-132). The axis ID is read
 // off RoundResult.FanoutItem (the JSON-marshaled OpenAxis the fanout
@@ -1076,7 +1076,7 @@ func mergeCandidateSurveys(s *PlanningState, results []RoundResult) {
 	}
 }
 
-// projectCandidateSurvey builds the spec_candidate_survey's user
+// projectCandidateSurvey builds the spec-candidate-survey's user
 // message. Per-call inputs: GOALS.md + scout brief (for the axis's
 // initial framing via technology_options + the project context the
 // survey filters against) + the in-flight manifest (for existing
@@ -1668,7 +1668,7 @@ func mergeNarrative(s *PlanningState, results []RoundResult) {
 	rebuildInFlightIndex(s)
 }
 
-// projectScout builds the spec_scout's user message. The scout reads
+// projectScout builds the spec-scout's user message. The scout reads
 // GOALS.md + imported content + the in-flight manifest (DJ-125
 // Phase 4) + concerns + dangling references + prior brief (on iter > 0)
 // and emits the new ScoutBrief.
@@ -1743,7 +1743,7 @@ func projectScout(snap StateSnapshot[PlanningState]) []Message {
 	return []Message{{Role: "user", Content: b.String()}}
 }
 
-// projectOpenAxis builds the spec_decision_elaborator's user message.
+// projectOpenAxis builds the spec-decision-elaborator's user message.
 // Per-call inputs: GOALS.md + scout brief (for technology_options /
 // watch_outs / implicit_assumptions context) + the in-flight manifest
 // (DJ-125 Phase 4 — sibling settled decisions, axes in flight, flagged
@@ -1896,7 +1896,7 @@ func projectAffectedNode(snap StateSnapshot[PlanningState]) []Message {
 // pile redundant replacements onto the same axis (and inflate the
 // per-axis revision-count cap artificially).
 //
-// AgentID is always spec_decision_elaborator (the revise mode lives
+// AgentID is always spec-decision-elaborator (the revise mode lives
 // in that prompt). ID is "rev:<dec-id>" so fanoutItemID returns a
 // unique label per dispatch slot and the per-call YAML traces are
 // diagnosable.
@@ -2080,7 +2080,7 @@ func fanoutReviseableConcerns(s *PlanningState) ([]string, error) {
 	for _, did := range order {
 		g := groups[did]
 		items = append(items, reviseableConcernItem{
-			AgentID:       "spec_decision_elaborator",
+			AgentID:       "spec-decision-elaborator",
 			ID:            fmt.Sprintf("rev:%s", did),
 			PriorDecision: priorByID[did],
 			Concerns:      g.concerns,
@@ -2116,7 +2116,7 @@ func decisionToRawProposal(d spec.Decision) RawDecisionProposal {
 	}
 }
 
-// projectReviseDecision builds the spec_decision_elaborator's user
+// projectReviseDecision builds the spec-decision-elaborator's user
 // message for a revise-decisions fanout call. Per-call inputs:
 // GOALS.md + scout brief + the in-flight manifest + the "Prior
 // decision" block (the full body of the decision being revised) +

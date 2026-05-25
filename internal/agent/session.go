@@ -41,7 +41,7 @@ func RoleFromContext(ctx context.Context) string {
 }
 
 // agentIDContextKey carries the source-agent identifier for an LLM
-// call (e.g. "spec_feature_elaborator"). Distinct from role: a single
+// call (e.g. "spec-feature-elaborator"). Distinct from role: a single
 // agent may participate in multiple roles (architect runs on propose
 // and revise, etc.). Trace consumers want to know "which .md file
 // produced this output," which is the agent id.
@@ -70,7 +70,7 @@ func AgentIDFromContext(ctx context.Context) string {
 // stamp `feat-x` onto a per-element elaborator call so that
 // `ls .locutus/sessions/<sid>/calls/` reads as a directory of named
 // nodes rather than 12 indistinguishable
-// `0017-spec_feature_elaborator.yaml` siblings. The agent_id stays as
+// `0017-spec-feature-elaborator.yaml` siblings. The agent_id stays as
 // the bare agent name; the tag is filename-only (it's already in the
 // call's messages content). Empty when not set.
 type callTagContextKey struct{}

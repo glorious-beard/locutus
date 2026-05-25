@@ -105,7 +105,7 @@ func snapshotJustifyState(s *JustifyState) JustifyState {
 	return out
 }
 
-// JustifySoloWorkflow runs the spec_advocate alone. Single phase with
+// JustifySoloWorkflow runs the spec-advocate alone. Single phase with
 // no challenger / researcher. Mirrors the old RunJustify direct-call
 // path; the workflowization gives it the same observability shape as
 // the other verbs (workflow.phase span, lifecycle events on the sink).
@@ -114,7 +114,7 @@ var JustifySoloWorkflow = &Workflow[JustifyState]{
 	Rounds: []WorkflowStep[JustifyState]{
 		{
 			ID:      "defend",
-			Agents:  []string{"spec_advocate"},
+			Agents:  []string{"spec-advocate"},
 			RunItem: runJustifySoloDefend,
 			Merge:   mergeJustifySoloDefend,
 		},
@@ -131,20 +131,20 @@ var JustifyAdversarialFallbackWorkflow = &Workflow[JustifyState]{
 	Rounds: []WorkflowStep[JustifyState]{
 		{
 			ID:      "challenge",
-			Agents:  []string{"spec_challenger"},
+			Agents:  []string{"spec-challenger"},
 			RunItem: runJustifyChallenge,
 			Merge:   mergeJustifyChallenge,
 		},
 		{
 			ID:        "research",
-			Agents:    []string{"justify_researcher"},
+			Agents:    []string{"justify-researcher"},
 			DependsOn: []string{"challenge"},
 			RunItem:   runJustifyResearch,
 			Merge:     mergeJustifyResearch,
 		},
 		{
 			ID:        "defend",
-			Agents:    []string{"spec_advocate"},
+			Agents:    []string{"spec-advocate"},
 			DependsOn: []string{"research"},
 			RunItem:   runJustifyAdversarialDefend,
 			Merge:     mergeJustifyAdversarialDefend,
@@ -177,13 +177,13 @@ var JustifyAdversarialFanoutWorkflow = &Workflow[JustifyState]{
 	Rounds: []WorkflowStep[JustifyState]{
 		{
 			ID:      "classify",
-			Agents:  []string{"justify_splitter"},
+			Agents:  []string{"justify-splitter"},
 			RunItem: runJustifyClassify,
 			Merge:   mergeJustifyClassify,
 		},
 		{
 			ID:        "per_decision",
-			Agents:    []string{"spec_advocate"},
+			Agents:    []string{"spec-advocate"},
 			DependsOn: []string{"classify"},
 			Fanout:    fanoutJustifyDecisions,
 			RunItem:   runJustifyPerDecision,
@@ -191,7 +191,7 @@ var JustifyAdversarialFanoutWorkflow = &Workflow[JustifyState]{
 		},
 		{
 			ID:          "synthesize",
-			Agents:      []string{"justify_synthesizer"},
+			Agents:      []string{"justify-synthesizer"},
 			DependsOn:   []string{"per_decision"},
 			Conditional: hasSynthesisInputs,
 			RunItem:     runJustifySynthesize,
@@ -201,7 +201,7 @@ var JustifyAdversarialFanoutWorkflow = &Workflow[JustifyState]{
 	MaxRounds: 1,
 }
 
-// runJustifySoloDefend dispatches the spec_advocate against the
+// runJustifySoloDefend dispatches the spec-advocate against the
 // rendered node + GOALS. Mirrors the old RunJustify path verbatim —
 // same prompt builder, same dispatch options, same parse + emptiness
 // check.
@@ -255,7 +255,7 @@ func mergeJustifySoloDefend(s *JustifyState, results []RoundResult) {
 	s.Brief = &brief
 }
 
-// runJustifyChallenge dispatches the spec_challenger via the
+// runJustifyChallenge dispatches the spec-challenger via the
 // degeneracy-retry helper. Its return value is the canonical JSON of
 // the ChallengeBrief.
 func runJustifyChallenge(ctx context.Context, snap StateSnapshot[JustifyState]) (string, error) {
@@ -374,7 +374,7 @@ func mergeJustifyResearch(s *JustifyState, results []RoundResult) {
 	s.ResearcherOut = &brief
 }
 
-// runJustifyAdversarialDefend dispatches the spec_advocate with the
+// runJustifyAdversarialDefend dispatches the spec-advocate with the
 // challenger + researcher context and returns the canonical
 // AdversarialDefense JSON.
 func runJustifyAdversarialDefend(ctx context.Context, snap StateSnapshot[JustifyState]) (string, error) {

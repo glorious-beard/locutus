@@ -17,7 +17,7 @@
 //     critic loop can address them.
 //
 // The reconciler agent's verdict (ReconciliationVerdict) is still parsed
-// for compatibility with the unchanged spec_reconciler.md prompt and
+// for compatibility with the unchanged spec-reconciler.md prompt and
 // schema, but its content is ignored by ApplyReconciliation. Phase 5's
 // workflow rewrite will remove the reconciler agent step entirely; this
 // stage keeps the schema-level types stable so the agent's strict-mode
@@ -43,7 +43,7 @@ import (
 // Verdict JSON is parsed (with fence-stripping) but its content is
 // ignored; the canonical proposal is derived purely from the raw
 // proposal. TODO Phase 5: remove the verdict step entirely once the
-// workflow no longer dispatches spec_reconciler.
+// workflow no longer dispatches spec-reconciler.
 func mergeReconcile(rawProposalJSON, verdictJSON string, existing *ExistingSpec) (string, []AppliedAction, error) {
 	var raw RawSpecProposal
 	if err := json.Unmarshal([]byte(rawProposalJSON), &raw); err != nil {
@@ -111,7 +111,7 @@ func appendConflictActions(existing []AppliedAction, applied []AppliedAction) []
 	return existing
 }
 
-// ReconciliationVerdict is the spec_reconciler agent's structured output.
+// ReconciliationVerdict is the spec-reconciler agent's structured output.
 // Under DJ-124 its content is ignored by ApplyReconciliation — the
 // reconciler agent's prompt and schema are preserved only so the agent's
 // strict-mode output continues to validate at the API layer pending

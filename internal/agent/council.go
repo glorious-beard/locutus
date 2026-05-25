@@ -73,7 +73,7 @@ type AgentDef struct {
 	// so an agent that wants thinking off on its balanced runs gets
 	// it off on the openai/gemini balanced runs too.
 	//
-	// Use sparingly. The justify_synthesizer is the first caller:
+	// Use sparingly. The justify-synthesizer is the first caller:
 	// claude-sonnet-4-6 was leaking thinking-block reasoning into a
 	// constrained enum field (verdict), and the rationale field
 	// already carries the synthesizer's reasoning, so thinking

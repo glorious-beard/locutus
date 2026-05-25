@@ -1,5 +1,5 @@
 ---
-id: backend_analyzer
+id: backend-analyzer
 thinking: off
 role: backend-analysis
 models:

@@ -29,7 +29,7 @@ func setupAssimilateFS(t *testing.T) *specio.MemFS {
 	// agent.AssimilationWorkflow — remediate runs as a separate pass in
 	// cmd/assimilate after Analyze (DJ-045).
 	fs.MkdirAll(".borg/agents", 0o755)
-	agents := []string{"scout", "backend_analyzer", "frontend_analyzer", "infra_analyzer", "gap_analyst", "remediator"}
+	agents := []string{"scout", "backend-analyzer", "frontend-analyzer", "infra-analyzer", "gap-analyst", "remediator"}
 	for _, id := range agents {
 		content := "---\nid: " + id + "\nrole: " + id + "\n---\nYou are the " + id + ".\n"
 		fs.WriteFile(".borg/agents/"+id+".md", []byte(content), 0o644)
@@ -286,7 +286,7 @@ func callToPromptString(req agent.AgentInput) string {
 }
 
 // mockAssimilationLLMWithGaps scripts an analysis pipeline whose
-// gap_analyst surfaces a non-empty gap, plus a remediator response that
+// gap-analyst surfaces a non-empty gap, plus a remediator response that
 // emits an assumed Decision filling that gap. Used to verify Round 5
 // integration: with runRemediate=true, the assumed Decision lands in
 // the AssimilationResult and on disk; with runRemediate=false, only
@@ -349,7 +349,7 @@ func TestAssimilateNoRemediateSkipsRemediation(t *testing.T) {
 
 func TestAssimilateRemediationSkippedWhenNoGaps(t *testing.T) {
 	fs := setupAssimilateFS(t)
-	// Standard mock — gap_analyst returns no gaps, so even with
+	// Standard mock — gap-analyst returns no gaps, so even with
 	// runRemediate=true the remediator LLM call is skipped.
 	llm := mockAssimilationLLM()
 
@@ -359,7 +359,7 @@ func TestAssimilateRemediationSkippedWhenNoGaps(t *testing.T) {
 
 	// Mock had a 6th scripted response (intended for the remediator),
 	// but it should not have been consumed because gaps were empty.
-	// CallCount is 5 (scout + 3 analyzers + gap_analyst).
+	// CallCount is 5 (scout + 3 analyzers + gap-analyst).
 	assert.Equal(t, 5, llm.CallCount(), "no LLM call for remediator when gaps are empty")
 }
 

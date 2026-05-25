@@ -1,5 +1,5 @@
 ---
-id: spec_advocate
+id: spec-advocate
 thinking: on
 role: synthesis
 models:

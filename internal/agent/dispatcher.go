@@ -52,7 +52,7 @@ type DispatchOptions struct {
 
 	// OutputSchema overrides AgentDef.OutputSchema for this call.
 	// Useful when a single agent .md is reused with different schemas
-	// (e.g. spec_advocate produces JustificationBrief in solo mode and
+	// (e.g. spec-advocate produces JustificationBrief in solo mode and
 	// AdversarialDefense in adversarial mode).
 	OutputSchema string
 

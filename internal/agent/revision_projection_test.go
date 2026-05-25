@@ -67,7 +67,7 @@ func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 		cluster := FindingCluster{
 			Topic:    "feat-a",
 			NodeID:   "feat-a",
-			AgentID:  "spec_feature_elaborator",
+			AgentID:  "spec-feature-elaborator",
 			Findings: []string{"add PII encryption", "clarify scale"},
 		}
 		clusterRaw, _ := json.Marshal(cluster)
@@ -97,7 +97,7 @@ func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 		cluster := FindingCluster{
 			Topic:    "strat-x",
 			NodeID:   "strat-x",
-			AgentID:  "spec_strategy_elaborator",
+			AgentID:  "spec-strategy-elaborator",
 			Findings: []string{"name the IaC tool"},
 		}
 		clusterRaw, _ := json.Marshal(cluster)
@@ -121,7 +121,7 @@ func TestProjectFindingClusterRendersTargetedNode(t *testing.T) {
 		cluster := FindingCluster{
 			Topic:    "feat-ghost",
 			NodeID:   "feat-ghost",
-			AgentID:  "spec_feature_elaborator",
+			AgentID:  "spec-feature-elaborator",
 			Findings: []string{"x"},
 		}
 		clusterRaw, _ := json.Marshal(cluster)
@@ -153,7 +153,7 @@ func TestProjectFindingClusterRendersAddMode(t *testing.T) {
 	t.Run("strategy add (no NodeID, kind=strategy)", func(t *testing.T) {
 		cluster := FindingCluster{
 			Topic:    "infrastructure-as-code and CI/CD",
-			AgentID:  "spec_strategy_elaborator",
+			AgentID:  "spec-strategy-elaborator",
 			Findings: []string{"missing IaC strategy", "no CI/CD pipeline defined"},
 		}
 		clusterRaw, _ := json.Marshal(cluster)
@@ -198,7 +198,7 @@ func TestProjectFindingClusterRendersCurrentCommitmentQuoted(t *testing.T) {
 		cluster := FindingCluster{
 			Topic:                   "WinPlan platform: on-call rotation owner",
 			NodeID:                  "strat-observability",
-			AgentID:                 "spec_strategy_elaborator",
+			AgentID:                 "spec-strategy-elaborator",
 			Findings:                []string{"The proposal commits PagerDuty but not who carries it."},
 			CurrentCommitmentQuoted: "WinPlan adopts a developer-led on-call rotation backed by PagerDuty.",
 		}
@@ -235,7 +235,7 @@ func TestProjectFindingClusterRendersCurrentCommitmentQuoted(t *testing.T) {
 		cluster := FindingCluster{
 			Topic:                   "strat-observability",
 			NodeID:                  "strat-observability",
-			AgentID:                 "spec_strategy_elaborator",
+			AgentID:                 "spec-strategy-elaborator",
 			Findings:                []string{"no SLO is named"},
 			CurrentCommitmentQuoted: "",
 		}
@@ -279,7 +279,7 @@ func TestProjectFindingClusterReadsCurrentRawProposal(t *testing.T) {
 	cluster := FindingCluster{
 		Topic:    "WinPlan platform: on-call rotation owner",
 		NodeID:   "strat-obs",
-		AgentID:  "spec_strategy_elaborator",
+		AgentID:  "spec-strategy-elaborator",
 		Findings: []string{"name the specific team carrying the pager"},
 	}
 	clusterRaw, _ := json.Marshal(cluster)
@@ -321,7 +321,7 @@ func TestClusterStepProjectionsRenderTheirData(t *testing.T) {
 		cluster := FindingCluster{
 			Topic:    "feat-a",
 			NodeID:   "feat-a",
-			AgentID:  "spec_feature_elaborator",
+			AgentID:  "spec-feature-elaborator",
 			Findings: []string{"x"},
 		}
 		clusterRaw, _ := json.Marshal(cluster)

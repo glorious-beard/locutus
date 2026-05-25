@@ -221,5 +221,5 @@ func TestRunJustifyAgainst_RetriesAfterDegenerateChallenger(t *testing.T) {
 
 // Test moved to internal/scaffold/agents_test.go after the prompt
 // extraction (advocate prompt now lives in
-// internal/scaffold/agents/spec_advocate.md). The grounding-discipline
+// internal/scaffold/agents/spec-advocate.md). The grounding-discipline
 // invariant is enforced there against the embedded scaffold copy.

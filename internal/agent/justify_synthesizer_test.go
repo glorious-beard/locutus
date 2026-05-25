@@ -78,7 +78,7 @@ func TestInvokeSynthesizer_RetriesAndRotates(t *testing.T) {
 	)
 
 	def := AgentDef{
-		ID:           "justify_synthesizer",
+		ID:           "justify-synthesizer",
 		OutputSchema: "SynthesisVerdict",
 		Models: []ModelPreference{
 			{Provider: "anthropic", Tier: "balanced"},
@@ -125,7 +125,7 @@ func TestInvokeSynthesizer_ExhaustsRetriesOnPersistentDegeneracy(t *testing.T) {
 	mock := NewMockExecutor(scripts...)
 
 	def := AgentDef{
-		ID:           "justify_synthesizer",
+		ID:           "justify-synthesizer",
 		OutputSchema: "SynthesisVerdict",
 		Models: []ModelPreference{
 			{Provider: "anthropic", Tier: "balanced"},

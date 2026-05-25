@@ -1,5 +1,5 @@
 ---
-id: spec_feature_elaborator
+id: spec-feature-elaborator
 thinking: on
 role: planning
 models:

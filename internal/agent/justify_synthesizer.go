@@ -9,7 +9,7 @@ import (
 	"github.com/chetan/locutus/internal/spec"
 )
 
-// SynthesisVerdict is the output of the justify_synthesizer agent.
+// SynthesisVerdict is the output of the justify-synthesizer agent.
 // Aggregates per-decision verdicts (already produced by the
 // per-decision RunJustifyAgainst calls) with a strategy-level read
 // of the parent's body prose. The orchestrator combines this with
@@ -114,7 +114,7 @@ type PerDecisionResult struct {
 // dispatch can't recover from.
 const synthesizerMaxAttempts = 3
 
-// InvokeSynthesizer runs the justify_synthesizer agent. Returns the
+// InvokeSynthesizer runs the justify-synthesizer agent. Returns the
 // aggregate strategy-level verdict. The dispatcher applies provider
 // rotation + validator-driven retry (synthesizerMaxAttempts) when the
 // output is degenerate (invalid verdict, empty defense, runaway field

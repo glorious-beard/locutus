@@ -39,7 +39,7 @@ func TestInvokeSplitter_RetriesAndRotatesOnValidationFailure(t *testing.T) {
 	)
 
 	def := AgentDef{
-		ID:           "justify_splitter",
+		ID:           "justify-splitter",
 		OutputSchema: "ChallengeSplit",
 		Models: []ModelPreference{
 			{Provider: "anthropic", Tier: "balanced"},
@@ -84,7 +84,7 @@ func TestInvokeSplitter_ExhaustsRetriesOnPersistentDegeneracy(t *testing.T) {
 	mock := NewMockExecutor(scripts...)
 
 	def := AgentDef{
-		ID:           "justify_splitter",
+		ID:           "justify-splitter",
 		OutputSchema: "ChallengeSplit",
 		Models: []ModelPreference{
 			{Provider: "anthropic", Tier: "balanced"},

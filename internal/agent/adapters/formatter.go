@@ -25,7 +25,7 @@ Rules:
 // Tells the model that JSON output is handled by the downstream
 // format pass — its job is to think out loud in prose. Without this,
 // models default to JSON for analytical tasks regardless of how the
-// agent prompt is phrased: spec_scout's iter-0 thinking-on call on
+// agent prompt is phrased: spec-scout's iter-0 thinking-on call on
 // Gemini 3 Pro Preview emitted a `​```json` code-fenced response even
 // with OutputSchema=nil and the prompt scrubbed of "produce a single
 // X object" framings, because the prompt's section-name structure

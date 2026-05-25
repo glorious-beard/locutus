@@ -1,5 +1,5 @@
 ---
-id: gap_analyst
+id: gap-analyst
 thinking: off
 role: gap-analysis
 models:

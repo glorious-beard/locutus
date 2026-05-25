@@ -1,5 +1,5 @@
 ---
-id: infra_analyzer
+id: infra-analyzer
 thinking: off
 role: infrastructure-analysis
 models:

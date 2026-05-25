@@ -1,4 +1,4 @@
-// Spec-lookup tools the spec_reconciler agent uses to navigate the
+// Spec-lookup tools the spec-reconciler agent uses to navigate the
 // persisted spec lazily instead of receiving the entire ExistingSpec
 // inlined into its prompt.
 //

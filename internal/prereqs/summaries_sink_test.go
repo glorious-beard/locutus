@@ -55,7 +55,7 @@ func TestEnsureSpecsContainSummaries_EmitsEventsToSink(t *testing.T) {
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-x", dec, "body"))
 
 	mock := agent.NewMockExecutor(
-		agent.MockResponse{AgentID: "spec_summarizer", Response: &agent.AgentOutput{
+		agent.MockResponse{AgentID: "spec-summarizer", Response: &agent.AgentOutput{
 			Content: `{"summary":"Adopt X for the workload."}`,
 		}},
 	)
@@ -88,7 +88,7 @@ func TestEnsureSpecsContainSummaries_NilSinkIsSilent(t *testing.T) {
 	require.NoError(t, specio.SavePair(fs, ".borg/spec/decisions/dec-y", dec, "body"))
 
 	mock := agent.NewMockExecutor(
-		agent.MockResponse{AgentID: "spec_summarizer", Response: &agent.AgentOutput{
+		agent.MockResponse{AgentID: "spec-summarizer", Response: &agent.AgentOutput{
 			Content: `{"summary":"Use Y."}`,
 		}},
 	)

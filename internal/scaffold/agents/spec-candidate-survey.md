@@ -1,5 +1,5 @@
 ---
-id: spec_candidate_survey
+id: spec-candidate-survey
 thinking: off
 role: enumeration
 models:

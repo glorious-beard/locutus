@@ -30,7 +30,7 @@ type SummariesContext struct {
 	// `.borg/` parent.
 	FSys specio.FS
 	// Executor is the workflow executor used to dispatch
-	// spec_summarizer fanout. Required when regen=true.
+	// spec-summarizer fanout. Required when regen=true.
 	Executor agent.AgentExecutor
 	// Dispatcher is the per-call dispatcher used by the workflow's
 	// RunItem closures. Required when regen=true. Production callers
@@ -68,7 +68,7 @@ func (e *SummariesError) Error() string {
 // directory and returns a SummariesError listing the ids of any nodes
 // without Summary. When regen=true it additionally dispatches the
 // FillSummariesWorkflow to fill the missing summaries via the
-// spec_summarizer fast-tier agent, returning a SummariesError only if
+// spec-summarizer fast-tier agent, returning a SummariesError only if
 // the workflow leaves any nodes unfilled.
 //
 // Greenfield projects (no spec dirs, zero nodes) pass trivially.
@@ -105,11 +105,11 @@ func EnsureSpecsContainSummaries(ctx context.Context, sctx SummariesContext, reg
 
 	slog.Info("prereq: filling missing spec summaries",
 		"count", len(missing),
-		"agent", "spec_summarizer")
+		"agent", "spec-summarizer")
 
-	def, err := scaffold.LoadAgent(sctx.FSys, "spec_summarizer")
+	def, err := scaffold.LoadAgent(sctx.FSys, "spec-summarizer")
 	if err != nil {
-		return fmt.Errorf("load spec_summarizer agent: %w", err)
+		return fmt.Errorf("load spec-summarizer agent: %w", err)
 	}
 
 	state := agent.FillSummariesState{
@@ -121,7 +121,7 @@ func EnsureSpecsContainSummaries(ctx context.Context, sctx SummariesContext, reg
 
 	exec := &agent.WorkflowExecutor[agent.FillSummariesState]{
 		Executor:  sctx.Executor,
-		AgentDefs: map[string]agent.AgentDef{"spec_summarizer": def},
+		AgentDefs: map[string]agent.AgentDef{"spec-summarizer": def},
 		Workflow:  agent.FillSummariesWorkflow,
 	}
 

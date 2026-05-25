@@ -1,5 +1,5 @@
 ---
-id: frontend_analyzer
+id: frontend-analyzer
 thinking: off
 role: frontend-analysis
 models:

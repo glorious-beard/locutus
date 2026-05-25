@@ -53,7 +53,7 @@ func strategyProposalJSON(t *testing.T, s RawStrategyProposal) string {
 }
 
 // setupSpecGenFixtureDJ124 mirrors setupSpecGenFixture but additionally
-// registers the spec_decision_elaborator agent the DJ-124 workflow
+// registers the spec-decision-elaborator agent the DJ-124 workflow
 // dispatches via the decisions fanout. The minimal AgentDef carries
 // the model tier + output schema so LoadAgentDefs + BuildAgentInput
 // wire the request correctly; the mock LLM stands in for the actual
@@ -62,16 +62,16 @@ func setupSpecGenFixtureDJ124(t *testing.T) specio.FS {
 	t.Helper()
 	fs := setupSpecGenFixture(t)
 	require.NoError(t, fs.WriteFile(
-		".borg/agents/spec_decision_elaborator.md",
-		[]byte(minAgentMD("spec_decision_elaborator", "planning", "strong", "RawDecisionProposal")),
+		".borg/agents/spec-decision-elaborator.md",
+		[]byte(minAgentMD("spec-decision-elaborator", "planning", "strong", "RawDecisionProposal")),
 		0o644))
 	require.NoError(t, fs.WriteFile(
-		".borg/agents/spec_feature_elaborator.md",
-		[]byte(minAgentMD("spec_feature_elaborator", "planning", "balanced", "RawFeatureProposal")),
+		".borg/agents/spec-feature-elaborator.md",
+		[]byte(minAgentMD("spec-feature-elaborator", "planning", "balanced", "RawFeatureProposal")),
 		0o644))
 	require.NoError(t, fs.WriteFile(
-		".borg/agents/spec_strategy_elaborator.md",
-		[]byte(minAgentMD("spec_strategy_elaborator", "planning", "balanced", "RawStrategyProposal")),
+		".borg/agents/spec-strategy-elaborator.md",
+		[]byte(minAgentMD("spec-strategy-elaborator", "planning", "balanced", "RawStrategyProposal")),
 		0o644))
 	// DJ-132 candidate-survey pre-step. Fast tier in production; the
 	// minAgentMD shape doesn't care about tier — the mock LLM
@@ -79,8 +79,8 @@ func setupSpecGenFixtureDJ124(t *testing.T) specio.FS {
 	// declare the schema so BuildAgentInput wires the strict-mode
 	// output correctly.
 	require.NoError(t, fs.WriteFile(
-		".borg/agents/spec_candidate_survey.md",
-		[]byte(minAgentMD("spec_candidate_survey", "enumeration", "fast", "CandidateList")),
+		".borg/agents/spec-candidate-survey.md",
+		[]byte(minAgentMD("spec-candidate-survey", "enumeration", "fast", "CandidateList")),
 		0o644))
 	return fs
 }
@@ -154,13 +154,13 @@ func TestSpecGenerationWorkflowDispatchOrder(t *testing.T) {
 	})
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: iter0Scout, Model: "m"}},
-		MockResponse{AgentID: "spec_candidate_survey", Response: &AgentOutput{Content: emptyCandidateListResp, Model: "m"}},
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decisionForDataStore, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featureNarrative, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: iter1Scout, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: iter0Scout, Model: "m"}},
+		MockResponse{AgentID: "spec-candidate-survey", Response: &AgentOutput{Content: emptyCandidateListResp, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: decisionForDataStore, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: featureNarrative, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: iter1Scout, Model: "m"}},
 	)
 
 	wf := NewSpecGenerationWorkflow(nil, 5)
@@ -176,13 +176,13 @@ func TestSpecGenerationWorkflowDispatchOrder(t *testing.T) {
 		agentOrder = append(agentOrder, c.Def.ID)
 	}
 
-	assert.Equal(t, "spec_scout", agentOrder[0], "iter-0 scout fires first")
-	assert.Equal(t, "spec_candidate_survey", agentOrder[1], "DJ-132 candidate-survey pre-step fires after scout, before decisions")
-	assert.Equal(t, "spec_decision_elaborator", agentOrder[2], "decisions step fires after candidate-survey")
-	assert.Equal(t, "spec_feature_elaborator", agentOrder[3], "narrative step fires after decisions")
-	assert.Equal(t, "spec_reconciler", agentOrder[4], "reconcile fires after narrative")
-	assert.Equal(t, "spec_critic_elaborator", agentOrder[5], "critique dispatches the parametric critic")
-	assert.Equal(t, "spec_scout", agentOrder[6], "next-iter scout fires after critique")
+	assert.Equal(t, "spec-scout", agentOrder[0], "iter-0 scout fires first")
+	assert.Equal(t, "spec-candidate-survey", agentOrder[1], "DJ-132 candidate-survey pre-step fires after scout, before decisions")
+	assert.Equal(t, "spec-decision-elaborator", agentOrder[2], "decisions step fires after candidate-survey")
+	assert.Equal(t, "spec-feature-elaborator", agentOrder[3], "narrative step fires after decisions")
+	assert.Equal(t, "spec-reconciler", agentOrder[4], "reconcile fires after narrative")
+	assert.Equal(t, "spec-critic-elaborator", agentOrder[5], "critique dispatches the parametric critic")
+	assert.Equal(t, "spec-scout", agentOrder[6], "next-iter scout fires after critique")
 }
 
 // TestConditionalNarrativeDispatchOnlyTouchesAffected drives a scout
@@ -274,7 +274,7 @@ func TestConvergenceWhenScoutReturnsConverged(t *testing.T) {
 	})
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: converged, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: converged, Model: "m"}},
 	)
 
 	wf := NewSpecGenerationWorkflow(nil, 5)
@@ -345,11 +345,11 @@ func TestCycleDetectionWhenAxisReopens(t *testing.T) {
 	historian := history.NewHistorian(osFS, ".borg/history")
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutIter0, Model: "m"}},
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decisionForA, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featureForX, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutIter1Cycle, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutIter0, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: decisionForA, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: featureForX, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutIter1Cycle, Model: "m"}},
 	)
 
 	wf := NewSpecGenerationWorkflow(historian, 5)
@@ -430,11 +430,11 @@ func TestGenerateSpecExercisesNewWorkflow(t *testing.T) {
 	})
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: dec, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: feat, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout1, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: dec, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: feat, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scout1, Model: "m"}},
 	)
 
 	wf := NewSpecGenerationWorkflow(nil, 5)
@@ -473,7 +473,7 @@ func TestMergeDecisionsAppendsAndTracksAxes(t *testing.T) {
 	}
 
 	results := []RoundResult{{
-		AgentID:        "spec_decision_elaborator",
+		AgentID:        "spec-decision-elaborator",
 		Output:         decisionProposalJSON(t, RawDecisionProposal{
 			ID: "dec-postgres",
 			Title: "Postgres",
@@ -563,11 +563,11 @@ func TestImportFlowUnifiedWithRefineWorkflow(t *testing.T) {
 	})
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: dec, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: feat, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout1, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: dec, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: feat, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scout1, Model: "m"}},
 	)
 
 	importedDocBody := "# Real-time dashboard\n\nAdmins see live updates of project health as work progresses; tiles re-render as events arrive."
@@ -589,7 +589,7 @@ func TestImportFlowUnifiedWithRefineWorkflow(t *testing.T) {
 	require.NotEmpty(t, calls, "at least one scout call should fire")
 	var scoutSawImport bool
 	for _, c := range calls {
-		if c.Def.ID != "spec_scout" {
+		if c.Def.ID != "spec-scout" {
 			continue
 		}
 		for _, m := range c.Input.Messages {
@@ -633,8 +633,8 @@ func TestMergeNarrativeUpdatesFeatureBody(t *testing.T) {
 		ID: "feat-new", Title: "new feature", Description: "fresh body", Decisions: []string{"dec-a"},
 	})
 	results := []RoundResult{
-		{AgentID: "spec_feature_elaborator", Output: revised},
-		{AgentID: "spec_feature_elaborator", Output: added},
+		{AgentID: "spec-feature-elaborator", Output: revised},
+		{AgentID: "spec-feature-elaborator", Output: added},
 	}
 	mergeNarrative(state, results)
 
@@ -756,7 +756,7 @@ func TestFanoutReviseableConcernsDedupesByDecisionID(t *testing.T) {
 	for _, raw := range items {
 		var it reviseableConcernItem
 		require.NoError(t, json.Unmarshal([]byte(raw), &it))
-		assert.Equal(t, "spec_decision_elaborator", it.AgentID)
+		assert.Equal(t, "spec-decision-elaborator", it.AgentID)
 		assert.NotEmpty(t, it.PriorDecision.ID, "prior_decision body must be populated for the projection")
 		assert.Contains(t, it.ID, "rev:", "fanout item id starts with rev: so fanoutItemID labels it as a revision dispatch")
 		byID[it.PriorDecision.ID] = it
@@ -810,7 +810,7 @@ func TestProjectReviseDecisionIncludesPriorDecisionFullBody(t *testing.T) {
 // that the conditional gate on the revise-decisions step skips
 // cleanly when every concern is in a non-open status (stale / addressed /
 // wontfix). The workflow proceeds to reconcile without dispatching
-// any spec_decision_elaborator revise calls.
+// any spec-decision-elaborator revise calls.
 func TestReviseDecisionsStepConditionalSkipsWhenNoOpenConcerns(t *testing.T) {
 	state := &PlanningState{
 		RawProposal: `{"features":[],"strategies":[],"decisions":[{"id":"dec-x","title":"X","rationale":"r","confidence":0.8,"alternatives":[{"name":"alt","rationale":"r","rejected_because":"why","citations":[{"kind":"web","reference":"https://x","excerpt":"e"}]}],"citations":[{"kind":"goals","reference":"GOALS.md","excerpt":"e"}],"axes":["a"],"surfaced_by":["feat-x"]}]}`,
@@ -840,7 +840,7 @@ func makeDecisionResult(t *testing.T, d RawDecisionProposal, iter int) RoundResu
 	out, err := json.Marshal(d)
 	require.NoError(t, err)
 	return RoundResult{
-		AgentID:        "spec_decision_elaborator",
+		AgentID:        "spec-decision-elaborator",
 		Output:         string(out),
 		IterationIndex: iter,
 	}
@@ -1186,7 +1186,7 @@ func TestRevisionCapTerminatesWhenExceeded(t *testing.T) {
 	fs := setupSpecGenFixtureDJ124(t)
 
 	// DJ-129: scout surfaces one cost dimension every iteration. The
-	// fanout dispatches one spec_critic_elaborator call per iter.
+	// fanout dispatches one spec-critic-elaborator call per iter.
 	costDim := CritiqueDimension{
 		ID: "cost-ceiling-coverage", Lens: "cost",
 		FocusQuestion:  "Does the proposal engage with the GOALS cost ceiling?",
@@ -1304,23 +1304,23 @@ func TestRevisionCapTerminatesWhenExceeded(t *testing.T) {
 	//          critique x4 (concern persists)
 	//          scout → cap fires; convergence_revision_capped terminal
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutIter0, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutIter0, Model: "m"}},
 		// iter-1
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decFirstAuthor, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featureForX, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: criticIssuesFlagX, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: decFirstAuthor, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: featureForX, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: criticIssuesFlagX, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 		// iter-2 (revise fires)
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revV1, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: criticIssuesFlagX, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: revV1, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: criticIssuesFlagX, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 		// iter-3 (revise fires again; count hits 2; cap=2 fires at tail scout)
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revV2, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: criticIssuesFlagX, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: revV2, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: criticIssuesFlagX, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 	)
 
 	wf := NewSpecGenerationWorkflow(historian, 10)
@@ -1608,7 +1608,7 @@ func TestLoopConvergesAfterForcedContradictionViaRevision(t *testing.T) {
 	fs := setupSpecGenFixtureDJ124(t)
 
 	// DJ-129: scout surfaces a cost dimension every iter; one
-	// spec_critic_elaborator call fires per iter.
+	// spec-critic-elaborator call fires per iter.
 	costDim := CritiqueDimension{
 		ID: "cost-ceiling-coverage", Lens: "cost",
 		FocusQuestion:  "Does the proposal fit the $150/mo ceiling?",
@@ -1723,19 +1723,19 @@ func TestLoopConvergesAfterForcedContradictionViaRevision(t *testing.T) {
 	historian := history.NewHistorian(osFS, ".borg/history")
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
 		// iter-1 (first-author + narrative + reconcile + critique + tail scout)
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decCognito, Model: "m"}},
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decDatadog, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featMonitoring, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: costIssue, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutIter1Open, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: decCognito, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: decDatadog, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: featMonitoring, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: costIssue, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutIter1Open, Model: "m"}},
 		// iter-2 (decisions + narrative skipped; revise-decisions fires; reconcile; critique; tail scout)
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revisedDecCloudWatch, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutIter2Converged, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: revisedDecCloudWatch, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutIter2Converged, Model: "m"}},
 	)
 
 	wf := NewSpecGenerationWorkflow(historian, 5)

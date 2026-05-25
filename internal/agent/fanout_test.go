@@ -77,8 +77,8 @@ func TestExecuteRoundFanoutSpawnsOnePerItem(t *testing.T) {
 	}
 
 	defs := map[string]AgentDef{
-		"spec_feature_elaborator": {
-			ID:           "spec_feature_elaborator",
+		"spec-feature-elaborator": {
+			ID:           "spec-feature-elaborator",
 			Role:         "planning",
 			OutputSchema: "RawFeatureProposal",
 			SystemPrompt: "You are an elaborator.",
@@ -98,7 +98,7 @@ func TestExecuteRoundFanoutSpawnsOnePerItem(t *testing.T) {
 	}
 	step := WorkflowStep[PlanningState]{
 		ID:       "elaborate_features",
-		Agents:   []string{"spec_feature_elaborator"},
+		Agents:   []string{"spec-feature-elaborator"},
 		Parallel: true,
 		Fanout:   fanoutOutlineFeatures,
 		Project:  projectElaborateFeature,
@@ -145,10 +145,10 @@ func TestExecuteRoundFanoutEmptyOutlineNoOps(t *testing.T) {
 	mock := NewMockExecutor()
 	ex := &WorkflowExecutor[PlanningState]{
 		Executor: mock,
-		AgentDefs: map[string]AgentDef{"spec_feature_elaborator": {ID: "spec_feature_elaborator"}},
+		AgentDefs: map[string]AgentDef{"spec-feature-elaborator": {ID: "spec-feature-elaborator"}},
 	}
 	step := WorkflowStep[PlanningState]{
-		ID: "elaborate_features", Agents: []string{"spec_feature_elaborator"},
+		ID: "elaborate_features", Agents: []string{"spec-feature-elaborator"},
 		Fanout: fanoutOutlineFeatures,
 	}
 	results, err := ex.ExecuteRound(context.Background(), step, state)

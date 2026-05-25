@@ -32,7 +32,7 @@ type RawFeatureProposal struct {
 	// Summary is a one-sentence "what" description of the feature.
 	// Optional in the JSON schema (some authoring agents may not yet
 	// emit it); the SummariesPresent prereq backfills any missing
-	// summaries via the fast-tier spec_summarizer agent. Producing
+	// summaries via the fast-tier spec-summarizer agent. Producing
 	// Summary inline here is strictly higher quality than the prereq
 	// fallback because the authoring agent has the full context that
 	// the persisted node will be summarising.

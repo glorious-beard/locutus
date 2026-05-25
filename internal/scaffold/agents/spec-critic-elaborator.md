@@ -1,5 +1,5 @@
 ---
-id: spec_critic_elaborator
+id: spec-critic-elaborator
 thinking: off
 role: review
 models:

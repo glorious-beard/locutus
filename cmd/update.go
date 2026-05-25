@@ -38,7 +38,7 @@ const updateRepo = "glorious-beard/locutus"
 //
 //   - --check-pre-reqs runs every prereq function (currently:
 //     SummariesPresent — fill missing spec summaries via the
-//     spec_summarizer agent). Implicit when --offline is not set;
+//     spec-summarizer agent). Implicit when --offline is not set;
 //     opt-in when --offline IS set so the dev compile-and-run loop can
 //     still satisfy prereqs without going over the network for the
 //     binary check.
@@ -79,7 +79,7 @@ func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 
 	// 2. If we just downloaded a new binary, the running process still
 	// has the OLD embedded artifacts. Resetting or running prereqs now
-	// would use stale embedded scaffolds (the new spec_summarizer might
+	// would use stale embedded scaffolds (the new spec-summarizer might
 	// have a different prompt). Bail out and tell the user to re-run
 	// with --offline using the new binary.
 	if binaryUpdated && (c.Reset || c.CheckPreReqs) {
@@ -91,7 +91,7 @@ func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 	// 3. Optional: refresh scaffolded artifacts from the running
 	// binary's embed.FS. Requires a project FS. Run before prereqs so
 	// the prereq layer sees the freshest embedded agent definitions
-	// (the spec_summarizer prompt may have changed in this binary).
+	// (the spec-summarizer prompt may have changed in this binary).
 	if c.Reset {
 		fsys, _, err := projectFS()
 		if err != nil {
@@ -217,7 +217,7 @@ func (c *UpdateCmd) runPrereqs(ctx context.Context, cli *CLI) error {
 // buildPrereqsContext constructs a SummariesContext with an LLM
 // executor + dispatcher pair AND a CLI sink for spinner feedback. The
 // dispatcher is registered against the project filesystem so the
-// spec_summarizer's spec_list_manifest / spec_get tools (DJ-094) bind
+// spec-summarizer's spec_list_manifest / spec_get tools (DJ-094) bind
 // to the same files the rest of the command operates on. The sink is
 // the CLI's per-mode default (cli pterm spinners or plain log lines)
 // so the prereq's per-summarizer-call lifecycle renders consistently

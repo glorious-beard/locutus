@@ -305,7 +305,7 @@ func init() {
 	RegisterSchemaOverride("ReconciliationVerdict", buildReconciliationVerdictSchema())
 
 	// CandidateList example payload (DJ-132): the per-axis enumeration
-	// the spec_candidate_survey agent emits. Example uses descriptive
+	// the spec-candidate-survey agent emits. Example uses descriptive
 	// prose with real-looking candidates for a database-engine axis so
 	// the schema-skeleton failure mode doesn't fire on placeholder
 	// tokens. Six entries matches the prompt's 6-10 target on well-
@@ -369,7 +369,7 @@ func init() {
 		}},
 	})
 
-	// LLMFindingClusters is the spec_finding_clusterer agent's output
+	// LLMFindingClusters is the spec-finding-clusterer agent's output
 	// (DJ-098). The clusterer's only job is to group unmatched critic
 	// findings by topic and assign each cluster a kind (feature or
 	// strategy) so the workflow knows which elaborator to dispatch.
@@ -386,7 +386,7 @@ func init() {
 	})
 
 	// SpecGateVerdict drives the DJ-122 spec-council convergence loop.
-	// The spec_gate agent reads the assembled ProposedSpec + GOALS.md
+	// The spec-gate agent reads the assembled ProposedSpec + GOALS.md
 	// and grades it against the four-lifecycle-phases YES question
 	// (define / develop / deploy / support). Example payload uses
 	// descriptive prose, never placeholder tokens — placeholders prime

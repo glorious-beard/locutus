@@ -25,21 +25,21 @@ func TestDecisionElaboratorPromptAllowsScoutBriefAndWebCitations(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
-	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
-	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	body, err := fsys.ReadFile(".borg/agents/spec-decision-elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec-decision-elaborator.md")
 	text := string(body)
 
 	assert.Contains(t, text, "scout_brief",
-		"spec_decision_elaborator.md must list scout_brief as an allowed citation kind (DJ-104 preserved on the agent that now authors citations)")
+		"spec-decision-elaborator.md must list scout_brief as an allowed citation kind (DJ-104 preserved on the agent that now authors citations)")
 	assert.Contains(t, text, "web",
-		"spec_decision_elaborator.md must list web as an allowed citation kind (DJ-124 Phase 1 extended the enum for grounded-research evidence)")
+		"spec-decision-elaborator.md must list web as an allowed citation kind (DJ-124 Phase 1 extended the enum for grounded-research evidence)")
 	assert.NotContains(t, text, "do not fabricate a citation kind for it",
-		"spec_decision_elaborator.md must not retain the legacy anti-grounding rule that forced scout-derived facts into best_practice citations")
+		"spec-decision-elaborator.md must not retain the legacy anti-grounding rule that forced scout-derived facts into best_practice citations")
 }
 
 // TestNarrativeElaboratorPromptsConsumeDecisionsAsReferences locks in
-// DJ-124 Stage B: the rewritten spec_feature_elaborator.md and
-// spec_strategy_elaborator.md must describe the new
+// DJ-124 Stage B: the rewritten spec-feature-elaborator.md and
+// spec-strategy-elaborator.md must describe the new
 // decisions-by-reference role — the elaborators consume a
 // pre-populated decision-ID list rather than authoring decisions
 // inline. Without explicit prompt coverage of this responsibility
@@ -50,8 +50,8 @@ func TestNarrativeElaboratorPromptsConsumeDecisionsAsReferences(t *testing.T) {
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
 	for _, file := range []string{
-		".borg/agents/spec_feature_elaborator.md",
-		".borg/agents/spec_strategy_elaborator.md",
+		".borg/agents/spec-feature-elaborator.md",
+		".borg/agents/spec-strategy-elaborator.md",
 	} {
 		body, err := fsys.ReadFile(file)
 		require.NoError(t, err, "read %s", file)
@@ -83,8 +83,8 @@ func TestElaboratorPromptsForbidDecisionsOmission(t *testing.T) {
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
 	for _, file := range []string{
-		".borg/agents/spec_feature_elaborator.md",
-		".borg/agents/spec_strategy_elaborator.md",
+		".borg/agents/spec-feature-elaborator.md",
+		".borg/agents/spec-strategy-elaborator.md",
 	} {
 		body, err := fsys.ReadFile(file)
 		require.NoError(t, err, "read %s", file)
@@ -98,10 +98,10 @@ func TestElaboratorPromptsForbidDecisionsOmission(t *testing.T) {
 }
 
 // TestDecisionElaboratorPromptDescribesGroundedCitations locks in
-// DJ-124 Phase 3: the new spec_decision_elaborator.md must describe
+// DJ-124 Phase 3: the new spec-decision-elaborator.md must describe
 // the grounded-research workflow — the `web` citation kind, the
 // presence of search as the input the agent uses, and the literal-
-// sentinel phrasing ported from justify_researcher.md for the two
+// sentinel phrasing ported from justify-researcher.md for the two
 // search-failure modes. Without this coverage the prompt could drift
 // back to ungrounded training-data-recall and the per-call tool_calls
 // audit would catch fabricated citations only after they reached
@@ -110,20 +110,20 @@ func TestDecisionElaboratorPromptDescribesGroundedCitations(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
-	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
-	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	body, err := fsys.ReadFile(".borg/agents/spec-decision-elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec-decision-elaborator.md")
 	text := string(body)
 
 	assert.Contains(t, text, "web",
-		"spec_decision_elaborator.md must name the `web` citation kind — DJ-124 Phase 1 extended Citation.Kind to include it for grounded research evidence")
+		"spec-decision-elaborator.md must name the `web` citation kind — DJ-124 Phase 1 extended Citation.Kind to include it for grounded research evidence")
 	assert.Contains(t, text, "search",
-		"spec_decision_elaborator.md must describe search as the grounded-research input the agent uses to verify version numbers / pricing / rejection-reason claims")
+		"spec-decision-elaborator.md must describe search as the grounded-research input the agent uses to verify version numbers / pricing / rejection-reason claims")
 	assert.Contains(t, text, "finding ungrounded",
-		"spec_decision_elaborator.md must carry the literal-sentinel phrasing ported from justify_researcher.md so the audit tooling that greps for ungrounded findings continues to work")
+		"spec-decision-elaborator.md must carry the literal-sentinel phrasing ported from justify-researcher.md so the audit tooling that greps for ungrounded findings continues to work")
 }
 
 // TestDecisionElaboratorPromptDescribesAxesAndSurfacedBy locks in
-// DJ-124 Phase 3: the new spec_decision_elaborator.md must describe
+// DJ-124 Phase 3: the new spec-decision-elaborator.md must describe
 // the per-axis scope of the agent and the back-reference fields on
 // the output schema. The agent is dispatched once per OpenAxis; the
 // axes[] and surfaced_by[] output fields mirror the input. Without
@@ -134,24 +134,24 @@ func TestDecisionElaboratorPromptDescribesAxesAndSurfacedBy(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
-	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
-	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	body, err := fsys.ReadFile(".borg/agents/spec-decision-elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec-decision-elaborator.md")
 	text := string(body)
 
 	assert.Contains(t, text, "axes",
-		"spec_decision_elaborator.md must name the `axes` output field — it's the structural link from decision back to the foundational axis the scout dispatched on")
+		"spec-decision-elaborator.md must name the `axes` output field — it's the structural link from decision back to the foundational axis the scout dispatched on")
 	assert.Contains(t, text, "surfaced_by",
-		"spec_decision_elaborator.md must name the `surfaced_by` back-reference field — it mirrors the input surfacing-node IDs so explain/justify verbs can walk the graph in both directions")
+		"spec-decision-elaborator.md must name the `surfaced_by` back-reference field — it mirrors the input surfacing-node IDs so explain/justify verbs can walk the graph in both directions")
 	containsScope := strings.Contains(text, "one axis") ||
 		strings.Contains(text, "per axis") ||
 		strings.Contains(text, "the axis") ||
 		strings.Contains(text, "ONE foundational axis")
 	assert.True(t, containsScope,
-		"spec_decision_elaborator.md must describe the agent's per-axis scope (the agent is dispatched once per OpenAxis; one decision per axis)")
+		"spec-decision-elaborator.md must describe the agent's per-axis scope (the agent is dispatched once per OpenAxis; one decision per axis)")
 }
 
 // TestDecisionElaboratorPromptForbidsFabricatedRejection locks in
-// DJ-124 Phase 3: the new spec_decision_elaborator.md must carry the
+// DJ-124 Phase 3: the new spec-decision-elaborator.md must carry the
 // structural-guardrail wording on alternative-rejection citations
 // and must explicitly name the fabricated-rejection failure mode.
 // Fabricated rejection reasoning (claims like "Auth0 was rejected
@@ -163,24 +163,24 @@ func TestDecisionElaboratorPromptForbidsFabricatedRejection(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
-	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
-	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	body, err := fsys.ReadFile(".borg/agents/spec-decision-elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec-decision-elaborator.md")
 	text := string(body)
 
 	assert.Contains(t, text, "citations",
-		"spec_decision_elaborator.md must mention citations as the structural guardrail on alternative rejection reasoning")
+		"spec-decision-elaborator.md must mention citations as the structural guardrail on alternative rejection reasoning")
 	// The prompt must use the alternatives-mandate framing to tie
 	// citations to alternative rejection reasoning specifically.
 	assert.Contains(t, text, "alternative",
-		"spec_decision_elaborator.md must name alternatives in the mandate so the citation-on-rejection guardrail is anchored to the right field")
+		"spec-decision-elaborator.md must name alternatives in the mandate so the citation-on-rejection guardrail is anchored to the right field")
 	containsFabricationLabel := strings.Contains(text, "fabricat") ||
 		strings.Contains(text, "made-up")
 	assert.True(t, containsFabricationLabel,
-		"spec_decision_elaborator.md must explicitly name the fabricated-rejection failure mode so the model has direct guidance on what the alternative-citations guardrail exists to prevent")
+		"spec-decision-elaborator.md must explicitly name the fabricated-rejection failure mode so the model has direct guidance on what the alternative-citations guardrail exists to prevent")
 }
 
 // TestDecisionElaboratorReviseModeSectionPresent locks in DJ-126
-// Phase 1: spec_decision_elaborator.md gains a second mode — revise an
+// Phase 1: spec-decision-elaborator.md gains a second mode — revise an
 // existing decision in response to a critic finding. The prompt must
 // name the revise-mode section and the two input blocks (Prior
 // decision; Critic finding) the workflow projects when dispatching
@@ -191,16 +191,16 @@ func TestDecisionElaboratorReviseModeSectionPresent(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
-	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
-	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	body, err := fsys.ReadFile(".borg/agents/spec-decision-elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec-decision-elaborator.md")
 	text := string(body)
 
 	assert.Contains(t, text, "Revise mode",
-		"spec_decision_elaborator.md must carry a Revise mode section heading — DJ-126 Phase 1 adds the second mode to handle critic-driven decision revision")
+		"spec-decision-elaborator.md must carry a Revise mode section heading — DJ-126 Phase 1 adds the second mode to handle critic-driven decision revision")
 	assert.Contains(t, text, "Prior decision",
-		"spec_decision_elaborator.md must describe the Prior decision input block the revise projection injects (the existing decision being revised)")
+		"spec-decision-elaborator.md must describe the Prior decision input block the revise projection injects (the existing decision being revised)")
 	assert.Contains(t, text, "Critic finding",
-		"spec_decision_elaborator.md must describe the Critic finding input block the revise projection injects (the concern driving the revision)")
+		"spec-decision-elaborator.md must describe the Critic finding input block the revise projection injects (the concern driving the revision)")
 }
 
 // TestDecisionElaboratorPromptPreservesAxesInRevise locks in DJ-126
@@ -214,8 +214,8 @@ func TestDecisionElaboratorPromptPreservesAxesInRevise(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
-	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
-	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	body, err := fsys.ReadFile(".borg/agents/spec-decision-elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec-decision-elaborator.md")
 	text := string(body)
 
 	reviseIdx := strings.Index(text, "Revise mode")
@@ -229,7 +229,7 @@ func TestDecisionElaboratorPromptPreservesAxesInRevise(t *testing.T) {
 }
 
 // TestScoutPromptDescribesAxesAndConvergence locks in DJ-124 Phase 2:
-// the rewritten spec_scout.md must walk the new ScoutBrief shape —
+// the rewritten spec-scout.md must walk the new ScoutBrief shape —
 // axes_open[] as the gap output, the decision-mapper pass, and the
 // convergence judge. Without explicit prompt coverage of these
 // responsibilities the model can fall back to the pre-DJ-124
@@ -239,20 +239,20 @@ func TestScoutPromptDescribesAxesAndConvergence(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
-	body, err := fsys.ReadFile(".borg/agents/spec_scout.md")
-	require.NoError(t, err, "read .borg/agents/spec_scout.md")
+	body, err := fsys.ReadFile(".borg/agents/spec-scout.md")
+	require.NoError(t, err, "read .borg/agents/spec-scout.md")
 	text := string(body)
 
 	assert.Contains(t, text, "axes_open",
-		"spec_scout.md must mention the axes_open field by name — it's the structural gap output the workflow dispatches on")
+		"spec-scout.md must mention the axes_open field by name — it's the structural gap output the workflow dispatches on")
 	assert.Contains(t, text, "decision-mapper",
-		"spec_scout.md must describe the decision-mapper pass that pre-populates new_nodes[].decisions[] from existing covered axes")
+		"spec-scout.md must describe the decision-mapper pass that pre-populates new_nodes[].decisions[] from existing covered axes")
 	assert.Contains(t, text, "converged",
-		"spec_scout.md must describe the convergence judge — the converged flag drives the loop's exit condition")
+		"spec-scout.md must describe the convergence judge — the converged flag drives the loop's exit condition")
 }
 
 // TestDecisionElaboratorPromptDescribesCandidateListSection locks in
-// DJ-132 Phase 3: spec_decision_elaborator.md gains an "Initial
+// DJ-132 Phase 3: spec-decision-elaborator.md gains an "Initial
 // dispatch with candidate list" section describing how to engage
 // with the survey output. Without explicit prompt coverage of the
 // new input block the elaborator falls back to its prior commit-mode
@@ -302,18 +302,18 @@ func TestCouncilAwareAgentsHaveNoGreenfieldEmptyPriming(t *testing.T) {
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
 	// Every council-aware agent — runs inside the spec-generation
-	// council (not the adopt-time scout / gap_analyst, which operate
+	// council (not the adopt-time scout / gap-analyst, which operate
 	// on persisted-only context and where "greenfield → empty"
 	// remains accurate).
 	for _, agent := range []string{
-		"spec_decision_elaborator",
-		"spec_feature_elaborator",
-		"spec_strategy_elaborator",
-		"spec_candidate_survey",
-		"spec_reconciler",
-		"spec_scout",
-		"spec_architect",
-		"spec_outliner",
+		"spec-decision-elaborator",
+		"spec-feature-elaborator",
+		"spec-strategy-elaborator",
+		"spec-candidate-survey",
+		"spec-reconciler",
+		"spec-scout",
+		"spec-architect",
+		"spec-outliner",
 	} {
 		t.Run(agent, func(t *testing.T) {
 			body, err := fsys.ReadFile(".borg/agents/" + agent + ".md")
@@ -362,20 +362,20 @@ func TestDecisionElaboratorPromptDescribesCandidateListSection(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
-	body, err := fsys.ReadFile(".borg/agents/spec_decision_elaborator.md")
-	require.NoError(t, err, "read .borg/agents/spec_decision_elaborator.md")
+	body, err := fsys.ReadFile(".borg/agents/spec-decision-elaborator.md")
+	require.NoError(t, err, "read .borg/agents/spec-decision-elaborator.md")
 	text := string(body)
 
 	assert.Contains(t, text, "Candidate list",
-		"spec_decision_elaborator.md must describe the Candidate list input block the DJ-132 projection injects on initial dispatch")
+		"spec-decision-elaborator.md must describe the Candidate list input block the DJ-132 projection injects on initial dispatch")
 	assert.Contains(t, text, "Initial dispatch with candidate list",
-		"spec_decision_elaborator.md must carry the Initial dispatch with candidate list section heading — the section is where DJ-132's elaborator-side discipline lives")
+		"spec-decision-elaborator.md must carry the Initial dispatch with candidate list section heading — the section is where DJ-132's elaborator-side discipline lives")
 
 	// Every unpicked surveyed candidate becomes an alternative — the
 	// load-bearing structural condition for the pre-populated
 	// alternatives slice DJ-132 is designed to produce.
 	assert.Contains(t, text, "unpicked",
-		"spec_decision_elaborator.md must say every unpicked surveyed candidate becomes an alternative entry")
+		"spec-decision-elaborator.md must say every unpicked surveyed candidate becomes an alternative entry")
 
 	// Anti-anchoring: the elaborator may surface candidates beyond
 	// the survey when the axis warrants. Reversal criterion (c) is
@@ -385,17 +385,17 @@ func TestDecisionElaboratorPromptDescribesCandidateListSection(t *testing.T) {
 		strings.Contains(text, "additional candidates") ||
 		strings.Contains(text, "candidates the survey missed")
 	assert.True(t, containsAntiAnchoring,
-		"spec_decision_elaborator.md must explicitly permit the elaborator to add candidates beyond the survey (DJ-132 anti-anchoring; reversal criterion (c))")
+		"spec-decision-elaborator.md must explicitly permit the elaborator to add candidates beyond the survey (DJ-132 anti-anchoring; reversal criterion (c))")
 
 	// The candidate-list-absent fallthrough must be documented so
 	// revise dispatches and survey-misfire axes don't leave the
 	// elaborator without instructions.
 	assert.Contains(t, text, "absent",
-		"spec_decision_elaborator.md must describe what to do when the Candidate list section is absent (revise dispatches; survey misfires)")
+		"spec-decision-elaborator.md must describe what to do when the Candidate list section is absent (revise dispatches; survey misfires)")
 }
 
 // TestCandidateSurveyAgentScaffoldedWithFastTierGroundedFrontmatter
-// locks in DJ-132 Phase 1: spec_candidate_survey.md must ship with the
+// locks in DJ-132 Phase 1: spec-candidate-survey.md must ship with the
 // scaffold, declare fast-tier providers across the three deployers,
 // keep grounding on (load-bearing for currency + hallucination
 // prevention), declare thinking off (enumeration is not a reasoning
@@ -409,12 +409,12 @@ func TestCandidateSurveyAgentScaffoldedWithFastTierGroundedFrontmatter(t *testin
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
-	body, err := fsys.ReadFile(".borg/agents/spec_candidate_survey.md")
-	require.NoError(t, err, "read .borg/agents/spec_candidate_survey.md")
+	body, err := fsys.ReadFile(".borg/agents/spec-candidate-survey.md")
+	require.NoError(t, err, "read .borg/agents/spec-candidate-survey.md")
 	text := string(body)
 
-	assert.Contains(t, text, "id: spec_candidate_survey",
-		"frontmatter must declare id: spec_candidate_survey")
+	assert.Contains(t, text, "id: spec-candidate-survey",
+		"frontmatter must declare id: spec-candidate-survey")
 	assert.Contains(t, text, "output_schema: CandidateList",
 		"frontmatter must bind output_schema: CandidateList — the survey emits the registered CandidateList shape")
 	assert.Contains(t, text, "tier: fast",
@@ -516,10 +516,10 @@ func TestScaffoldCreatesAgents(t *testing.T) {
 		".borg/agents/historian.md",
 		".borg/agents/convergence.md",
 		".borg/agents/scout.md",
-		".borg/agents/backend_analyzer.md",
-		".borg/agents/frontend_analyzer.md",
-		".borg/agents/infra_analyzer.md",
-		".borg/agents/gap_analyst.md",
+		".borg/agents/backend-analyzer.md",
+		".borg/agents/frontend-analyzer.md",
+		".borg/agents/infra-analyzer.md",
+		".borg/agents/gap-analyst.md",
 		".borg/agents/remediator.md",
 		".borg/agents/validator.md",
 		".borg/agents/guide.md",
@@ -550,26 +550,26 @@ func TestResetOverwritesEmbeddedArtifacts(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
 
-	// Locally modify spec_architect.md so we can detect overwrite.
+	// Locally modify spec-architect.md so we can detect overwrite.
 	const localEdit = "# LOCAL EDIT — should be overwritten by Reset\n"
-	require.NoError(t, fsys.WriteFile(".borg/agents/spec_architect.md", []byte(localEdit), 0o644))
-	got, err := fsys.ReadFile(".borg/agents/spec_architect.md")
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec-architect.md", []byte(localEdit), 0o644))
+	got, err := fsys.ReadFile(".borg/agents/spec-architect.md")
 	require.NoError(t, err)
 	require.Equal(t, localEdit, string(got), "precondition: local edit was written")
 
 	report, err := scaffold.Reset(fsys)
 	require.NoError(t, err)
 
-	got, err = fsys.ReadFile(".borg/agents/spec_architect.md")
+	got, err = fsys.ReadFile(".borg/agents/spec-architect.md")
 	require.NoError(t, err)
 	assert.NotEqual(t, localEdit, string(got),
 		"Reset should have overwritten the local edit with the embedded version")
-	assert.Contains(t, string(got), "spec_architect",
-		"the new content should be the embedded spec_architect.md (frontmatter mentions its id)")
+	assert.Contains(t, string(got), "spec-architect",
+		"the new content should be the embedded spec-architect.md (frontmatter mentions its id)")
 
 	// Report should list the reset agent files and the models.yaml flag.
 	assert.NotEmpty(t, report.AgentsReset, "report should record reset agent files")
-	assert.Contains(t, report.AgentsReset, ".borg/agents/spec_architect.md")
+	assert.Contains(t, report.AgentsReset, ".borg/agents/spec-architect.md")
 	assert.True(t, report.ModelsReset, "report should record models.yaml refresh")
 }
 
@@ -646,17 +646,17 @@ func TestResetLeavesEmbeddedAgentsAfterRemoval(t *testing.T) {
 
 	// Write a project override with a real scaffold id; Reset
 	// should overwrite (not remove) it.
-	require.NoError(t, fsys.WriteFile(".borg/agents/spec_advocate.md",
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec-advocate.md",
 		[]byte("# overridden by user; scaffold should overwrite"), 0o644))
 
 	report, err := scaffold.Reset(fsys)
 	require.NoError(t, err)
 
-	got, err := fsys.ReadFile(".borg/agents/spec_advocate.md")
+	got, err := fsys.ReadFile(".borg/agents/spec-advocate.md")
 	require.NoError(t, err, "overridden scaffold agent must still exist after Reset")
 	assert.NotContains(t, string(got), "overridden by user",
 		"override content must be replaced with embedded scaffold")
-	assert.NotContains(t, report.AgentsRemoved, ".borg/agents/spec_advocate.md",
+	assert.NotContains(t, report.AgentsRemoved, ".borg/agents/spec-advocate.md",
 		"a file whose id is in the embedded scaffold must not appear in AgentsRemoved")
 }
 

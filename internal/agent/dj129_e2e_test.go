@@ -1,6 +1,6 @@
 // DJ-129 Phase 6 — end-to-end tests for the dimension-driven critique
 // flow. These verify the full path: scout surfaces a dimension; the
-// critique fanout dispatches spec_critic_elaborator against it; the
+// critique fanout dispatches spec-critic-elaborator against it; the
 // critic emits a CriticIssue with counterproposals; the elaborator
 // revises in response; the loop converges.
 
@@ -122,18 +122,18 @@ func TestDJ129ScoutSurfacedComplianceDimensionDrivesCritic(t *testing.T) {
 	})
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
 		// iter-1: first-author + narrative + reconcile + critique (1 dim) + tail scout.
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decAuth, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featOrganizing, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: complianceIssue, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: decAuth, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: featOrganizing, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: complianceIssue, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutKeepOpen, Model: "m"}},
 		// iter-2: revise fires; concern flips to addressed; scout converges (dimension stable).
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: revFlip, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutConverged, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: revFlip, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutConverged, Model: "m"}},
 	)
 
 	wf := NewSpecGenerationWorkflow(historian, 5)
@@ -208,12 +208,12 @@ func TestDJ129ProjectWithNoCostConcernRunsNoCostCritic(t *testing.T) {
 	})
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
 		// iter-1: first-author + narrative + reconcile + (no critique, scout surfaced no dimensions) + tail scout converges.
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decCompute, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featPipeline, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutConverged, Model: "m"}},
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: decCompute, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: featPipeline, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutConverged, Model: "m"}},
 	)
 
 	wf := NewSpecGenerationWorkflow(historian, 5)
@@ -224,13 +224,13 @@ func TestDJ129ProjectWithNoCostConcernRunsNoCostCritic(t *testing.T) {
 	require.NotNil(t, proposal)
 
 	// The test's structural invariant: MockExecutor was set up with
-	// ZERO spec_critic_elaborator responses; if the workflow had
+	// ZERO spec-critic-elaborator responses; if the workflow had
 	// dispatched the critic-elaborator anyway, the mock would have
 	// returned no-such-response and the workflow would have failed.
 	// Reaching this point successfully IS the assertion. Belt-and-
 	// suspenders: also assert the call log lacks the critic.
 	for _, c := range mock.Calls() {
-		assert.NotEqual(t, "spec_critic_elaborator", c.Def.ID,
+		assert.NotEqual(t, "spec-critic-elaborator", c.Def.ID,
 			"the critique step must not have dispatched when scout surfaced no dimensions")
 	}
 }
@@ -301,18 +301,18 @@ func TestDJ129DimensionInstabilityBlocksConvergence(t *testing.T) {
 	})
 
 	mock := NewMockExecutor(
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scout0, Model: "m"}},
 		// iter-1
-		MockResponse{AgentID: "spec_decision_elaborator", Response: &AgentOutput{Content: decX, Model: "m"}},
-		MockResponse{AgentID: "spec_feature_elaborator", Response: &AgentOutput{Content: featX, Model: "m"}},
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}}, // dim-a
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutNewDim, Model: "m"}},          // surfaces dim-b NEW; convergence blocked
+		MockResponse{AgentID: "spec-decision-elaborator", Response: &AgentOutput{Content: decX, Model: "m"}},
+		MockResponse{AgentID: "spec-feature-elaborator", Response: &AgentOutput{Content: featX, Model: "m"}},
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}}, // dim-a
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutNewDim, Model: "m"}},          // surfaces dim-b NEW; convergence blocked
 		// iter-2 (forced by instability)
-		MockResponse{AgentID: "spec_reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}}, // dim-a
-		MockResponse{AgentID: "spec_critic_elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}}, // dim-b
-		MockResponse{AgentID: "spec_scout", Response: &AgentOutput{Content: scoutStable, Model: "m"}},          // stable; converges
+		MockResponse{AgentID: "spec-reconciler", Response: &AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}}, // dim-a
+		MockResponse{AgentID: "spec-critic-elaborator", Response: &AgentOutput{Content: noIssues, Model: "m"}}, // dim-b
+		MockResponse{AgentID: "spec-scout", Response: &AgentOutput{Content: scoutStable, Model: "m"}},          // stable; converges
 	)
 
 	wf := NewSpecGenerationWorkflow(historian, 5)
@@ -326,7 +326,7 @@ func TestDJ129DimensionInstabilityBlocksConvergence(t *testing.T) {
 	// the second tail iteration.
 	scoutCalls := 0
 	for _, c := range mock.Calls() {
-		if c.Def.ID == "spec_scout" {
+		if c.Def.ID == "spec-scout" {
 			scoutCalls++
 		}
 	}

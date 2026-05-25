@@ -43,7 +43,7 @@ func runSpecGateTestWorkflow(t *testing.T, mock *MockExecutor, historian *histor
 		return []WorkflowStep[PlanningState]{
 			{
 				ID:      "gate",
-				Agents:  []string{"spec_gate"},
+				Agents:  []string{"spec-gate"},
 				Project: projectSpecGate,
 				Merge:   mergeGateVerdict,
 				Budget:  budget,
@@ -61,13 +61,13 @@ func runSpecGateTestWorkflow(t *testing.T, mock *MockExecutor, historian *histor
 		Rounds: []WorkflowStep[PlanningState]{
 			{
 				ID:      "seed",
-				Agents:  []string{"spec_scout"},
+				Agents:  []string{"spec-scout"},
 				Project: projectDefault,
 				Merge:   mergeScoutBrief,
 			},
 			{
 				ID:        "gate",
-				Agents:    []string{"spec_gate"},
+				Agents:    []string{"spec-gate"},
 				DependsOn: []string{"seed"},
 				Project:   projectSpecGate,
 				Merge:     mergeGateVerdict,
@@ -80,8 +80,8 @@ func runSpecGateTestWorkflow(t *testing.T, mock *MockExecutor, historian *histor
 	exec := &WorkflowExecutor[PlanningState]{
 		Executor: mock,
 		AgentDefs: map[string]AgentDef{
-			"spec_scout": {ID: "spec_scout"},
-			"spec_gate":  {ID: "spec_gate"},
+			"spec-scout": {ID: "spec-scout"},
+			"spec-gate":  {ID: "spec-gate"},
 		},
 		Workflow: wf,
 	}
@@ -244,7 +244,7 @@ func TestSpecGateMergeAppendsOpenDimensionsAsConcernsAndClusters(t *testing.T) {
 	}
 	results := []RoundResult{{
 		StepID:  "gate",
-		AgentID: "spec_gate",
+		AgentID: "spec-gate",
 		Output:  gateVerdictJSON(t, verdict),
 	}}
 
@@ -252,7 +252,7 @@ func TestSpecGateMergeAppendsOpenDimensionsAsConcernsAndClusters(t *testing.T) {
 
 	assert.Len(t, state.Concerns, 2, "each OpenDimension becomes a Concern")
 	for _, c := range state.Concerns {
-		assert.Equal(t, "spec_gate", c.AgentID)
+		assert.Equal(t, "spec-gate", c.AgentID)
 		assert.Equal(t, "high", c.Severity)
 		assert.Equal(t, "deploy", c.Kind, "Concern.Kind carries the dimension's lifecycle phase")
 	}
@@ -263,7 +263,7 @@ func TestSpecGateMergeAppendsOpenDimensionsAsConcernsAndClusters(t *testing.T) {
 	assert.Equal(t, "iOS companion app: App Store / TestFlight rollout cadence", state.FindingClusters[0].Topic)
 	assert.Equal(t, "nRF52840 firmware: OTA update channel", state.FindingClusters[1].Topic)
 	for _, c := range state.FindingClusters {
-		assert.Equal(t, "spec_strategy_elaborator", c.AgentID,
+		assert.Equal(t, "spec-strategy-elaborator", c.AgentID,
 			"gate findings route to the strategy elaborator")
 		assert.Len(t, c.Findings, 1, "one finding per cluster")
 	}
@@ -297,7 +297,7 @@ func TestSpecGateMergeAccumulatesRecurrence(t *testing.T) {
 				Reasoning:   "On-call owner still uncommitted.",
 			}},
 		}
-		results := []RoundResult{{AgentID: "spec_gate", Output: gateVerdictJSON(t, v)}}
+		results := []RoundResult{{AgentID: "spec-gate", Output: gateVerdictJSON(t, v)}}
 		mergeGateVerdict(state, results)
 	}
 	assert.Equal(t, 3, state.GateAxisRecurrence["winplan platform|on-call rotation owner"],
@@ -337,7 +337,7 @@ func TestSpecGateSpawnerForceTerminatesOnStuck(t *testing.T) {
 			Reasoning:   "Gate still finds the on-call commitment insufficient.",
 		}},
 	}
-	results := []RoundResult{{AgentID: "spec_gate", Output: gateVerdictJSON(t, verdict)}}
+	results := []RoundResult{{AgentID: "spec-gate", Output: gateVerdictJSON(t, verdict)}}
 
 	// Generous budget — we expect the stuck check to fire before
 	// budget exhaustion.
@@ -385,7 +385,7 @@ func TestSpecGateMergeNoopOnConverged(t *testing.T) {
 	}
 	results := []RoundResult{{
 		StepID:  "gate",
-		AgentID: "spec_gate",
+		AgentID: "spec-gate",
 		Output:  gateVerdictJSON(t, verdict),
 	}}
 
@@ -395,20 +395,20 @@ func TestSpecGateMergeNoopOnConverged(t *testing.T) {
 }
 
 func TestSpecGateParseVerdictRejectsEmpty(t *testing.T) {
-	// Defensive: a spec_gate result with empty output is surfaced as
+	// Defensive: a spec-gate result with empty output is surfaced as
 	// an error by parseSpecGateVerdict so the spawner errors visibly
 	// rather than silently treating absence as non-converged.
 	_, err := parseSpecGateVerdict(nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no spec_gate result")
+	assert.Contains(t, err.Error(), "no spec-gate result")
 
-	_, err = parseSpecGateVerdict([]RoundResult{{AgentID: "spec_gate", Output: ""}})
+	_, err = parseSpecGateVerdict([]RoundResult{{AgentID: "spec-gate", Output: ""}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty output")
 
-	_, err = parseSpecGateVerdict([]RoundResult{{AgentID: "spec_gate", Output: "not json"}})
+	_, err = parseSpecGateVerdict([]RoundResult{{AgentID: "spec-gate", Output: "not json"}})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parse spec_gate verdict")
+	assert.Contains(t, err.Error(), "parse spec-gate verdict")
 }
 
 // TestSpecGateParseVerdictRejectsDegenerate locks in the safety-net
@@ -425,7 +425,7 @@ func TestSpecGateParseVerdictRejectsDegenerate(t *testing.T) {
 		OpenDimensions: nil,
 	}
 	results := []RoundResult{{
-		AgentID: "spec_gate",
+		AgentID: "spec-gate",
 		Output:  gateVerdictJSON(t, verdict),
 	}}
 	_, err := parseSpecGateVerdict(results)
@@ -451,7 +451,7 @@ func TestSpecGateParseVerdictRejectsContradictory(t *testing.T) {
 		}},
 	}
 	results := []RoundResult{{
-		AgentID: "spec_gate",
+		AgentID: "spec-gate",
 		Output:  gateVerdictJSON(t, verdict),
 	}}
 	_, err := parseSpecGateVerdict(results)

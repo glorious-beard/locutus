@@ -1,5 +1,5 @@
 ---
-id: spec_finding_clusterer
+id: spec-finding-clusterer
 thinking: off
 role: planning
 models:

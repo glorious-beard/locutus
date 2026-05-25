@@ -18,7 +18,7 @@ var AssimilationWorkflow = &Workflow[PlanningState]{
 		},
 		{
 			ID:        "analyze",
-			Agents:    []string{"backend_analyzer", "frontend_analyzer", "infra_analyzer"},
+			Agents:    []string{"backend-analyzer", "frontend-analyzer", "infra-analyzer"},
 			Parallel:  true,
 			DependsOn: []string{"scan"},
 			Project:   projectDefault,
@@ -26,7 +26,7 @@ var AssimilationWorkflow = &Workflow[PlanningState]{
 		},
 		{
 			ID:        "gaps",
-			Agents:    []string{"gap_analyst"},
+			Agents:    []string{"gap-analyst"},
 			DependsOn: []string{"analyze"},
 			Project:   projectDefault,
 			Merge:     mergeNoop,

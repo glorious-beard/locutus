@@ -16,8 +16,8 @@ import (
 func TestExtractFanoutItemsFindingClusters(t *testing.T) {
 	state := &PlanningState{
 		FindingClusters: []FindingCluster{
-			{Topic: "feat-a", NodeID: "feat-a", AgentID: "spec_feature_elaborator", Findings: []string{"address PII"}},
-			{Topic: "infrastructure-as-code", AgentID: "spec_strategy_elaborator", Findings: []string{"missing IaC", "no CI/CD"}},
+			{Topic: "feat-a", NodeID: "feat-a", AgentID: "spec-feature-elaborator", Findings: []string{"address PII"}},
+			{Topic: "infrastructure-as-code", AgentID: "spec-strategy-elaborator", Findings: []string{"missing IaC", "no CI/CD"}},
 		},
 	}
 
@@ -28,12 +28,12 @@ func TestExtractFanoutItemsFindingClusters(t *testing.T) {
 	var first FindingCluster
 	require.NoError(t, json.Unmarshal([]byte(items[0]), &first))
 	assert.Equal(t, "feat-a", first.NodeID)
-	assert.Equal(t, "spec_feature_elaborator", first.AgentID)
+	assert.Equal(t, "spec-feature-elaborator", first.AgentID)
 
 	var second FindingCluster
 	require.NoError(t, json.Unmarshal([]byte(items[1]), &second))
 	assert.Empty(t, second.NodeID, "addition cluster has no NodeID")
-	assert.Equal(t, "spec_strategy_elaborator", second.AgentID)
+	assert.Equal(t, "spec-strategy-elaborator", second.AgentID)
 	assert.Len(t, second.Findings, 2)
 }
 
@@ -43,8 +43,8 @@ func TestExtractFanoutItemsFindingClusters(t *testing.T) {
 func TestExtractFanoutItemsFindingClustersDropsEmpty(t *testing.T) {
 	state := &PlanningState{
 		FindingClusters: []FindingCluster{
-			{Topic: "real", AgentID: "spec_strategy_elaborator", Findings: []string{"x"}},
-			{Topic: "empty", AgentID: "spec_strategy_elaborator", Findings: nil},
+			{Topic: "real", AgentID: "spec-strategy-elaborator", Findings: []string{"x"}},
+			{Topic: "empty", AgentID: "spec-strategy-elaborator", Findings: nil},
 		},
 	}
 	items, err := fanoutFindingClusters(state)
@@ -81,8 +81,8 @@ func TestMechanicalClusterPartitions(t *testing.T) {
 	}
 	require.NotNil(t, dashboard)
 	require.NotNil(t, frontend)
-	assert.Equal(t, "spec_feature_elaborator", dashboard.AgentID, "feat- prefix dispatches to feature elaborator")
-	assert.Equal(t, "spec_strategy_elaborator", frontend.AgentID, "strat- prefix dispatches to strategy elaborator")
+	assert.Equal(t, "spec-feature-elaborator", dashboard.AgentID, "feat- prefix dispatches to feature elaborator")
+	assert.Equal(t, "spec-strategy-elaborator", frontend.AgentID, "strat- prefix dispatches to strategy elaborator")
 	assert.Len(t, dashboard.Findings, 2)
 	assert.Len(t, frontend.Findings, 1)
 
@@ -139,7 +139,7 @@ func TestPromoteLLMClustersDefaultsKindToStrategy(t *testing.T) {
 	raw, _ := json.Marshal(llm)
 	out := PromoteLLMClusters(string(raw))
 	require.Len(t, out, 1)
-	assert.Equal(t, "spec_strategy_elaborator", out[0].AgentID)
+	assert.Equal(t, "spec-strategy-elaborator", out[0].AgentID)
 }
 
 // TestFanoutItemIDFallsBackToTopic — the per-item progress label
@@ -178,7 +178,7 @@ func TestClusterConditionals(t *testing.T) {
 	})
 	t.Run("hasFindingClusters: true with clusters", func(t *testing.T) {
 		state := &PlanningState{
-			FindingClusters: []FindingCluster{{Topic: "x", AgentID: "spec_strategy_elaborator", Findings: []string{"y"}}},
+			FindingClusters: []FindingCluster{{Topic: "x", AgentID: "spec-strategy-elaborator", Findings: []string{"y"}}},
 		}
 		assert.True(t, hasFindingClusters(state))
 	})
@@ -301,13 +301,13 @@ func TestExecuteRoundReviseFanoutSkipsWithoutClusters(t *testing.T) {
 	ex := &WorkflowExecutor[PlanningState]{
 		Executor: mock,
 		AgentDefs: map[string]AgentDef{
-			"spec_feature_elaborator":  {ID: "spec_feature_elaborator"},
-			"spec_strategy_elaborator": {ID: "spec_strategy_elaborator"},
+			"spec-feature-elaborator":  {ID: "spec-feature-elaborator"},
+			"spec-strategy-elaborator": {ID: "spec-strategy-elaborator"},
 		},
 	}
 	step := WorkflowStep[PlanningState]{
 		ID:     "revise",
-		Agents: []string{"spec_strategy_elaborator"},
+		Agents: []string{"spec-strategy-elaborator"},
 		Fanout: fanoutFindingClusters,
 	}
 	results, err := ex.ExecuteRound(context.Background(), step, state)
@@ -324,8 +324,8 @@ func TestExecuteRoundReviseFanoutSkipsWithoutClusters(t *testing.T) {
 func TestMergeResultsRevisedNodesAccumulates(t *testing.T) {
 	state := &PlanningState{}
 	mergeRevisedNodes(state, []RoundResult{
-		{StepID: "revise (feat-a)", AgentID: "spec_feature_elaborator", Output: `{"id":"feat-a"}`},
-		{StepID: "revise (strat-iac)", AgentID: "spec_strategy_elaborator", Output: `{"id":"strat-iac"}`},
+		{StepID: "revise (feat-a)", AgentID: "spec-feature-elaborator", Output: `{"id":"feat-a"}`},
+		{StepID: "revise (strat-iac)", AgentID: "spec-strategy-elaborator", Output: `{"id":"strat-iac"}`},
 	})
 	require.Len(t, state.RevisedNodes, 2)
 	assert.Contains(t, state.RevisedNodes[0], "feat-a")
@@ -341,16 +341,16 @@ func TestMergeResultsFindingClustersPromotesLLMOutput(t *testing.T) {
 	state := &PlanningState{
 		// Pre-existing mechanical cluster.
 		FindingClusters: []FindingCluster{
-			{Topic: "feat-a", NodeID: "feat-a", AgentID: "spec_feature_elaborator", Findings: []string{"x"}},
+			{Topic: "feat-a", NodeID: "feat-a", AgentID: "spec-feature-elaborator", Findings: []string{"x"}},
 		},
 	}
 	llmOutput := `{"clusters":[{"topic":"infrastructure-as-code","findings":["missing IaC"],"kind":"strategy"}]}`
 	mergeFindingClusters(state, []RoundResult{
-		{StepID: "cluster_findings", AgentID: "spec_finding_clusterer", Output: llmOutput},
+		{StepID: "cluster_findings", AgentID: "spec-finding-clusterer", Output: llmOutput},
 	})
 	require.Len(t, state.FindingClusters, 2, "mechanical pre-existing + LLM-promoted cluster")
 	assert.Equal(t, "feat-a", state.FindingClusters[0].NodeID, "mechanical cluster preserved")
 	assert.Equal(t, "infrastructure-as-code", state.FindingClusters[1].Topic)
-	assert.Equal(t, "spec_strategy_elaborator", state.FindingClusters[1].AgentID,
-		"kind=strategy promotes to spec_strategy_elaborator")
+	assert.Equal(t, "spec-strategy-elaborator", state.FindingClusters[1].AgentID,
+		"kind=strategy promotes to spec-strategy-elaborator")
 }

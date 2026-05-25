@@ -111,7 +111,7 @@ type PlanningState struct {
 	OpenConcerns     []string  `json:"open_concerns,omitempty"`
 	ResolvedConcerns []string  `json:"resolved_concerns,omitempty"`
 	// ScoutBrief carries a survey-step output (e.g. the spec-generation
-	// council's spec_scout) into downstream propose/revise rounds. It is
+	// council's spec-scout) into downstream propose/revise rounds. It is
 	// the raw JSON of an agent.ScoutBrief — projection.go formats it
 	// for human-readable inclusion in the proposer's user message.
 	ScoutBrief string `json:"scout_brief,omitempty"`
@@ -131,7 +131,7 @@ type PlanningState struct {
 	Existing *ExistingSpec `json:"-"`
 	// Phase 3: outline + per-node elaborate fanout state.
 	//
-	// Outline holds the spec_outliner's JSON output (used by the
+	// Outline holds the spec-outliner's JSON output (used by the
 	// fanout step to spawn per-element elaborator calls, and by the
 	// elaborator's projection to give each call situational
 	// awareness of sibling features/strategies).
@@ -158,7 +158,7 @@ type PlanningState struct {
 	// clusters for findings naming an existing node by id; the LLM
 	// clusterer step processes UnmatchedFindings and appends topic-
 	// grouped clusters for the rest. Each cluster carries the agent_id
-	// to dispatch (spec_feature_elaborator vs spec_strategy_elaborator)
+	// to dispatch (spec-feature-elaborator vs spec-strategy-elaborator)
 	// and an optional node_id (set when the cluster targets an existing
 	// node, empty when it proposes a new one).
 	//
@@ -218,7 +218,7 @@ type PlanningState struct {
 	AxesOpen []OpenAxis `json:"-"`
 
 	// AxisSurveys carries the per-axis CandidateList output from the
-	// DJ-132 spec_candidate_survey pre-step. Keyed by OpenAxis.ID. The
+	// DJ-132 spec-candidate-survey pre-step. Keyed by OpenAxis.ID. The
 	// candidate-survey step runs as a per-axis fanout BEFORE the
 	// decisions step on initial dispatch; the survey's merge handler
 	// populates this map keyed by the axis ID it dispatched on, and

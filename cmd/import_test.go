@@ -396,15 +396,15 @@ func TestRunImportThreadsImportedContentToScout(t *testing.T) {
 		// Intake call (skipTriage=false drives this first).
 		agent.MockResponse{Response: &agent.AgentOutput{Content: intakeJSON, Model: "test-model"}},
 		// Planning pass — full DJ-124 council scripted.
-		agent.MockResponse{AgentID: "spec_scout", Response: &agent.AgentOutput{Content: scout0, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_decision_elaborator", Response: &agent.AgentOutput{Content: decisionJSON, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_feature_elaborator", Response: &agent.AgentOutput{Content: featureJSON, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_reconciler", Response: &agent.AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
+		agent.MockResponse{AgentID: "spec-scout", Response: &agent.AgentOutput{Content: scout0, Model: "m"}},
+		agent.MockResponse{AgentID: "spec-decision-elaborator", Response: &agent.AgentOutput{Content: decisionJSON, Model: "m"}},
+		agent.MockResponse{AgentID: "spec-feature-elaborator", Response: &agent.AgentOutput{Content: featureJSON, Model: "m"}},
+		agent.MockResponse{AgentID: "spec-reconciler", Response: &agent.AgentOutput{Content: `{"actions":[]}`, Model: "m"}},
 		agent.MockResponse{AgentID: "architect_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 		agent.MockResponse{AgentID: "devops_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 		agent.MockResponse{AgentID: "sre_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
 		agent.MockResponse{AgentID: "cost_critic", Response: &agent.AgentOutput{Content: `{"issues":[]}`, Model: "m"}},
-		agent.MockResponse{AgentID: "spec_scout", Response: &agent.AgentOutput{Content: scoutConverged, Model: "m"}},
+		agent.MockResponse{AgentID: "spec-scout", Response: &agent.AgentOutput{Content: scoutConverged, Model: "m"}},
 	)
 
 	// skipTriage=false (run intake), noPlan=false (run planning pass).
@@ -420,7 +420,7 @@ func TestRunImportThreadsImportedContentToScout(t *testing.T) {
 	// the unified workflow projected it onto the scout's user message.
 	var scoutSawImport bool
 	for _, c := range mock.Calls() {
-		if c.Def.ID != "spec_scout" {
+		if c.Def.ID != "spec-scout" {
 			continue
 		}
 		for _, m := range c.Input.Messages {

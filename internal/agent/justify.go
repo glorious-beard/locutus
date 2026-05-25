@@ -10,8 +10,8 @@ import (
 
 // The advocate, challenger, and researcher prompts previously lived
 // inline in this file. They now live as scaffold .md files —
-// internal/scaffold/agents/{spec_advocate,spec_challenger,
-// justify_researcher}.md — loaded via scaffold.LoadAgent at the cmd
+// internal/scaffold/agents/{spec-advocate,spec-challenger,
+// justify-researcher}.md — loaded via scaffold.LoadAgent at the cmd
 // layer with embedded fallback for projects that haven't run
 // `update --reset`. The cmd layer threads the loaded AgentDef values
 // through JustifyInputs.{Advocate,Challenger,Researcher}.
@@ -273,7 +273,7 @@ func joinSections(parts []string) string {
 }
 
 // challengerMaxAttempts caps how many times we'll dispatch the
-// spec_challenger before giving up. The DJ-108 schema-skeleton
+// spec-challenger before giving up. The DJ-108 schema-skeleton
 // failure mode is provider-specific — empirical evidence from
 // strat-frontend in winplan (2026-05-10) showed 3/3 attempts going
 // to Anthropic and producing literal "dummy" tokens. Bumping
@@ -293,7 +293,7 @@ func joinSections(parts []string) string {
 // real fourth provider lands in DefaultModels.
 const challengerMaxAttempts = 3
 
-// dispatchChallengerWithRetry runs the spec_challenger via the
+// dispatchChallengerWithRetry runs the spec-challenger via the
 // dispatcher with the degenerate-output validator wired into the
 // dispatch options. On a degenerate result the dispatcher rotates
 // providers and retries up to challengerMaxAttempts. The DJ-108

@@ -53,12 +53,12 @@ func TestCLISinkRendersAgentLifecycle(t *testing.T) {
 	t.Cleanup(func() { s.Close() })
 
 	now := time.Now()
-	s.OnEvent(agent.WorkflowEvent{StepID: "survey", AgentID: "spec_scout", Status: "started", Timestamp: now})
+	s.OnEvent(agent.WorkflowEvent{StepID: "survey", AgentID: "spec-scout", Status: "started", Timestamp: now})
 
 	s.mu.Lock()
-	_, has := s.spinners["survey/spec_scout"]
+	_, has := s.spinners["survey/spec-scout"]
 	s.mu.Unlock()
 	assert.True(t, has, "agent-level started should create a keyed spinner")
 
-	s.OnEvent(agent.WorkflowEvent{StepID: "survey", AgentID: "spec_scout", Status: "completed", Timestamp: now.Add(time.Second)})
+	s.OnEvent(agent.WorkflowEvent{StepID: "survey", AgentID: "spec-scout", Status: "completed", Timestamp: now.Add(time.Second)})
 }

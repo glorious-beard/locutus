@@ -1,5 +1,5 @@
 ---
-id: justify_splitter
+id: justify-splitter
 thinking: off
 role: classification
 models:

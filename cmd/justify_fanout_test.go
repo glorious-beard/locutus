@@ -119,17 +119,17 @@ func TestRunJustifyCommand_FanOutAgainstStrategy(t *testing.T) {
 
 	mock := agent.NewMockExecutor(
 		// Splitter
-		agent.MockResponse{AgentID: "justify_splitter", Response: &agent.AgentOutput{Content: mustJSON(t, splitterPayload)}},
+		agent.MockResponse{AgentID: "justify-splitter", Response: &agent.AgentOutput{Content: mustJSON(t, splitterPayload)}},
 		// Per-decision flow for dec-framework: challenger, researcher, advocate
-		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, frameworkChallenge)}},
-		agent.MockResponse{AgentID: "justify_researcher", Response: &agent.AgentOutput{Content: mustJSON(t, frameworkResearch)}},
-		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, frameworkDefense)}},
+		agent.MockResponse{AgentID: "spec-challenger", Response: &agent.AgentOutput{Content: mustJSON(t, frameworkChallenge)}},
+		agent.MockResponse{AgentID: "justify-researcher", Response: &agent.AgentOutput{Content: mustJSON(t, frameworkResearch)}},
+		agent.MockResponse{AgentID: "spec-advocate", Response: &agent.AgentOutput{Content: mustJSON(t, frameworkDefense)}},
 		// Per-decision flow for dec-rsc: challenger, researcher, advocate
-		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, rscChallenge)}},
-		agent.MockResponse{AgentID: "justify_researcher", Response: &agent.AgentOutput{Content: mustJSON(t, rscResearch)}},
-		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, rscDefense)}},
+		agent.MockResponse{AgentID: "spec-challenger", Response: &agent.AgentOutput{Content: mustJSON(t, rscChallenge)}},
+		agent.MockResponse{AgentID: "justify-researcher", Response: &agent.AgentOutput{Content: mustJSON(t, rscResearch)}},
+		agent.MockResponse{AgentID: "spec-advocate", Response: &agent.AgentOutput{Content: mustJSON(t, rscDefense)}},
 		// Synthesis
-		agent.MockResponse{AgentID: "justify_synthesizer", Response: &agent.AgentOutput{Content: mustJSON(t, synthesisPayload)}},
+		agent.MockResponse{AgentID: "justify-synthesizer", Response: &agent.AgentOutput{Content: mustJSON(t, synthesisPayload)}},
 	)
 
 	result, err := RunJustifyCommand(context.Background(), mock, fs, "strat-frontend",
@@ -206,11 +206,11 @@ func TestRunJustifyCommand_FanOutSkipsIrrelevantShards(t *testing.T) {
 	}
 
 	mock := agent.NewMockExecutor(
-		agent.MockResponse{AgentID: "justify_splitter", Response: &agent.AgentOutput{Content: mustJSON(t, splitterPayload)}},
-		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, rscChallenge)}},
-		agent.MockResponse{AgentID: "justify_researcher", Response: &agent.AgentOutput{Content: mustJSON(t, rscResearch)}},
-		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, rscDefense)}},
-		agent.MockResponse{AgentID: "justify_synthesizer", Response: &agent.AgentOutput{Content: mustJSON(t, synthesisPayload)}},
+		agent.MockResponse{AgentID: "justify-splitter", Response: &agent.AgentOutput{Content: mustJSON(t, splitterPayload)}},
+		agent.MockResponse{AgentID: "spec-challenger", Response: &agent.AgentOutput{Content: mustJSON(t, rscChallenge)}},
+		agent.MockResponse{AgentID: "justify-researcher", Response: &agent.AgentOutput{Content: mustJSON(t, rscResearch)}},
+		agent.MockResponse{AgentID: "spec-advocate", Response: &agent.AgentOutput{Content: mustJSON(t, rscDefense)}},
+		agent.MockResponse{AgentID: "justify-synthesizer", Response: &agent.AgentOutput{Content: mustJSON(t, synthesisPayload)}},
 	)
 
 	result, err := RunJustifyCommand(context.Background(), mock, fs, "strat-frontend",
@@ -265,9 +265,9 @@ func TestRunJustifyCommand_DecisionlessStrategyFallsBackToSingleFlow(t *testing.
 	mock := agent.NewMockExecutor(
 		// Single-target flow: challenger + researcher + advocate.
 		// No splitter, no synthesizer, no per-decision flows.
-		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge)}},
-		agent.MockResponse{AgentID: "justify_researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research)}},
-		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense)}},
+		agent.MockResponse{AgentID: "spec-challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge)}},
+		agent.MockResponse{AgentID: "justify-researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research)}},
+		agent.MockResponse{AgentID: "spec-advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense)}},
 	)
 
 	result, err := RunJustifyCommand(context.Background(), mock, fs, "strat-tdd",
@@ -311,9 +311,9 @@ func TestRunJustifyCommand_DecisionTargetUsesSingleFlow(t *testing.T) {
 	}
 
 	mock := agent.NewMockExecutor(
-		agent.MockResponse{AgentID: "spec_challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge)}},
-		agent.MockResponse{AgentID: "justify_researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research)}},
-		agent.MockResponse{AgentID: "spec_advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense)}},
+		agent.MockResponse{AgentID: "spec-challenger", Response: &agent.AgentOutput{Content: mustJSON(t, challenge)}},
+		agent.MockResponse{AgentID: "justify-researcher", Response: &agent.AgentOutput{Content: mustJSON(t, research)}},
+		agent.MockResponse{AgentID: "spec-advocate", Response: &agent.AgentOutput{Content: mustJSON(t, defense)}},
 	)
 
 	result, err := RunJustifyCommand(context.Background(), mock, fs, "dec-framework", "Why Next.js?", nil)

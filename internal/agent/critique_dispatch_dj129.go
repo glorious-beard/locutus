@@ -14,7 +14,7 @@ import (
 )
 
 // CritiqueDimensionItem is one fanout item the critique step
-// dispatches against. AgentID is always spec_critic_elaborator (the
+// dispatches against. AgentID is always spec-critic-elaborator (the
 // parametric critic). ID is "crit:<dimension.id>" so fanoutItemID
 // returns a unique label per dispatch slot. Dimension carries the
 // full CritiqueDimension for the projection to render in the user
@@ -36,7 +36,7 @@ func fanoutCritiqueDimensions(s *PlanningState) ([]string, error) {
 	items := make([]any, 0, len(s.CurrentCritiqueDimensions))
 	for _, d := range s.CurrentCritiqueDimensions {
 		items = append(items, CritiqueDimensionItem{
-			AgentID:   "spec_critic_elaborator",
+			AgentID:   "spec-critic-elaborator",
 			ID:        fmt.Sprintf("crit:%s", d.ID),
 			Dimension: d,
 		})

@@ -32,9 +32,9 @@ type LLMJudge struct {
 }
 
 // Name identifies this evaluator in EvalMetric.EvaluatorName.
-func (j *LLMJudge) Name() string { return "llm_judge" }
+func (j *LLMJudge) Name() string { return "llm-judge" }
 
-// LLMJudgeResult is the structured JSON the llm_judge agent emits —
+// LLMJudgeResult is the structured JSON the llm-judge agent emits —
 // the model's verdict on one assertion against one approach's
 // artifacts. Lives here (not in internal/agent/schemas.go) so the
 // type and the consumer code stay colocated.
@@ -57,7 +57,7 @@ func init() {
 // EvalMetric, not an error.
 func (j *LLMJudge) Evaluate(ctx context.Context, c EvalCase) (*EvalMetric, error) {
 	if j.LLM == nil {
-		return nil, fmt.Errorf("llm_judge: llm provider is required")
+		return nil, fmt.Errorf("llm-judge: llm provider is required")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -66,18 +66,18 @@ func (j *LLMJudge) Evaluate(ctx context.Context, c EvalCase) (*EvalMetric, error
 	prompt := j.buildPrompt(c)
 
 	def := agent.AgentDef{
-		ID:           "llm_judge",
-		SystemPrompt: "You are the llm_judge evaluator. Read the approach body, the assertion's question, and the artifacts; emit a structured pass/fail verdict with reasoning citing specific file:line evidence and an honest confidence score.",
+		ID:           "llm-judge",
+		SystemPrompt: "You are the llm-judge evaluator. Read the approach body, the assertion's question, and the artifacts; emit a structured pass/fail verdict with reasoning citing specific file:line evidence and an honest confidence score.",
 		OutputSchema: "LLMJudgeResult",
 	}
 	input := agent.AgentInput{Messages: []agent.Message{{Role: "user", Content: prompt}}}
 	resp, err := j.LLM.Run(ctx, def, input)
 	if err != nil {
-		return nil, fmt.Errorf("llm_judge generate: %w", err)
+		return nil, fmt.Errorf("llm-judge generate: %w", err)
 	}
 	var out LLMJudgeResult
 	if err := json.Unmarshal([]byte(resp.Content), &out); err != nil {
-		return nil, fmt.Errorf("llm_judge parse: %w", err)
+		return nil, fmt.Errorf("llm-judge parse: %w", err)
 	}
 
 	score := 0.0
@@ -102,7 +102,7 @@ func (j *LLMJudge) artifactCap() int {
 
 // buildPrompt assembles the user-message body. Kept deterministic — the
 // artifact iteration order is stable so pinning tests aren't flaky, and
-// the section headers match what llm_judge.md teaches the model to look
+// the section headers match what llm-judge.md teaches the model to look
 // for.
 func (j *LLMJudge) buildPrompt(c EvalCase) string {
 	cap := j.artifactCap()

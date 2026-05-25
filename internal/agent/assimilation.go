@@ -89,8 +89,8 @@ type Gap struct {
 }
 
 // AssimilationContribution is the per-call output of every agent in
-// the assimilation pipeline (scout / backend_analyzer / frontend_analyzer
-// / infra_analyzer / gap_analyst). It's a union of contribution slots —
+// the assimilation pipeline (scout / backend-analyzer / frontend-analyzer
+// / infra-analyzer / gap-analyst). It's a union of contribution slots —
 // each agent populates the subset that fits its task. The orchestrator's
 // parseAssimilationResults merges contributions across all rounds into
 // a single AssimilationResult.
@@ -107,7 +107,7 @@ type AssimilationContribution struct {
 	Strategies []spec.Strategy `json:"strategies,omitempty" jsonschema:"description=Cross-cutting engineering commitments the agent surfaced — testing approach; deployment posture; observability stack; build system. Strategies bundle related decisions and the prerequisites/commands that operationalize them."`
 	Approaches []spec.Approach `json:"approaches,omitempty" jsonschema:"description=Implementation approaches the agent surfaced — typically empty for analyzer agents; populated by adopt-time synthesis. Listed here for completeness since the parser accepts the field."`
 	Entities   []spec.Entity   `json:"entities,omitempty" jsonschema:"description=Domain entities the agent extracted from data models / DB schemas / struct definitions. Each entity carries its fields and relationships so downstream remediation can scope tests and ownership to specific business objects."`
-	Gaps       []Gap           `json:"gaps,omitempty" jsonschema:"description=Detected gaps — typically populated only by gap_analyst. Each gap names a missing test / undocumented decision / orphan code / missing quality strategy with a severity tier and the spec node ids it affects."`
+	Gaps       []Gap           `json:"gaps,omitempty" jsonschema:"description=Detected gaps — typically populated only by gap-analyst. Each gap names a missing test / undocumented decision / orphan code / missing quality strategy with a severity tier and the spec node ids it affects."`
 }
 
 func init() {

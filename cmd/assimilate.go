@@ -16,7 +16,7 @@ import (
 // AssimilateCmd analyzes an existing codebase and produces a spec graph.
 //
 // Default behavior is to run remediation (DJ-045 + DJ-046) after the
-// inference pass — the gap_analyst's findings are converted into
+// inference pass — the gap-analyst's findings are converted into
 // assumed Decisions, new Strategies, and updated Features in a single
 // atomic write. `--no-remediate` opts out: the report still includes
 // the Gaps list but no remediation writes happen.

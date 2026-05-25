@@ -94,8 +94,8 @@ func TestLoadAgentDefsMissingDir(t *testing.T) {
 func TestLoadAgentDefsParsesTimeout(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, fsys.MkdirAll(".borg/agents", 0o755))
-	require.NoError(t, fsys.WriteFile(".borg/agents/spec_feature_elaborator.md", []byte(`---
-id: spec_feature_elaborator
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec-feature-elaborator.md", []byte(`---
+id: spec-feature-elaborator
 role: planning
 timeout: 5m
 models:
@@ -103,8 +103,8 @@ models:
 ---
 You are the elaborator.
 `), 0o644))
-	require.NoError(t, fsys.WriteFile(".borg/agents/spec_architect.md", []byte(`---
-id: spec_architect
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec-architect.md", []byte(`---
+id: spec-architect
 role: planning
 models:
   - {provider: anthropic, tier: strong}
@@ -120,17 +120,17 @@ You are the architect.
 	for _, d := range defs {
 		byID[d.ID] = d
 	}
-	assert.Equal(t, "5m", byID["spec_feature_elaborator"].Timeout,
+	assert.Equal(t, "5m", byID["spec-feature-elaborator"].Timeout,
 		"frontmatter `timeout: 5m` round-trips as a string field; perCallTimeout does the parse")
-	assert.Empty(t, byID["spec_architect"].Timeout,
+	assert.Empty(t, byID["spec-architect"].Timeout,
 		"missing key defaults to empty; the global default applies")
 }
 
 func TestLoadAgentDefsParsesGrounding(t *testing.T) {
 	fsys := specio.NewMemFS()
 	require.NoError(t, fsys.MkdirAll(".borg/agents", 0o755))
-	require.NoError(t, fsys.WriteFile(".borg/agents/spec_scout.md", []byte(`---
-id: spec_scout
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec-scout.md", []byte(`---
+id: spec-scout
 role: survey
 grounding: true
 models:
@@ -138,8 +138,8 @@ models:
 ---
 You are the scout.
 `), 0o644))
-	require.NoError(t, fsys.WriteFile(".borg/agents/spec_architect.md", []byte(`---
-id: spec_architect
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec-architect.md", []byte(`---
+id: spec-architect
 role: planning
 models:
   - {provider: anthropic, tier: strong}
@@ -155,9 +155,9 @@ You are the architect.
 	for _, d := range defs {
 		byID[d.ID] = d
 	}
-	assert.True(t, byID["spec_scout"].Grounding,
+	assert.True(t, byID["spec-scout"].Grounding,
 		"frontmatter grounding: true must round-trip via yaml.Unmarshal")
-	assert.False(t, byID["spec_architect"].Grounding,
+	assert.False(t, byID["spec-architect"].Grounding,
 		"missing grounding key must default to false; agents not opted-in stay ungrounded")
 }
 
@@ -178,7 +178,7 @@ func TestBuildSystemPrompt(t *testing.T) {
 	})
 
 	t.Run("thinking-on agents get system prompt unchanged", func(t *testing.T) {
-		def := AgentDef{ID: "spec_advocate", SystemPrompt: "advocate prompt", OutputSchema: "ChallengeBrief", Thinking: "on"}
+		def := AgentDef{ID: "spec-advocate", SystemPrompt: "advocate prompt", OutputSchema: "ChallengeBrief", Thinking: "on"}
 		out := BuildSystemPrompt(def)
 		assert.Equal(t, "advocate prompt", out)
 		assert.NotContains(t, out, "Example output")

@@ -116,7 +116,7 @@ func TestProjectAffectedNodeIncludesManifestAndNode(t *testing.T) {
 	rawJSON, _ := json.Marshal(raw)
 
 	item := affectedNodeItem{
-		AgentID:   "spec_feature_elaborator",
+		AgentID:   "spec-feature-elaborator",
 		ID:        "feat-dashboard",
 		Kind:      "feature",
 		NewNode:   &NewSpecNode{ID: "feat-dashboard", Title: "Dashboard", Summary: "Realtime telemetry view"},

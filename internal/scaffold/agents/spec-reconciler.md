@@ -1,5 +1,5 @@
 ---
-id: spec_reconciler
+id: spec-reconciler
 thinking: high
 role: reconcile
 models:

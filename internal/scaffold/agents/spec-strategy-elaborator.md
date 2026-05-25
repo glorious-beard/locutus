@@ -1,5 +1,5 @@
 ---
-id: spec_strategy_elaborator
+id: spec-strategy-elaborator
 thinking: on
 role: planning
 models:

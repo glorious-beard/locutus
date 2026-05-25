@@ -18,17 +18,17 @@ func TestNotifyingExecutor_EmitsStartedAndCompleted(t *testing.T) {
 	sink := &CapturingSink{}
 	exec := &NotifyingExecutor{Inner: mock, Sink: sink}
 
-	out, err := exec.Run(context.Background(), AgentDef{ID: "spec_advocate"}, AgentInput{})
+	out, err := exec.Run(context.Background(), AgentDef{ID: "spec-advocate"}, AgentInput{})
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Equal(t, "ok", out.Content)
 
 	events := sink.Events()
 	require.Len(t, events, 2, "one started + one completed")
-	assert.Equal(t, "spec_advocate", events[0].AgentID)
+	assert.Equal(t, "spec-advocate", events[0].AgentID)
 	assert.Equal(t, "started", events[0].Status)
 	assert.Empty(t, events[0].StepID, "direct calls have no enclosing step")
-	assert.Equal(t, "spec_advocate", events[1].AgentID)
+	assert.Equal(t, "spec-advocate", events[1].AgentID)
 	assert.Equal(t, "completed", events[1].Status)
 }
 
@@ -60,7 +60,7 @@ func TestNotifyingExecutor_SuppressedInsideWorkflow(t *testing.T) {
 	exec := &NotifyingExecutor{Inner: mock, Sink: sink}
 
 	ctx := WithSuppressLLMNotify(context.Background())
-	_, err := exec.Run(ctx, AgentDef{ID: "spec_scout"}, AgentInput{})
+	_, err := exec.Run(ctx, AgentDef{ID: "spec-scout"}, AgentInput{})
 	require.NoError(t, err)
 
 	assert.Empty(t, sink.Events(),

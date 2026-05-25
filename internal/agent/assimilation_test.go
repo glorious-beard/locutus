@@ -28,26 +28,26 @@ role: scout
 ---
 You are a codebase scout. Analyze the file inventory and identify languages, frameworks, and project structure.`,
 
-		"backend_analyzer": `---
-id: backend_analyzer
+		"backend-analyzer": `---
+id: backend-analyzer
 role: analyzer
 ---
 You are a backend analyzer. Examine backend code and infer decisions, entities, and strategies.`,
 
-		"frontend_analyzer": `---
-id: frontend_analyzer
+		"frontend-analyzer": `---
+id: frontend-analyzer
 role: analyzer
 ---
 You are a frontend analyzer. Examine frontend code and infer decisions and strategies.`,
 
-		"infra_analyzer": `---
-id: infra_analyzer
+		"infra-analyzer": `---
+id: infra-analyzer
 role: analyzer
 ---
 You are an infrastructure analyzer. Examine infra config and infer deployment decisions.`,
 
-		"gap_analyst": `---
-id: gap_analyst
+		"gap-analyst": `---
+id: gap-analyst
 role: analyst
 ---
 You are a gap analyst. Identify missing tests, undocumented decisions, and orphan code.`,
@@ -136,10 +136,10 @@ func TestAnalyzeProducesSpec(t *testing.T) {
 
 	// Mock LLM responses — one per agent call in workflow order:
 	// 1. scout (scan round)
-	// 2. backend_analyzer (analyze round, parallel)
-	// 3. frontend_analyzer (analyze round, parallel)
-	// 4. infra_analyzer (analyze round, parallel)
-	// 5. gap_analyst (gaps round)
+	// 2. backend-analyzer (analyze round, parallel)
+	// 3. frontend-analyzer (analyze round, parallel)
+	// 4. infra-analyzer (analyze round, parallel)
+	// 5. gap-analyst (gaps round)
 	// 6. remediator (remediate round)
 
 	scoutResp := mustJSON(t, map[string]any{
@@ -274,10 +274,10 @@ func TestAnalyzeEmptyCodebase(t *testing.T) {
 
 	mock := NewMockExecutor(
 		mockResp(scoutResp),     // scout
-		mockResp(emptyAnalysis), // backend_analyzer
-		mockResp(emptyAnalysis), // frontend_analyzer
-		mockResp(emptyAnalysis), // infra_analyzer
-		mockResp(gapResp),       // gap_analyst
+		mockResp(emptyAnalysis), // backend-analyzer
+		mockResp(emptyAnalysis), // frontend-analyzer
+		mockResp(emptyAnalysis), // infra-analyzer
+		mockResp(gapResp),       // gap-analyst
 		mockResp(remediatorResp), // remediator
 	)
 

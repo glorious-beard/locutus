@@ -80,7 +80,7 @@ func TestDispatchChallenger_RotatesProviderOnRetry(t *testing.T) {
 	mock := NewMockExecutor(responses...)
 
 	def := AgentDef{
-		ID:           "spec_challenger",
+		ID:           "spec-challenger",
 		OutputSchema: "ChallengeBrief",
 		Models: []ModelPreference{
 			{Provider: "anthropic", Tier: "balanced"},

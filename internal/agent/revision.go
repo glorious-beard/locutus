@@ -16,7 +16,7 @@
 //
 //   - MechanicalCluster (Go, no LLM): groups findings by id-mention into
 //     per-node clusters. Findings without an id reference fall through.
-//   - spec_finding_clusterer (LLM, single job): groups the unmatched
+//   - spec-finding-clusterer (LLM, single job): groups the unmatched
 //     findings by topic. Schema is one array; one decision dimension.
 //   - revise (fanout: findings.clusters): per-cluster elaborator call.
 //     Each call emits one RawFeatureProposal or RawStrategyProposal

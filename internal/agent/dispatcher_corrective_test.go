@@ -34,7 +34,7 @@ func TestDispatch_CorrectiveRetryRecoversOnSameProvider(t *testing.T) {
 	mock := NewMockExecutor(first, second)
 
 	def := AgentDef{
-		ID: "spec_challenger",
+		ID: "spec-challenger",
 		Models: []ModelPreference{
 			{Provider: "anthropic", Tier: "balanced"},
 			{Provider: "googleai", Tier: "balanced"},

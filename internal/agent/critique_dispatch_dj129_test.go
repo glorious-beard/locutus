@@ -28,7 +28,7 @@ func TestFanoutCritiqueDimensionsEmitsOneItemPerDimension(t *testing.T) {
 	for i, raw := range items {
 		var item CritiqueDimensionItem
 		require.NoError(t, json.Unmarshal([]byte(raw), &item))
-		assert.Equal(t, "spec_critic_elaborator", item.AgentID)
+		assert.Equal(t, "spec-critic-elaborator", item.AgentID)
 		assert.Equal(t, "crit:"+s.CurrentCritiqueDimensions[i].ID, item.ID)
 		assert.Equal(t, s.CurrentCritiqueDimensions[i], item.Dimension)
 	}
@@ -136,7 +136,7 @@ func TestMergeScoutBriefPopulatesCritiqueDimensions(t *testing.T) {
 	require.NoError(t, err)
 
 	state := &PlanningState{}
-	mergeScoutBrief(state, []RoundResult{{AgentID: "spec_scout", Output: string(out), IterationIndex: 2}})
+	mergeScoutBrief(state, []RoundResult{{AgentID: "spec-scout", Output: string(out), IterationIndex: 2}})
 
 	require.Len(t, state.CurrentCritiqueDimensions, 1)
 	assert.Equal(t, "cost-ceiling-coverage", state.CurrentCritiqueDimensions[0].ID)
@@ -168,7 +168,7 @@ func TestProjectCritiqueDimensionRendersFocusAndDisciplines(t *testing.T) {
 		Disciplines:    []string{"web_grounded", "goals_grounded"},
 		SeverityFloor:  "high",
 	}
-	item := CritiqueDimensionItem{AgentID: "spec_critic_elaborator", ID: "crit:cost-ceiling-coverage", Dimension: dim}
+	item := CritiqueDimensionItem{AgentID: "spec-critic-elaborator", ID: "crit:cost-ceiling-coverage", Dimension: dim}
 	itemJSON, err := json.Marshal(item)
 	require.NoError(t, err)
 
@@ -203,8 +203,8 @@ func TestCritiqueStepIsAFanoutOverCritiqueDimensions(t *testing.T) {
 		}
 	}
 	require.NotNil(t, critique, "critique step must appear in the iteration template")
-	require.Len(t, critique.Agents, 1, "DJ-129: critique uses one parametric agent (spec_critic_elaborator), not four fixed critics")
-	assert.Equal(t, "spec_critic_elaborator", critique.Agents[0])
+	require.Len(t, critique.Agents, 1, "DJ-129: critique uses one parametric agent (spec-critic-elaborator), not four fixed critics")
+	assert.Equal(t, "spec-critic-elaborator", critique.Agents[0])
 	require.NotNil(t, critique.Fanout, "critique must dispatch via Fanout under DJ-129")
 }
 
@@ -217,7 +217,7 @@ func TestMergeCriticIssuesTagsKindFromDimensionLens(t *testing.T) {
 		ID: "voter-file-privacy", Lens: "compliance",
 		FocusQuestion: "q", SourceEvidence: []string{"e"}, Disciplines: []string{"goals_grounded"}, SeverityFloor: "high",
 	}
-	item := CritiqueDimensionItem{AgentID: "spec_critic_elaborator", ID: "crit:voter-file-privacy", Dimension: dim}
+	item := CritiqueDimensionItem{AgentID: "spec-critic-elaborator", ID: "crit:voter-file-privacy", Dimension: dim}
 	itemJSON, _ := json.Marshal(item)
 
 	issue := CriticIssue{
@@ -229,7 +229,7 @@ func TestMergeCriticIssuesTagsKindFromDimensionLens(t *testing.T) {
 
 	state := &PlanningState{}
 	mergeCriticIssues(state, []RoundResult{{
-		AgentID:        "spec_critic_elaborator",
+		AgentID:        "spec-critic-elaborator",
 		Output:         string(out),
 		IterationIndex: 2,
 		FanoutItem:     string(itemJSON),

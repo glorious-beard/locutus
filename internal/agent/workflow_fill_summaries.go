@@ -13,7 +13,7 @@ import (
 )
 
 // MissingSummaryNode describes one spec node that lacks a Summary and
-// needs the spec_summarizer to fill it. Populated by the prereq layer
+// needs the spec-summarizer to fill it. Populated by the prereq layer
 // before the workflow runs.
 type MissingSummaryNode struct {
 	// Kind is the spec-node kind: "feature", "strategy", "decision",
@@ -57,7 +57,7 @@ type FillSummariesState struct {
 	Failed map[string]error
 }
 
-// FillSummariesWorkflow runs the spec_summarizer agent against every
+// FillSummariesWorkflow runs the spec-summarizer agent against every
 // node in state.Missing in parallel. Each item's RunItem closure
 // invokes the summarizer, validates the output, and writes the Summary
 // back to the node on disk. The Merge handler accumulates per-node
@@ -77,7 +77,7 @@ var FillSummariesWorkflow = &Workflow[FillSummariesState]{
 	Rounds: []WorkflowStep[FillSummariesState]{
 		{
 			ID:       "summarize",
-			Agents:   []string{"spec_summarizer"},
+			Agents:   []string{"spec-summarizer"},
 			Parallel: true,
 			Fanout:   fanoutMissingSummaries,
 			RunItem:  runSummarizeOne,
@@ -129,7 +129,7 @@ type summarizeOneResult struct {
 }
 
 // runSummarizeOne is the per-item RunItem closure: invoke the
-// spec_summarizer against one node's content, validate the result,
+// spec-summarizer against one node's content, validate the result,
 // and write the Summary back to disk. Returns the JSON of
 // summarizeOneResult on success; returns a non-nil error on failure
 // (which the executor surfaces as RoundResult.Err for the merge

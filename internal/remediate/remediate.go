@@ -1,5 +1,5 @@
 // Package remediate is the autonomy bridge in brownfield assimilation
-// (DJ-045 + DJ-046): given the gap_analyst's findings and the spec
+// (DJ-045 + DJ-046): given the gap-analyst's findings and the spec
 // inferred so far, it produces concrete spec writes — assumed Decisions,
 // new Strategies, new or updated Features — so `assimilate` can
 // produce a complete, internally consistent spec in one pass without

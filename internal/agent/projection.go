@@ -148,7 +148,7 @@ func formatOutlineForElaborator(raw string) string {
 	return strings.TrimSpace(b.String())
 }
 
-// projectClusterFindings builds the spec_finding_clusterer's user
+// projectClusterFindings builds the spec-finding-clusterer's user
 // message (DJ-098). The clusterer receives the unmatched-findings
 // list (findings that didn't name an existing node id) and groups
 // them by topic. Decision dimensions are minimal: which cluster a
@@ -188,7 +188,7 @@ func projectClusterFindings(snap StateSnapshot[PlanningState]) []Message {
 	}
 
 	// Lossless-grouping mandate, kind-defaulting rule, and example
-	// shape live in spec_finding_clusterer.md. Projection is data-only
+	// shape live in spec-finding-clusterer.md. Projection is data-only
 	// per DJ-097.
 	return []Message{{Role: "user", Content: b.String()}}
 }
@@ -358,7 +358,7 @@ func projectReconcile(snap StateSnapshot[PlanningState]) []Message {
 	}
 	// Directive ("Emit a ReconciliationVerdict... inline decisions
 	// you do not mention are kept as separate canonical decisions")
-	// lives in spec_reconciler.md. Do not re-state here — see DJ-097.
+	// lives in spec-reconciler.md. Do not re-state here — see DJ-097.
 	return []Message{{Role: "user", Content: b.String()}}
 }
 
