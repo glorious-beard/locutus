@@ -30,7 +30,9 @@ type CLI struct {
 	Justify    JustifyCmd    `cmd:"" help:"Have the spec advocate write a defense for a node, optionally vs a challenge."`
 	List       ListCmd       `cmd:"" help:"Find spec node ids matching a free-text query (no LLM)."`
 
-	Mcp McpCmd `cmd:"" help:"Start the MCP server."`
+	Mcp       McpCmd       `cmd:"" help:"Start the MCP server (forks a per-project daemon if not already running and bridges stdio to its socket)."`
+	McpDaemon McpDaemonCmd `cmd:"" name:"mcp-daemon" help:"Internal: run the per-project MCP daemon. Use 'locutus mcp' instead." hidden:""`
+	McpStop   McpStopCmd   `cmd:"" name:"mcp-stop" help:"Stop the per-project MCP daemon (removes the .locutus/mcp.sock so the accept loop unwinds)."`
 
 	// mcpMode is set programmatically by McpCmd.Run before any work
 	// starts so RenderMode reflects "this process is serving MCP."

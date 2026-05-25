@@ -11,7 +11,6 @@ import (
 	"github.com/chetan/locutus/internal/history"
 	"github.com/chetan/locutus/internal/scaffold"
 	"github.com/chetan/locutus/internal/specio"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // HistoryCmd queries the historian's past-tense record of spec changes.
@@ -308,73 +307,6 @@ func parseHistoryDate(raw, flag string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("%s: %q is not a YYYY-MM-DD date", flag, raw)
 	}
 	return t, nil
-}
-
-// runHistoryMCP is the shared implementation used by the MCP handler. It
-// renders a compact text result rather than streaming the full event set.
-func runHistoryMCP(fsys specio.FS, input historyInput) (*mcp.CallToolResult, any, error) {
-	if input.Narrative {
-		data, err := fsys.ReadFile(narrativeOutputDir + "/summary.md")
-		if err != nil {
-			return errorResult(fmt.Sprintf("no narrative summary at %s/summary.md — run `locutus history --narrative` to generate one", narrativeOutputDir)), nil, nil
-		}
-		return textResult(string(data)), nil, nil
-	}
-
-	hist := history.NewHistorian(fsys, ".borg/history")
-
-	if input.Alternatives {
-		if input.ID == "" {
-			return errorResult("id is required when alternatives=true"), nil, nil
-		}
-		alts, err := hist.Alternatives(input.ID)
-		if err != nil {
-			return errorResult(err.Error()), nil, nil
-		}
-		if len(alts) == 0 {
-			return textResult(fmt.Sprintf("No alternatives recorded for %s.", input.ID)), nil, nil
-		}
-		out := fmt.Sprintf("Alternatives for %s:\n", input.ID)
-		for _, a := range alts {
-			out += "  - " + a + "\n"
-		}
-		return textResult(out), nil, nil
-	}
-
-	var events []history.Event
-	var err error
-	if input.ID != "" {
-		events, err = hist.EventsForTarget(input.ID)
-	} else {
-		events, err = hist.Events()
-	}
-	if err != nil {
-		return errorResult(err.Error()), nil, nil
-	}
-
-	limit := input.Limit
-	if limit <= 0 {
-		limit = 50
-	}
-	if len(events) > limit {
-		events = events[len(events)-limit:]
-	}
-
-	if len(events) == 0 {
-		return textResult("No history events recorded."), nil, nil
-	}
-
-	var out string
-	for i := len(events) - 1; i >= 0; i-- {
-		e := events[i]
-		out += fmt.Sprintf("%s  %-20s  %-30s  %s\n",
-			e.Timestamp.Format("2006-01-02 15:04"),
-			e.Kind,
-			e.TargetID,
-			firstLine(e.Rationale),
-		)
-	}
-	return textResult(out), nil, nil
 }
 
 func firstLine(s string) string {
