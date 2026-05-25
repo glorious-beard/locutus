@@ -26,7 +26,10 @@ This plan sequences the implementation in phases that each leave the system in a
 - **Agent prompts** at `internal/scaffold/agents/*.md` use underscored names (`spec_scout`, `spec_decision_elaborator`). Rename pass to hyphenated form (`spec-scout`, etc.) is Phase 2.
 - **No agents.yaml exists yet.** Phase 3 introduces it.
 - **No publisher exists yet.** Phase 4 introduces it.
-- **No MCP server exists yet.** Phase 5 introduces it.
+- **A v1 MCP server already exists at `cmd/mcp.go` (499 lines, byte-identical to the version landed pre-DJ-128).** It exposes the CLI verbs as MCP tools (`init`, `status`, `import`, `assimilate`, `refine`, `adopt`, `history`, `explain`, `list`, `justify`) over `mcp.StdioTransport`, with `cmd/sink_mcp.go` (145 lines) translating council workflow events into `notifications/progress` + `notifications/message`. `cmd/mcp_test.go` (269 lines) drives it via `mcp.NewInMemoryTransports()`. **This entire v1 surface — verb-as-tool, single-stdio-session, council-backed — is what DJ-135 retires.** Phase 1 deletes all three files in the same phase it introduces the v2 graph-as-tool surface. Per [[feedback-no-back-compat-until-self-hosting]], no transitional shim.
+- **Read-side spec tool handlers already exist as `RegisterSpecTools(registry, store)` in `internal/agent/spec_tools.go:750`** — wired against the council's in-process `ToolRegistry`, not against `mcp.Server`. The handler bodies (BuildSpecManifest, LookupSpecNode, SearchSpecNodes) are SpecStore-backed and directly reusable; the registration call site is not. Phase 1's `internal/mcp/tools_spec_read.go` wraps the same handlers in `mcp.AddTool` registrations.
+- **Write-side propose/revise tools do not exist** at the tool level. `SpecStore.Put(kind, id, body, origin)` + `Begin`/`Commit`/`Rollback` are the underlying primitives. Phase 1's `internal/mcp/tools_spec_write.go` is the first time these are exposed as MCP tools.
+- **MCP Go SDK (`github.com/modelcontextprotocol/go-sdk` v1.6.1) already in go.mod.** The `Transport` interface is one method (`Connect(ctx) (Connection, error)`); `IOTransport{Reader, Writer}` operates on any `io.ReadCloser`/`io.WriteCloser` pair and is the building block for socket-backed transports (`net.Conn` satisfies both interfaces). `InMemoryTransport` uses `net.Pipe()` under the hood, confirming the SDK already operates over arbitrary `io.ReadWriteCloser`. No custom transport implementation needed; the singleton daemon is a `net.Listen("unix", ...)` accept-loop calling `Server.Connect(ctx, &IOTransport{conn, conn}, nil)` per accepted connection.
 
 ## Resolved design questions
 
@@ -34,39 +37,56 @@ Captured in DJ-135 §"Resolved design questions" — 15 items spanning council-s
 
 Read the DJ for the full reasoning; each phase below cites the relevant resolved-question items where they constrain implementation choices.
 
-## Phase 1 — Foundation: MCP server core + singleton bootstrap (no activities yet)
+## Phase 1 — Foundation: v2 MCP server (spec graph surface) + singleton daemon, v1 retired
 
-**Goal:** stand up `locutus mcp` as a working MCP server backed by the SpecStore, with the singleton + Unix socket bootstrap working end-to-end. No activities yet; the server exposes only the read/write tools and resources for the spec graph. This is the *minimum viable* MCP server.
+**Goal:** replace the v1 verb-as-tool MCP surface at `cmd/mcp.go` with a v2 graph-as-tool surface backed by the SpecStore, served by a per-project singleton daemon over a Unix socket. The v2 server exposes only the spec read/write tools and the `spec://manifest` resource; activity prompts arrive in Phase 5. v1 deletes in the same commit window — no two-architectures-in-one-server transition.
 
 **Files expected to add:**
 
-- `internal/mcp/server.go` — MCP server core: capability negotiation, JSON-RPC dispatch loop, tool/prompt/resource registration, notification emission. ~600-800 lines.
-- `internal/mcp/transport_socket.go` — stdio-over-Unix-socket bridge. The local `locutus mcp --project .` invocation is a thin shim between the calling client's stdin/stdout and the daemon's socket.
-- `internal/mcp/bootstrap.go` — singleton bootstrap logic. Check `.locutus/mcp.sock` → if responsive, connect; if absent or stale, fork `locutus mcp-daemon` and connect once it's listening. Handles stale PID cleanup, socket permission errors, daemon startup race.
-- `internal/mcp/tools_spec_read.go` — read tools: `spec_list_manifest`, `spec_get(ids)`, `spec_search(query)`. Delegates to SpecStore.
-- `internal/mcp/tools_spec_write.go` — write tools: `spec_propose_decision`, `spec_propose_feature`, `spec_propose_strategy`, `spec_revise_*`. Validation + delegation to SpecStore (within a transaction owned by the calling MCP session).
-- `internal/mcp/resources_spec.go` — resources: `spec://manifest`. Per resolved-question 9 (additive ergonomic surface; per-node resources skipped).
-- `internal/mcp/notifications.go` — `notifications/progress` and `notifications/message` emitters. `notifications/resources/updated` fires on commit.
-- `cmd/mcp.go` — `locutus mcp` subcommand. Smart client/server: discovers or starts the daemon, then runs the stdio-over-socket bridge.
-- `cmd/mcp_daemon.go` — `locutus mcp-daemon` subcommand. Long-lived process; binds the Unix socket; serves concurrent JSON-RPC clients.
+- `internal/mcp/server.go` — v2 server constructor. `NewSpecServer(store *agent.SpecStore) *mcp.Server` wires the `mcp.Server` instance, registers all spec_* tools, registers the `spec://manifest` resource, and configures session-scoped notification routing. The SDK handles JSON-RPC dispatch + capability negotiation; this file's job is purely registration. ~200-300 lines, not 600-800 — the SDK is doing the heavy lifting.
+- `internal/mcp/socket.go` — socket transport helpers. `ListenSocket(path) (net.Listener, error)` (with stale-socket cleanup), `ServeOnSocket(ctx, listener, server *mcp.Server) error` (accept loop + per-conn `server.Connect(ctx, &mcp.IOTransport{Reader: conn, Writer: conn}, nil)`).
+- `internal/mcp/bridge.go` — client-side bridge. `BridgeStdioToSocket(ctx, sockPath) error` proxies the calling process's stdin↔socket↔stdout. To external MCP clients (Claude Code, etc.) this is indistinguishable from a stdio MCP server.
+- `internal/mcp/bootstrap.go` — singleton discovery. `EnsureDaemon(projectRoot string) (sockPath string, err error)`: probe `.locutus/mcp.sock`; if responsive, return; if absent or stale (probe fails with ECONNREFUSED or path-doesn't-exist), fork `locutus mcp-daemon --project <root>` and poll until it's listening (bounded by timeout). Stale-socket cleanup is "try-and-fail-on-Listen" — POSIX socket files aren't auto-cleaned by the kernel.
+- `internal/mcp/tools_spec_read.go` — read tools registered with `mcp.AddTool`: `spec_list_manifest`, `spec_get`, `spec_search`. Handler bodies delegate to the existing `BuildSpecManifest`, `LookupSpecNode`, `SearchSpecNodes` in `internal/agent/spec_tools.go` (which is already SpecStore-backed). Tool descriptions live in the registration call per DJ-134's "tool descriptions live in registration, not prompts" rule.
+- `internal/mcp/tools_spec_write.go` — write tools: `spec_propose_decision`, `spec_propose_feature`, `spec_propose_strategy`, `spec_revise_decision`. Each validates input, calls `SpecStore.Put(kind, id, body, origin)`, and emits `notifications/resources/updated` for `spec://manifest`. **Transactional model TBD in test-design phase:** options are (a) implicit one-tool-call-per-transaction with auto-commit (simplest; matches MCP's stateless-tool semantics), or (b) explicit `spec_begin` / `spec_commit` / `spec_rollback` tools (matches SpecStore's API but exposes session state to the MCP client). Pick before writing.
+- `internal/mcp/resources_spec.go` — registers `spec://manifest` as a resource. `resources/read` returns the same JSON as `spec_list_manifest`. Per resolved-question 9, no per-node resources in v1.
+- `internal/mcp/notifications.go` — emit `notifications/resources/updated` for `spec://manifest` when SpecStore commits. Subscription set tracked per-session. (The v1 `notifications/progress` + `notifications/message` machinery from `cmd/sink_mcp.go` is council-driven and deletes with v1; the v2 server has no in-process LLM activity to report.)
+- `cmd/mcp.go` — **rewrite**, not new. `locutus mcp` subcommand becomes: `EnsureDaemon(root)` → `BridgeStdioToSocket(ctx, sock)`. No tool wiring, no `NewMCPServerWithDir` call. ~30 lines.
+- `cmd/mcp_daemon.go` — `locutus mcp-daemon --project <root>` subcommand. Opens the SpecStore (its own instance, separate from the council's `cmd/llm.go` cache during the migration window), constructs `NewSpecServer(store)`, calls `ServeOnSocket`. Blocks until ctx cancellation or socket close.
 
-**Files expected to modify:** none. `cmd/llm.go` stays untouched in this phase — it's entirely council/Executor wiring and the council still runs through it. The MCP daemon opens its own SpecStore in `cmd/mcp_daemon.go` (or `internal/mcp/bootstrap.go`), independent of the council's process-wide cache. Both paths reading the same on-disk `.borg/spec/` is intentional during the migration window — Phase 5 deletes the council path, and `cmd/llm.go` goes with it.
+**Files expected to delete (in the same commit):**
 
-**Tests:**
+- `cmd/sink_mcp.go` (145 lines) — council event → MCP notification translator. v2 has no in-process council to translate from.
+- `cmd/mcp_test.go` (269 lines) — exercises the v1 verb-as-tool surface via `mcp.NewInMemoryTransports()`. Tests for the v2 surface live in `internal/mcp/*_test.go`.
+- The verb-as-tool registrations inside `cmd/mcp.go` (helpers `textResult` / `errorResult` / `formatRefineResultForMCP`, the `initInput` / `statusInput` / `importInput` / etc. type set) all delete as part of the `cmd/mcp.go` rewrite.
 
-- `TestMcpServer_RegistersAllReadTools` — confirms `spec_list_manifest`, `spec_get`, `spec_search` appear in `tools/list`.
-- `TestMcpServer_RegistersAllWriteTools` — confirms `spec_propose_decision`, `spec_propose_feature`, `spec_propose_strategy`, `spec_revise_decision` appear.
-- `TestMcpServer_SpecGetThroughSocket` — round-trip: spawn daemon, connect via socket bridge, call `spec_get`, get back the SpecStore content.
-- `TestMcpServer_SpecProposeFeatureWritesToSpecStore` — round-trip: call `spec_propose_feature`, observe the SpecStore now carries the proposed entry.
-- `TestMcpServer_ResourcesManifestRendersFullGraph` — `resources/read spec://manifest` returns the same content as `spec_list_manifest` tool.
-- `TestMcpServer_NotificationsResourcesUpdatedFiresOnCommit` — after `spec_revise_decision` + commit, a subscribed client receives `notifications/resources/updated` for `spec://manifest`.
-- `TestMcpDaemon_SocketStaleCleanup` — stale PID file with no live process → next bootstrap successfully forks fresh daemon.
-- `TestMcpDaemon_ConcurrentClientsShareSpecStore` — two concurrent client connections; mutation via client A is visible to client B's read.
-- `TestMcpDaemon_IdleShutdown` — daemon shuts down after configured idle timeout with no connections.
+**Files expected to modify:** none. `cmd/llm.go` stays untouched per [the dedicated note at the top of this section](#) — its retirement is bundled with the council in Phase 5. The daemon opens its own SpecStore instance in `cmd/mcp_daemon.go`; during the migration window the council's `cmd/llm.go` cache and the daemon's instance both read the same on-disk `.borg/spec/`, and the *daemon* is the only writer because the council still operates over the legacy CLI (not through MCP) until Phase 5.
 
-**Verification:** `go build ./... && go vet ./... && go test ./internal/mcp/... ./cmd/... -count=1 -race`. Manual: spawn `locutus mcp` in two terminals; verify they share the same daemon (one `.locutus/mcp.sock`); make a tool call from each; observe consistent state.
+**Open design questions to settle in the test-design checkpoint (before any implementation):**
 
-**Estimated:** 12-18 hours.
+1. **Transaction model for write tools** — implicit per-call auto-commit vs explicit begin/commit/rollback tools. Affects how `spec_propose_*` schemas look.
+2. **Daemon idle shutdown** — fire-and-forget timer per disconnect, or no idle shutdown (relies on OS process management / explicit `locutus mcp stop`)? Plan originally listed `TestMcpDaemon_IdleShutdown` — is idle shutdown actually wanted, or YAGNI for a per-project daemon?
+3. **Socket location for non-Unix platforms** — Windows doesn't have Unix sockets in the same form. v1 scope: Unix-only (`darwin` + `linux`). Document the constraint; revisit if a Windows user appears.
+4. **Concurrent-write safety** — `SpecStore.Begin/Commit/Rollback` are RWMutex-guarded; concurrent MCP clients calling write tools serialize through that mutex. Confirm this is acceptable; if not, the daemon needs higher-level queuing.
+
+**Tests (subject to revision during checkpoint):**
+
+- `TestSpecServer_RegistersAllReadTools` — confirms `spec_list_manifest`, `spec_get`, `spec_search` appear in `tools/list` via in-memory transport.
+- `TestSpecServer_RegistersAllWriteTools` — confirms write tools appear (set depends on transaction-model decision).
+- `TestSpecServer_SpecGetReturnsBatchedResults` — in-memory transport: call `spec_get(ids: [...])`, verify response shape matches the SpecStore's `GetSpec` contract (status + body / available_ids / working).
+- `TestSpecServer_SpecProposeFeatureWritesToSpecStore` — call `spec_propose_feature`, observe the SpecStore now carries the proposed entry with `origin: proposed`.
+- `TestSpecServer_ResourceManifestRendersFullGraph` — `resources/read spec://manifest` returns the same content as `spec_list_manifest` tool.
+- `TestSpecServer_NotificationsResourcesUpdatedFiresOnWrite` — after `spec_propose_feature` succeeds, subscribed clients receive `notifications/resources/updated` for `spec://manifest`.
+- `TestSocketDaemon_AcceptsAndServes` — `ServeOnSocket` over a real Unix socket in `t.TempDir()`; dial from a goroutine, drive a `tools/list` call, confirm response.
+- `TestSocketDaemon_ConcurrentClientsShareSpecStore` — two goroutines dial the same socket; mutation via client A is visible to client B's read.
+- `TestSocketDaemon_StaleSocketCleanedOnListen` — pre-create a stale socket file at the path; `ListenSocket` removes it and binds fresh.
+- `TestBootstrap_DiscoversLiveDaemon` — pre-existing live daemon → `EnsureDaemon` returns its sock without forking.
+- `TestBootstrap_ForksWhenSocketAbsent` — no daemon → `EnsureDaemon` forks `locutus mcp-daemon`, polls, returns sock. (May need to be skipped in CI if subprocess-spawning is constrained; mark as integration.)
+- `TestCmdMcp_BridgesStdioToSocket` — pipe `tools/list` into the bridge's stdin, observe response on stdout (in-memory listener + pipe pair).
+
+**Verification:** `go build ./... && go vet ./... && go test ./internal/mcp/... ./cmd/... -count=1 -race`. Manual: spawn `locutus mcp` (forks daemon transparently), drive `tools/list` from stdin, observe spec_* tool catalog. Spawn a second `locutus mcp` in another terminal — verify only one `.locutus/mcp.sock` exists, both clients hit the same daemon, a write through client A is visible to client B's read.
+
+**Estimated:** 10-14 hours (reduced from 12-18 because the SDK does more than the original plan assumed and `RegisterSpecTools` handlers are reusable).
 
 ## Phase 2 — Hyphenated naming rename pass
 
