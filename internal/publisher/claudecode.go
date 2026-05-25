@@ -75,18 +75,66 @@ func (claudeCodePublisher) EnsureMCPConfig(fsys specio.FS) error {
 
 // PublishAgent writes .claude/agents/locutus/<id>.md with the
 // CC-shaped frontmatter and the canonical body verbatim.
+//
+// The model: field is emitted when the canonical agent declares a
+// `models:` tier. Claude Code subagent frontmatter accepts the
+// short-form values haiku/sonnet/opus (mapping to the latest of each
+// model family) or specific model ids; we use the short form so the
+// published subagents track the current frontier without needing
+// re-publish when Anthropic releases a new minor version. Tier
+// mapping mirrors what the legacy adapters resolved each tier to
+// against Anthropic's lineup:
+//
+//	fast      → haiku   (was claude-haiku-4-5 in pre-DJ-135 models.yaml)
+//	balanced  → sonnet  (was claude-sonnet-4-6)
+//	strong    → opus    (was claude-opus-4-7)
+//
+// Agents that declare no `models:` (or an unrecognized tier) get no
+// model field — Claude Code defaults to inheriting the parent
+// session's model.
 func (claudeCodePublisher) PublishAgent(agent CanonicalAgent, fsys specio.FS) error {
 	dir := ".claude/agents/locutus"
 	if err := fsys.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	frontmatter := fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n", agent.ID, deriveDescription(agent))
+	var fm strings.Builder
+	fm.WriteString("---\n")
+	fmt.Fprintf(&fm, "name: %s\n", agent.ID)
+	fmt.Fprintf(&fm, "description: %s\n", deriveDescription(agent))
+	if m := claudeCodeModelForTier(agent.Tier); m != "" {
+		fmt.Fprintf(&fm, "model: %s\n", m)
+	}
+	fm.WriteString("---\n")
 	body := agent.Body
 	if !strings.HasPrefix(body, "\n") {
 		body = "\n" + body
 	}
-	content := frontmatter + body
-	return fsys.WriteFile(dir+"/"+agent.ID+".md", []byte(content), 0o644)
+	return fsys.WriteFile(dir+"/"+agent.ID+".md", []byte(fm.String()+body), 0o644)
+}
+
+// claudeCodeModelForTier maps a canonical tier label to the Claude
+// Code subagent `model:` short-form value. Returns "" for an
+// unrecognized or absent tier — the publisher omits the field, and
+// Claude Code falls back to inheriting the parent session's model.
+//
+// We intentionally don't pin specific model ids (claude-opus-4-7,
+// etc.) here — the short form lets published subagents track the
+// current frontier without a re-publish on every Anthropic minor
+// release. The downside is that a future Anthropic release that
+// changes what "opus" maps to could surprise us; mitigated by
+// `locutus update --reset` being the conventional refresh path
+// when behavior shifts.
+func claudeCodeModelForTier(tier string) string {
+	switch tier {
+	case "fast":
+		return "haiku"
+	case "balanced":
+		return "sonnet"
+	case "strong":
+		return "opus"
+	default:
+		return ""
+	}
 }
 
 // PublishActivity writes .claude/commands/locutus-<name>.md. The

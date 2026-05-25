@@ -51,8 +51,17 @@ type CanonicalAgent struct {
 	// Per-runtime publishers use it to derive a one-line description
 	// when the canonical doesn't carry a dedicated description field.
 	Role string
+	// Tier is the model tier the canonical declares ("fast",
+	// "balanced", "strong"). Extracted from the first entry of the
+	// `models:` slice — the canonical convention is to declare a
+	// uniform tier across all three providers (anthropic, googleai,
+	// openai) on a single agent, so any entry's tier is the right
+	// one. Empty when the canonical omits `models:` entirely;
+	// publishers handle that as "inherit parent session's model."
+	Tier string
 	// Frontmatter is the raw decoded YAML map. Reserved for future
-	// per-runtime translation logic — Phase 4 only reads ID + Role.
+	// per-runtime translation logic — today the publishers read
+	// only the typed fields above.
 	Frontmatter map[string]any
 	// Body is the prompt content (everything after the frontmatter
 	// delimiters). Published verbatim as the subagent's system
@@ -139,9 +148,14 @@ func loadAgents(fsys specio.FS) ([]CanonicalAgent, error) {
 		return nil, fmt.Errorf("publisher: list %s: %w", dir, err)
 	}
 
+	type modelEntry struct {
+		Provider string `yaml:"provider"`
+		Tier     string `yaml:"tier"`
+	}
 	type rawFrontmatter struct {
-		ID   string `yaml:"id"`
-		Role string `yaml:"role"`
+		ID     string       `yaml:"id"`
+		Role   string       `yaml:"role"`
+		Models []modelEntry `yaml:"models"`
 	}
 
 	// ListDir returns full paths (matching the OSFS / MemFS contract);
@@ -163,9 +177,21 @@ func loadAgents(fsys specio.FS) ([]CanonicalAgent, error) {
 		if fm.ID == "" {
 			return nil, fmt.Errorf("publisher: %s missing required id: field", path)
 		}
+		// Pick the first entry's tier. Canonical convention is uniform
+		// tier across providers per agent; any entry is the right one.
+		// Defensively pick the first non-empty tier in case a future
+		// agent mixes tiers (shouldn't happen, but cheap to handle).
+		var tier string
+		for _, m := range fm.Models {
+			if m.Tier != "" {
+				tier = m.Tier
+				break
+			}
+		}
 		out = append(out, CanonicalAgent{
 			ID:   fm.ID,
 			Role: fm.Role,
+			Tier: tier,
 			Body: body,
 		})
 	}

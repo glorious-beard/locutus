@@ -23,15 +23,44 @@ func seedProject(t *testing.T, withPlan bool) specio.FS {
 		`---
 id: spec-scout
 role: survey
+models:
+  - {provider: anthropic, tier: strong}
 ---
 # Identity
 
 You survey the spec graph.
 `), 0o644))
+	// Add one fast-tier and one balanced-tier agent so the model-mapping
+	// tests have all three cases covered without further fixture surgery.
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec-candidate-survey.md", []byte(
+		`---
+id: spec-candidate-survey
+role: enumeration
+models:
+  - {provider: anthropic, tier: fast}
+---
+# Identity
+
+You enumerate candidates.
+`), 0o644))
+	require.NoError(t, fsys.WriteFile(".borg/agents/spec-feature-elaborator.md", []byte(
+		`---
+id: spec-feature-elaborator
+role: planning
+models:
+  - {provider: anthropic, tier: balanced}
+---
+# Identity
+
+You elaborate features.
+`), 0o644))
 	require.NoError(t, fsys.WriteFile(".borg/agents/spec-decision-elaborator.md", []byte(
 		`---
 id: spec-decision-elaborator
 role: planning
+models:
+  - {provider: anthropic, tier: strong}
+  - {provider: googleai, tier: strong}
 ---
 # Identity
 
@@ -77,6 +106,55 @@ func TestPublisher_ClaudeCodeEmitsSubagent(t *testing.T) {
 	assert.Contains(t, got, "name: spec-scout")
 	assert.Contains(t, got, "description: spec-scout — Locutus survey agent")
 	assert.Contains(t, got, "You survey the spec graph.")
+}
+
+func TestPublisher_ClaudeCodeEmitsModelFromTier(t *testing.T) {
+	// Canonical tier (declared in the canonical agent's frontmatter
+	// models: slice) maps to Claude Code's short-form model field:
+	// fast → haiku, balanced → sonnet, strong → opus. Agents that
+	// declare no models field get no model emitted (inherit parent
+	// session's model).
+	fsys := seedProject(t, false)
+	reg := buildRegistry(t)
+	require.NoError(t, Publish(fsys, reg))
+
+	cases := []struct {
+		filename, wantModel string
+	}{
+		{"spec-scout.md", "model: opus"},
+		{"spec-candidate-survey.md", "model: haiku"},
+		{"spec-feature-elaborator.md", "model: sonnet"},
+		{"spec-decision-elaborator.md", "model: opus"},
+	}
+	for _, tc := range cases {
+		got, err := readAsString(fsys, ".claude/agents/locutus/"+tc.filename)
+		require.NoError(t, err, tc.filename)
+		assert.Contains(t, got, tc.wantModel,
+			"%s should carry %q in its frontmatter (tier→model mapping)", tc.filename, tc.wantModel)
+	}
+}
+
+func TestPublisher_ClaudeCodeOmitsModelWhenTierUnset(t *testing.T) {
+	// An agent without a models: declaration (or an unrecognized
+	// tier) gets no model field in the published frontmatter so
+	// Claude Code falls back to inheriting the parent session.
+	fsys := specio.NewMemFS()
+	require.NoError(t, fsys.MkdirAll(".borg/agents", 0o755))
+	require.NoError(t, fsys.MkdirAll(".borg/plans", 0o755))
+	require.NoError(t, fsys.WriteFile(".borg/agents/no-tier.md", []byte(
+		`---
+id: no-tier
+role: unknown
+---
+Body.
+`), 0o644))
+	reg := buildRegistry(t)
+	require.NoError(t, Publish(fsys, reg))
+
+	got, err := readAsString(fsys, ".claude/agents/locutus/no-tier.md")
+	require.NoError(t, err)
+	assert.NotContains(t, got, "model:",
+		"agent without canonical tier should not emit a model: field")
 }
 
 func TestPublisher_CodexEmitsSubagentTOML(t *testing.T) {
