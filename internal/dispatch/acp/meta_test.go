@@ -328,9 +328,9 @@ func TestInjectClaudeOptions_NoCaptureLeavesMetaUntouched(t *testing.T) {
 
 func TestInjectClaudeOptions_EmitRawMessagesUsesBoolWireForm(t *testing.T) {
 	got := injectClaudeOptions(nil, ClaudeSessionOptions{EmitRawMessages: true})
-	options := got["claudeCode"].(map[string]any)["options"].(map[string]any)
-	if v, _ := options["emitRawSDKMessages"].(bool); !v {
-		t.Fatalf("EmitRawMessages alone should serialise as the bool form; got %v", options["emitRawSDKMessages"])
+	cc := got["claudeCode"].(map[string]any)
+	if v, _ := cc["emitRawSDKMessages"].(bool); !v {
+		t.Fatalf("EmitRawMessages alone should serialise as the bool form at claudeCode.emitRawSDKMessages; got %v", cc["emitRawSDKMessages"])
 	}
 }
 
@@ -341,10 +341,10 @@ func TestInjectClaudeOptions_FilterUsesArrayWireForm(t *testing.T) {
 		{Type: "result"},
 	}
 	got := injectClaudeOptions(nil, ClaudeSessionOptions{EmitFilter: filter})
-	options := got["claudeCode"].(map[string]any)["options"].(map[string]any)
-	gotFilter, ok := options["emitRawSDKMessages"].([]SDKMessageFilter)
+	cc := got["claudeCode"].(map[string]any)
+	gotFilter, ok := cc["emitRawSDKMessages"].([]SDKMessageFilter)
 	if !ok {
-		t.Fatalf("EmitFilter should serialise as the array form; got %T", options["emitRawSDKMessages"])
+		t.Fatalf("EmitFilter should serialise as the array form at claudeCode.emitRawSDKMessages; got %T", cc["emitRawSDKMessages"])
 	}
 	if len(gotFilter) != 3 {
 		t.Fatalf("filter length: want 3, got %d", len(gotFilter))
@@ -357,9 +357,9 @@ func TestInjectClaudeOptions_FilterTakesPrecedenceOverBool(t *testing.T) {
 		EmitRawMessages: true,
 		EmitFilter:      filter,
 	})
-	options := got["claudeCode"].(map[string]any)["options"].(map[string]any)
-	if _, ok := options["emitRawSDKMessages"].([]SDKMessageFilter); !ok {
-		t.Fatalf("filter should win when both are set; got %T", options["emitRawSDKMessages"])
+	cc := got["claudeCode"].(map[string]any)
+	if _, ok := cc["emitRawSDKMessages"].([]SDKMessageFilter); !ok {
+		t.Fatalf("filter should win when both are set; got %T", cc["emitRawSDKMessages"])
 	}
 }
 
@@ -380,7 +380,10 @@ func TestInjectClaudeOptions_PreservesExistingClaudeCodeSubtree(t *testing.T) {
 	}
 	options := cc["options"].(map[string]any)
 	if options["someOtherOption"] != 42 {
-		t.Fatalf("pre-existing options sibling lost: %v", options)
+		t.Fatalf("pre-existing nested options key lost: %v", options)
+	}
+	if cc["emitRawSDKMessages"] != true {
+		t.Fatalf("emitRawSDKMessages should land at claudeCode.emitRawSDKMessages (sibling to options, not nested in it); got %v", cc)
 	}
 	if got["traceparent"] != "00-aaaa-bbbb-01" {
 		t.Fatalf("pre-existing top-level _meta key lost: %v", got)

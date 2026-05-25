@@ -60,9 +60,15 @@ type SDKMessageFilter struct {
 // options Locutus uses today: opt-in to the raw-SDK-message feed, with an
 // optional filter to cut volume.
 //
-// The shape is keyed under `_meta.claudeCode.options.*` in the session/new
-// request. Other runtimes (Codex, Gemini) ignore unknown _meta keys per
-// the ACP extensibility contract, so threading these options through every
+// The shape is keyed at `_meta.claudeCode.emitRawSDKMessages` in the
+// session/new request. Note: this lives at the top of the claudeCode
+// subtree, NOT nested under `options` — the latter is reserved for a
+// different set of fields (hooks, mcpServers, disallowedTools, etc.)
+// that get forwarded to the Claude SDK's query call. See
+// claude-agent-acp's NewSessionMeta type for the canonical schema.
+//
+// Other runtimes (Codex, Gemini) ignore unknown _meta keys per the ACP
+// extensibility contract, so threading these options through every
 // runtime is safe.
 type ClaudeSessionOptions struct {
 	// EmitRawMessages: when EmitFilter is non-nil it acts as the
@@ -74,10 +80,10 @@ type ClaudeSessionOptions struct {
 	EmitFilter      []SDKMessageFilter
 }
 
-// injectClaudeOptions adds `_meta.claudeCode.options.*` entries derived
-// from opts onto meta. Returns the resulting meta (allocates a fresh map
-// if meta is nil and we have anything to add). Other claudeCode meta
-// fields a future caller adds are preserved.
+// injectClaudeOptions adds the `_meta.claudeCode.emitRawSDKMessages`
+// entry derived from opts onto meta. Returns the resulting meta
+// (allocates a fresh map if meta is nil and we have anything to add).
+// Other claudeCode meta fields a future caller adds are preserved.
 func injectClaudeOptions(meta map[string]any, opts ClaudeSessionOptions) map[string]any {
 	if !opts.EmitRawMessages && len(opts.EmitFilter) == 0 {
 		return meta
@@ -90,15 +96,10 @@ func injectClaudeOptions(meta map[string]any, opts ClaudeSessionOptions) map[str
 		cc = map[string]any{}
 		meta["claudeCode"] = cc
 	}
-	options, _ := cc["options"].(map[string]any)
-	if options == nil {
-		options = map[string]any{}
-		cc["options"] = options
-	}
 	if len(opts.EmitFilter) > 0 {
-		options["emitRawSDKMessages"] = opts.EmitFilter
+		cc["emitRawSDKMessages"] = opts.EmitFilter
 	} else {
-		options["emitRawSDKMessages"] = true
+		cc["emitRawSDKMessages"] = true
 	}
 	return meta
 }
