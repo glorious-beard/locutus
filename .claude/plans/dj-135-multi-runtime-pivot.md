@@ -50,9 +50,7 @@ Read the DJ for the full reasoning; each phase below cites the relevant resolved
 - `cmd/mcp.go` — `locutus mcp` subcommand. Smart client/server: discovers or starts the daemon, then runs the stdio-over-socket bridge.
 - `cmd/mcp_daemon.go` — `locutus mcp-daemon` subcommand. Long-lived process; binds the Unix socket; serves concurrent JSON-RPC clients.
 
-**Files expected to modify:**
-
-- `cmd/llm.go` — drops the SpecStore wiring into the deprecated `Executor`; the SpecStore is wired into the MCP server instead. Existing direct-SDK adapter wiring stays for now (the council still uses it; retires in Phase 7).
+**Files expected to modify:** none. `cmd/llm.go` stays untouched in this phase — it's entirely council/Executor wiring and the council still runs through it. The MCP daemon opens its own SpecStore in `cmd/mcp_daemon.go` (or `internal/mcp/bootstrap.go`), independent of the council's process-wide cache. Both paths reading the same on-disk `.borg/spec/` is intentional during the migration window — Phase 5 deletes the council path, and `cmd/llm.go` goes with it.
 
 **Tests:**
 
@@ -154,11 +152,11 @@ Read the DJ for the full reasoning; each phase below cites the relevant resolved
 **Files expected to modify:**
 
 - `cmd/refine.go` — replace Go-encoded council orchestration with: detect runtime from agents.yaml; spawn it via ACP; hand it the published `refine-goals` plan. The runtime executes; calls back into Locutus's MCP tools to mutate the graph.
-- `cmd/llm.go` — significant simplification: no more model resolution, no more provider adapter wiring. The MCP server retains its own minimal SpecStore wiring.
 - Other CLI verbs (`import`, `adopt`, `assimilate`) that referenced the legacy council path migrate to the activity-driven model in the same commit.
 
 **Files expected to delete (in the same phase, after the new path lands and compiles):**
 
+- `cmd/llm.go` — entire file. With the council gone, every helper here is dead code: `getLLM`, `buildExecutor`, `newExecutor`, `recordingLLM`, `registerSpecToolsOnce`, `emitBannerOnce`, `initTracerForSession` / `ShutdownTracer` (the MCP daemon owns its own tracer lifecycle), `heartbeatEnabledForMode`. Locutus stops making LLM calls directly; nothing left to wire.
 - `internal/agent/workflow_spec_generation.go`, `workflow_spec_generation_dj124.go`, `workflow_spec_generation_test.go` — the council workflow.
 - `internal/agent/specgen.go` — integrity-revise architect, runSpecGeneration's council bootstrap.
 - `internal/agent/dispatcher.go` — ReAct iteration loop.
