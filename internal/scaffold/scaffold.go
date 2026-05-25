@@ -29,6 +29,15 @@ import (
 //go:embed agents/*.md
 var agentsFS embed.FS
 
+// plansFS embeds the canonical activity-playbook content (DJ-135
+// phase 5). Each .md is keyed by activity name (spec_refinement.md,
+// feature_ingestion.md, etc.) and copied to .borg/plans/ at init
+// time. The publisher (Phase 4) reads from .borg/plans/ to emit
+// runtime-specific slash commands.
+//
+//go:embed plans/*.md
+var plansFS embed.FS
+
 // directories is the set of directories created by Scaffold.
 var directories = []string{
 	".borg",
@@ -40,6 +49,7 @@ var directories = []string{
 	".borg/spec/entities",
 	".borg/history",
 	".borg/agents",
+	".borg/plans",
 	".agents/skills",
 	".borg/state",
 }
@@ -89,6 +99,14 @@ func Scaffold(fsys specio.FS, projectName string) error {
 		return fmt.Errorf("copy agent files: %w", err)
 	}
 
+	// 5b. Copy embedded activity playbooks (DJ-135 phase 5). Same
+	// idempotent semantics as agent files — existing playbooks are
+	// not overwritten on `init`; `update --reset` is the explicit
+	// refresh path.
+	if err := copyEmbedded(fsys, plansFS, "plans", ".borg/plans"); err != nil {
+		return fmt.Errorf("copy plan files: %w", err)
+	}
+
 	// 6. Seed .borg/models.yaml from the embedded defaults so users can
 	// edit per-project model preferences (provider order, tier candidates)
 	// without rebuilding or setting LOCUTUS_MODELS_CONFIG. The runtime
@@ -130,6 +148,7 @@ func copyEmbedded(fsys specio.FS, embedded embed.FS, root, targetPrefix string) 
 type ResetReport struct {
 	AgentsReset   []string // FS-relative paths of agent files written
 	AgentsRemoved []string // FS-relative paths of agent files deleted (no longer in the embedded scaffold)
+	PlansReset    []string // FS-relative paths of activity-playbook files written (DJ-135 phase 5)
 	ModelsReset   bool     // true if .borg/models.yaml was rewritten
 }
 
@@ -199,6 +218,34 @@ func Reset(fsys specio.FS) (*ResetReport, error) {
 			return fmt.Errorf("write %s: %w", target, err)
 		}
 		report.AgentsReset = append(report.AgentsReset, target)
+		return nil
+	}); err != nil {
+		return report, err
+	}
+
+	// Overwrite each embedded activity playbook (DJ-135 phase 5).
+	// No orphan-removal pass for plans yet — the activity registry
+	// drives which plans actually publish, so an extra .md sitting
+	// in .borg/plans/ from an old binary is harmless until it
+	// matches a registered activity name.
+	if err := fs.WalkDir(plansFS, "plans", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			rel := path[len("plans"):]
+			return fsys.MkdirAll(".borg/plans"+rel, 0o755)
+		}
+		rel := path[len("plans"):]
+		target := ".borg/plans" + rel
+		data, err := plansFS.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read embedded plan %s: %w", path, err)
+		}
+		if err := fsys.WriteFile(target, data, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", target, err)
+		}
+		report.PlansReset = append(report.PlansReset, target)
 		return nil
 	}); err != nil {
 		return report, err

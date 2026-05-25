@@ -26,12 +26,17 @@ activities:
       - claude-code
       - codex
       - gemini
-  planning:
+  feature_ingestion:
     runtimes:
       - claude-code
       - codex
       - gemini
-  implementation:
+  code_adoption:
+    runtimes:
+      - claude-code
+      - codex
+      - gemini
+  code_assimilation:
     runtimes:
       - claude-code
       - codex

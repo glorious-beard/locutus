@@ -25,7 +25,7 @@ func TestBootstrap_DiscoversLiveDaemon(t *testing.T) {
 	store := bootstrapTestStore(t)
 	listener, err := ListenSocket(sockPath)
 	assert.NoError(t, err)
-	server := NewSpecServer(store)
+	server := NewSpecServer(store, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -65,7 +65,7 @@ func TestStopDaemon_RemovesSocket(t *testing.T) {
 	store := bootstrapTestStore(t)
 	listener, err := ListenSocket(sockPath)
 	assert.NoError(t, err)
-	server := NewSpecServer(store)
+	server := NewSpecServer(store, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

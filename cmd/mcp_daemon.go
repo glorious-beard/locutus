@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/chetan/locutus/internal/activity"
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/mcp"
 	"github.com/chetan/locutus/internal/specio"
@@ -35,11 +36,20 @@ func (c *McpDaemonCmd) Run(ctx context.Context, cli *CLI) error {
 	if err != nil {
 		return fmt.Errorf("mcp-daemon: open spec store at %s: %w", c.Project, err)
 	}
+	// DJ-135 phase 5: load the activity registry so the server's
+	// prompts surface can serve playbook content via prompts/get.
+	// A registry construction failure is surfaced rather than
+	// swallowed — operators editing agents.yaml deserve to see the
+	// schema error immediately, not lose prompt visibility silently.
+	reg, err := activity.NewRegistry(fsys)
+	if err != nil {
+		return fmt.Errorf("mcp-daemon: activity registry: %w", err)
+	}
 	listener, err := mcp.ListenSocket(mcp.SocketPath(c.Project))
 	if err != nil {
 		return fmt.Errorf("mcp-daemon: %w", err)
 	}
-	server := mcp.NewSpecServer(store)
+	server := mcp.NewSpecServer(store, fsys, reg)
 	if err := mcp.ServeOnSocket(ctx, listener, server); err != nil && err != context.Canceled {
 		return fmt.Errorf("mcp-daemon: serve: %w", err)
 	}

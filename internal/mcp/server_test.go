@@ -36,7 +36,7 @@ func newTestServer(t *testing.T, seed func(*agent.SpecStore)) (*mcp.ClientSessio
 		seed(store)
 	}
 
-	server := NewSpecServer(store)
+	server := NewSpecServer(store, nil, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 
 	_, err = server.Connect(ctx, serverTransport, nil)

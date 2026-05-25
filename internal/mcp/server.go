@@ -14,7 +14,9 @@ package mcp
 import (
 	"context"
 
+	"github.com/chetan/locutus/internal/activity"
 	"github.com/chetan/locutus/internal/agent"
+	"github.com/chetan/locutus/internal/specio"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -26,10 +28,16 @@ import (
 const implementationVersion = "dj-135-phase-1"
 
 // NewSpecServer constructs a fully-configured *mcp.Server with the
-// spec_* tool set, the spec://manifest resource, and the subscription
-// handlers wired through. The SDK handles JSON-RPC dispatch and
-// capability negotiation; this constructor's job is purely
-// registration.
+// spec_* tool set, the spec://manifest resource, the subscription
+// handlers wired through, and (when fsys + reg are provided) the
+// activity-prompt surface that exposes published playbooks via
+// prompts/get. The SDK handles JSON-RPC dispatch and capability
+// negotiation; this constructor's job is purely registration.
+//
+// fsys and reg may be nil — useful for in-memory tests that only
+// exercise the tool/resource surface. In production
+// (cmd/mcp_daemon.go) both are supplied so the prompts surface is
+// live alongside the tools.
 //
 // Subscriptions: the SDK ignores resources/subscribe unless
 // ServerOptions.SubscribeHandler is non-nil. We provide a no-op
@@ -38,7 +46,7 @@ const implementationVersion = "dj-135-phase-1"
 // the write tools call (*Server).ResourceUpdated which dispatches to
 // every tracked subscriber regardless of which session originated the
 // write. Multi-session coordination falls out naturally.
-func NewSpecServer(store *agent.SpecStore) *mcp.Server {
+func NewSpecServer(store *agent.SpecStore, fsys specio.FS, reg *activity.Registry) *mcp.Server {
 	if store == nil {
 		panic("mcp.NewSpecServer: store is required")
 	}
@@ -52,5 +60,11 @@ func NewSpecServer(store *agent.SpecStore) *mcp.Server {
 	registerReadTools(server, store)
 	registerWriteTools(server, store)
 	registerResources(server, store)
+	if fsys != nil && reg != nil {
+		// Surface activity-playbook prompts. Errors here log via the
+		// runtime; we don't fail server construction on a missing
+		// plan file — the prompt simply isn't registered.
+		_ = registerActivityPrompts(server, fsys, reg)
+	}
 	return server
 }

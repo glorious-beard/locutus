@@ -14,9 +14,13 @@ func TestNewRegistry_LoadsEmbeddedDefaults(t *testing.T) {
 	reg, err := NewRegistry(nil)
 	require.NoError(t, err)
 	names := reg.Names()
+	// One activity per CLI verb that dispatches to a coding-agent
+	// runtime (refine, import, adopt, assimilate). See DJ-135 phase 5
+	// CLI-verb → activity mapping.
 	assert.Contains(t, names, "spec_refinement")
-	assert.Contains(t, names, "planning")
-	assert.Contains(t, names, "implementation")
+	assert.Contains(t, names, "feature_ingestion")
+	assert.Contains(t, names, "code_adoption")
+	assert.Contains(t, names, "code_assimilation")
 }
 
 func TestActivityRegistry_ResolvesByName(t *testing.T) {
@@ -132,7 +136,7 @@ func TestAgentsYAML_ProjectOverridesShipDefaults(t *testing.T) {
 	assert.Equal(t, []string{"codex", "claude-code"}, act.Runtimes)
 
 	// Default activities not mentioned in the override remain available.
-	_, ok = reg.Lookup("planning")
+	_, ok = reg.Lookup("code_adoption")
 	assert.True(t, ok, "defaults survive when override omits them")
 }
 
