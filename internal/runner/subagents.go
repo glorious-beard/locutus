@@ -74,56 +74,130 @@ type subagentGroup struct {
 }
 
 // groupSDKMessagesBySubagent scans the JSONL stream and partitions
-// messages by their request_id (or synthetic fallback when absent).
-// Returns the group map + the dispatch order (group keys in the
-// order they first appeared) so callers can produce stable file
-// numbering across runs.
+// messages by the dispatching tool_use_id. Returns the group map +
+// the dispatch order (group keys in the order they first appeared)
+// so callers can produce stable file numbering across runs.
 //
-// SDK message shape per claude-agent-sdk 0.3.142+:
+// Shape note: claude-agent-acp v0.33.1 (and the SDK it bundles)
+// does NOT populate a top-level `subagent_type` on subagent
+// messages. The discriminating fields live elsewhere:
 //
-//	{type, subtype?, origin?, subagent_type?, request_id?, task_description?, ...}
+//   - The dispatching call appears as an assistant message whose
+//     content[] contains a `tool_use` block with name "Agent" (or
+//     "Task" — naming varies across SDK versions) and an input map
+//     carrying `subagent_type`, `description`, `prompt`.
+//   - Downstream messages from inside that subagent's session carry
+//     `parent_tool_use_id` matching the dispatching tool_use's id.
 //
-// We treat any message carrying a `subagent_type` (or whose origin
-// indicates task-notification) as belonging to a subagent group;
-// orchestrator-level messages without those fields are skipped in
-// this view (the orchestrator transcript lives in events.jsonl +
-// output.md).
+// So we do two passes:
+//   - Pre-scan to build a tool_use.id → {subagent_type, description,
+//     prompt} lookup from every tool_use block we see in assistant
+//     messages.
+//   - Group pass keys by parent_tool_use_id (or the dispatching
+//     tool_use's own id when the message IS the dispatch), falling
+//     back to request_id and finally a synthetic counter.
+//
+// The orchestrator's top-level assistant/user messages — those
+// without a parent_tool_use_id AND without a dispatching tool_use
+// block — stay in the orchestrator's transcript (events.jsonl +
+// output.md), not in subagent transcripts.
 func groupSDKMessagesBySubagent(r io.Reader) (map[string]*subagentGroup, []string) {
+	lines := readJSONLines(r)
+
+	// Pre-scan: build the dispatch-table from tool_use blocks. We
+	// only need the input.subagent_type + input.description.
+	type dispatchInfo struct {
+		SubagentType    string
+		TaskDescription string
+	}
+	dispatch := map[string]dispatchInfo{}
+	for _, line := range lines {
+		var m struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content []struct {
+					Type  string                 `json:"type"`
+					ID    string                 `json:"id"`
+					Name  string                 `json:"name"`
+					Input map[string]interface{} `json:"input"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(line, &m); err != nil {
+			continue
+		}
+		if m.Type != "assistant" {
+			continue
+		}
+		for _, cb := range m.Message.Content {
+			if cb.Type != "tool_use" || cb.ID == "" || cb.Input == nil {
+				continue
+			}
+			sub, _ := cb.Input["subagent_type"].(string)
+			if sub == "" {
+				continue
+			}
+			desc, _ := cb.Input["description"].(string)
+			dispatch[cb.ID] = dispatchInfo{SubagentType: sub, TaskDescription: desc}
+		}
+	}
+
+	// Group pass.
 	groups := map[string]*subagentGroup{}
 	var order []string
-
 	syntheticCounter := 0
-	scanner := bufio.NewScanner(r)
-	// SDK messages can carry full assistant-text blocks; the default
-	// 64KB token cap on bufio.Scanner is too small. 4MB matches the
-	// claude-agent-acp upper bound for a single JSON-RPC frame.
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	for _, line := range lines {
 		var meta struct {
-			Type            string          `json:"type"`
-			Subtype         string          `json:"subtype,omitempty"`
-			Origin          json.RawMessage `json:"origin,omitempty"`
-			SubagentType    string          `json:"subagent_type,omitempty"`
-			RequestID       string          `json:"request_id,omitempty"`
-			TaskDescription string          `json:"task_description,omitempty"`
-			ParentToolUseID string          `json:"parent_tool_use_id,omitempty"`
+			Type            string `json:"type"`
+			Subtype         string `json:"subtype,omitempty"`
+			RequestID       string `json:"request_id,omitempty"`
+			ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
+			Message         struct {
+				Content []struct {
+					Type  string                 `json:"type"`
+					ID    string                 `json:"id"`
+					Input map[string]interface{} `json:"input"`
+				} `json:"content"`
+			} `json:"message"`
 		}
 		if err := json.Unmarshal(line, &meta); err != nil {
 			continue
 		}
 
-		// Skip messages that aren't subagent-scoped. The orchestrator's
-		// own user/assistant messages have no subagent_type and (by
-		// claude-agent-acp convention) a null parent_tool_use_id.
-		if meta.SubagentType == "" && meta.ParentToolUseID == "" {
+		// Pick the dispatching tool_use id for this message. Three
+		// cases, in order:
+		// 1) message is the dispatch itself: assistant with a tool_use
+		//    whose input has subagent_type — group by that tool_use's
+		//    own id so the dispatch and its downstream messages land
+		//    together.
+		// 2) message is a downstream subagent message: parent_tool_use_id
+		//    points back to the dispatch.
+		// 3) otherwise: orchestrator-level message; skip.
+		var dispatchID string
+		if meta.Type == "assistant" {
+			for _, cb := range meta.Message.Content {
+				if cb.Type == "tool_use" && cb.Input != nil {
+					if _, ok := cb.Input["subagent_type"].(string); ok {
+						dispatchID = cb.ID
+						break
+					}
+				}
+			}
+		}
+		if dispatchID == "" && meta.ParentToolUseID != "" {
+			dispatchID = meta.ParentToolUseID
+		}
+		if dispatchID == "" {
 			continue
 		}
 
-		key := meta.RequestID
-		if key == "" {
-			key = meta.ParentToolUseID
+		info, hasInfo := dispatch[dispatchID]
+		key := dispatchID
+		if !hasInfo && meta.RequestID != "" {
+			// Defensive fallback — keep the group but don't pretend
+			// to know the subagent type.
+			key = meta.RequestID
 		}
 		if key == "" {
 			syntheticCounter++
@@ -134,26 +208,39 @@ func groupSDKMessagesBySubagent(r io.Reader) (map[string]*subagentGroup, []strin
 		if !exists {
 			g = &subagentGroup{
 				Key:             key,
-				SubagentType:    meta.SubagentType,
-				TaskDescription: meta.TaskDescription,
+				SubagentType:    info.SubagentType,
+				TaskDescription: info.TaskDescription,
 			}
 			groups[key] = g
 			order = append(order, key)
 		}
-		// Some sub-messages omit subagent_type but inherit from the
-		// dispatching call; preserve the first non-empty value.
-		if g.SubagentType == "" && meta.SubagentType != "" {
-			g.SubagentType = meta.SubagentType
+		if g.SubagentType == "" && info.SubagentType != "" {
+			g.SubagentType = info.SubagentType
 		}
-		if g.TaskDescription == "" && meta.TaskDescription != "" {
-			g.TaskDescription = meta.TaskDescription
+		if g.TaskDescription == "" && info.TaskDescription != "" {
+			g.TaskDescription = info.TaskDescription
 		}
-		// Copy the line; scanner reuses its buffer.
-		rawCopy := make([]byte, len(line))
-		copy(rawCopy, line)
-		g.Messages = append(g.Messages, rawCopy)
+		g.Messages = append(g.Messages, line)
 	}
 	return groups, order
+}
+
+// readJSONLines slurps the JSONL stream into a slice of raw lines so
+// the two-pass extractor can re-iterate without rewinding. SDK
+// messages can carry full assistant-text blocks; default 64KB cap
+// is too small. 4MB matches the claude-agent-acp upper bound for a
+// single JSON-RPC frame.
+func readJSONLines(r io.Reader) [][]byte {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	var lines [][]byte
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		cp := make([]byte, len(line))
+		copy(cp, line)
+		lines = append(lines, cp)
+	}
+	return lines
 }
 
 // renderSubagentTranscript formats one group as a single markdown
