@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/chetan/locutus/internal/agent"
@@ -48,8 +49,8 @@ type proposeDecisionInput struct {
 	Confidence   float64           `json:"confidence" jsonschema:"Confidence in this choice on [0, 1]. Use 1.0 for high-confidence commits; lower values flag uncertainty for downstream review."`
 	Rationale    string            `json:"rationale" jsonschema:"The 'why' — a complete paragraph citing GOALS clauses, evidence, or constraints that drove the choice."`
 	Alternatives []mcpAlternative  `json:"alternatives,omitempty" jsonschema:"Considered but not chosen options, each with name, rationale, rejected_because, and citations backing the rejection."`
-	Axes         []string          `json:"axes" jsonschema:"Stable slug-IDs of the foundational axes this decision answers (DJ-124). At least one entry is required; the id's axis-suffix MUST appear here."`
-	SurfacedBy   []string          `json:"surfaced_by" jsonschema:"Spec node ids (goal / feature / strategy) that surfaced the axis this decision answers. At least one entry is required."`
+	Axes         []string          `json:"axes,omitempty" jsonschema:"Stable slug-IDs of the foundational axes this decision answers (DJ-124). Strongly recommended for queryability; defaults to [the id's axis-suffix] when omitted so convergence-by-construction commits aren't blocked by missing axis enumeration. A revise pass can add axes later."`
+	SurfacedBy   []string          `json:"surfaced_by,omitempty" jsonschema:"Spec node ids (goal / feature / strategy) that surfaced the axis this decision answers. Optional — the publisher can backfill from graph topology if missing."`
 	InfluencedBy []string          `json:"influenced_by,omitempty" jsonschema:"Optional list of related spec node ids that informed this decision."`
 }
 
@@ -241,10 +242,20 @@ func commitOne(store *agent.SpecStore, kind agent.SpecKind, id string, body any)
 // buildDecisionBody assembles a spec.Decision from the input,
 // filling server-managed fields. createdAt zero-value means "set to
 // now" (propose); non-zero preserves the supplied value (revise).
+//
+// Axes backfill: per DJ-133 every decision's id equals dec-<axis-id>,
+// so an empty Axes input is deterministically inferable from the id.
+// We backfill rather than reject so convergence-by-construction
+// commits aren't blocked by the agent's failure to re-state what's
+// already encoded in the id.
 func buildDecisionBody(in proposeDecisionInput, createdAt time.Time) (spec.Decision, error) {
 	now := time.Now().UTC()
 	if createdAt.IsZero() {
 		createdAt = now
+	}
+	axes := in.Axes
+	if len(axes) == 0 && strings.HasPrefix(in.ID, "dec-") {
+		axes = []string{strings.TrimPrefix(in.ID, "dec-")}
 	}
 	return spec.Decision{
 		ID:           in.ID,
@@ -254,7 +265,7 @@ func buildDecisionBody(in proposeDecisionInput, createdAt time.Time) (spec.Decis
 		Confidence:   in.Confidence,
 		Alternatives: toSpecAlternatives(in.Alternatives),
 		Rationale:    in.Rationale,
-		Axes:         in.Axes,
+		Axes:         axes,
 		SurfacedBy:   in.SurfacedBy,
 		InfluencedBy: in.InfluencedBy,
 		CreatedAt:    createdAt,
