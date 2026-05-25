@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/glorious-beard/locutus/internal/activity"
@@ -103,7 +104,19 @@ func DispatchActivity(
 		return nil, fmt.Errorf("dispatch: write playbook.md: %w", err)
 	}
 
-	conn, err := acp.Open(ctx, spawn, sessionDir)
+	// Capture the ACP subprocess's stderr under the session directory
+	// rather than leaking it to the operator's terminal. claude-agent-acp
+	// emits one "No onPostToolUseHook found" warning per tool call —
+	// useful for debugging the bridge, useless noise during normal
+	// runs. The captured log is available under
+	// .locutus/sessions/<sid>/acp-stderr.log for forensic use.
+	acpStderr, err := os.OpenFile(filepath.Join(sessionDir, "acp-stderr.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch: open acp stderr log: %w", err)
+	}
+	defer acpStderr.Close()
+
+	conn, err := acp.Open(ctx, spawn, sessionDir, acpStderr)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: open acp connection: %w", err)
 	}
@@ -134,8 +147,39 @@ func DispatchActivity(
 
 	// Tool-call counter for the progress prefix. Cheap concurrency
 	// guard: the ACP channel is single-reader (this goroutine), so
-	// no synchronization needed.
-	toolN := 0
+	// no synchronization needed within the main loop, but the
+	// heartbeat goroutine reads through a mutex.
+	var (
+		toolN     int
+		runStart  = time.Now()
+		heartbeat sync.Mutex
+	)
+
+	// Heartbeat goroutine: emits an elapsed-time line every 60s so
+	// the operator sees progress even when the agent's subagents are
+	// running grounded research without surfacing per-call events to
+	// the orchestrator session. Stops when the main loop exits via
+	// the done channel.
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				heartbeat.Lock()
+				n := toolN
+				heartbeat.Unlock()
+				elapsed := time.Since(runStart).Round(time.Second)
+				fmt.Fprintf(progress, "  [%s] ⋯ elapsed %s · %d tool calls so far\n",
+					time.Now().Format("15:04:05"), elapsed, n)
+			}
+		}
+	}()
+	defer close(done)
+
 	var finalText strings.Builder
 	for ev := range ch {
 		if err := writeJSONLine(eventsFile, ev); err != nil {
@@ -148,8 +192,12 @@ func DispatchActivity(
 				finalText.WriteString(ev.Text)
 			}
 		case dispatch.EventToolCall:
+			heartbeat.Lock()
 			toolN++
-			fmt.Fprintf(progress, "  %3d → %s\n", toolN, toolProgressLine(ev))
+			n := toolN
+			heartbeat.Unlock()
+			fmt.Fprintf(progress, "  [%s] %3d → %s\n",
+				time.Now().Format("15:04:05"), n, toolProgressLine(ev))
 			if err := writeJSONLine(toolsFile, ev); err != nil {
 				return nil, fmt.Errorf("dispatch: append tools log: %w", err)
 			}
@@ -196,27 +244,57 @@ func makeSessionDir(projectRoot string) (string, error) {
 }
 
 // toolProgressLine renders one tool-call event as a single human-
-// readable status line for the progress writer. Prefers Claude
-// Code's _meta.claudeCode.toolName when present (so an MCP tool
-// surfaces as "mcp__locutus__spec_propose_decision" rather than the
-// generic "ToolCall" title), with a one-key argument hint when the
-// tool's input carries an obvious primary parameter (id, path,
-// query, command).
+// readable status line for the progress writer.
 //
-// Falls back to the event's ToolName when no Claude-specific
-// metadata is present — other runtimes (Codex / Gemini) populate
-// the event differently and the dispatcher's event translator
-// already normalizes them onto ToolName.
+// Name resolution order:
+//  1. Claude Code's _meta.claudeCode.toolName when present (surfaces
+//     MCP tools with their mcp__locutus__-prefixed canonical name
+//     rather than the generic ACP "ToolCall" title).
+//  2. The dispatcher's normalized ev.ToolName (the fallback for
+//     non-Claude runtimes).
+//  3. "tool" as the absolute fallback.
+//
+// Task-tool dispatches get special handling: when the call is
+// Claude Code's Task tool, the subagent type is in the input map's
+// "subagent_type" field. Surface it inline so "Agent" lines read as
+// "Task → spec-decision-elaborator" instead of an undifferentiated
+// "Agent". Equivalent fields on other runtimes are added as they're
+// empirically validated.
+//
+// Primary-input hint surfaces one identifying argument (id,
+// file_path, command, query, pattern) so the line carries more than
+// the tool name alone.
 func toolProgressLine(ev dispatch.AgentEvent) string {
-	name := ev.ToolName
-	if raw, ok := ev.Raw, true; ok && len(raw) > 0 {
-		// Best-effort _meta.claudeCode.toolName extraction. Use the
-		// JSON byte slice directly rather than re-decoding the whole
-		// notification — every other Raw access in the codebase pays
-		// the decode cost twice; this one helper doesn't need to.
-		if extracted := claudeCodeToolName(raw); extracted != "" {
-			name = extracted
+	// title is the ACP tool_call.Title field (set by the dispatcher's
+	// event translator into ev.ToolName before we override). For Claude
+	// Code's Bash/Read/Write tools it's typically the tool name; for
+	// the Task tool it's the human-authored description the agent gave
+	// the dispatch (e.g. "Initial survey against empty graph") which
+	// is far more useful than the canonical "Agent" string.
+	title := ev.ToolName
+	// canonical is _meta.claudeCode.toolName when present — the
+	// runtime-canonical tool id (Bash / Agent / mcp__locutus__*).
+	canonical := ""
+	if len(ev.Raw) > 0 {
+		canonical = claudeCodeToolName(ev.Raw)
+	}
+
+	// Task tool: prefer the human-authored title; the canonical name
+	// ("Agent") is generic and hides what the dispatch is for.
+	if canonical == "Agent" || canonical == "Task" {
+		if title != "" && title != canonical {
+			return fmt.Sprintf("Task → %s", title)
 		}
+		return "Task"
+	}
+
+	// Everything else: prefer the canonical name (it's more
+	// machine-precise — e.g. "mcp__locutus__spec_propose_decision"
+	// over the title-cased "Spec Propose Decision"). Fall back to
+	// title when no canonical is present (non-Claude runtimes).
+	name := canonical
+	if name == "" {
+		name = title
 	}
 	if name == "" {
 		name = "tool"

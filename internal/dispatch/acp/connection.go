@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"time"
 
@@ -66,7 +65,15 @@ type Connection struct {
 //
 // archiveDir is reserved for a future JSON-RPC frame archive (Phase 1
 // follow-up). Pass "" to disable; today it's accepted and ignored.
-func Open(ctx context.Context, spawn Spawn, archiveDir string) (*Connection, error) {
+//
+// stderr is where the spawned subprocess's stderr is routed. Pass
+// nil to discard, or a file under the session directory to capture
+// (the latter is what runner.DispatchActivity does so operator
+// terminals stay clean — see acp-stderr.log under each session
+// folder). Routing to os.Stderr is fine for debugging but produces a
+// lot of noise for runtimes like claude-agent-acp that emit verbose
+// internal warnings on every tool call.
+func Open(ctx context.Context, spawn Spawn, archiveDir string, stderr io.Writer) (*Connection, error) {
 	if spawn.Cmd == "" {
 		return nil, errors.New("acp.Open: empty Spawn.Cmd")
 	}
@@ -74,7 +81,10 @@ func Open(ctx context.Context, spawn Spawn, archiveDir string) (*Connection, err
 	if spawn.Env != nil {
 		cmd.Env = spawn.Env
 	}
-	cmd.Stderr = os.Stderr
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	cmd.Stderr = stderr
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
