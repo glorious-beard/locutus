@@ -40,6 +40,69 @@ import (
 
 const traceparentKey = "traceparent"
 
+// SDKMessageFilter mirrors claude-agent-acp's SDKMessageFilter shape. Each
+// entry is an AND-combined predicate over inbound SDK messages: an
+// agent-side message matches when Type equals the filter's Type AND
+// (Subtype is empty OR equals the filter's Subtype) AND likewise for
+// Origin. A non-empty filter slice acts as a union (any filter matches →
+// emit).
+//
+// The agent emits notifications for messages that pass at least one
+// filter, so scoping at the source is cheaper than capturing everything
+// and filtering client-side.
+type SDKMessageFilter struct {
+	Type    string `json:"type"`
+	Subtype string `json:"subtype,omitempty"`
+	Origin  string `json:"origin,omitempty"`
+}
+
+// ClaudeSessionOptions encodes the subset of claude-agent-acp's per-session
+// options Locutus uses today: opt-in to the raw-SDK-message feed, with an
+// optional filter to cut volume.
+//
+// The shape is keyed under `_meta.claudeCode.options.*` in the session/new
+// request. Other runtimes (Codex, Gemini) ignore unknown _meta keys per
+// the ACP extensibility contract, so threading these options through every
+// runtime is safe.
+type ClaudeSessionOptions struct {
+	// EmitRawMessages: when EmitFilter is non-nil it acts as the
+	// allowlist; otherwise this bool toggles capture wholesale (true =
+	// every message; false = nothing). Default zero-value (false / nil)
+	// is "no capture" — backwards compatible with sessions created
+	// before this option existed.
+	EmitRawMessages bool
+	EmitFilter      []SDKMessageFilter
+}
+
+// injectClaudeOptions adds `_meta.claudeCode.options.*` entries derived
+// from opts onto meta. Returns the resulting meta (allocates a fresh map
+// if meta is nil and we have anything to add). Other claudeCode meta
+// fields a future caller adds are preserved.
+func injectClaudeOptions(meta map[string]any, opts ClaudeSessionOptions) map[string]any {
+	if !opts.EmitRawMessages && len(opts.EmitFilter) == 0 {
+		return meta
+	}
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	cc, _ := meta["claudeCode"].(map[string]any)
+	if cc == nil {
+		cc = map[string]any{}
+		meta["claudeCode"] = cc
+	}
+	options, _ := cc["options"].(map[string]any)
+	if options == nil {
+		options = map[string]any{}
+		cc["options"] = options
+	}
+	if len(opts.EmitFilter) > 0 {
+		options["emitRawSDKMessages"] = opts.EmitFilter
+	} else {
+		options["emitRawSDKMessages"] = true
+	}
+	return meta
+}
+
 // injectTraceparent returns a Meta map carrying the W3C `traceparent` for
 // ctx's active span context, when one is present. Returns the original meta
 // (or nil) unchanged when ctx has no valid span context, and never

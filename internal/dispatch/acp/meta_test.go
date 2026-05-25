@@ -310,3 +310,79 @@ func assertLogContainsRemoteTP(t *testing.T, ndjson, want string) bool {
 	return false
 }
 
+func TestInjectClaudeOptions_NoCaptureLeavesMetaUntouched(t *testing.T) {
+	// Default zero-value options should be a complete no-op so existing
+	// NewSession callers don't accidentally start sending _meta entries
+	// they didn't ask for.
+	got := injectClaudeOptions(nil, ClaudeSessionOptions{})
+	if got != nil {
+		t.Fatalf("no capture configured should not allocate a meta map; got %v", got)
+	}
+
+	pre := map[string]any{"traceparent": "00-aaaa-bbbb-01"}
+	got = injectClaudeOptions(pre, ClaudeSessionOptions{})
+	if _, hasClaude := got["claudeCode"]; hasClaude {
+		t.Fatalf("no claudeCode subtree when capture is off; got %v", got)
+	}
+}
+
+func TestInjectClaudeOptions_EmitRawMessagesUsesBoolWireForm(t *testing.T) {
+	got := injectClaudeOptions(nil, ClaudeSessionOptions{EmitRawMessages: true})
+	options := got["claudeCode"].(map[string]any)["options"].(map[string]any)
+	if v, _ := options["emitRawSDKMessages"].(bool); !v {
+		t.Fatalf("EmitRawMessages alone should serialise as the bool form; got %v", options["emitRawSDKMessages"])
+	}
+}
+
+func TestInjectClaudeOptions_FilterUsesArrayWireForm(t *testing.T) {
+	filter := []SDKMessageFilter{
+		{Type: "assistant"},
+		{Type: "user"},
+		{Type: "result"},
+	}
+	got := injectClaudeOptions(nil, ClaudeSessionOptions{EmitFilter: filter})
+	options := got["claudeCode"].(map[string]any)["options"].(map[string]any)
+	gotFilter, ok := options["emitRawSDKMessages"].([]SDKMessageFilter)
+	if !ok {
+		t.Fatalf("EmitFilter should serialise as the array form; got %T", options["emitRawSDKMessages"])
+	}
+	if len(gotFilter) != 3 {
+		t.Fatalf("filter length: want 3, got %d", len(gotFilter))
+	}
+}
+
+func TestInjectClaudeOptions_FilterTakesPrecedenceOverBool(t *testing.T) {
+	filter := []SDKMessageFilter{{Type: "result"}}
+	got := injectClaudeOptions(nil, ClaudeSessionOptions{
+		EmitRawMessages: true,
+		EmitFilter:      filter,
+	})
+	options := got["claudeCode"].(map[string]any)["options"].(map[string]any)
+	if _, ok := options["emitRawSDKMessages"].([]SDKMessageFilter); !ok {
+		t.Fatalf("filter should win when both are set; got %T", options["emitRawSDKMessages"])
+	}
+}
+
+func TestInjectClaudeOptions_PreservesExistingClaudeCodeSubtree(t *testing.T) {
+	pre := map[string]any{
+		"traceparent": "00-aaaa-bbbb-01",
+		"claudeCode": map[string]any{
+			"unrelatedField": "preserved",
+			"options": map[string]any{
+				"someOtherOption": 42,
+			},
+		},
+	}
+	got := injectClaudeOptions(pre, ClaudeSessionOptions{EmitRawMessages: true})
+	cc := got["claudeCode"].(map[string]any)
+	if cc["unrelatedField"] != "preserved" {
+		t.Fatalf("pre-existing claudeCode sibling lost: %v", cc)
+	}
+	options := cc["options"].(map[string]any)
+	if options["someOtherOption"] != 42 {
+		t.Fatalf("pre-existing options sibling lost: %v", options)
+	}
+	if got["traceparent"] != "00-aaaa-bbbb-01" {
+		t.Fatalf("pre-existing top-level _meta key lost: %v", got)
+	}
+}

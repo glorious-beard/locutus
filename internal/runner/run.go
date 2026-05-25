@@ -122,13 +122,25 @@ func DispatchActivity(
 	}
 	defer conn.Close()
 
-	sessionID, err := conn.NewSession(ctx, projectRoot)
+	// Opt into claude-agent-acp's raw-SDK-message feed. Default filter
+	// captures the substantive content (user/assistant/result/system),
+	// which is enough to reconstruct per-subagent transcripts in the
+	// post-run extractor. LOCUTUS_CAPTURE_STREAM_EVENTS=1 widens the
+	// filter to include the raw streaming chunks (one per token), which
+	// inflates volume 10x but unlocks per-chunk latency analysis and
+	// mid-stream cancellation forensics.
+	//
+	// Other runtimes (Codex, Gemini) ignore the unknown _meta keys per
+	// the ACP extensibility contract, so it's safe to always pass the
+	// option. Only claude-agent-acp emits matching notifications today.
+	sessionID, err := conn.NewSessionWithOptions(ctx, projectRoot, claudeSessionOptionsFromEnv())
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: new session: %w", err)
 	}
 
 	eventsPath := filepath.Join(sessionDir, "events.jsonl")
 	toolsPath := filepath.Join(sessionDir, "tools.jsonl")
+	sdkPath := filepath.Join(sessionDir, "sdk-messages.jsonl")
 	eventsFile, err := os.OpenFile(eventsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: open events log: %w", err)
@@ -139,8 +151,18 @@ func DispatchActivity(
 		return nil, fmt.Errorf("dispatch: open tools log: %w", err)
 	}
 	defer toolsFile.Close()
+	// sdk-messages.jsonl receives the raw _claude/sdkMessage feed.
+	// The file is always opened (one inode per session) and stays
+	// empty when the runtime doesn't emit anything — keeps the
+	// post-run extractor logic simple (open-or-skip rather than
+	// "file may or may not exist").
+	sdkFile, err := os.OpenFile(sdkPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch: open sdk-messages log: %w", err)
+	}
+	defer sdkFile.Close()
 
-	ch, err := conn.Prompt(ctx, sessionID, playbookBody, policy.AllowOncePolicy{})
+	ch, err := conn.PromptWithSDKSink(ctx, sessionID, playbookBody, policy.AllowOncePolicy{}, sdkFile)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: prompt: %w", err)
 	}
@@ -215,6 +237,14 @@ func DispatchActivity(
 	finalString := finalText.String()
 	if err := os.WriteFile(filepath.Join(sessionDir, "output.md"), []byte(finalString), 0o644); err != nil {
 		return nil, fmt.Errorf("dispatch: write output.md: %w", err)
+	}
+
+	// Best-effort post-run: re-read sdk-messages.jsonl and produce
+	// one human-readable transcript per subagent under
+	// <sessionDir>/subagents/. Failures here are logged but do not
+	// fail the run — the raw jsonl is still available alongside.
+	if err := extractSubagentTranscripts(sessionDir); err != nil {
+		fmt.Fprintf(progress, "  [warn] subagent transcript extraction failed: %v\n", err)
 	}
 
 	return &ActivityRun{
@@ -381,4 +411,40 @@ func writeJSONLine(w io.Writer, ev dispatch.AgentEvent) error {
 		return err
 	}
 	return nil
+}
+
+// claudeSessionOptionsFromEnv builds the per-session ClaudeSessionOptions
+// from the LOCUTUS_CAPTURE_STREAM_EVENTS env var. The default (env unset
+// or "0"/"false") emits the substantive content classes — user, assistant,
+// result, system — which together are enough to reconstruct per-subagent
+// transcripts in the post-run extractor. Setting the env var to "1" /
+// "true" widens the filter to include stream_event, which inflates volume
+// 10x but unlocks per-chunk latency analysis and mid-stream cancellation
+// forensics.
+//
+// Other runtimes (Codex, Gemini) ignore the unknown _meta keys per the
+// ACP extensibility contract; passing the option unconditionally is safe.
+func claudeSessionOptionsFromEnv() acp.ClaudeSessionOptions {
+	base := []acp.SDKMessageFilter{
+		{Type: "user"},
+		{Type: "assistant"},
+		{Type: "result"},
+		{Type: "system"},
+	}
+	if envBool("LOCUTUS_CAPTURE_STREAM_EVENTS") {
+		base = append(base, acp.SDKMessageFilter{Type: "stream_event"})
+	}
+	return acp.ClaudeSessionOptions{EmitFilter: base}
+}
+
+// envBool reads a boolean env var with the conventional 1/true/yes/on
+// truthy set. Empty or unrecognized values are false. Matches the
+// behavior of common Go env-var helpers without pulling in a dependency.
+func envBool(name string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }

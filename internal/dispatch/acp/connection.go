@@ -153,8 +153,23 @@ func (c *Connection) Capabilities() acpsdk.AgentCapabilities {
 // rather than changing this signature (it's what dispatch.PromptConn
 // declares).
 func (c *Connection) NewSession(ctx context.Context, cwd string) (string, error) {
+	return c.NewSessionWithOptions(ctx, cwd, ClaudeSessionOptions{})
+}
+
+// NewSessionWithOptions is the variant that lets the caller opt into the
+// claude-agent-acp _meta.claudeCode.options.* surface — today that's the
+// raw-SDK-message feed (DJ-135 follow-up). Other runtimes ignore unknown
+// _meta keys per the ACP extensibility contract, so it's safe to thread
+// the same options through any runtime; the runner only fills opts when
+// the resolved runtime is claude-code.
+//
+// Existing NewSession callers are unaffected — they get a zero-value
+// ClaudeSessionOptions that adds no _meta entries.
+func (c *Connection) NewSessionWithOptions(ctx context.Context, cwd string, opts ClaudeSessionOptions) (string, error) {
+	meta := injectTraceparent(ctx, nil)
+	meta = injectClaudeOptions(meta, opts)
 	resp, err := c.conn.NewSession(ctx, acpsdk.NewSessionRequest{
-		Meta:       injectTraceparent(ctx, nil),
+		Meta:       meta,
 		Cwd:        cwd,
 		McpServers: []acpsdk.McpServer{},
 	})
@@ -178,12 +193,26 @@ func (c *Connection) NewSession(ctx context.Context, cwd string) (string, error)
 // Policy type lives in internal/dispatch/policy so implementations don't
 // need to import the acpsdk types this package translates from.
 func (c *Connection) Prompt(ctx context.Context, sessionID, text string, pol policy.Policy) (<-chan dispatch.AgentEvent, error) {
+	return c.PromptWithSDKSink(ctx, sessionID, text, pol, nil)
+}
+
+// PromptWithSDKSink is the variant that captures inbound
+// `_claude/sdkMessage` extension notifications to sdkSink (one JSON line
+// per message). Pass nil to discard. Pairs with
+// NewSessionWithOptions(...) — the session must have been created with
+// EmitRawMessages or a non-empty EmitFilter for any messages to arrive.
+//
+// The sink is written from the JSON-RPC reader goroutine; the activePrompt
+// guards Write with its own mutex so a second writer (none today) wouldn't
+// race. The caller owns the sink's lifecycle and is free to close it as
+// soon as the events channel closes.
+func (c *Connection) PromptWithSDKSink(ctx context.Context, sessionID, text string, pol policy.Policy, sdkSink io.Writer) (<-chan dispatch.AgentEvent, error) {
 	if sessionID == "" {
 		return nil, errors.New("acp.Prompt: empty sessionID")
 	}
 	sid := acpsdk.SessionId(sessionID)
 	events := make(chan dispatch.AgentEvent, 16)
-	c.client.register(sid, &activePrompt{events: events, policy: pol})
+	c.client.register(sid, &activePrompt{events: events, policy: pol, sdkSink: sdkSink})
 
 	go func() {
 		defer close(events)

@@ -2,7 +2,9 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 
@@ -11,14 +13,34 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 )
 
+// claudeSDKMessageMethod is the extension-method name claude-agent-acp uses
+// when `options.emitRawSDKMessages` is enabled on a session. Each call
+// delivers one raw SDK message as a notification (no response expected),
+// scoped to the session id in the params.
+//
+// Reference: agentclientprotocol/claude-agent-acp's src/acp-agent.ts
+// (search for `extNotification("_claude/sdkMessage")`).
+const claudeSDKMessageMethod = "_claude/sdkMessage"
+
 // activePrompt is the per-session state the client uses to route inbound
 // notifications (session/update) and method calls (session/request_permission)
 // back to the caller of Prompt. Created on Prompt entry, deleted on Prompt
 // return. A non-existent entry on an inbound message means the prompt has
 // already completed — defensive late-delivery handling.
+//
+// sdkSink, when non-nil, is a write-only artifact channel: each raw SDK
+// message (delivered by claude-agent-acp via the _claude/sdkMessage
+// extension notification) gets appended verbatim as one JSON line. The
+// runner opens an sdk-messages.jsonl file under the session directory and
+// passes it as the sink. Concurrent writes from the JSON-RPC reader
+// goroutine and any other source serialize through sdkSinkMu. The sink is
+// best-effort — a Write error is logged and dropped so a broken sink can't
+// kill the session.
 type activePrompt struct {
-	events chan<- dispatch.AgentEvent
-	policy policy.Policy
+	events    chan<- dispatch.AgentEvent
+	policy    policy.Policy
+	sdkSink   io.Writer
+	sdkSinkMu sync.Mutex
 }
 
 // client implements acp.Client. It holds the per-session routing table and
@@ -201,4 +223,67 @@ func (c *client) WaitForTerminalExit(_ context.Context, _ acpsdk.WaitForTerminal
 
 func (c *client) KillTerminal(_ context.Context, _ acpsdk.KillTerminalRequest) (acpsdk.KillTerminalResponse, error) {
 	return acpsdk.KillTerminalResponse{}, fmt.Errorf("terminal capability not advertised by this client")
+}
+
+// HandleExtensionMethod satisfies acp.ExtensionMethodHandler. The SDK
+// detects this interface via type assertion and routes any inbound
+// JSON-RPC method whose name starts with "_" through this entrypoint.
+//
+// Today the only recognized extension is `_claude/sdkMessage` —
+// claude-agent-acp's raw-SDK-message feed, opt-in via the
+// emitRawSDKMessages session option. The handler returns (nil, nil)
+// for notifications (no response expected); unknown extensions return
+// MethodNotFound so a misbehaving agent gets a clean rejection.
+//
+// The wire shape for sdkMessage params (per claude-agent-acp source) is:
+//
+//	{"sessionId": "...", "message": { ... raw SDK message ... }}
+//
+// We do not unmarshal `message` ourselves — it's a heterogeneous union
+// (system/user/assistant/result/stream_event with type-specific
+// subtype enums) and the consumer is the post-run extractor under
+// internal/runner/, which decides per-message what to do with the
+// shape. Persisting the raw JSON keeps the contract stable across SDK
+// upgrades that add fields.
+func (c *client) HandleExtensionMethod(_ context.Context, method string, params json.RawMessage) (any, error) {
+	if method != claudeSDKMessageMethod {
+		return nil, acpsdk.NewMethodNotFound(method)
+	}
+	var env struct {
+		SessionId acpsdk.SessionId `json:"sessionId"`
+		Message   json.RawMessage  `json:"message"`
+	}
+	if err := json.Unmarshal(params, &env); err != nil {
+		// Notifications don't take responses; the best we can do is
+		// log and drop. A malformed extension payload from the agent
+		// is a bug in the agent, not something we should kill our
+		// session over.
+		slog.Warn("acp client: malformed _claude/sdkMessage params", "error", err)
+		return nil, nil
+	}
+	ap, ok := c.lookup(env.SessionId)
+	if !ok {
+		// Late delivery after the prompt completed — silently drop.
+		// Same posture as session/update notifications on retired sessions.
+		return nil, nil
+	}
+	ap.writeSDKMessage(env.Message)
+	return nil, nil
+}
+
+// writeSDKMessage appends one JSON line (the raw SDK message wrapped in
+// a session-scoped envelope) to the active prompt's sdkSink. No-op when
+// sdkSink is nil (capture was not enabled for this prompt). Write
+// errors are logged but otherwise dropped — a broken sink shouldn't
+// crash the session.
+func (a *activePrompt) writeSDKMessage(raw json.RawMessage) {
+	if a.sdkSink == nil {
+		return
+	}
+	a.sdkSinkMu.Lock()
+	defer a.sdkSinkMu.Unlock()
+	line := append([]byte(raw), '\n')
+	if _, err := a.sdkSink.Write(line); err != nil {
+		slog.Warn("acp client: write to sdk-messages sink failed", "error", err)
+	}
 }
