@@ -4,79 +4,68 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Locutus — a Go CLI and MCP server that acts as an autonomous project manager for spec-driven software. It maintains a persistent spec graph (`Goal → Decision → (Feature | Strategy) → Approach` — decisions inform features and strategies; approaches are the synthesis layer for coding agents over features and strategies. Axes are surfaced from goals, features, and strategies and resolved by decisions; see DJ-124), produces execution plans, delegates coding to external agents, and supervises their output. The spec is the source of truth; artifacts are derived outputs.
+Locutus — a Go CLI and MCP server that acts as an autonomous project manager for spec-driven software. It maintains a persistent spec graph (`Goal → Decision → (Feature | Strategy) → Approach` — decisions inform features and strategies; approaches are the synthesis layer for coding agents over features and strategies. Axes are surfaced from goals, features, and strategies and resolved by decisions; see DJ-124), exposes that graph to coding agents (Claude Code, Codex, Gemini CLI) via MCP tools and resources, and dispatches activity-shaped work via ACP. The spec is the source of truth; artifacts are derived outputs.
+
+Locutus itself does not make LLM calls. The coding-agent runtime — Claude Code via `claude-agent-acp`, Codex via `codex-acp`, Gemini CLI via `gemini --acp` — owns model selection and the conversation; Locutus exposes the spec graph and the activity playbooks, then watches the agent execute.
 
 ## Sources of Truth
 
-- **Decision IDs are axis-shaped (DJ-133).** Every decision's `id` equals `dec-` followed by the primary axis ID it answers verbatim (axis `oltp-store` → `dec-oltp-store`). The id names the *question*; `title`, `chosen_option`, and `rationale` carry the human-readable *answer*. A revision that flips the chosen option keeps the same id — backreferences from features, strategies, and approaches stay byte-stable across Flips. The merge step matches revise dispatches against prior decisions by exact id equality (the retired pre-DJ-133 path matched by axis intersection).
-- **The in-process `SpecStore` is the source of truth for spec graph reads and writes during a session (DJ-134).** `internal/agent/spec_store.go` holds typed entries tagged by origin (settled / proposed) and a working flag under one RWMutex, with a write-through Bluge search index. The RAG tools (spec_list_manifest, spec_get, spec_search), CLI verbs (explain, justify), and the council's merge helpers all read and write through it. `.borg/spec/` is its persistence backing, not a parallel data source. `spec_get` is batched by design — input is `{ids: [string]}`, output is `{results: {id: {status, body?, working?, reason?}}, available_ids?, working?}` with status in `settled | in_flight | missing`. There is no scalar-id variant; batching is structural. The pre-DJ-134 swappable wrapper stack (SwappableSpecSearch, SwappableSpecListManifest, SwappableSpecGet, InFlightSpecStore, fsSpecProvider) is retired.
-- **Tool descriptions live in registration, not prompts (DJ-134).** When an agent prompt references a tool (spec_*, future write tools), the prompt's job is workflow guidance — when to reach for the tool and why, in the context of the agent's task. Tool-behavior text (field shapes, kind-prefix routing, in-flight-vs-settled semantics, batched-input contract) lives in the `ToolDef.Description` and `InputSchema.properties[].description` passed to `RegisterSpecTools`. See `docs/agent-conventions.md` § "Tool descriptions live in registration, not prompts."
+- **Multi-runtime via MCP + ACP (DJ-135).** Every CLI verb (`refine`, `import`, `adopt`, `assimilate`) dispatches the matching activity playbook to a coding-agent runtime via ACP; the runtime calls back into the per-project Locutus MCP daemon for spec graph reads and writes. The daemon is a singleton bound to a Unix socket at `.locutus/mcp.sock` so multiple coding agents attached to the same project share one in-process `SpecStore` and one notification fanout. The bridge command `locutus mcp` makes that singleton look like a stdio MCP server to clients that only know stdio. See `docs/mcp.md` and `docs/activities.md`.
+- **Decision IDs are axis-shaped (DJ-133).** Every decision's `id` equals `dec-` followed by the primary axis ID it answers verbatim (axis `oltp-store` → `dec-oltp-store`). The id names the *question*; `title`, `chosen_option`, and `rationale` carry the human-readable *answer*. A revision that flips the chosen option keeps the same id — backreferences from features, strategies, and approaches stay byte-stable across flips. The MCP write tool `spec_propose_decision` backfills `axes` from the id when the agent omits it (per DJ-135 phase 5 convergence-by-construction discipline).
+- **The in-process `SpecStore` is the source of truth for spec graph reads and writes during a daemon session (DJ-134).** `internal/agent/spec_store.go` holds typed entries tagged by origin (settled / proposed) and a working flag under one RWMutex, with a write-through Bluge search index. The MCP server's read tools (`spec_list_manifest`, `spec_get`, `spec_search`), write tools (`spec_propose_decision`, `spec_propose_feature`, `spec_propose_strategy`, `spec_revise_decision`), and the `spec://manifest` resource all read and write through it. `.borg/spec/` is its persistence backing, not a parallel data source. `spec_get` is batched by design — input is `{ids: [string]}`, output is `{results: {id: {status, body?, working?, reason?}}, available_ids?, working?}` with status in `settled | in_flight | missing`. There is no scalar-id variant; batching is structural.
+- **Tool descriptions live in registration, not prompts (DJ-134).** When an activity playbook references a tool (the `mcp__locutus__spec_*` set), the playbook's job is workflow guidance — when to reach for the tool and why, in the context of the activity. Tool-behavior text (input shape, kind-prefix routing, in-flight-vs-settled semantics) lives in the tool's registered `Description` in `internal/mcp/tools_spec_{read,write}.go`. See `docs/agent-conventions.md` § "Tool descriptions live in registration, not prompts."
+- **Per-runtime publishing is one-way (DJ-135).** The canonical agent prompts at `internal/scaffold/agents/*.md` and activity playbooks at `internal/scaffold/plans/*.md` are the source of truth. The publisher (`internal/publisher/`) reads them on `locutus init` and `locutus update --reset` and emits per-runtime copies (`.claude/agents/locutus/`, `.codex/agents/locutus-*.toml`, `.gemini/extensions/locutus/`) plus the runtime's MCP-server descriptor pointing at `locutus mcp`. Edits to the published copies are overwritten on the next reset; project-local agent edits go in `.borg/agents/`.
 - `docs/DECISION_JOURNAL.md` — architectural decisions with rationale, alternatives considered, and reversals. Authoritative design record.
-- `.claude/plans/` — active implementation plans (current consolidation work is in `verb-set-phase-{a,b,c,d}.md`). Copy to `docs/plans/` once a phase stabilises.
-- `docs/agent-conventions.md` — documented anti-patterns and conventions for agent prompt files. **Read this before editing or creating any file under `internal/scaffold/agents/`.** It captures lessons we've re-learned multiple times (anti-pattern priming, thinking-leakage, schema-skeleton placeholders) and the prefer-positive-phrasing + push-constraints-to-schema-tags patterns that replace them.
-- `docs/debugging-traces.md` — operational guide for walking session traces and OTel spans when an LLM-driven verb misbehaves. Covers the per-step folder layout (DJ-130), the per-call YAML / OTel correlation, common failure patterns, and one-liners for grepping concerns / extracting structured responses.
-- `docs/council.md` — workflow diagram + per-agent reference for the spec-generation council (and the other verb-level workflows that reuse council agents). Read this when reasoning about which agent runs when, what schema each emits, or which DJ governs a given step.
+- `.claude/plans/` — active implementation plans. Copy to `docs/plans/` once a phase stabilises.
+- `docs/agent-conventions.md` — conventions for the canonical agent prompts under `internal/scaffold/agents/`. **Read this before editing or creating any file under `internal/scaffold/agents/` or `internal/scaffold/plans/`.** Covers anti-pattern priming, positive-phrasing patterns, hyphenated naming, and the publishing-translation contract.
+- `docs/debugging-traces.md` — operational guide for walking session traces. The shape changed under DJ-135: the agent's reasoning lives in *its* session log (Claude Code, etc.), and Locutus's `.locutus/sessions/<date>/<time>/<sid>/` carries the playbook body it received, the full ACP event stream (`events.jsonl`), the distilled tool-call ↔ result log (`tools.jsonl`), and the agent's final output text.
+- `docs/council.md` — workflow diagram for the spec-refinement playbook and a per-agent reference. Re-framed in DJ-135: the "council" is no longer Locutus-orchestrated; it's a coding-agent's execution of the published playbook. The agents themselves (spec-scout, spec-decision-elaborator, etc.) are unchanged.
 
 When these documents conflict with any other file in the repo, `docs/` and `.claude/plans/` win.
 
-## Rule: Structs used as LLM response shapes MUST carry `jsonschema` tags
+## Architecture invariants
 
-If a Go struct is registered via `RegisterSchema` (or otherwise travels into an `OutputSchema` on an `adapters.Request`), every meaningful field MUST carry an invopop/jsonschema struct tag with enough detail to prevent the degenerate-output failure modes documented in `docs/agent-conventions.md`:
-
-- **Every enum-shaped string field** carries `jsonschema:"enum=v1,enum=v2,enum=v3"`. Without this, strict-mode providers don't constrain the decoder and we depend entirely on the model's prose-following. Validators that catch enum drift after the fact (`degenerateSynthesisVerdict`, etc.) are the second line of defence, not the first.
-- **Every field with semantic constraints** (must-be-non-empty, must-be-a-sentence, must-cite-a-real-source, must-not-be-placeholder) carries `jsonschema:"description=..."` naming the constraint in language the model will read on every call. The description travels into the schema doc every adapter sends to its provider's structured-output mode. This is load-bearing — schema-skeleton failures ("dummy" placeholders, one-word answers) trace back to fields with no inline guidance.
-- **Required-non-empty arrays** carry `jsonschema:"minItems=1"` (or higher). Empty arrays for things like `Concerns` or `Decisions` are a known degenerate-output mode.
-- **Fields whose enum/constraint set is too dynamic for the tag** (e.g. ids that must match an input list) carry a description that names the constraint and points the model at where to find the legal values.
-
-`RegisterSchema` example payloads (the value passed as the second arg) must use **descriptive prose** for example field values — never `"dummy"`, `"placeholder"`, `"TBD"`, `"foo"`. The example payload is rendered into the system prompt as "what a valid response looks like"; placeholder tokens prime the schema-skeleton failure the validator exists to catch.
-
-The library is `github.com/invopop/jsonschema` v0.13.0 (per DJ-118). Tag syntax is key=value, comma-separated. Don't use `github.com/google/jsonschema-go` syntax (bare-string-as-description) — it produces silent no-ops in invopop.
-
-When adding a new struct to the response-shape set: walk the field list, ask "if the model gives me garbage in this field, would the user know what went wrong?", and tag every field where the answer is "only because we wrote a validator." Push the validator's constraint into the schema. The validator becomes a safety net for the rare cases that slip through, not the primary enforcement.
-
-## LLM Layering Invariant (DJ-130)
-
-The workflow expresses intent; the dispatcher orchestrates retry/rotation/observability; the adapter handles provider-specific mechanics including any internal multi-call workaround. Observability follows the provider-call boundary on both surfaces (OTel and YAML).
-
-Concretely:
-
-- **Workflow** ([internal/agent/workflow.go](internal/agent/workflow.go)) emits one `Dispatcher.Dispatch` call per agent step. It knows nothing about which provider serves the call, whether the call splits, or how token cost is computed.
-- **Dispatcher** ([internal/agent/dispatcher.go](internal/agent/dispatcher.go)) handles provider rotation, corrective retry, and ReAct iteration. From its perspective every adapter Run is one logical SDK call (even when the adapter splits internally).
-- **Adapter** ([internal/agent/adapters/](internal/agent/adapters/)) handles provider-specific mechanics: native structured output via `OutputConfig.Format.Schema` (Anthropic, DJ-108), `responseJsonSchema` (Gemini), `json_schema strict:true` (OpenAI Responses); the multi-round tool-use loop; AND the thinking + schema split via `requiresThinkingSchemaSplit` → `runSplit`. Each adapter's `runSplit` issues two SDK calls back-to-back (reasoning pass keeps tools + grounding; format pass strips them and runs against the provider's own `fast:` tier from models.yaml).
-- **Recorder** ([internal/agent/session.go](internal/agent/session.go)) opens a parent `step.yaml` when `LoggingExecutor.Run` is invoked and plumbs an `adapters.CallRecorder` bridge onto ctx; each adapter then writes one per-SDK-call YAML per real provider round-trip into the step's folder. Per-call YAMLs and OTel `provider.generate` spans now agree on what constitutes a "call." See [docs/debugging-traces.md](docs/debugging-traces.md) for the operational guide to walking session traces.
-
-The per-deployer `format_providers:` rotation in `models.yaml` is retired — each adapter handles its own provider's fast tier for the format pass, no cross-provider rotation. A stale `format_providers:` block left in a user-edited `models.yaml` is silently ignored by the parser.
-
-## Cognitive Task Separation (DJ-130 + DJ-132)
-
-When one LLM call is asked to do two cognitive tasks that conflict in the attention budget, separate them into sequential calls that each focus on one task. The principle shows up at two layers:
-
-- **DJ-130 separates reasoning from formatting at the adapter layer.** A thinking-on agent with a strict-mode schema dispatches as two SDK round-trips: a reasoning pass (thinking on, schema cleared, tools + grounding kept) and a format pass (thinking off, schema set, tools stripped, fast-tier). The split prevents thinking-output corruption in structured fields and keeps reasoning attention from being crowded out by JSON-shape attention.
-- **DJ-132 separates enumeration from judgment at the workflow layer.** The decision-elaboration fanout gains a per-axis `spec_candidate_survey` pre-step (fast tier, grounded) that enumerates the candidate space; the decision-elaborator runs after with the candidate list as input and spends its attention budget on judgment. The split prevents commit-mode attention from crowding out exhaustive option-space exploration; initial alternatives slices ship with 6-10 entries instead of 1-2.
-
-Both are instances of the same pattern. Future cognitive-task conflations should be diagnosed with the same lens: is one LLM call carrying two tasks whose attention demands fight each other? If yes, split into sequential calls. The cost of an extra call amortizes against the avoided work the cross-task-suppression was previously generating.
+- **No in-process LLM calls.** Locutus does not import an LLM SDK. The coding-agent runtime owns the conversation; Locutus exposes data and orchestrates dispatch. If you find yourself adding an Anthropic/Gemini/OpenAI SDK import, you're about to recreate the council that DJ-135 retired.
+- **MCP tools are the only spec-mutation path.** The `spec_propose_*` and `spec_revise_*` tools registered in `internal/mcp/tools_spec_write.go` are the surface area for graph writes. Direct `SpecStore.Put` calls outside the MCP handlers are reserved for tests and the daemon's own boot-time load.
+- **One activity = one playbook = one MCP prompt = one CLI verb.** The mapping is in `internal/activity/agents-default.yaml` and `internal/scaffold/plans/<activity>.md`. Adding an activity means adding a row to the registry, a playbook file, and (optionally) a CLI verb that calls `runActivityVerb`.
+- **The daemon is per-project.** Two projects = two daemons = two sockets. The singleton-per-project pattern is what makes cross-client coordination work (writes through one bridge are visible to reads on another). See `internal/mcp/socket.go` + `internal/mcp/bootstrap.go`.
+- **Hyphenated agent ids.** Per DJ-135 resolved-question 8, Claude Code requires hyphens; Gemini and Codex accept both. Canonical agent files use hyphens (`spec-scout`, `spec-decision-elaborator`). The invariant is enforced by `internal/scaffold/agents/hyphenated_ids_dj135_test.go`.
 
 ## Command Surface
 
-The verb set splits into 8 mutating/operational verbs plus 2 read-only deliberation aids (DJ-101).
+8 verbs (DJ-101 set) + 3 MCP subcommands (DJ-135).
 
-**Mutating and operational (8):**
+**Activity-dispatching verbs (4):**
 
-1. `locutus init` — Bootstrap `.borg/` scaffold.
-2. `locutus update` — Refresh binary and embedded defaults.
-3. `locutus import <source>` — Admit a new feature/bug with GOALS.md triage.
-4. `locutus refine <node>` — Council-driven deliberation on any spec node. Flags: `--brief "..."` threads a focused refinement intent through to the dedicated `refiner` agent (DJ-102); `--diff` prints a unified diff over the rendered Markdown after the rewrite; `--rollback` undoes the most recent refine using the prior bytes captured in `.borg/history/`.
-5. `locutus assimilate` — Infer or update spec from code.
-6. `locutus adopt` — Bring code into alignment with spec (reconcile loop).
-7. `locutus status` — Show state, drift, and validation errors. With `--full` emits a comprehensive snapshot of the spec graph (DJ-100).
-8. `locutus history` — Query the past-tense record. `--narrative` auto-regenerates the LLM-authored summary from `.borg/history/evt-*.json` (committed events) into `.locutus/history/summary.md` (gitignored cache) when the event hash diverges (DJ-103).
+1. `locutus refine [target]` — dispatch the `spec_refinement` activity. Optional positional `<target>` becomes a focus note appended to the playbook.
+2. `locutus import [source]` — dispatch the `feature_ingestion` activity. Content comes from `<source>` file path or stdin.
+3. `locutus adopt [--scope X]` — dispatch the `code_adoption` activity. Optional `--scope` becomes a focus note.
+4. `locutus assimilate` — dispatch the `code_assimilation` activity.
 
-**Read-only deliberation aids (2):**
+Each blocks until the ACP session closes (Q3 of DJ-135 phase 5). Sessions land under `.locutus/sessions/<date>/<time>/<sid>/`.
 
-- `locutus explain <id>` — Render a single spec node's rationale, alternatives, citations, and back-references. No LLM.
-- `locutus justify <id> [--against "..."]` — Spec advocate writes an active defense; `--against` runs the challenger first for an adversarial dialogue.
+**Operational verbs (4):**
 
-Every mutating verb supports `--dry-run`. `locutus mcp` starts the MCP server; `locutus mcp-perm-bridge` is a hidden internal subprocess. Every CLI verb has MCP parity.
+5. `locutus init` — Bootstrap `.borg/` scaffold + emit per-runtime publish files + write MCP-server config.
+6. `locutus update` — Refresh binary. `--reset` overwrites `.borg/agents/` + `.borg/plans/` from embedded defaults and re-publishes per-runtime copies.
+7. `locutus status` — Show spec summary. `--full` emits a comprehensive snapshot of the spec graph (DJ-100).
+8. `locutus history` — Print the past-tense event timeline. `--alternatives <id>` lists alternatives recorded for a target.
+
+**Read-only deliberation aid (1):**
+
+- `locutus explain <id>` — Render a single spec node's rationale, alternatives, citations, and back-references. No LLM, no dispatch.
+
+**Search aid (1):**
+
+- `locutus list <query>` — Find spec node ids matching a free-text query. No LLM, no dispatch.
+
+**MCP subcommands (3):**
+
+- `locutus mcp` — Smart client/server. Discovers or forks the per-project daemon, then bridges stdin/stdout to its socket. To external MCP clients (Claude Code, Codex, Gemini CLI) this is indistinguishable from a stdio MCP server.
+- `locutus mcp-daemon --project <root>` — Internal: the long-lived singleton. Operators don't invoke directly; `mcp` forks it via `EnsureDaemon` when no daemon is responsive.
+- `locutus mcp-stop` — Remove the per-project socket so the accept loop unwinds.
+
+The `justify` verb retired with the council in DJ-135 phase 5. The `refine --brief / --supersede / --diff / --rollback` and `history --narrative / --regenerate-narrative` flags retired alongside; if you need them back, they land as ACP-dispatched activities in a follow-up.
 
 ## Build & Test
 
@@ -92,8 +81,12 @@ go test ./... -race                    # race detector
 ## Libraries
 
 - **CLI**: `github.com/alecthomas/kong`
+- **MCP**: `github.com/modelcontextprotocol/go-sdk` v1.6.1
+- **ACP**: `github.com/coder/acp-go-sdk` (per DJ-119)
+- **Spec search**: `github.com/blugelabs/bluge` (per DJ-123)
 - **YAML**: `gopkg.in/yaml.v3`
 - **Testing**: `github.com/stretchr/testify/assert`
 - **Console output**: `github.com/pterm/pterm`
 - **Logging**: `log/slog` (stdlib)
-- **LLM**: direct-SDK adapters per provider (DJ-099) — `github.com/anthropics/anthropic-sdk-go`, `google.golang.org/genai`, `github.com/openai/openai-go` (Responses API).
+
+No LLM SDK imports — Locutus does not call providers directly (per DJ-135). The coding-agent runtime owns the conversation.
