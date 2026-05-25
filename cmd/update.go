@@ -8,10 +8,12 @@ import (
 
 	selfupdate "github.com/creativeprojects/go-selfupdate"
 
+	"github.com/chetan/locutus/internal/activity"
 	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/history"
 	"github.com/chetan/locutus/internal/migrate"
 	"github.com/chetan/locutus/internal/prereqs"
+	"github.com/chetan/locutus/internal/publisher"
 	"github.com/chetan/locutus/internal/scaffold"
 	"github.com/chetan/locutus/internal/specio"
 )
@@ -102,6 +104,18 @@ func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 			return fmt.Errorf("update --reset: %w", err)
 		}
 		printResetReport(report)
+
+		// DJ-135 phase 4: after refreshing .borg/ canonicals from the
+		// embedded scaffold, re-publish the per-runtime subagent and
+		// slash-command copies so updates to the canonical prompt set
+		// reach every coding-agent runtime in one command.
+		reg, err := activity.NewRegistry(fsys)
+		if err != nil {
+			return fmt.Errorf("update --reset: activity registry: %w", err)
+		}
+		if err := publisher.Publish(fsys, reg); err != nil {
+			return fmt.Errorf("update --reset: publish runtime files: %w", err)
+		}
 	}
 
 	// 4. Run one-shot on-disk migrations. DJ-133 renames every
