@@ -141,19 +141,30 @@ Read the DJ for the full reasoning; each phase below cites the relevant resolved
 
 **Estimated:** 8-12 hours.
 
-## Phase 5 — Activity playbooks + MCP prompts
+## Phase 5 — Activity playbooks + MCP prompts + retire the Go council (direct cut)
 
-**Goal:** author the activity playbooks under `internal/scaffold/plans/<activity>.md` (embedded, scaffolded to `.borg/plans/`) and expose them as MCP prompts. Per resolved-question 5 (three trigger paths converge on the playbook).
+**Goal:** author the activity playbooks, expose them as MCP prompts, rewire the CLI verbs to dispatch via ACP, AND delete the Go council code in the same phase. Per resolved-question 5 (three trigger paths converge on the playbook) and the DJ's Migration framing (direct cut, no fallback). The current Go council has never converged reliably; there's no value in keeping it as a parallel path during development. Once this phase lands, the legacy council code is gone.
 
 **Files expected to add:**
 
 - `internal/scaffold/plans/refine-goals.md` — the spec-refinement activity playbook. Markdown imperative instructions: "Dispatch spec-scout. Once it returns, for each axis in scout.axes_open, dispatch spec-decision-elaborator. Wait for all to complete. For each new node from scout.new_nodes, dispatch the appropriate elaborator. Once all decisions are committed, dispatch spec-reconciler. For each critic dimension in scout.dimensions, dispatch spec-critic-elaborator. Loop until scout.converged is true." Convergence-by-construction discipline: "If an axis is open and not surfaced as a concern, assume the best-practice default and commit; do not surface to human."
-- `internal/scaffold/plans/plan-feature.md` — placeholder for Phase 8 (planning activity).
+- `internal/scaffold/plans/plan-feature.md` — placeholder for future planning-activity work.
 - `internal/mcp/prompts_activity.go` — registers prompts for each activity: `locutus.refine_goals`, `locutus.plan_feature`, etc. `prompts/get` returns the playbook content as a multi-turn message sequence.
 
 **Files expected to modify:**
 
 - `cmd/refine.go` — replace Go-encoded council orchestration with: detect runtime from agents.yaml; spawn it via ACP; hand it the published `refine-goals` plan. The runtime executes; calls back into Locutus's MCP tools to mutate the graph.
+- `cmd/llm.go` — significant simplification: no more model resolution, no more provider adapter wiring. The MCP server retains its own minimal SpecStore wiring.
+- Other CLI verbs (`import`, `adopt`, `assimilate`) that referenced the legacy council path migrate to the activity-driven model in the same commit.
+
+**Files expected to delete (in the same phase, after the new path lands and compiles):**
+
+- `internal/agent/workflow_spec_generation.go`, `workflow_spec_generation_dj124.go`, `workflow_spec_generation_test.go` — the council workflow.
+- `internal/agent/specgen.go` — integrity-revise architect, runSpecGeneration's council bootstrap.
+- `internal/agent/dispatcher.go` — ReAct iteration loop.
+- `internal/agent/adapters/anthropic.go`, `gemini.go`, `openai_responses.go` — direct-SDK adapters. Locutus no longer makes LLM calls directly.
+- `internal/agent/state.go` PlanningState and council-internal bookkeeping (AxesOpen, NewNodesFromScout, OpenConcernDecisionIDs, LockedDecisionIDs, AxisRevisionCount, DecidedAxesByIter).
+- DJ-128's cap-as-commit logic; DJ-130's reasoning/format split (`runSplit`, `requiresThinkingSchemaSplit`); revision-count limits.
 
 **Tests:**
 
@@ -161,10 +172,11 @@ Read the DJ for the full reasoning; each phase below cites the relevant resolved
 - `TestMcpServer_PromptsGetReturnsPlaybook` — `prompts/get locutus.refine_goals` returns content matching `.borg/plans/refine-goals.md`.
 - `TestRefineGoalsPlaybookReferencesPublishedSubagents` — the playbook content uses hyphenated subagent names that match what the publisher emits.
 - `TestCLI_RefineGoalsDispatchesViaACP` — `locutus refine goals` end-to-end against a mock ACP server: detects runtime, spawns it, hands it the playbook, observes the spawned agent calling Locutus's MCP tools.
+- Existing council tests delete alongside the council code. New test coverage focuses on the dispatch + playbook path.
 
-**Verification:** `go build ./... && go vet ./... && go test ./... -count=1`. Manual: run `locutus refine goals` against winplan with Claude Code as the detected runtime; observe Claude Code session opening, executing the playbook, calling spec tools.
+**Verification:** `go build ./... && go vet ./... && go test ./... -count=1 -race`. Manual empirical: run `locutus refine goals` against winplan with Claude Code as the detected runtime; observe Claude Code session opening, executing the playbook, calling spec tools, and writing a populated `.borg/spec/` to disk. **The validation criterion is "the run produces a populated spec graph on disk," not "equal-to-or-better than the legacy path" — the legacy path's failure mode is what motivated this DJ and is not a meaningful baseline.**
 
-**Estimated:** 10-15 hours (playbook authoring is iterative; expect to refine prompts based on first-run observations).
+**Estimated:** 14-21 hours (playbook authoring is iterative; expect to refine prompts based on first-run observations; deletion is mechanical but voluminous).
 
 ## Phase 6 — Documentation
 
@@ -182,50 +194,28 @@ Read the DJ for the full reasoning; each phase below cites the relevant resolved
 - `docs/activities.md` — the activity registry, agents.yaml schema, runtime detection, publisher behavior, lifecycle.
 - `docs/mcp.md` — Locutus's MCP server: tools/prompts/resources surface, notification semantics, singleton lifecycle, transport (stdio-over-socket).
 
-**Verification:** `go test ./... -count=1 -race` clean (docs don't affect tests but the rename + publisher changes should). Manually verify Mermaid diagrams in council.md still render. Walk `git grep -nE 'workflow_spec_generation|specgen.go|integrity_revise'` — references in docs should be updated or removed.
+**Verification:** `go test ./... -count=1 -race` clean. Manually verify Mermaid diagrams in council.md still render. Walk `git grep -nE 'workflow_spec_generation|specgen.go|integrity_revise'` — references in docs should be updated or removed (the code is already gone after Phase 5).
 
 **Estimated:** 4-6 hours.
 
-## Phase 7 — Retire the Go-driven council
+## Phase 7 — Status flip + plan marked DONE
 
-**Goal:** delete the WorkflowExecutor + council orchestration code once Phase 5's coding-agent path produces equal-or-better results than the Go council (verified empirically on winplan and one other project).
-
-**Files expected to delete:**
-
-- `internal/agent/workflow_spec_generation.go`, `workflow_spec_generation_dj124.go`, `workflow_spec_generation_test.go` — the council workflow.
-- `internal/agent/specgen.go` — integrity-revise architect, runSpecGeneration's council bootstrap (its CLI entry point lives in `cmd/refine.go` now).
-- `internal/agent/dispatcher.go` — ReAct iteration loop.
-- `internal/agent/adapters/anthropic.go`, `gemini.go`, `openai_responses.go` — direct-SDK adapters. Locutus no longer makes LLM calls directly.
-- `internal/agent/state.go` PlanningState and council-internal bookkeeping (AxesOpen, NewNodesFromScout, OpenConcernDecisionIDs, LockedDecisionIDs, AxisRevisionCount, DecidedAxesByIter).
-- DJ-128's cap-as-commit logic; DJ-130's reasoning/format split (`runSplit`, `requiresThinkingSchemaSplit`); revision-count limits.
+**Goal:** DJ-135 flips from `proposed` to `shipping` once Phases 1-6 land and Phase 5's empirical winplan run produces a populated spec graph.
 
 **Files expected to modify:**
 
-- `cmd/llm.go` — significant simplification: no more model resolution, no more provider adapter wiring. The MCP server retains its own minimal SpecStore wiring.
-- Any other CLI verbs that still reference the legacy council path migrate to the activity-driven model.
-
-**Verification:** `go build ./... && go vet ./... && go test ./... -count=1 -race`. Empirical: winplan refine via the new path matches or exceeds the old path's output quality on the same GOALS.md.
-
-**Estimated:** 4-6 hours of mechanical deletion + the empirical-validation prerequisite (Phase 5's outcome).
-
-## Phase 8 — Status flip + plan marked DONE
-
-**Goal:** DJ-135 flips from `proposed` to `shipping` once Phases 1-7 land and empirical validation confirms convergence on winplan + one other project.
-
-**Files expected to modify:**
-
-- `docs/DECISION_JOURNAL.md` — DJ-135 status `proposed` → `shipping (Phases 1-7 landed YYYY-MM-DD)`.
+- `docs/DECISION_JOURNAL.md` — DJ-135 status `proposed` → `shipping (Phases 1-6 landed YYYY-MM-DD)`.
 - This plan file marked DONE.
 
-**Verification:** `go test ./... -count=1 -race` clean. Empirical: winplan + one other project refine via the new path produce specs equivalent to (or better than) what the legacy council produced.
+**Verification:** `go test ./... -count=1 -race` clean. Empirical: winplan refine via the new path produces a populated `.borg/spec/`.
 
 **Estimated:** 30 minutes (purely status flip and plan close-out).
 
 ---
 
-## Total estimate: 43-65 hours single-stranded across 7-9 sessions
+## Total estimate: 43-65 hours single-stranded across 6-8 sessions
 
-(plus empirical validation compute time)
+(plus Phase 5 empirical winplan run for validation)
 
 ## Pointers a fresh session should follow before resuming
 
@@ -244,7 +234,7 @@ Read the DJ for the full reasoning; each phase below cites the relevant resolved
 - **A2UI output** (resolved-question 15). Skipped for v1; revisit if a specific A2UI-capable client emerges.
 - **Multi-project orchestration** — Locutus is per-project. Operators running multiple projects in parallel run multiple Locutus daemons (one per project, bound to that project's socket).
 - **Token / cost accounting at the Locutus level.** Coding agents call their own LLMs under their own subscriptions; Locutus has no visibility into per-call cost. Aggregate observability moves to the calling agent's tools (Claude Code's session log, etc.).
-- **Backward compatibility shims for the legacy CLI verb invocations** — per [[feedback-no-back-compat-until-self-hosting]], CLI verbs change semantics in-place; users run `locutus update --offline --reset` before next use.
+- **Backward compatibility shims for the legacy CLI verb invocations** — per [[feedback-no-back-compat-until-self-hosting]], CLI verbs change semantics in-place; users run `locutus update --offline --reset` before next use. **Fallback dispatch to the Go council is also explicitly not retained** — Phase 5 deletes the legacy council code directly. The current Go council has never produced a clean convergent run; keeping it as fallback would signal otherwise and split engineering attention.
 - **Migration of existing on-disk specs.** SpecStore's persistence shape carries forward unchanged (DJ-134); no migration needed.
 - **Renaming the `.borg/` directory** — the directory name is durable per existing convention. The pivot's new files all land under existing `.borg/` and `.locutus/` partitions per resolved-question 12.
 - **Web UI / dashboard for spec graph inspection** — a future Locutus dashboard COULD consume `notifications/resources/updated` on `spec://manifest` to render live, but standing it up is outside this DJ's scope.
