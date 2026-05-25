@@ -56,29 +56,34 @@ type ActivityRun struct {
 // the ACP stream closes (clean session end), the context cancels,
 // or a permanent error occurs.
 //
-// w is where the streamed agent text is mirrored (Q3 (a): the
-// terminal in the CLI case; io.Discard in tests / non-interactive
-// callers). The full structured event stream is captured under the
-// session directory regardless.
+// out is where the agent's free-text output is mirrored. progress
+// is where the dispatcher writes per-tool-call status lines and
+// error notices — separate writers so callers can route final text
+// to stdout (for piping) while keeping live status on stderr.
+// io.Discard works for either when the caller doesn't want one.
+// The full structured event stream is captured under the session
+// directory regardless of what the writers do.
 //
-// policyFn picks a policy.Policy for each tool-permission request
-// the ACP agent surfaces. Pass policy.AllowAll for now — Locutus's
-// MCP server is the only tool surface the agent can reach and the
-// tools we expose are by-design safe to call without per-tool
-// confirmation.
+// Per Q3 (a) of DJ-135 phase 5, the call blocks until the ACP
+// stream closes; the caller is expected to be a CLI verb that owns
+// the terminal until then.
 func DispatchActivity(
 	ctx context.Context,
 	projectRoot string,
 	activityName string,
 	playbookBody string,
 	reg *activity.Registry,
-	w io.Writer,
+	out io.Writer,
+	progress io.Writer,
 ) (*ActivityRun, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("dispatch: registry is required")
 	}
-	if w == nil {
-		w = io.Discard
+	if out == nil {
+		out = io.Discard
+	}
+	if progress == nil {
+		progress = io.Discard
 	}
 
 	runtime, err := reg.Resolve(activityName, nil /* exec.LookPath */)
@@ -127,6 +132,10 @@ func DispatchActivity(
 		return nil, fmt.Errorf("dispatch: prompt: %w", err)
 	}
 
+	// Tool-call counter for the progress prefix. Cheap concurrency
+	// guard: the ACP channel is single-reader (this goroutine), so
+	// no synchronization needed.
+	toolN := 0
 	var finalText strings.Builder
 	for ev := range ch {
 		if err := writeJSONLine(eventsFile, ev); err != nil {
@@ -135,16 +144,22 @@ func DispatchActivity(
 		switch ev.Kind {
 		case dispatch.EventText, dispatch.EventResult:
 			if ev.Text != "" {
-				fmt.Fprint(w, ev.Text)
+				fmt.Fprint(out, ev.Text)
 				finalText.WriteString(ev.Text)
 			}
-		case dispatch.EventToolCall, dispatch.EventToolResult:
+		case dispatch.EventToolCall:
+			toolN++
+			fmt.Fprintf(progress, "  %3d → %s\n", toolN, toolProgressLine(ev))
+			if err := writeJSONLine(toolsFile, ev); err != nil {
+				return nil, fmt.Errorf("dispatch: append tools log: %w", err)
+			}
+		case dispatch.EventToolResult:
 			if err := writeJSONLine(toolsFile, ev); err != nil {
 				return nil, fmt.Errorf("dispatch: append tools log: %w", err)
 			}
 		case dispatch.EventError:
 			if ev.Text != "" {
-				fmt.Fprintf(w, "\n[error] %s\n", ev.Text)
+				fmt.Fprintf(progress, "  [error] %s\n", ev.Text)
 			}
 		}
 	}
@@ -178,6 +193,102 @@ func makeSessionDir(projectRoot string) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// toolProgressLine renders one tool-call event as a single human-
+// readable status line for the progress writer. Prefers Claude
+// Code's _meta.claudeCode.toolName when present (so an MCP tool
+// surfaces as "mcp__locutus__spec_propose_decision" rather than the
+// generic "ToolCall" title), with a one-key argument hint when the
+// tool's input carries an obvious primary parameter (id, path,
+// query, command).
+//
+// Falls back to the event's ToolName when no Claude-specific
+// metadata is present — other runtimes (Codex / Gemini) populate
+// the event differently and the dispatcher's event translator
+// already normalizes them onto ToolName.
+func toolProgressLine(ev dispatch.AgentEvent) string {
+	name := ev.ToolName
+	if raw, ok := ev.Raw, true; ok && len(raw) > 0 {
+		// Best-effort _meta.claudeCode.toolName extraction. Use the
+		// JSON byte slice directly rather than re-decoding the whole
+		// notification — every other Raw access in the codebase pays
+		// the decode cost twice; this one helper doesn't need to.
+		if extracted := claudeCodeToolName(raw); extracted != "" {
+			name = extracted
+		}
+	}
+	if name == "" {
+		name = "tool"
+	}
+	if hint := primaryInputHint(ev.ToolInput); hint != "" {
+		return fmt.Sprintf("%s %s", name, hint)
+	}
+	return name
+}
+
+// claudeCodeToolName scans an ACP SessionNotification's JSON for
+// the _meta.claudeCode.toolName field. Returns the value when
+// present and a string, empty otherwise. Hand-rolled string scan
+// rather than full JSON decode — this runs once per tool event in
+// the progress hot path and the field's location is stable per the
+// Claude Agent ACP protocol's _meta convention.
+func claudeCodeToolName(raw []byte) string {
+	const needle = `"toolName":"`
+	i := indexOfBytes(raw, []byte(needle))
+	if i < 0 {
+		return ""
+	}
+	start := i + len(needle)
+	end := start
+	for end < len(raw) && raw[end] != '"' {
+		end++
+	}
+	if end <= start || end >= len(raw) {
+		return ""
+	}
+	return string(raw[start:end])
+}
+
+// indexOfBytes is bytes.Index re-exported under a name that doesn't
+// require an extra import just for one line.
+func indexOfBytes(haystack, needle []byte) int {
+	n := len(needle)
+	if n == 0 {
+		return 0
+	}
+	limit := len(haystack) - n
+	for i := 0; i <= limit; i++ {
+		match := true
+		for j := 0; j < n; j++ {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
+// primaryInputHint surfaces a one-key argument summary from a tool
+// invocation's input map. Priority order picks the field most
+// likely to identify what the call is operating on: id (spec
+// nodes), file_path (file ops), command (shell), query (search),
+// pattern (grep). Returns "" when no recognized key is present.
+func primaryInputHint(input map[string]any) string {
+	for _, key := range []string{"id", "file_path", "path", "command", "query", "pattern"} {
+		if v, ok := input[key]; ok {
+			s := fmt.Sprintf("%v", v)
+			if len(s) > 60 {
+				s = s[:57] + "..."
+			}
+			return fmt.Sprintf("%s=%s", key, s)
+		}
+	}
+	return ""
 }
 
 // writeJSONLine appends one event as a JSON-encoded line. Used for

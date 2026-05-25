@@ -2,10 +2,16 @@ package publisher
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/glorious-beard/locutus/internal/activity"
 	"github.com/glorious-beard/locutus/internal/specio"
 )
+
+// osExecutable aliases os.Executable so tests can stub the
+// `executable` package-level seam without depending on the stdlib
+// symbol directly.
+var osExecutable = os.Executable
 
 // RuntimePublisher is the per-runtime emission contract. Implementations
 // know the runtime's expected directory layout, frontmatter shape, and
@@ -109,4 +115,42 @@ func deriveDescription(agent CanonicalAgent) string {
 		return fmt.Sprintf("%s — Locutus %s agent", agent.ID, agent.Role)
 	}
 	return fmt.Sprintf("%s — Locutus agent", agent.ID)
+}
+
+// locutusCommand returns the absolute path of the running locutus
+// binary, used by every per-runtime publisher when emitting the
+// runtime's MCP-server config. Coding-agent runtimes (Claude Code's
+// .mcp.json launcher, Codex's mcp_servers table, Gemini's extension
+// manifest) spawn the named command as a subprocess; using a bare
+// "locutus" string requires the user to install the binary on $PATH
+// globally, which is fragile when the user runs a project-local
+// `./locutus` build. os.Executable returns the path of the binary
+// that's currently running — typically the one the user invoked
+// init/update with — so .mcp.json gets a stable absolute path that
+// works regardless of $PATH state.
+//
+// Operators who upgrade locutus by replacing the binary in place
+// keep the same .mcp.json path. Operators who switch from a project-
+// local build to a globally-installed one (or vice versa) need to
+// re-run `locutus update --reset` from the new binary so the per-
+// runtime configs pick up the new path. Documented in
+// docs/activities.md under "Lifecycle."
+//
+// Falls back to "locutus" (bare name; PATH lookup) when
+// os.Executable fails — a defensive case that shouldn't fire on
+// any supported platform, but failing the publish is worse than
+// emitting a config that requires PATH.
+var locutusCommand = func() string {
+	path, err := executable()
+	if err != nil {
+		return "locutus"
+	}
+	return path
+}
+
+// executable is the package-level seam over os.Executable. Tests
+// stub it to avoid coupling the emitted MCP config to wherever the
+// test binary lives.
+var executable = func() (string, error) {
+	return osExecutable()
 }

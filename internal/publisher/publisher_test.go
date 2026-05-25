@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -138,6 +139,14 @@ func TestPublisher_SkipsCommandsWhenPlanMissing(t *testing.T) {
 }
 
 func TestPublisher_MCPServerConfigInjected(t *testing.T) {
+	// Stub the executable lookup so the test asserts against a
+	// stable absolute path rather than wherever the go-test binary
+	// lives. Production uses os.Executable.
+	const stubPath = "/usr/local/bin/locutus"
+	prev := executable
+	executable = func() (string, error) { return stubPath, nil }
+	t.Cleanup(func() { executable = prev })
+
 	fsys := seedProject(t, false)
 	reg := buildRegistry(t)
 	require.NoError(t, Publish(fsys, reg))
@@ -148,14 +157,16 @@ func TestPublisher_MCPServerConfigInjected(t *testing.T) {
 	var parsed claudeMCPFile
 	require.NoError(t, json.Unmarshal([]byte(cc), &parsed))
 	require.Contains(t, parsed.MCPServers, "locutus")
-	assert.Equal(t, "locutus", parsed.MCPServers["locutus"].Command)
+	assert.Equal(t, stubPath, parsed.MCPServers["locutus"].Command,
+		"Claude Code config should carry the absolute binary path, not a bare 'locutus' that depends on $PATH")
 	assert.Equal(t, []string{"mcp"}, parsed.MCPServers["locutus"].Args)
 
 	// Codex: .codex/config.toml.
 	codex, err := readAsString(fsys, ".codex/config.toml")
 	require.NoError(t, err)
 	assert.Contains(t, codex, "[mcp_servers.locutus]")
-	assert.Contains(t, codex, `command = "locutus"`)
+	assert.Contains(t, codex, `command = "`+stubPath+`"`,
+		"Codex config should carry the absolute binary path")
 
 	// Gemini: .gemini/extensions/locutus/extension.json.
 	gem, err := readAsString(fsys, ".gemini/extensions/locutus/extension.json")
@@ -164,7 +175,30 @@ func TestPublisher_MCPServerConfigInjected(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(gem), &manifest))
 	assert.Equal(t, "locutus", manifest.Name)
 	require.Contains(t, manifest.MCPServers, "locutus")
-	assert.Equal(t, "locutus", manifest.MCPServers["locutus"].Command)
+	assert.Equal(t, stubPath, manifest.MCPServers["locutus"].Command,
+		"Gemini extension manifest should carry the absolute binary path")
+}
+
+func TestPublisher_MCPServerConfigFallsBackToBareNameOnExecutableErr(t *testing.T) {
+	// Defensive case: if os.Executable fails (shouldn't on any
+	// supported platform, but guard regardless), we emit the bare
+	// "locutus" name that requires the user to install on $PATH.
+	// Failing the publish would be worse — at least the bare-name
+	// form works for users who DO have it on $PATH.
+	prev := executable
+	executable = func() (string, error) { return "", os.ErrNotExist }
+	t.Cleanup(func() { executable = prev })
+
+	fsys := seedProject(t, false)
+	reg := buildRegistry(t)
+	require.NoError(t, Publish(fsys, reg))
+
+	cc, err := readAsString(fsys, ".mcp.json")
+	require.NoError(t, err)
+	var parsed claudeMCPFile
+	require.NoError(t, json.Unmarshal([]byte(cc), &parsed))
+	assert.Equal(t, "locutus", parsed.MCPServers["locutus"].Command,
+		"fallback should be the bare command name")
 }
 
 func TestPublisher_ReEmissionOverwritesGenerated(t *testing.T) {

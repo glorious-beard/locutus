@@ -39,7 +39,11 @@ func runActivityVerb(ctx context.Context, _ *CLI, activityName, contextNote stri
 	if contextNote != "" {
 		prompt = playbook + "\n\n---\n\n## Run context\n\n" + contextNote + "\n"
 	}
-	run, err := runner.DispatchActivity(ctx, root, activityName, prompt, reg, os.Stdout)
+	// Quick start banner so the operator sees we're going. Stderr
+	// for operational messaging; stdout is reserved for the agent's
+	// own text output so pipes work cleanly.
+	fmt.Fprintf(os.Stderr, "→ dispatching %s activity (runtime resolution pending)\n", activityName)
+	run, err := runner.DispatchActivity(ctx, root, activityName, prompt, reg, os.Stdout, os.Stderr)
 	if err != nil {
 		return fmt.Errorf("%s: dispatch: %w", activityName, err)
 	}

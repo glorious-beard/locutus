@@ -50,7 +50,7 @@ func (geminiPublisher) EnsureMCPConfig(fsys specio.FS) error {
 		Version:     "dj-135-phase-4",
 		Description: "Locutus spec-driven project manager — exposes spec graph tools, resources, and activity prompts via MCP.",
 		MCPServers: map[string]claudeMCPServerConfig{
-			"locutus": {Command: "locutus", Args: []string{"mcp"}},
+			"locutus": {Command: locutusCommand(), Args: []string{"mcp"}},
 		},
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")

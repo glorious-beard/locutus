@@ -63,7 +63,7 @@ type claudeMCPFile struct {
 func (claudeCodePublisher) EnsureMCPConfig(fsys specio.FS) error {
 	file := claudeMCPFile{
 		MCPServers: map[string]claudeMCPServerConfig{
-			"locutus": {Command: "locutus", Args: []string{"mcp"}},
+			"locutus": {Command: locutusCommand(), Args: []string{"mcp"}},
 		},
 	}
 	data, err := json.MarshalIndent(file, "", "  ")
