@@ -6,21 +6,50 @@ If you're editing or creating an agent prompt, read this first.
 
 ## Scope
 
-This file covers the **LLM-driven council and pipeline personas** defined under
-`internal/scaffold/agents/` — scout, architect, critic, advocate, synthesizer,
-refiner, archivist, and the rest. These are not the *coding agents* Locutus
-delegates to during `adopt`. Coding agents (Claude Code, Codex, Gemini) are
-external CLIs reached via the Agent Client Protocol; the transport lives under
-`internal/dispatch/acp/`, the design is DJ-119, and there are no prompt files
-for them under `internal/scaffold/agents/`. If you're here looking for how
-Locutus drives the coding agent, you want `internal/dispatch/` and DJ-119, not
-this file.
+This file covers the canonical **agent prompts** at `internal/scaffold/agents/` and the **activity playbooks** at `internal/scaffold/plans/`. Both are markdown documents the coding-agent runtime reads — agent prompts become subagent files published to `.claude/agents/locutus/`, `.codex/agents/locutus-*.toml`, etc.; playbooks become activity prompts served by the MCP server (or runtime-published slash commands).
 
-The driving lesson: LLMs autocomplete from their context. **Telling a model not to
-do X often makes it do X**, especially with Anthropic models. Whenever a prompt
-fix would make the agent reliable, the wrong fix is "add a longer don't-do-this
-section." The right fix is to remove the anti-pattern priming and tighten the
-structural constraints at the schema level.
+Per DJ-135 Locutus no longer makes LLM calls directly — the coding-agent runtime (Claude Code via `claude-agent-acp`, Codex via `codex-acp`, Gemini via `gemini --acp`) owns model selection and the conversation. The prompts under `internal/scaffold/agents/` are still LLM-facing prose; what changed is *who* sends them to the model. The anti-patterns below still hold — model behavior is unchanged by the dispatch surface.
+
+The driving lesson: LLMs autocomplete from their context. **Telling a model not to do X often makes it do X**, especially with Anthropic models. Whenever a prompt fix would make the agent reliable, the wrong fix is "add a longer don't-do-this section." The right fix is to remove the anti-pattern priming and rephrase positively.
+
+## Publishing and naming (DJ-135)
+
+Canonical agent prompts ship from `internal/scaffold/agents/` and get **published** to each registered runtime by `internal/publisher/` on `locutus init` and `locutus update --reset`. The publisher emits per-runtime copies with translated frontmatter and namespacing:
+
+| Runtime | Subagent path | Slash command path | MCP config |
+|---|---|---|---|
+| Claude Code | `.claude/agents/locutus/<id>.md` | `.claude/commands/locutus-<activity>.md` | `.mcp.json` |
+| Codex | `.codex/agents/locutus-<id>.toml` | `.codex/commands/locutus-<activity>.toml` | `.codex/config.toml` |
+| Gemini | `.gemini/extensions/locutus/agents/locutus-<id>.md` | `.gemini/extensions/locutus/commands/locutus-<activity>.toml` | `.gemini/extensions/locutus/extension.json` |
+
+What the publisher carries through (per `internal/publisher/publisher.go`):
+
+- **The body** — the markdown prompt below the canonical frontmatter is emitted verbatim. Edit the canonical; the next reset propagates.
+- **The `id`** — becomes the runtime subagent's `name` field. Hyphenated form (`spec-scout`, not `spec_scout`); per DJ-135 ckpt 2 this is enforced by `TestAllAgentsHaveHyphenatedID_DJ135`. Claude Code requires hyphens; Gemini and Codex accept both.
+- **A derived `description`** — `<id> — Locutus <role> agent` when the canonical declares `role:`, else `<id> — Locutus agent`.
+
+What does NOT propagate (because the runtime now owns these):
+
+- `models: [{provider, tier}]` — coding-agent runtime picks the model.
+- `thinking: on/off` — runtime decides whether to think.
+- `output_schema: <name>` — the runtime doesn't enforce a Go-side schema. The subagent's prose tells the orchestrator what shape to return.
+- `grounding: true` — runtime grounding is a runtime concern; canonical declares "this agent needs web search" as a soft requirement that the playbook can fall back from when the runtime doesn't ship search.
+
+These fields still live on the canonical for documentation purposes (and as soft signals the playbook author can reference), but they don't drive a Locutus-side adapter selection anymore.
+
+## Playbook authoring
+
+The activity playbooks at `internal/scaffold/plans/` are a different surface from the agent prompts. Where an agent prompt is one model's instructions for its one task, a playbook is an **orchestrator's instructions** for driving the whole activity — it names which subagents to dispatch, which MCP tools to call, and how to decide when the activity is done.
+
+Conventions specific to playbooks:
+
+- **Use the prefixed MCP tool names.** Claude Code (and other MCP-aware runtimes) prefix MCP server tools as `mcp__<server>__<tool>` in the agent's catalogue. Reference `mcp__locutus__spec_list_manifest`, not `spec_list_manifest`. The agent doesn't have to ToolSearch to find them.
+- **Start with an explicit first action.** Empirical observation: a playbook that says "Your very first action is to call mcp__locutus__spec_list_manifest" gets the agent into the right context immediately. Without that, the agent often explores filesystem first and wastes round-trips.
+- **Name subagents by their hyphenated id.** Claude Code's Task tool, Codex's equivalent, and Gemini's all reference subagents by their published filename basename. Use `spec-decision-elaborator`, not "the decision elaborator."
+- **Encode the convergence-by-construction discipline explicitly.** The previous Go-coded council retired because it couldn't reliably converge — critics re-raised concerns, decisions stalled, runs timed out. The playbook's prose has to push the orchestrating agent to commit aggressively and let revisions fix what needs fixing. See the "Convergence by construction" section in `spec_refinement.md` for the canonical formulation.
+- **No anti-pattern lists in playbooks either.** Same model autocomplete behavior applies. Describe the desired iteration shape positively; don't enumerate failure modes the agent should avoid.
+
+## Anti-patterns to avoid in prompts
 
 ## Anti-patterns to avoid in prompts
 

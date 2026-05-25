@@ -1,273 +1,206 @@
 # The Council
 
-The council is Locutus's multi-agent convergence loop for spec
-generation. `locutus refine`, `locutus import`, and parts of
-`locutus assimilate` drive a workflow that dispatches a set of
-LLM-backed agents — each with a specialized role — until the
-graph converges on a complete spec or the iteration budget
-exhausts.
+Locutus's "council" is the set of specialized agents (`spec-scout`, `spec-decision-elaborator`, etc.) that, taken together, drive a project's spec graph to convergence against `GOALS.md`. Before DJ-135 the council was a Go-coded workflow that Locutus orchestrated in-process. After DJ-135 the same agent set is preserved but the orchestration moves out: the published playbook at `.borg/plans/spec_refinement.md` instructs a coding-agent runtime (Claude Code, Codex, Gemini) to dispatch the agents itself via its own subagent mechanism (Claude Code's Task tool, etc.), calling back into Locutus's MCP server to read and mutate the spec graph.
 
-This document is the human-readable map of the council:
+The agents themselves are unchanged. What changed is who orchestrates them and through what surface.
 
-- The workflow shape, diagrammed
-- Per-agent reference: what each agent does, when it runs, model tier, transport, governing DJs
-- Convergence semantics
-- The other verb-level workflows that reuse council-style agents
+This document covers:
+- The playbook iteration loop, diagrammed
+- Per-agent reference: role, output shape, governing DJs
+- Convergence-by-construction discipline
+- Where to look when a refinement run misbehaves
 
-Authoritative design lives in the [Decision Journal](DECISION_JOURNAL.md) (the per-DJ entries cited throughout). When this doc disagrees with a DJ, the DJ wins.
+Authoritative design lives in the [Decision Journal](DECISION_JOURNAL.md). When this doc disagrees with a DJ, the DJ wins.
 
-## Workflow shape
+## The playbook loop
+
+The shape below mirrors the loop the spec_refinement playbook (`.borg/plans/spec_refinement.md`) prescribes. The coding agent reads the playbook on session start, then drives this loop itself by dispatching the named subagents and calling the named MCP tools.
 
 ```mermaid
 graph TD
-    Start(["locutus refine / import"]) --> Scout0["spec_scout: initial gap analysis"]
-    Scout0 --> CandidateSurvey
+    Start(["locutus refine → ACP session → playbook delivered"]) --> Survey
 
-    subgraph loop ["Convergence iteration loop"]
-        CandidateSurvey["candidate-survey step (fanout per OpenAxis)"]
-        CandidateSurveyDone["merge into state.AxisSurveys"]
-        Decisions["decisions step (fanout per OpenAxis)"]
-        DecisionsDone["merge into RawProposal.Decisions"]
-        Narrative["narrative step (fanout per affected node)"]
-        NarrativeDone["merge into RawProposal.Features and Strategies"]
-        Revise["revise-decisions step (fanout per concern with related decision)"]
-        ReviseDone["merge updated decisions in-place"]
-        Reconcile["spec_reconciler: field-map RawProposal to SpecProposal, plus integrity_critic synthetic check"]
-        Critique["critique step (fanout per CritiqueDimension)"]
-        CritiqueDone["merge into state.Concerns"]
-        ScoutTail["spec_scout: re-judge convergence"]
+    subgraph loop ["Iteration loop"]
+        Survey["spec-scout: survey + convergence judgement"]
+        Surveyed["axes_open · new_nodes · critique_dimensions · concern_dispositions · converged?"]
+        CandidateSurveys["spec-candidate-survey × N axes (parallel)"]
+        Decisions["spec-decision-elaborator × N axes (parallel) → mcp__locutus__spec_propose_decision"]
+        Narratives["spec-feature-elaborator / spec-strategy-elaborator × M new nodes (parallel) → spec_propose_feature / spec_propose_strategy"]
+        Critics["spec-critic-elaborator × K dimensions (parallel) → concerns feed next scout"]
+        Reconcile["spec-reconciler: cross-decision integrity → mcp__locutus__spec_revise_decision"]
 
-        CandidateSurvey -- "spec_candidate_survey, one call per axis" --> CandidateSurveyDone
-        CandidateSurveyDone --> Decisions
-        Decisions -- "spec_decision_elaborator, one call per axis" --> DecisionsDone
-        DecisionsDone --> Narrative
-        Narrative -- "spec_feature_elaborator or spec_strategy_elaborator" --> NarrativeDone
-        NarrativeDone --> Revise
-        Revise -- "spec_decision_elaborator in revise mode" --> ReviseDone
-        ReviseDone --> Reconcile
-        Reconcile --> Critique
-        Critique -- "spec_critic_elaborator, one call per dimension" --> CritiqueDone
-        CritiqueDone --> ScoutTail
+        Survey --> Surveyed
+        Surveyed -- "converged? = true" --> Done
+        Surveyed -- "converged? = false" --> CandidateSurveys
+        CandidateSurveys --> Decisions
+        Decisions --> Narratives
+        Narratives --> Critics
+        Critics --> Reconcile
+        Reconcile --> Survey
     end
 
-    ScoutTail -- "converged false, budget remaining" --> CandidateSurvey
-    ScoutTail -- "converged true" --> Persist["Integrity-revise gate (spec_architect via reviseForIntegrity)"]
-    ScoutTail -- "budget exhausted" --> Failed(["Convergence failed: history event written"])
-
-    Persist -- "integrity violations remain" --> Failed
-    Persist -- "clean" --> Done(["Persist to .borg/spec/"])
+    Done(["Run complete: summary in agent's final output; spec graph at .borg/spec/"])
+    Cap(["20-iteration cap → commit best-known + report"])
+    Surveyed -- "20 iterations reached" --> Cap
 
     classDef agent fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef fanout fill:#fef3c7,stroke:#d97706,color:#78350f
     classDef merge fill:#f3f4f6,stroke:#6b7280,color:#374151
-    classDef terminal fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
-    classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef terminal fill:#dcfce7,stroke:#16a34a,color:#14532d
 
-    class Scout0,Reconcile,ScoutTail,Persist agent
-    class CandidateSurvey,Decisions,Narrative,Revise,Critique fanout
-    class CandidateSurveyDone,DecisionsDone,NarrativeDone,ReviseDone,CritiqueDone merge
-    class Failed terminal
-    class Done done
+    class Survey,Reconcile agent
+    class CandidateSurveys,Decisions,Narratives,Critics fanout
+    class Surveyed merge
+    class Done,Cap terminal
 
     style loop fill:#fefce8,stroke:#a8a29e,stroke-width:1.5px,color:#713f12
 ```
 
-Each step's actual dispatch shape depends on the agent's frontmatter `thinking` + `output_schema` combination — see the [DJ-130](DECISION_JOURNAL.md#dj-130) split discipline. Thinking-on schema-bearing agents (scout, elaborators, critic, reconciler) dispatch as two SDK round-trips per logical call (reasoning pass → format pass); thinking-off agents dispatch as one. The diagram shows logical agent calls; the per-step folders under `.locutus/sessions/.../calls/` carry the actual SDK-call detail.
+Each fanout step's parallelism is enabled by the runtime — Claude Code can dispatch multiple subagents concurrently via repeated Task invocations; Codex / Gemini have their own equivalents. The playbook describes the steps as "dispatch in parallel where your runtime allows" rather than mandating concurrency.
 
-## Agents in the council
+Spec mutation goes exclusively through MCP write tools (`mcp__locutus__spec_propose_*`, `mcp__locutus__spec_revise_decision`). Auto-commit per call: the orchestrating coding agent calls the tool, Locutus commits, and every other attached client receives `notifications/resources/updated` on `spec://manifest`. Multi-client coordination falls out of the singleton daemon model — see `docs/mcp.md` for the lifecycle.
 
-Each entry below covers: role, when it runs, output schema, transport (direct-SDK today, `acp` after [DJ-127](DECISION_JOURNAL.md#dj-127) ships), governing DJs, and notable design choices.
+## Agents
 
-### `spec_scout`
+Each entry covers role, when the agent runs, output shape (the playbook expects the subagent to return this), and the governing DJs that shaped the agent's prompt content. Model tier, thinking-mode, and grounding fields in the canonical frontmatter still ship for documentation purposes but the coding-agent runtime now decides which model to run — those fields no longer drive a Locutus-side adapter selection.
 
-The gap analyzer, completeness judge, and convergence gate. Runs once on initial dispatch and once at the tail of every iteration.
+### `spec-scout`
+
+Gap analyzer, completeness judge, and convergence gate. Runs once on the initial dispatch and once at the tail of every iteration.
 
 | Field | Value |
 |---|---|
-| Output schema | `ScoutBrief` (axes_open, new_nodes, critique_dimensions, concern_dispositions, converged + scoping content) |
-| Model tier | Strong (Opus 4.7 / Gemini 3 Pro / GPT-5) |
-| Thinking | `on` |
-| Grounding | `true` (web search) |
+| Returns | `ScoutBrief`-shaped output: `axes_open`, `new_nodes`, `critique_dimensions`, `concern_dispositions`, `converged` (plus scoping content) |
 | Governing DJs | [DJ-124](DECISION_JOURNAL.md#dj-124) (scout-as-judge convergence), [DJ-125](DECISION_JOURNAL.md#dj-125) (concern dispositions), [DJ-129](DECISION_JOURNAL.md#dj-129) (critique-dimension surfacing) |
 
 Four coupled jobs in a single pass:
 
-1. **Survey the domain** — reads GOALS.md + any imported feature/design document + the existing spec snapshot via `spec_list_manifest` and `spec_get`. Emits `domain_read`, `technology_options`, `implicit_assumptions`, `watch_outs` for downstream agents.
-2. **Identify foundational axes** — walks the deliverables and surfaces axes that need a decision. Each axis the existing graph doesn't already cover becomes an `axes_open[]` entry the decision step fans out on. Stable axis IDs across iterations enable cycle detection.
-3. **Identify new spec nodes** — when imported content or goal-shape analysis surfaces a new feature or strategy the graph doesn't carry, emit a `new_nodes[]` entry. Each entry pre-populates `decisions[]` with existing-decision IDs that already cover the node's axes.
-4. **Grade open concerns** — from iter 1 onward, the manifest carries critic findings with status `open` (after the mechanical pre-pass stales the easy cases). Every still-`open` concern gets a `concern_dispositions[]` entry: `addressed`, `wontfix`, or `still_open` with a one-sentence justification.
+1. **Survey the domain** — reads GOALS.md + the existing spec snapshot via `mcp__locutus__spec_list_manifest` and `mcp__locutus__spec_get`.
+2. **Identify foundational axes** — surfaces axes that need a decision. Each axis the existing graph doesn't already cover becomes an `axes_open[]` entry the next step fans out on.
+3. **Identify new spec nodes** — when imported content or goal-shape analysis surfaces a new feature or strategy, emit a `new_nodes[]` entry with pre-populated decision-id references.
+4. **Grade open concerns** — from iter 1 onward, every still-`open` critic concern gets a disposition (`addressed` / `wontfix` / `still_open`) with a one-sentence justification.
 
-The `converged` flag drives the convergence gate. True exactly when `axes_open` is empty AND every concern has effective status `stale`/`addressed`/`wontfix`. False keeps the loop running until budget exhausts.
+The `converged` flag drives the playbook's exit condition. True exactly when `axes_open` is empty AND every concern has effective status `stale`/`addressed`/`wontfix`.
 
-### `spec_candidate_survey`
+### `spec-candidate-survey`
 
-Per-axis enumeration agent that runs BEFORE `spec_decision_elaborator` on the initial-elaboration path. One survey call per `axes_open` entry; surveys + elaborators dispatch in two sequential parallel steps (per-axis ordering is enforced by the candidate-survey step's merge populating `state.AxisSurveys` before the decisions step projects its inputs).
+Per-axis enumeration agent that runs before `spec-decision-elaborator` on the initial-elaboration path. One survey call per `axes_open` entry.
 
 | Field | Value |
 |---|---|
-| Output schema | `CandidateList` (flat: name + first_glance_fit per `SurveyedCandidate`; schema `minItems=3`) |
-| Model tier | Fast (Haiku 4.5 / Flash-Lite / gpt-5-mini) |
-| Thinking | `off` |
-| Grounding | `true` (web search; load-bearing for currency + hallucination prevention) |
+| Returns | `CandidateList` (flat: name + first_glance_fit per surveyed candidate; ships 6-10 entries for well-trodden axes, 3-5 for specialized ones) |
 | Governing DJs | [DJ-132](DECISION_JOURNAL.md#dj-132) (enumeration-vs-judgment separation; per-axis pre-step before the decision-elaborator) |
 
-The agent's job per axis: search the candidate space (broad enumeration queries like `"managed Postgres alternatives 2026"`; constraint-narrowed queries when GOALS.md filters the set; adjacent-decision-narrowed queries when a sibling decision already commits to a stack); verify each candidate is real, current, and viable; emit a flat 6-10 entry list on well-trodden axes (3-5 on specialized ones) with each entry carrying only the candidate's name and a one-sentence first-glance fit. Judgment is the elaborator's job downstream; the survey only enumerates.
+Per axis: search the candidate space (broad enumeration + constraint-narrowed queries), verify each candidate is real / current / viable, emit a flat list of name + first-glance-fit. **Judgment is the elaborator's job downstream; the survey only enumerates.**
 
-The survey runs **on initial dispatch only**, not on revises (DJ-132 design decision #1). Revises engage with critic findings + the prior decision's alternatives slice; the survey enumeration would duplicate work and is structurally absent on the revise path. The elaborator's projection (`projectOpenAxis`) reads `state.AxisSurveys` keyed by axis ID; revise dispatches go through `projectReviseDecision` and never see the candidate list.
+Survey runs **on initial dispatch only**, not on revises (DJ-132 design decision). Revises engage with critic findings + the prior decision's alternatives slice; the survey enumeration would duplicate work.
 
-Grounding is load-bearing for this agent, not supplementary — DJ-132 documents that training-data-only enumeration produces hallucinated vendors and stale candidates. Web search forces every entry to resolve to a real, current source. See [docs/agent-conventions.md](agent-conventions.md)'s "Enumeration agents" section for the prompt-discipline pattern this agent exemplifies.
+Grounding (web search) is load-bearing for this agent, not supplementary — DJ-132 documents that training-data-only enumeration produces hallucinated vendors and stale candidates. The canonical frontmatter declares `grounding: true`; coding agents that don't ship a web search tool degrade this agent meaningfully.
 
-### `spec_decision_elaborator`
+### `spec-decision-elaborator`
 
-Authors decisions per axis. Runs in two modes from the same .md file: **first-author** (initial dispatch per `axes_open` entry, with a pre-survey candidate list when DJ-132's `spec_candidate_survey` ran upstream) and **revise** (re-dispatch per critic concern targeting an existing decision under [DJ-126](DECISION_JOURNAL.md#dj-126)).
-
-| Field | Value |
-|---|---|
-| Output schema | `RawDecisionProposal` (id, summary, title, rationale, alternatives, citations, axes, surfaced_by) |
-| Model tier | Strong |
-| Thinking | `on` |
-| Grounding | `true` |
-| Governing DJs | [DJ-124](DECISION_JOURNAL.md#dj-124) (per-axis dispatch), [DJ-126](DECISION_JOURNAL.md#dj-126) (revise mode), [DJ-128](DECISION_JOURNAL.md#dj-128) (deliberation log + counterproposal discipline), [DJ-132](DECISION_JOURNAL.md#dj-132) (candidate-list-aware initial mode), [DJ-133](DECISION_JOURNAL.md#dj-133) (axis-as-id; the elaborator copies the axis ID verbatim into the decision's id rather than minting a slug from the chosen option) |
-
-The agent's job per axis: research the option set (web search + spec_search of existing decisions on adjacent axes), pick one, justify with grounded citations, and weigh every alternative with grounded `rejected_because` reasoning. The alternatives slice carries the durable deliberation log; the schema enforces `minItems=1` per alternative's citations to prevent fabricated rejection prose.
-
-Under DJ-133 the decision's `id` is derived mechanically from the input axis (`dec-` + the axis's `id` field verbatim). The elaborator no longer mints a slug from the chosen option — the id names the *question* the decision answers; `title` / `summary` / `rationale` carry the *answer*. A revision that flips the chosen option keeps the id stable, so backreferences from features and strategies don't drift across Flips. The workflow's revise-by-id match (post-DJ-133 mergeDecisions) finds replacements by exact id equality rather than the retired axis-intersection scan.
-
-Under DJ-132, when the initial-dispatch projection injects a `Candidate list` section (`spec_candidate_survey` ran upstream and populated `state.AxisSurveys` for this axis), the elaborator's task narrows from "discover the candidates and pick" to "pick from these surveyed candidates + author proper rationale + write `rejected_because` for each unpicked + cite each." Every unpicked surveyed candidate becomes an alternative entry; the elaborator may surface additional candidates beyond the survey when the axis warrants (anti-anchoring against the survey's coverage gaps). On axes where no survey ran (revise dispatches; survey misfires), the elaborator falls through to its own enumeration as before.
-
-Revise mode addresses critic findings with structured counterproposals. The elaborator either:
-
-- **Flips** to a counterproposal as the new chosen (prior chosen demotes to alternatives with `rejected_because` synthesized from the picking counterproposal's argument)
-- **Rejects** all counterproposals (every counterproposal becomes a new alternative entry with the critic's argument verbatim as `rationale`)
-
-Alternatives strictly accumulate across revises — this is now enforced by the merge layer mechanically (commit `ef2d209`), not by prompt-discipline alone. The elaborator emits only new or updated alternatives per revise; the merge layer preserves prior entries unchanged. See [DJ-128](DECISION_JOURNAL.md#dj-128).
-
-### `spec_feature_elaborator`
-
-Authors per-feature narrative — description, acceptance criteria, and the list of decision IDs the feature depends on. Runs as part of the `narrative` fanout step when scout-surfaced or critic-affected nodes need elaboration.
+Authors one decision per axis. Runs in two modes from the same prompt: **first-author** (initial dispatch per `axes_open` entry, with the candidate list from the survey as input) and **revise** (re-dispatch per critic concern under [DJ-126](DECISION_JOURNAL.md#dj-126)).
 
 | Field | Value |
 |---|---|
-| Output schema | `RawFeatureProposal` (id, summary, title, description, acceptance_criteria, decisions) |
-| Model tier | Balanced |
-| Thinking | `on` |
-| Grounding | (none; reads spec only) |
+| Returns | A decision body ready to commit via `mcp__locutus__spec_propose_decision` — id, title, summary, status, confidence, rationale, alternatives (each with grounded citations), axes (backfilled from id if omitted), surfaced_by |
+| Governing DJs | [DJ-124](DECISION_JOURNAL.md#dj-124) (per-axis dispatch), [DJ-126](DECISION_JOURNAL.md#dj-126) (revise mode), [DJ-128](DECISION_JOURNAL.md#dj-128) (deliberation log + counterproposal discipline), [DJ-132](DECISION_JOURNAL.md#dj-132) (candidate-list-aware initial mode), [DJ-133](DECISION_JOURNAL.md#dj-133) (axis-as-id) |
+
+Per axis: pick a chosen option, justify with grounded citations, and weigh every alternative with grounded `rejected_because` reasoning. The alternatives slice carries the durable deliberation log.
+
+Per DJ-133 the decision's `id` is derived mechanically from the input axis (`dec-` + axis-id verbatim). A revision that flips the chosen option keeps the id stable, so backreferences from features and strategies don't drift. Per DJ-135 ckpt 4 the MCP write tool backfills `axes` from the id when the agent omits it — convergence-by-construction trumps strict-input rigidity.
+
+Revise mode addresses critic concerns with structured counterproposals: either **flips** (counterproposal becomes new chosen; prior chosen demotes to alternatives) or **rejects** (every counterproposal becomes a new alternative with the critic's argument as `rationale`).
+
+### `spec-feature-elaborator`
+
+Authors per-feature narrative — description, acceptance criteria, and the list of decision IDs the feature depends on.
+
+| Field | Value |
+|---|---|
+| Returns | Feature body for `mcp__locutus__spec_propose_feature` — id, title, summary, status, description, acceptance_criteria, decisions |
 | Governing DJs | [DJ-124](DECISION_JOURNAL.md#dj-124) (decisions-before-narrative ordering) |
 
-Narrative elaborators are downstream of decision-elaborators by design. They receive a pre-populated `decisions[]` slice (computed by the scout's decision-mapper pass + the workflow's append of newly-minted decision IDs from this iteration's decision dispatch) and author narrative that's consistent with those decisions' chosen technologies. The feature's `description` names user-visible behavior; the cited decisions' technologies are referenced in domain terms where they clarify behavior. Decisions are referenced by id; the elaborator does not author or rename decisions.
+Narrative elaborators are downstream of decision-elaborators by design. They receive a pre-populated `decisions[]` slice (the scout's decision-mapper pass + this iteration's new decision ids) and author narrative consistent with those decisions' chosen technologies. The feature's `description` names user-visible behavior; cited decisions are referenced by id, not authored or renamed.
 
-### `spec_strategy_elaborator`
+### `spec-strategy-elaborator`
 
-Authors per-strategy prose body and decision-ID linkage. Same workflow position as the feature elaborator; structurally similar but produces multi-paragraph strategy body instead of feature description + acceptance criteria.
+Authors per-strategy prose body and decision-id linkage. Structurally similar to the feature elaborator; produces multi-paragraph strategy body instead of feature description + acceptance criteria.
 
 | Field | Value |
 |---|---|
-| Output schema | `RawStrategyProposal` (id, summary, title, kind, body, decisions) |
-| Model tier | Balanced |
-| Thinking | `on` |
-| Grounding | (none) |
+| Returns | Strategy body for `mcp__locutus__spec_propose_strategy` — id, title, summary, kind, body, decisions |
 | Governing DJs | [DJ-124](DECISION_JOURNAL.md#dj-124) |
 
-Strategy bodies name a specific technology — that's the structural difference from features. A strategy body says "Use Postgres 16 with PostGIS on AWS RDS Multi-AZ" and explains system-wide consequences; the cited decisions' chosen options are committed verbatim. Strategies are dispatched alongside features in the same `narrative` fanout step; the per-item `agent_id` field on each fanout item routes between the two elaborators ([DJ-098](DECISION_JOURNAL.md#dj-098)).
+Strategy bodies name a specific technology — that's the structural difference from features. A strategy body says "Use Postgres 16 with PostGIS on AWS RDS Multi-AZ"; the cited decisions' chosen options are committed verbatim.
 
-### `spec_reconciler`
+### `spec-critic-elaborator`
 
-Post-narrative integrity check + field mapping. Runs once per iteration after the narrative fanout, before critique.
-
-| Field | Value |
-|---|---|
-| Output schema | `ReconciliationVerdict` (actions list — kept for API stability) |
-| Model tier | Strong |
-| Thinking | `high` |
-| Grounding | (none; reads spec only) |
-| Governing DJs | [DJ-105](DECISION_JOURNAL.md#dj-105) (legacy inline-decisions schema reconciler — superseded), [DJ-124](DECISION_JOURNAL.md#dj-124) (decisions-before-narrative re-scopes the reconciler to no-op) |
-
-**Status note:** Under DJ-124's decisions-before-narrative flow, decisions are now authored at the top level by `spec_decision_elaborator`, not inline by the architect. The reconciler's original job — clustering duplicate/conflicting inline decisions across an architect-emitted `RawSpecProposal` — has become largely a no-op. The agent still runs and emits a verdict (for API-layer schema stability), but `ApplyReconciliation` ignores the verdict content. The merge function field-maps `RawSpecProposal` → `SpecProposal` and surfaces dangling decision references onto `state.DanglingReferences`. The agent retirement is tracked in the [DJ-124 plan TODO](../.claude/plans/dj-124-decisions-before-narrative.md).
-
-The same merge pass also runs `appendIntegrityFindings(state)` — a synthetic `integrity_critic` source (not an LLM call) that calls `SpecProposal.Validate(existing)` to detect dangling refs and other structural defects, then appends them to `state.Concerns` as `kind: "integrity"` entries. The next scout iteration sees these alongside LLM-critic concerns.
-
-### `spec_critic_elaborator`
-
-Dimension-driven critic. Runs as part of the `critique` fanout step, one call per `CritiqueDimension` the scout surfaced this iteration. Replaces the pre-DJ-129 fixed 4-critic lens set (architect_critic / devops_critic / sre_critic / cost_critic) with a single parametric agent the scout instructs per-axis.
+Dimension-driven critic. One call per `critique_dimensions` entry the scout surfaced this iteration.
 
 | Field | Value |
 |---|---|
-| Output schema | `CriticIssues` (issues list, each with weakness + evidence + counterproposals + related_decision_ids) |
-| Model tier | Strong |
-| Thinking | `on` |
-| Grounding | depends on dimension's `disciplines` field — `web_grounded` dimensions get `grounding: true` |
+| Returns | `CriticIssues` — issues list, each with weakness + evidence + counterproposals + related_decision_ids |
 | Governing DJs | [DJ-128](DECISION_JOURNAL.md#dj-128) (structured counterproposal menu discipline), [DJ-129](DECISION_JOURNAL.md#dj-129) (dimension-driven critique replacing fixed lens set) |
 
-Each invocation receives one dimension as scope: a `focus_question` framing what to challenge, `source_evidence` excerpts to ground against, a `disciplines` enum slice (web_grounded / spec_node_grounded / best_practice_grounded / goals_grounded / freeform) declaring what citation kinds the critic must apply, and a `severity_floor` for default issue severity. The critic emits one `CriticIssue` per architecturally distinct problem found within the dimension's scope.
+Each invocation receives one dimension: a `focus_question`, `source_evidence` excerpts, a `disciplines` enum, and a `severity_floor`. Emits one issue per architecturally distinct problem. Each issue carries `counterproposals[]` — an enumerated menu of concrete alternatives the critic would accept in place of the current decision, each with `option` + `argument` + grounded `citations`.
 
-Each issue carries `counterproposals[]` — an enumerated menu of concrete alternatives the critic would accept in place of the current decision, each with `option` + `argument` + grounded `citations` ([DJ-128](DECISION_JOURNAL.md#dj-128)). The elaborator's revise pass evaluates the full menu and either picks one as the new chosen option or rejects all coherently. The "needs investigation" sentinel option lets a critic raise a real concern without inventing an unsupported alternative.
+`CritiqueDimensions` themselves come from the scout. Scout-author dimensions are project-shaped — an electoral-campaign project surfaces `voter-file-privacy`; a fintech project surfaces `pci-scope`. The pre-DJ-129 fixed lens set (architect / devops / sre / cost critics) is retired.
 
-`CritiqueDimensions` themselves come from the scout. Scout-author dimensions are project-shaped: an electoral campaign project surfaces `voter-file-privacy` and `election-cycle-traffic`; a fintech project surfaces `pci-scope`. The fixed-lens cost/sre/devops/architecture critics are retired; their concerns now surface under scout-defined dimensions whose `lens` field carries the categorisation.
+### `spec-reconciler`
 
-### `spec_architect`
-
-Post-workflow integrity-revise gate. Runs OUTSIDE the convergence loop — after the loop converges (or exhausts budget) and `GenerateSpec` validates the final `SpecProposal`. When the validation surfaces dangling references the council didn't resolve, the architect gets one or two repair attempts to fix them; persistent violations fail the verb with `IntegrityViolationError`.
+Cross-decision integrity check. Runs once per iteration near the end of the loop.
 
 | Field | Value |
 |---|---|
-| Output schema | `SpecProposal` (architect emits the full post-DJ-124 spec shape) |
-| Model tier | Strong |
-| Thinking | `on` |
-| Grounding | `true` |
-| Governing DJs | predates the spec-generation council architecture; retained as a backstop for DJ-124's decisions-before-narrative flow |
+| Returns | A list of revisions to apply via `mcp__locutus__spec_revise_decision` for any decision that needs cross-graph repair |
+| Governing DJs | (pre-DJ-124 integrity-revise architect — repurposed under the new playbook model as an explicit step rather than a backstop) |
 
-The cap is small (`MaxIntegrityRetries = 2`) because a model that fails twice in a row to repair structural integrity is unlikely to comply on the third try. Failure surfaces as a typed `IntegrityViolationError` carrying the warnings + the last attempt's output, so the operator can inspect what the architect produced and decide whether to re-run, switch model tier, or hand-edit.
+Walks the graph for dangling references, axis duplication, contradictory commitments, and emits per-decision revisions where needed. Under the legacy in-process council this was largely a no-op because the merge layer guaranteed integrity; under the new model the runtime's parallel dispatch can produce transient inconsistencies the reconciler catches before the next iteration's scout.
 
-In current traces, the architect rarely runs — most council convergence produces structurally clean spec proposals because the merge functions guarantee referential integrity at the workflow layer. The architect is a backstop, not a hot path.
+### Retired agents
 
-## Convergence semantics
+- **`spec_architect`** (integrity-revise gate) — was a Locutus-side backstop after the council loop converged. The new model has the orchestrating coding agent itself catch integrity at the reconciler step; the standalone architect retired with the workflow that drove it.
+- **`spec_advocate` / `spec_challenger`** (justify verb) — the `locutus justify` verb retired in DJ-135 ckpt 5. If an advocate/challenger workflow returns, it ships as a separate activity (`justify_brief`?) with its own playbook.
+- **`spec_gate`, `spec_outliner`, `spec_finding_clusterer`, `spec_summarizer`** — supporting agents that were council-internal. Canonical files still ship for forward compatibility, but no current playbook dispatches them.
 
-The council's exit conditions, in priority order:
+## Convergence by construction
 
-1. **Converged**: scout's tail call emits `converged: true`. Loop terminates as the queue drains; the in-flight `ProposedSpec` is what persists.
-2. **Cycle detected**: any (deliverable, axis) pair recurs at the non-progress termination threshold. Force-terminates with a `convergence_stuck` history event naming the stuck axes ([DJ-103](DECISION_JOURNAL.md#dj-103) history events).
-3. **Revision cap exceeded**: any single decision exceeds `LOCUTUS_DECISION_REVISION_CAP` revisions (default 3). Force-terminates with `convergence_revision_capped`; the cap-as-commit mark lands on the affected decision ([DJ-128](DECISION_JOURNAL.md#dj-128)).
-4. **Budget exhausted**: iteration index reaches `LOCUTUS_SPEC_GEN_MAX_ITERATIONS` (default 5). Force-terminates with `convergence_failed` history event; nothing persists to `.borg/spec/`.
+The pre-DJ-135 council frequently failed to converge: critics re-raised the same concerns iteration after iteration, decisions stalled waiting for human review, and the loop timed out without committing anything. The pivot's discipline: **commit, don't defer.**
 
-Each force-termination writes a [DJ-103](DECISION_JOURNAL.md#dj-103) history event so `locutus history` and the integrity-revise narrative can later explain what happened. The terminal step's RunItem closure writes the event and returns a non-nil error; the executor propagates the error up through `GenerateSpec` to the cmd-layer caller.
+The spec_refinement playbook's prose enforces this:
 
-## Other verb workflows that use council-style agents
+- If an axis appears in `axes_open` and the candidate-survey + elaborator produced a defensible answer, commit it. Don't surface "I'm not sure" to the human — that's a deferral.
+- If a concern recurs across two iterations with no new evidence, treat it as `wontfix`. Recurring concerns without new evidence are a smell that the critic dimension is mis-scoped, not that the decision is wrong.
+- If the 20-iteration cap fires, commit the best-known state and report. Don't loop further.
 
-Beyond the spec-generation council, several verb-level workflows reuse the same agent infrastructure with different agent sets and step shapes:
+The MCP write tools reinforce the discipline at the validation layer: `axes` backfills from the id when omitted (per DJ-133), `surfaced_by` is optional, and validation errors that DO fire (id missing, wrong kind prefix, body shape mismatch) name what's wrong specifically so the agent's next attempt can fix it.
 
-| Verb | Workflow | Agents |
-|---|---|---|
-| `locutus refine <node>` | [workflow_refine.go](../internal/agent/workflow_refine.go) | `refiner` family — runs the council on a focused subgraph, then a rewriter pass that emits the refined .md body |
-| `locutus justify <id> [--against]` | [workflow_justify.go](../internal/agent/workflow_justify.go) | `spec_advocate` (active defense) and `spec_challenger` (adversarial dialogue, when `--against` is set) |
-| `locutus import <source>` | [workflow_import.go](../internal/agent/workflow_import.go) | intake → admit → spec-generation council |
-| `locutus assimilate` | [workflow_assimilation.go](../internal/agent/workflow_assimilation.go) | per-domain `*_analyzer` agents (backend, frontend, infra) → synthesizer → spec-generation council |
-| `locutus update --fill-summaries` | [workflow_fill_summaries.go](../internal/agent/workflow_fill_summaries.go) | `spec_summarizer` per node missing a summary |
-| `locutus adopt` | [workflow_planning.go](../internal/agent/workflow_planning.go) and [planner.go](../internal/agent/planner.go) | per-step planner / critic / stakeholder / researcher / historian roles for the per-node implementation council |
+## Where to look when a run misbehaves
 
-These workflows share the underlying agent infrastructure (frontmatter loading, model resolution, transport selection, the DJ-130 split, the DJ-130 trace recorder) but compose different agent graphs for their domain. The spec-generation council is the most elaborate; the others are narrower applications of the same primitives.
+Sessions land under `.locutus/sessions/<date>/<time>/<sid>/`:
 
-## Forensic surfaces
+| File | What to look at |
+|---|---|
+| `playbook.md` | What the agent received as its initial instruction. Confirms the playbook reached the agent intact. |
+| `events.jsonl` | Every ACP event observed during the session — agent messages, subagent dispatches, MCP tool calls, errors. One JSON object per line. |
+| `tools.jsonl` | Filtered to tool_call / tool_result events. Fast scan for "did the agent ever call `spec_propose_decision`?" or "did `spec_search` return what we expected?" |
+| `output.md` | The agent's final text output (concatenated EventText). The summary the playbook asks for at the end. |
 
-When the council misbehaves, the operator-facing diagnostic surfaces are:
+Common patterns:
 
-- **Per-step trace folders** under `.locutus/sessions/<sid>/calls/<NNNN>-<agent>[-<tag>]/` carrying a parent `step.yaml` (summed token counts, child call list, duration) plus per-SDK-call YAML children (the DJ-130 layout). Each child carries the full request/response payload.
-- **OTel `trace.jsonl`** under each session directory, with span_id cross-references back to per-call YAMLs. The `workflow.phase` → `agent.dispatch` → `llm.attempt` → `provider.generate` span tree shows the full dispatch hierarchy.
-- **History events** under `.borg/history/evt-*.json`, the durable record of what the council decided across runs. `convergence_failed`, `convergence_stuck`, `convergence_revision_capped`, `decision_revised`, `decision_locked` events name the council's terminal judgments.
-- **The persisted spec** under `.borg/spec/` is the source of truth for what landed. Each decision's `alternatives[]` slice carries the durable deliberation log; reviewers and future iterations read it to avoid re-litigating settled rejections.
+- **Agent never calls `mcp__locutus__spec_*` tools.** Either the MCP server didn't attach (check `.mcp.json` is present + `.locutus/mcp.sock` exists during the run) or the agent went exploratory-first (the playbook's "Start here" section calls this out; adjust if needed).
+- **Subagent dispatches return but no `propose_decision` follows.** Check the subagent's returned body in `tools.jsonl` (the Task tool result event) — usually a schema-validation rejection. The MCP tool's error response names the missing field; the agent's next attempt usually fixes it.
+- **Loop never reaches `converged: true`.** Check the scout's returned `concern_dispositions` across iterations. Repeated `still_open` on the same concern is the convergence-by-construction failure mode; the playbook says to flip it to `wontfix` after two iterations without new evidence.
+- **Run timed out mid-loop.** ACP heavy-grounding fanouts (15+ candidate surveys each doing web searches) can run 10+ minutes. Either increase the timeout, simplify the GOALS.md to reduce axis count, or tune the canonical `spec-candidate-survey` prompt to bound research depth.
 
-The in-process spec graph during a council run is the unified `SpecStore` (DJ-134) at `internal/agent/spec_store.go`. All three RAG tools (spec_list_manifest, spec_get, spec_search) dispatch against it; settled-vs-proposed disposition is tagged per entry. An `spec_*` tool returning unexpected data during a council run means either the council didn't `Begin` a transaction on the store (the wrapper-chain `SpecStore()` accessor returned nil somewhere) or the merge helpers' sync-from-RawProposal step skipped a node — both visible in per-step YAMLs.
-
-See [docs/debugging-traces.md](debugging-traces.md) for the operational guide to walking these surfaces when investigating a council failure.
-
-## Schema discipline
-
-Every council agent's output schema is a registered Go struct with `jsonschema` tags. The schema travels into the provider's strict-mode structured-output config on every call; the agent's prompt walks each field in prose but lets the schema carry shape via `description=`, `enum=`, `minItems=` tags. See [CLAUDE.md](../CLAUDE.md)'s schema discipline section for the load-bearing rules — chiefly that example payloads use descriptive prose (never `"dummy"` / `"placeholder"`) and that fields with semantic constraints carry inline descriptions naming the constraint in language the model reads on every call.
-
-[`docs/agent-conventions.md`](agent-conventions.md) is the companion document covering the anti-patterns and positive patterns for agent prompt files under `internal/scaffold/agents/`. Read it before editing or creating any agent prompt.
+See [docs/debugging-traces.md](debugging-traces.md) for the broader operational guide.
 
 ## Cross-document references
 
 - **[DECISION_JOURNAL.md](DECISION_JOURNAL.md)** — authoritative design record. DJs cited throughout this doc are the load-bearing source.
-- **[agent-conventions.md](agent-conventions.md)** — prompt-author conventions and anti-patterns for agents under `internal/scaffold/agents/`.
+- **[agent-conventions.md](agent-conventions.md)** — prompt-author conventions for canonical agents under `internal/scaffold/agents/` and playbooks under `internal/scaffold/plans/`.
+- **[mcp.md](mcp.md)** — Locutus's MCP server surface, daemon lifecycle, bridge mechanics, and session-recording shape.
+- **[activities.md](activities.md)** — activity registry, agents.yaml schema, runtime detection, publisher behavior, and lifecycle.
 - **[debugging-traces.md](debugging-traces.md)** — operational guide for session-trace forensics.
-- **[CLAUDE.md](../CLAUDE.md)** — repo-wide guidance including the LLM layering invariant ([DJ-130](DECISION_JOURNAL.md#dj-130)) and schema discipline rules.
+- **[CLAUDE.md](../CLAUDE.md)** — repo-wide guidance and architecture invariants.
