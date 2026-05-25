@@ -1,0 +1,38 @@
+# Default agents.yaml shipped with Locutus.
+#
+# This file maps activity names (spec_refinement, planning,
+# implementation) to a prioritized list of coding-agent runtimes
+# capable of executing them. At dispatch time, Locutus picks the
+# first listed runtime whose ACP-server binary is detectable on
+# $PATH; users override per-project by writing their own
+# .borg/agents.yaml.
+#
+# Runtime ids match internal/dispatch/acp/registry.go AgentSpawns
+# keys — currently claude-code, codex, gemini. Adding a new runtime
+# means landing a Spawn entry in that registry first; agents.yaml
+# entries pointing at unknown runtimes are rejected by the loader.
+#
+# The defaults below are deliberately uniform: claude-code first
+# everywhere. Empirical task-tool-fit data (DJ-135 §"Reference
+# state") suggests different runtimes excel at different activities
+# — Codex for planning, Claude Code for spec deliberation, etc. —
+# but those preferences land as targeted overrides in a follow-up,
+# not as the embedded shipping default. The default's job is to
+# work; per-project specialization belongs to the user.
+
+activities:
+  spec_refinement:
+    runtimes:
+      - claude-code
+      - codex
+      - gemini
+  planning:
+    runtimes:
+      - claude-code
+      - codex
+      - gemini
+  implementation:
+    runtimes:
+      - claude-code
+      - codex
+      - gemini
