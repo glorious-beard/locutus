@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/frontmatter"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
@@ -107,16 +106,9 @@ func Scaffold(fsys specio.FS, projectName string) error {
 		return fmt.Errorf("copy plan files: %w", err)
 	}
 
-	// 6. Seed .borg/models.yaml from the embedded defaults so users can
-	// edit per-project model preferences (provider order, tier candidates)
-	// without rebuilding or setting LOCUTUS_MODELS_CONFIG. The runtime
-	// reads from this path on every invocation; absent file falls back
-	// to the embedded bytes.
-	if err := writeIfMissing(fsys, ".borg/models.yaml", func() ([]byte, error) {
-		return agent.EmbeddedModelsYAML(), nil
-	}); err != nil {
-		return err
-	}
+	// .borg/models.yaml retired in DJ-135 phase 5. Locutus no longer
+	// makes LLM calls directly; the coding-agent runtime (Claude Code
+	// etc.) handles model selection per its own configuration.
 
 	return nil
 }
@@ -272,48 +264,24 @@ func Reset(fsys specio.FS) (*ResetReport, error) {
 		}
 	}
 
-	// Overwrite models.yaml.
-	if err := fsys.MkdirAll(".borg", 0o755); err != nil {
-		return report, err
-	}
-	if err := fsys.WriteFile(".borg/models.yaml", agent.EmbeddedModelsYAML(), 0o644); err != nil {
-		return report, fmt.Errorf("write .borg/models.yaml: %w", err)
-	}
-	report.ModelsReset = true
+	// models.yaml retired with the in-process LLM dispatch (see
+	// Scaffold). No models.yaml is written by Reset; existing files
+	// on legacy projects can be removed manually.
 
 	return report, nil
 }
 
-// LoadAgent reads one AgentDef by id, preferring the project's
-// `.borg/agents/<id>.md` so an advanced user's per-project edits win.
-// Falls back to the embedded scaffold copy when the project file is
-// missing — supports tests and freshly-built binaries running on
-// uninitialized FSes. The scaffold is the source of truth for the
-// initial prompt; project copies are user-owned overrides.
-//
-// Used by cascade and cmd to load `rewriter` / `synthesizer` (and
-// any future single-shot helper that has a scaffold .md). Helpers
-// without a scaffold .md (intake, advocate, challenger) inline their
-// prompts in Go because there's nothing to override.
-func LoadAgent(fsys specio.FS, id string) (agent.AgentDef, error) {
-	if data, err := fsys.ReadFile(".borg/agents/" + id + ".md"); err == nil {
-		return parseAgentDef(data)
-	}
-	data, err := agentsFS.ReadFile("agents/" + id + ".md")
-	if err != nil {
-		return agent.AgentDef{}, fmt.Errorf("load agent %q: project copy missing and embedded copy unreadable: %w", id, err)
-	}
-	return parseAgentDef(data)
-}
+// LoadAgent retired in DJ-135 phase 5 — the council-side agent.AgentDef
+// type retired with the council. The publisher reads canonical agents
+// directly via frontmatter into its own CanonicalAgent shape; nothing
+// else loads agents through this path.
 
-func parseAgentDef(data []byte) (agent.AgentDef, error) {
-	var def agent.AgentDef
-	body, err := frontmatter.Parse(data, &def)
+func parseAgentDef(data []byte) ([]byte, error) {
+	body, err := frontmatter.Parse(data, &struct{}{})
 	if err != nil {
-		return def, fmt.Errorf("parse agent frontmatter: %w", err)
+		return nil, fmt.Errorf("parse agent frontmatter: %w", err)
 	}
-	def.SystemPrompt = body
-	return def, nil
+	return []byte(body), nil
 }
 
 // writeIfMissing writes a file only if it does not already exist (idempotency).

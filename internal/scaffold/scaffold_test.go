@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/scaffold"
 	"github.com/chetan/locutus/internal/spec"
 	"github.com/chetan/locutus/internal/specio"
@@ -531,17 +530,9 @@ func TestScaffoldCreatesAgents(t *testing.T) {
 	}
 }
 
-func TestScaffoldSeedsModelsYAML(t *testing.T) {
-	fsys := specio.NewMemFS()
-	err := scaffold.Scaffold(fsys, "test-project")
-	assert.NoError(t, err)
-
-	data, err := fsys.ReadFile(".borg/models.yaml")
-	assert.NoError(t, err, ".borg/models.yaml should be seeded by init so users can edit per-project model preferences")
-	assert.NotEmpty(t, data)
-	// The seeded content must match the embedded source of truth byte-for-byte.
-	assert.Equal(t, agent.EmbeddedModelsYAML(), data)
-}
+// TestScaffoldSeedsModelsYAML retired in DJ-135 phase 5 — Locutus no
+// longer makes in-process LLM calls, so .borg/models.yaml is gone.
+// The coding-agent runtime handles model selection now.
 
 func TestResetOverwritesEmbeddedArtifacts(t *testing.T) {
 	// User has scaffolded a project, then edited an agent .md file.
@@ -567,10 +558,9 @@ func TestResetOverwritesEmbeddedArtifacts(t *testing.T) {
 	assert.Contains(t, string(got), "spec-architect",
 		"the new content should be the embedded spec-architect.md (frontmatter mentions its id)")
 
-	// Report should list the reset agent files and the models.yaml flag.
+	// Report should list the reset agent files.
 	assert.NotEmpty(t, report.AgentsReset, "report should record reset agent files")
 	assert.Contains(t, report.AgentsReset, ".borg/agents/spec-architect.md")
-	assert.True(t, report.ModelsReset, "report should record models.yaml refresh")
 }
 
 func TestResetLeavesUserContentAlone(t *testing.T) {

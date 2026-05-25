@@ -4,14 +4,8 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/chetan/locutus/internal/agent"
 	"github.com/stretchr/testify/assert"
 )
-
-// agentWorkflowEvent constructs a minimal WorkflowEvent for sink tests.
-func agentWorkflowEvent(stepID, status string) agent.WorkflowEvent {
-	return agent.WorkflowEvent{StepID: stepID, AgentID: "test", Status: status}
-}
 
 func TestResolveLogLevel(t *testing.T) {
 	cases := []struct {
@@ -58,30 +52,4 @@ func TestRenderModePrecedence(t *testing.T) {
 	// Default is rich.
 	cli = &CLI{}
 	assert.Equal(t, RenderModeRich, cli.RenderMode())
-}
-
-func TestPickSinkMatchesMode(t *testing.T) {
-	// JSON / silent → SilentSink.
-	cli := &CLI{JSON: true}
-	sink := pickSink(cli)
-	assert.NotNil(t, sink)
-	// SilentSink is a value type — can't directly compare; just exercise it.
-	sink.OnEvent(agentWorkflowEvent("x", "started"))
-	sink.Close()
-
-	// MCP from CLI path also returns silent — mcpSink is built directly
-	// in the MCP handlers and never via pickSink.
-	cli = &CLI{}
-	cli.mcpMode = true
-	sink = pickSink(cli)
-	assert.NotNil(t, sink)
-	sink.OnEvent(agentWorkflowEvent("y", "started"))
-	sink.Close()
-
-	// Plain mode returns a non-nil sink that doesn't panic.
-	cli = &CLI{Plain: true}
-	sink = pickSink(cli)
-	assert.NotNil(t, sink)
-	sink.OnEvent(agentWorkflowEvent("z", "started"))
-	sink.Close()
 }

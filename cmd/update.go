@@ -2,20 +2,16 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
 	selfupdate "github.com/creativeprojects/go-selfupdate"
 
 	"github.com/chetan/locutus/internal/activity"
-	"github.com/chetan/locutus/internal/agent"
 	"github.com/chetan/locutus/internal/history"
 	"github.com/chetan/locutus/internal/migrate"
-	"github.com/chetan/locutus/internal/prereqs"
 	"github.com/chetan/locutus/internal/publisher"
 	"github.com/chetan/locutus/internal/scaffold"
-	"github.com/chetan/locutus/internal/specio"
 )
 
 const updateRepo = "glorious-beard/locutus"
@@ -56,14 +52,19 @@ const updateRepo = "glorious-beard/locutus"
 type UpdateCmd struct {
 	Reset        bool `help:"Overwrite the project's scaffolded agents and models.yaml with the running binary's embedded versions. Local edits to those files will be lost. Defaults to off so casual binary updates don't surprise users with overwritten edits."`
 	Offline      bool `help:"Skip the GitHub release check and download. Useful when working without network or paired with --reset to refresh local files from the current binary."`
-	CheckPreReqs bool `name:"check-pre-reqs" help:"Run prerequisite checks (fill missing spec summaries, etc.) using LLM calls. Implicit when --offline is not set; opt-in with this flag when --offline IS set so a dev compile-and-run loop can still satisfy prereqs without going over the network for the binary check."`
+	// CheckPreReqs retired in DJ-135 phase 5. The legacy prereq
+	// surface ran an LLM-driven summary backfill; the new ACP-
+	// dispatched model authors summaries at propose time so the
+	// backfill isn't needed. If summary regeneration is wanted, a
+	// dedicated activity (e.g. `update_summaries`) lands as a
+	// follow-up.
 }
 
 func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 	// Bare --offline (no --reset, no --check-pre-reqs) has nothing to
 	// do — be clear about it rather than running a silent no-op the
 	// user might mistake for a successful update.
-	if c.Offline && !c.Reset && !c.CheckPreReqs {
+	if c.Offline && !c.Reset {
 		fmt.Println("Nothing to do: --offline skips the binary check, --reset is not set, and --check-pre-reqs is not set.")
 		fmt.Println("Pair --offline with --reset (refresh local files) or --check-pre-reqs (run prereq checks) — or run plain `update` to do everything.")
 		return nil
@@ -84,7 +85,7 @@ func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 	// would use stale embedded scaffolds (the new spec-summarizer might
 	// have a different prompt). Bail out and tell the user to re-run
 	// with --offline using the new binary.
-	if binaryUpdated && (c.Reset || c.CheckPreReqs) {
+	if binaryUpdated && c.Reset {
 		fmt.Println("Skipping --reset / --check-pre-reqs: the new binary's embedded artifacts haven't loaded into this process.")
 		fmt.Println("Run `locutus update --offline --reset --check-pre-reqs` from your project to refresh scaffolds and run prereqs from the new binary.")
 		return nil
@@ -121,20 +122,9 @@ func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 	// 4. Run one-shot on-disk migrations. DJ-133 renames every
 	// persisted `dec-<chosen-option>` to `dec-<primary-axis>` and
 	// rewrites incoming references. Idempotent — a graph that's
-	// already fully axis-shaped is a no-op. Runs when we have a
-	// project FS to migrate (either --reset or a prereq pass is going
-	// to run).
-	if c.Reset || c.shouldRunPrereqs() {
+	// already fully axis-shaped is a no-op.
+	if c.Reset {
 		if err := runOnDiskMigrations(); err != nil {
-			return err
-		}
-	}
-
-	// 5. Run prerequisite checks. Implicit when --offline is not set;
-	// opt-in via --check-pre-reqs when --offline is set (the dev
-	// compile-and-run loop).
-	if c.shouldRunPrereqs() {
-		if err := c.runPrereqs(ctx, cli); err != nil {
 			return err
 		}
 	}
@@ -180,84 +170,6 @@ func runOnDiskMigrations() error {
 		fmt.Printf("  - skipped %s (%s)\n", s.ID, s.Reason)
 	}
 	return nil
-}
-
-// shouldRunPrereqs implements the flag matrix the design pins down:
-//
-//	update                         → run
-//	update --reset                 → run
-//	update --offline               → skip
-//	update --offline --reset       → skip
-//	update --check-pre-reqs        → run
-//	update --offline --check-pre-reqs → run
-func (c *UpdateCmd) shouldRunPrereqs() bool {
-	return !c.Offline || c.CheckPreReqs
-}
-
-// runPrereqs invokes every prereq check in turn with regen=true. New
-// prereqs added here as the surface grows; today there's just the
-// SummariesPresent check. When the list grows past two or three, the
-// hardcoded sequence becomes a slice or config struct.
-//
-// cli is threaded through so the prereq workflow's per-call events
-// render on the same CLI sink the rest of the verb's UI would use —
-// for `update --check-pre-reqs` on a legacy project, that's the only
-// console feedback the operator gets, so wiring it is load-bearing.
-func (c *UpdateCmd) runPrereqs(ctx context.Context, cli *CLI) error {
-	fsys, root, err := projectFS()
-	if err != nil {
-		return fmt.Errorf("update --check-pre-reqs: %w", err)
-	}
-
-	sctx, closeFn, err := buildPrereqsContext(cli, fsys, root)
-	if err != nil {
-		return fmt.Errorf("update --check-pre-reqs: %w", err)
-	}
-	defer closeFn()
-
-	if err := prereqs.EnsureSpecsContainSummaries(ctx, sctx, true); err != nil {
-		var sErr *prereqs.SummariesError
-		if errors.As(err, &sErr) {
-			// SummariesError carries a friendly message; surface it
-			// directly without wrapping noise.
-			return fmt.Errorf("prereqs: %s", sErr.Error())
-		}
-		return fmt.Errorf("prereqs: %w", err)
-	}
-	fmt.Println("Prereqs satisfied: every spec node has a Summary.")
-	return nil
-}
-
-// buildPrereqsContext constructs a SummariesContext with an LLM
-// executor + dispatcher pair AND a CLI sink for spinner feedback. The
-// dispatcher is registered against the project filesystem so the
-// spec-summarizer's spec_list_manifest / spec_get tools (DJ-094) bind
-// to the same files the rest of the command operates on. The sink is
-// the CLI's per-mode default (cli pterm spinners or plain log lines)
-// so the prereq's per-summarizer-call lifecycle renders consistently
-// with every other workflow-driven verb.
-//
-// Returns a close function the caller defers — closes the session
-// recorder AND the CLI sink (in that order so any final events still
-// flush before the spinner teardown).
-func buildPrereqsContext(cli *CLI, fsys specio.FS, root string) (prereqs.SummariesContext, func(), error) {
-	llm, rec, err := recordingLLM(fsys, root, "update --check-pre-reqs")
-	if err != nil {
-		return prereqs.SummariesContext{}, func() {}, err
-	}
-	llm, sink, closeSink := withProgressSink(cli, llm)
-	closeFn := func() {
-		if rec != nil {
-			_ = rec.Close()
-		}
-		closeSink()
-	}
-	return prereqs.SummariesContext{
-		FSys:       fsys,
-		Executor:   llm,
-		Dispatcher: agent.NewDispatcher(llm),
-		Sink:       sink,
-	}, closeFn, nil
 }
 
 // runBinaryUpdate runs the GitHub release check and downloads a newer

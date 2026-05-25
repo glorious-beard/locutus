@@ -31,11 +31,6 @@ func main() {
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Flush the OTel TracerProvider on exit so trace.jsonl ends with
-	// every completed span on disk. No-op when a verb path didn't
-	// initialize the SDK (read-only verbs that bypass recordingLLM).
-	defer cmd.ShutdownTracer()
-
 	var cli cmd.CLI
 	kctx := kong.Parse(&cli,
 		kong.Name("locutus"),
