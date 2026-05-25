@@ -1,4 +1,4 @@
-module github.com/chetan/locutus
+module github.com/glorious-beard/locutus
 
 go 1.26.1
 

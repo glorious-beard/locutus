@@ -7,11 +7,11 @@ import (
 
 	selfupdate "github.com/creativeprojects/go-selfupdate"
 
-	"github.com/chetan/locutus/internal/activity"
-	"github.com/chetan/locutus/internal/history"
-	"github.com/chetan/locutus/internal/migrate"
-	"github.com/chetan/locutus/internal/publisher"
-	"github.com/chetan/locutus/internal/scaffold"
+	"github.com/glorious-beard/locutus/internal/activity"
+	"github.com/glorious-beard/locutus/internal/history"
+	"github.com/glorious-beard/locutus/internal/migrate"
+	"github.com/glorious-beard/locutus/internal/publisher"
+	"github.com/glorious-beard/locutus/internal/scaffold"
 )
 
 const updateRepo = "glorious-beard/locutus"

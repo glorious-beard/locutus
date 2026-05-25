@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/chetan/locutus/internal/memory"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/memory"
+	"github.com/glorious-beard/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"

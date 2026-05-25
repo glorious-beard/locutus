@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // Gemini CLI publisher. Format notes (subject to Phase 5 verification):

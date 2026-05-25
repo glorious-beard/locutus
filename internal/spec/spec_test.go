@@ -256,7 +256,7 @@ func TestMasterPlanRoundTrip(t *testing.T) {
 							{Kind: AssertionKindContains, Target: "internal/spec/types.go", Pattern: "type Decision struct", Message: "Decision struct must be defined"},
 						},
 						Context: map[string]string{
-							"module": "github.com/chetan/locutus",
+							"module": "github.com/glorious-beard/locutus",
 							"go":     "1.26",
 						},
 					},

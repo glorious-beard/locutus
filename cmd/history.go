@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/chetan/locutus/internal/history"
+	"github.com/glorious-beard/locutus/internal/history"
 )
 
 // HistoryCmd queries the historian's past-tense record of spec changes.

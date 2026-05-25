@@ -8,9 +8,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/chetan/locutus/internal/activity"
-	"github.com/chetan/locutus/internal/runner"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/activity"
+	"github.com/glorious-beard/locutus/internal/runner"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // runActivityVerb is the shared entry point used by every Locutus

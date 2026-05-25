@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/chetan/locutus/internal/mcp"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/mcp"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // McpStopCmd implements `locutus mcp-stop`. Removes the

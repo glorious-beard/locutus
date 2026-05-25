@@ -42,8 +42,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chetan/locutus/internal/dispatch"
-	"github.com/chetan/locutus/internal/dispatch/acp"
+	"github.com/glorious-beard/locutus/internal/dispatch"
+	"github.com/glorious-beard/locutus/internal/dispatch/acp"
 	"github.com/stretchr/testify/require"
 )
 

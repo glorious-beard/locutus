@@ -33,9 +33,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chetan/locutus/internal/activity"
-	"github.com/chetan/locutus/internal/frontmatter"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/activity"
+	"github.com/glorious-beard/locutus/internal/frontmatter"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // CanonicalAgent is one Locutus agent loaded from .borg/agents/<id>.md.

@@ -4,7 +4,7 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // readOnlyFS wraps a specio.FS and silently drops writes. Used for

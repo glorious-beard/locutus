@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/chetan/locutus/internal/mcp"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/mcp"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // McpCmd implements `locutus mcp`. The command is a thin bridge: it

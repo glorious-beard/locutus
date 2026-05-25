@@ -7,10 +7,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chetan/locutus/internal/render"
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
-	"github.com/chetan/locutus/internal/workstream"
+	"github.com/glorious-beard/locutus/internal/render"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/workstream"
 )
 
 // workstreamsDir is the on-disk root for in-flight workstreams

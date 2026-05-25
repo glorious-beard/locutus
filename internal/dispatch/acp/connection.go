@@ -20,8 +20,8 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/chetan/locutus/internal/dispatch"
-	"github.com/chetan/locutus/internal/dispatch/policy"
+	"github.com/glorious-beard/locutus/internal/dispatch"
+	"github.com/glorious-beard/locutus/internal/dispatch/policy"
 	acpsdk "github.com/coder/acp-go-sdk"
 )
 

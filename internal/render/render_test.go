@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chetan/locutus/internal/check"
-	"github.com/chetan/locutus/internal/render"
+	"github.com/glorious-beard/locutus/internal/check"
+	"github.com/glorious-beard/locutus/internal/render"
 	"github.com/stretchr/testify/assert"
 )
 

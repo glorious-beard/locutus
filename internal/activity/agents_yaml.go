@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/specio"
 	"gopkg.in/yaml.v3"
 )
 

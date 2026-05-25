@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/chetan/locutus/internal/frontmatter"
+	"github.com/glorious-beard/locutus/internal/frontmatter"
 )
 
 // FrontmatterHeader is the minimal set of fields written to .md frontmatter.

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // Claude Code publisher. Format references:

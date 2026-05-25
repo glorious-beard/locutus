@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/chetan/locutus/internal/activity"
-	"github.com/chetan/locutus/internal/agent"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/activity"
+	"github.com/glorious-beard/locutus/internal/agent"
+	"github.com/glorious-beard/locutus/internal/specio"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

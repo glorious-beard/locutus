@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chetan/locutus/internal/frontmatter"
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/frontmatter"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // Embed only .md scaffold prompts. Test files (`*_test.go`) coexist

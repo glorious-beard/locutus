@@ -9,7 +9,7 @@ import (
 	"path"
 	"sort"
 
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // specRoot is the directory under the project root that holds every

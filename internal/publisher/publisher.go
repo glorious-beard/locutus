@@ -3,8 +3,8 @@ package publisher
 import (
 	"fmt"
 
-	"github.com/chetan/locutus/internal/activity"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/activity"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // RuntimePublisher is the per-runtime emission contract. Implementations

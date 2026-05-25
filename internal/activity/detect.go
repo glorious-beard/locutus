@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 
-	"github.com/chetan/locutus/internal/dispatch/acp"
+	"github.com/glorious-beard/locutus/internal/dispatch/acp"
 )
 
 // Resolver picks a runtime for an activity by walking its preference

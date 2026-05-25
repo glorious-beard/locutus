@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chetan/locutus/internal/agent"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/agent"
+	"github.com/glorious-beard/locutus/internal/specio"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 )

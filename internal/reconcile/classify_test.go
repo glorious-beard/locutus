@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chetan/locutus/internal/reconcile"
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
-	"github.com/chetan/locutus/internal/state"
+	"github.com/glorious-beard/locutus/internal/reconcile"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

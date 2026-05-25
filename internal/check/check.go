@@ -3,7 +3,7 @@ package check
 import (
 	"strings"
 
-	"github.com/chetan/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/spec"
 )
 
 // Commander abstracts command execution for testability.

@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chetan/locutus/internal/history"
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/history"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // EventKindDecisionIDMigration is the DJ-133 per-decision rename event.

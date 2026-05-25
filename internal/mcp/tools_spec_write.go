@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chetan/locutus/internal/agent"
-	"github.com/chetan/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/agent"
+	"github.com/glorious-beard/locutus/internal/spec"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

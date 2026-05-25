@@ -30,7 +30,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chetan/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/spec"
 )
 
 // Report describes one overlapping pair. WorkstreamA and WorkstreamB are

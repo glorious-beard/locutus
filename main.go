@@ -7,7 +7,7 @@ import (
 	"syscall"
 
 	"github.com/alecthomas/kong"
-	"github.com/chetan/locutus/cmd"
+	"github.com/glorious-beard/locutus/cmd"
 	"github.com/joho/godotenv"
 )
 

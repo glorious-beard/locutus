@@ -34,10 +34,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chetan/locutus/internal/activity"
-	"github.com/chetan/locutus/internal/dispatch"
-	"github.com/chetan/locutus/internal/dispatch/acp"
-	"github.com/chetan/locutus/internal/dispatch/policy"
+	"github.com/glorious-beard/locutus/internal/activity"
+	"github.com/glorious-beard/locutus/internal/dispatch"
+	"github.com/glorious-beard/locutus/internal/dispatch/acp"
+	"github.com/glorious-beard/locutus/internal/dispatch/policy"
 )
 
 // ActivityRun captures the metadata of one dispatched activity run:

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // projectFS returns an OSFS rooted at the current Locutus project's root

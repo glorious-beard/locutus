@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chetan/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/spec"
 )
 
 // SnapshotData is the JSON-shape of a comprehensive spec snapshot.

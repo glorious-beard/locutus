@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/blugelabs/bluge"
-	"github.com/chetan/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/spec"
 )
 
 // InFlightIndex is the in-memory Bluge index backed by an agent-council

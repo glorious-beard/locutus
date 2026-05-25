@@ -3,7 +3,7 @@ package spec
 import (
 	"strings"
 
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // ImplementationStage classifies where a feature/strategy/decision

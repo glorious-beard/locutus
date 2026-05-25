@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/chetan/locutus/internal/agent"
-	"github.com/chetan/locutus/internal/search"
+	"github.com/glorious-beard/locutus/internal/agent"
+	"github.com/glorious-beard/locutus/internal/search"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

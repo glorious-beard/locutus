@@ -4,7 +4,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/chetan/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

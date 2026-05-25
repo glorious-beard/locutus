@@ -7,12 +7,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/chetan/locutus/internal/activity"
-	"github.com/chetan/locutus/internal/dispatch/acp"
-	"github.com/chetan/locutus/internal/publisher"
-	"github.com/chetan/locutus/internal/render"
-	"github.com/chetan/locutus/internal/scaffold"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/activity"
+	"github.com/glorious-beard/locutus/internal/dispatch/acp"
+	"github.com/glorious-beard/locutus/internal/publisher"
+	"github.com/glorious-beard/locutus/internal/render"
+	"github.com/glorious-beard/locutus/internal/scaffold"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // InitCmd initializes a new spec-driven project.

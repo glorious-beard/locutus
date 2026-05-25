@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/state"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/state"
+	"github.com/glorious-beard/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,7 +32,7 @@ func sampleState(approachID string) state.ReconciliationState {
 			{
 				Assertion: spec.Assertion{Kind: spec.AssertionKindTestPass, Target: "./..."},
 				Passed:    true,
-				Output:    "ok github.com/chetan/locutus",
+				Output:    "ok github.com/glorious-beard/locutus",
 				RunAt:     time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC),
 			},
 		},

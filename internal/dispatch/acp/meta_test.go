@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chetan/locutus/internal/dispatch/policy"
+	"github.com/glorious-beard/locutus/internal/dispatch/policy"
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

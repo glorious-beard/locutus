@@ -29,9 +29,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/chetan/locutus/internal/search"
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/search"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // validSpecID restricts spec ids to the kebab-case shape locutus

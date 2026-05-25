@@ -25,8 +25,8 @@ import (
 
 	_ "embed"
 
-	"github.com/chetan/locutus/internal/dispatch/acp"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/dispatch/acp"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // defaultAgentsYAML is the embedded shipping default. Lives next to

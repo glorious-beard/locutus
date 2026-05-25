@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/chetan/locutus/internal/activity"
-	"github.com/chetan/locutus/internal/agent"
-	"github.com/chetan/locutus/internal/mcp"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/activity"
+	"github.com/glorious-beard/locutus/internal/agent"
+	"github.com/glorious-beard/locutus/internal/mcp"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // McpDaemonCmd implements `locutus mcp-daemon --project <root>`. It's
