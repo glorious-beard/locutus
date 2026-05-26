@@ -162,7 +162,16 @@ func DispatchActivity(
 	}
 	defer sdkFile.Close()
 
-	ch, err := conn.PromptWithSDKSink(ctx, sessionID, playbookBody, policy.AllowOncePolicy{}, sdkFile)
+	// Tee the SDK message stream through a dispatchTable that
+	// extracts (toolUseId → subagent_type + description) for the
+	// progress writer. Claude-agent-acp emits the assistant message
+	// that contains the Task tool_use BEFORE the matching ACP
+	// tool_call notification, so by the time the event loop needs
+	// to format a Task line, the table already holds the dispatch
+	// info. See internal/runner/dispatch_table.go for details.
+	dispatchTbl := newDispatchTable(sdkFile)
+
+	ch, err := conn.PromptWithSDKSink(ctx, sessionID, playbookBody, policy.AllowOncePolicy{}, dispatchTbl)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: prompt: %w", err)
 	}
@@ -219,7 +228,7 @@ func DispatchActivity(
 			n := toolN
 			heartbeat.Unlock()
 			fmt.Fprintf(progress, "  [%s] %3d → %s\n",
-				time.Now().Format("15:04:05"), n, toolProgressLine(ev))
+				time.Now().Format("15:04:05"), n, toolProgressLine(ev, dispatchTbl))
 			if err := writeJSONLine(toolsFile, ev); err != nil {
 				return nil, fmt.Errorf("dispatch: append tools log: %w", err)
 			}
@@ -284,23 +293,24 @@ func makeSessionDir(projectRoot string) (string, error) {
 //     non-Claude runtimes).
 //  3. "tool" as the absolute fallback.
 //
-// Task-tool dispatches get special handling: when the call is
-// Claude Code's Task tool, the subagent type is in the input map's
-// "subagent_type" field. Surface it inline so "Agent" lines read as
-// "Task → spec-decision-elaborator" instead of an undifferentiated
-// "Agent". Equivalent fields on other runtimes are added as they're
-// empirically validated.
+// Task-tool dispatches get special handling. The ACP tool_call event
+// carries title="Task" and toolName="Agent" but rawInput={} — the
+// subagent_type + description live on the parallel SDK message
+// stream (the assistant message whose tool_use produced this Task).
+// The dispatchTable correlates the two by tool_use_id; when we find
+// a hit, the line reads as `<subagent-type> · <description>` instead
+// of the uninformative "Task → Task".
 //
 // Primary-input hint surfaces one identifying argument (id,
 // file_path, command, query, pattern) so the line carries more than
-// the tool name alone.
-func toolProgressLine(ev dispatch.AgentEvent) string {
+// the tool name alone for non-Task tools.
+func toolProgressLine(ev dispatch.AgentEvent, dt *dispatchTable) string {
 	// title is the ACP tool_call.Title field (set by the dispatcher's
 	// event translator into ev.ToolName before we override). For Claude
 	// Code's Bash/Read/Write tools it's typically the tool name; for
-	// the Task tool it's the human-authored description the agent gave
-	// the dispatch (e.g. "Initial survey against empty graph") which
-	// is far more useful than the canonical "Agent" string.
+	// the Task tool empirically it's literally "Task" and the rawInput
+	// is {}, so the dispatchTable lookup below is how we recover the
+	// subagent type and description.
 	title := ev.ToolName
 	// canonical is _meta.claudeCode.toolName when present — the
 	// runtime-canonical tool id (Bash / Agent / mcp__locutus__*).
@@ -309,10 +319,26 @@ func toolProgressLine(ev dispatch.AgentEvent) string {
 		canonical = claudeCodeToolName(ev.Raw)
 	}
 
-	// Task tool: prefer the human-authored title; the canonical name
-	// ("Agent") is generic and hides what the dispatch is for.
+	// Task tool: consult the dispatchTable for subagent metadata that
+	// the ACP event itself doesn't carry. The SDK assistant message
+	// containing the tool_use arrives before this ACP tool_call event
+	// (verified empirically on a live winplan session), so the table
+	// is populated by the time we look it up.
 	if canonical == "Agent" || canonical == "Task" {
-		if title != "" && title != canonical {
+		toolCallID := acpToolCallID(ev.Raw)
+		if dt != nil && toolCallID != "" {
+			if info, ok := dt.Lookup(toolCallID); ok {
+				if info.Description != "" {
+					return fmt.Sprintf("%s · %s", info.SubagentType, info.Description)
+				}
+				return info.SubagentType
+			}
+		}
+		// Fallback: no SDK correlation yet. Prefer the title when it
+		// adds information beyond the canonical name; otherwise just
+		// "Task" — the lookup will succeed on subsequent dispatches
+		// after the SDK stream catches up.
+		if title != "" && title != canonical && title != "Task" {
 			return fmt.Sprintf("Task → %s", title)
 		}
 		return "Task"
@@ -342,7 +368,29 @@ func toolProgressLine(ev dispatch.AgentEvent) string {
 // the progress hot path and the field's location is stable per the
 // Claude Agent ACP protocol's _meta convention.
 func claudeCodeToolName(raw []byte) string {
-	const needle = `"toolName":"`
+	return scanStringField(raw, `"toolName":"`)
+}
+
+// acpToolCallID scans an ACP SessionNotification's JSON for the
+// toolCallId field. Returns the value when present, empty otherwise.
+// Used to correlate ACP tool_call events with SDK tool_use messages
+// via the dispatchTable. Same hand-rolled scan approach as
+// claudeCodeToolName for the same hot-path-cost reasons.
+func acpToolCallID(raw []byte) string {
+	return scanStringField(raw, `"toolCallId":"`)
+}
+
+// scanStringField finds the first occurrence of needle (which must
+// end with `:"`) and returns the unescaped-but-not-decoded string
+// value up to the closing quote. Returns "" when needle is absent
+// or the field's value is empty. Tolerates JSON whitespace between
+// the colon and the opening quote only when needle includes it.
+//
+// Limitation: doesn't handle JSON string escape sequences (`\"`,
+// `\\`, etc.) — fine for the two fields we use it for (toolName
+// is a tool id; toolCallId is `toolu_<24 hex>`), neither of which
+// contains escapable characters.
+func scanStringField(raw []byte, needle string) string {
 	i := indexOfBytes(raw, []byte(needle))
 	if i < 0 {
 		return ""
