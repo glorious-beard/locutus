@@ -17,6 +17,10 @@
 # the implementation-plan source of truth per CLAUDE.md).
 /.claude/settings.json
 /.claude/settings.local.json
+# Claude Code's scheduled-task subsystem (/loop, ScheduleWakeup) writes a
+# session-scoped lock file with the active session id + pid. Per-machine
+# runtime state, not source.
+/.claude/*.lock
 
 # Test binary, built with `go test -c`
 *.test
