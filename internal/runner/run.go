@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -327,21 +328,32 @@ func toolProgressLine(ev dispatch.AgentEvent, dt *dispatchTable) string {
 	if canonical == "Agent" || canonical == "Task" {
 		toolCallID := acpToolCallID(ev.Raw)
 		if dt != nil && toolCallID != "" {
-			// Wait briefly for the SDK side to arrive — the JSON-RPC
-			// framework can dispatch the ACP tool_call notification
-			// and the matching _claude/sdkMessage extension
-			// notification on parallel goroutines, so the SDK side
-			// sometimes loses the race despite being emitted first.
-			// 150ms covers the empirical window; a longer wait
-			// here would still be bounded since the SDK side either
-			// arrives or doesn't, and we fall back to "Task" if it
-			// genuinely never came (non-Claude runtimes).
-			if info, ok := dt.LookupOrWait(toolCallID, 150*time.Millisecond); ok {
+			// Wait for the SDK side to arrive — acp-go-sdk's
+			// processNotifications serializes inbound notifications
+			// in order, so in theory the SDK ext notification (which
+			// claude-agent-acp emits first) is processed before the
+			// ACP tool_call notification reaches the runner. In
+			// practice we've seen "Task → Task" lines on production
+			// runs despite that ordering, suggesting either a wider
+			// race window than the in-order claim implies OR a
+			// distinct bug in the wiring. Use a generous 2s timeout
+			// — high enough to absorb any plausible race, low
+			// enough not to stall the progress writer perceptibly
+			// when a runtime genuinely never emits the SDK side
+			// (Codex / Gemini). When the lookup misses despite the
+			// 2s wait, log at debug so a follow-up run with -vv can
+			// surface the diagnostic.
+			info, ok := dt.LookupOrWait(toolCallID, 2*time.Second)
+			if ok {
 				if info.Description != "" {
 					return fmt.Sprintf("%s · %s", info.SubagentType, info.Description)
 				}
 				return info.SubagentType
 			}
+			slog.Debug("acp Task tool_call: dispatchTable lookup missed after wait",
+				"toolCallId", toolCallID,
+				"title", title,
+				"canonical", canonical)
 		}
 		// Fallback: no SDK correlation yet. Prefer the title when it
 		// adds information beyond the canonical name; otherwise just
