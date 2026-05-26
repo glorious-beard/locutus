@@ -327,7 +327,16 @@ func toolProgressLine(ev dispatch.AgentEvent, dt *dispatchTable) string {
 	if canonical == "Agent" || canonical == "Task" {
 		toolCallID := acpToolCallID(ev.Raw)
 		if dt != nil && toolCallID != "" {
-			if info, ok := dt.Lookup(toolCallID); ok {
+			// Wait briefly for the SDK side to arrive — the JSON-RPC
+			// framework can dispatch the ACP tool_call notification
+			// and the matching _claude/sdkMessage extension
+			// notification on parallel goroutines, so the SDK side
+			// sometimes loses the race despite being emitted first.
+			// 150ms covers the empirical window; a longer wait
+			// here would still be bounded since the SDK side either
+			// arrives or doesn't, and we fall back to "Task" if it
+			// genuinely never came (non-Claude runtimes).
+			if info, ok := dt.LookupOrWait(toolCallID, 150*time.Millisecond); ok {
 				if info.Description != "" {
 					return fmt.Sprintf("%s · %s", info.SubagentType, info.Description)
 				}

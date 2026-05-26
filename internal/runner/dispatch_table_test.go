@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/glorious-beard/locutus/internal/dispatch"
 )
@@ -130,6 +131,61 @@ func TestToolProgressLine_TaskFromDispatchTable(t *testing.T) {
 	want := "spec-candidate-survey · Candidate survey: implementation-language"
 	if got != want {
 		t.Fatalf("toolProgressLine got %q\nwant %q", got, want)
+	}
+}
+
+// TestDispatchTable_LookupOrWait_UnblocksOnLateWrite simulates the
+// race fix: a lookup races a write, and the lookup blocks until the
+// write lands. Confirms (a) the lookup returns the right info once
+// the write happens (not the timeout-fallback), and (b) the wait
+// duration is bounded by the actual write delay, not the full
+// timeout.
+func TestDispatchTable_LookupOrWait_UnblocksOnLateWrite(t *testing.T) {
+	var sink bytes.Buffer
+	dt := newDispatchTable(&sink)
+
+	// Schedule a write to land 30ms into the lookup's 500ms timeout.
+	line := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_race","name":"Agent","input":{"subagent_type":"spec-scout","description":"late arrival"}}]}}` + "\n")
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_, _ = dt.Write(line)
+	}()
+
+	start := time.Now()
+	info, ok := dt.LookupOrWait("toolu_race", 500*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if !ok {
+		t.Fatalf("LookupOrWait returned miss; want hit after late write")
+	}
+	if info.SubagentType != "spec-scout" {
+		t.Errorf("SubagentType got %q want %q", info.SubagentType, "spec-scout")
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("LookupOrWait took %v; expected to unblock soon after the 30ms write (cond.Broadcast should fire immediately)", elapsed)
+	}
+}
+
+// TestDispatchTable_LookupOrWait_TimesOutWhenWriteNeverComes confirms
+// the upper bound on wait time: if the SDK side genuinely never
+// arrives (non-Claude runtimes, or a buggy agent), the lookup falls
+// back gracefully without hanging the progress writer.
+func TestDispatchTable_LookupOrWait_TimesOutWhenWriteNeverComes(t *testing.T) {
+	var sink bytes.Buffer
+	dt := newDispatchTable(&sink)
+
+	start := time.Now()
+	_, ok := dt.LookupOrWait("toolu_never_comes", 100*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatalf("LookupOrWait returned hit; want miss after timeout")
+	}
+	if elapsed < 90*time.Millisecond {
+		t.Errorf("LookupOrWait returned in %v; expected at least ~100ms wait", elapsed)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("LookupOrWait took %v; expected close to the 100ms timeout", elapsed)
 	}
 }
 

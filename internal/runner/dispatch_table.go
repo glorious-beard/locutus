@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"sync"
+	"time"
 )
 
 // dispatchTable is the runtime correlator between the orchestrator's
@@ -26,7 +27,8 @@ import (
 // rather than failing — the file write is the load-bearing side-effect,
 // the lookup table is a best-effort UI augmentation.
 type dispatchTable struct {
-	mu      sync.RWMutex
+	mu      sync.Mutex
+	cond    *sync.Cond
 	entries map[string]dispatchInfo
 	sink    io.Writer
 }
@@ -37,10 +39,12 @@ type dispatchInfo struct {
 }
 
 func newDispatchTable(sink io.Writer) *dispatchTable {
-	return &dispatchTable{
+	d := &dispatchTable{
 		entries: make(map[string]dispatchInfo),
 		sink:    sink,
 	}
+	d.cond = sync.NewCond(&d.mu)
+	return d
 }
 
 // Write implements io.Writer. Tee'd: bytes go to sink (the
@@ -90,6 +94,7 @@ func (d *dispatchTable) parseLine(line []byte) {
 		desc, _ := cb.Input["description"].(string)
 		d.mu.Lock()
 		d.entries[cb.ID] = dispatchInfo{SubagentType: sub, Description: desc}
+		d.cond.Broadcast()
 		d.mu.Unlock()
 	}
 }
@@ -97,12 +102,61 @@ func (d *dispatchTable) parseLine(line []byte) {
 // Lookup returns the dispatch info for the given tool_use_id (the
 // ACP tool_call event's ToolCallId). Returns zero-value + false when
 // the id isn't in the table — either because the SDK message hasn't
-// arrived yet (very rare given the wire ordering) OR because the
-// dispatch wasn't a subagent invocation (e.g. a Bash or WebSearch
-// tool_use, which never carries subagent_type).
+// arrived yet OR because the dispatch wasn't a subagent invocation
+// (e.g. a Bash or WebSearch tool_use, which never carries
+// subagent_type). Non-blocking; for the case where the caller can
+// afford to wait briefly for an in-flight SDK message, see
+// LookupOrWait.
 func (d *dispatchTable) Lookup(toolCallID string) (dispatchInfo, bool) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	info, ok := d.entries[toolCallID]
 	return info, ok
+}
+
+// LookupOrWait returns the dispatch info for the tool_use_id, blocking
+// up to timeout for the matching SDK message to arrive. The race we're
+// guarding against: claude-agent-acp emits the SDK extension
+// notification (containing subagent_type) and the ACP tool_call
+// notification close together, and the JSON-RPC framework dispatches
+// them on parallel goroutines — so the ACP event sometimes reaches
+// the runner BEFORE the SDK side has been parsed into this table.
+// Empirically the SDK side wins by 0-50ms when it wins; a 150ms wait
+// covers the common race window without adding meaningful UI latency.
+//
+// Returns (zero, false) when timeout expires without an entry landing.
+// Non-Agent/Task tool_calls (Bash, WebSearch, MCP tools) should call
+// Lookup, not this, since they never populate the table.
+func (d *dispatchTable) LookupOrWait(toolCallID string, timeout time.Duration) (dispatchInfo, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if info, ok := d.entries[toolCallID]; ok {
+		return info, true
+	}
+	deadline := time.Now().Add(timeout)
+	// sync.Cond doesn't support timed-Wait directly, so we run a
+	// helper goroutine that broadcasts after the deadline. The cost
+	// is a goroutine + a sleep per blocking lookup; both are tiny
+	// and bounded by timeout. The shared cond means a real arrival
+	// broadcasts to every waiting lookup, not just this one.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-time.After(timeout):
+			d.mu.Lock()
+			d.cond.Broadcast()
+			d.mu.Unlock()
+		case <-done:
+		}
+	}()
+	for {
+		if info, ok := d.entries[toolCallID]; ok {
+			return info, true
+		}
+		if !time.Now().Before(deadline) {
+			return dispatchInfo{}, false
+		}
+		d.cond.Wait()
+	}
 }
