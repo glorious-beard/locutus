@@ -35,16 +35,17 @@ A surprise the audit revealed: the five agent prompts the pre-DJ-135 verb dispat
 
 ## Resolved design questions
 
-Recorded in chat 2026-05-26; settled in the DJ. Restated here for implementation reference.
+Recorded in chat 2026-05-26; settled in the DJ (with revisions after the user surfaced the `--format json` and fanout questions). Restated here for implementation reference.
 
-1. **Output is markdown to stdout.** No `--format json` flag in v1.
+1. **Output to stdout with `--format markdown|json` (default markdown).** Both formats ship in v1. The JSON schema is documented in the DJ's Decision section.
 2. **`--against "..."` triggers the adversarial dialogue.** Orchestrator dispatches challenger first, then advocate with challenger brief in context.
-3. **Fanout across decisions deferred.** No `--fanout` flag in v1. Run multiple `locutus justify` invocations for parent justification.
-4. **`justify-splitter` and `justify-synthesizer` stay published but unused in v1.** Reusable if a v2 fanout mode lands.
-5. **No per-runtime playbook overlay in v1.** One cross-runtime default suffices.
-6. **CLI shape matches the retired verb.** `locutus justify <id> [--against "..."]`.
-7. **No hooks or `/goal`.** Read-only one-shot activity; DJ-136's hook framework not needed.
-8. **Five agent prompts ship as-is across all three runtimes.** No per-runtime agent overlay (deferred per DJ-135 resolved-question 14, not yet reversed).
+3. **Dependency-graph context expansion is default behavior, with full struct content.** The playbook instructs the orchestrator to fetch the target's `influenced_by` / `decisions` / `feature_refs` via batched `spec_get`, carrying full `rationale` + `alternatives` per upstream node — not just title summaries. Under DJ-133's axis-aligned model, the typed JSON struct already encodes the council's comparative research; the advocate consumes it rather than re-derives it.
+4. **No parallel-subagent per-child fanout (rejected, not deferred).** The retired pre-DJ-135 `--fanout` mode is superseded by the rich-context expansion above. Leaving fanout on the books as a v2 escape hatch would invite re-derivation of research the spec graph already encodes. If structurally-distinct per-child adversarial dialogue demand surfaces, that's a separate verb, not a justify flag.
+5. **`justify-splitter` and `justify-synthesizer` stay published but unused.** Council-era plumbing; v1 doesn't reference them. The publisher emits them so operators can invoke ad-hoc if they want, but no v2 promise.
+6. **No per-runtime playbook overlay in v1.** One cross-runtime default suffices.
+7. **CLI shape extends the retired verb.** `locutus justify <id> [--against "..."] [--format markdown|json]`.
+8. **No hooks or `/goal`.** Read-only one-shot activity; DJ-136's hook framework not needed.
+9. **Five agent prompts ship as-is across all three runtimes.** No per-runtime agent overlay (deferred per DJ-135 resolved-question 14, not yet reversed).
 
 ## Phase 1 — Frontmatter audit + body cleanup on the five existing agent prompts
 
@@ -81,14 +82,17 @@ Recorded in chat 2026-05-26; settled in the DJ. Restated here for implementation
 **Files expected to change:**
 
 - New: [internal/scaffold/plans/justification.md](../../internal/scaffold/plans/justification.md). Sections:
-    1. **Opening directive.** Call `TodoWrite` with the iteration plan — read node, optionally dispatch challenger, optionally dispatch researcher, dispatch advocate, synthesize output. Update statuses as steps execute.
-    2. **Inputs.** The target node id (from the operator's CLI invocation), optionally the `--against "..."` challenge text (passed via the activity verb's context note). GOALS.md is read via the `Read` tool for context.
-    3. **Step 1: fetch the node.** Call `mcp__locutus__spec_get` with the id; if missing, surface a clear error and stop. Use the node's body, rationale, alternatives, citations, and back-references.
-    4. **Step 2 (optional): dispatch `justify-researcher`** if the node's claims involve current-vendor or current-spec facts the researcher could verify via web search. Pass the node + a list of specific claims to verify. Receive findings.
-    5. **Step 3 (conditional on `--against`): dispatch `spec-challenger`** with the node + the user's challenge text. Receive a structured `ChallengeBrief` (2-5 concerns).
-    6. **Step 4: dispatch `spec-advocate`** with the node + (optional) challenger brief + (optional) researcher findings. Receive the active defense.
-    7. **Step 5: synthesize and emit.** The orchestrator combines the advocate's defense (and, if `--against`, the dialogue structure) into a markdown output that prints to stdout. Format guidance: heading with the node id + title, then the defense; if adversarial, a "Concerns raised" section followed by "Response to concerns."
-    8. **Stop directive.** The activity completes after the synthesis lands on stdout; no follow-up turns.
+    1. **Opening directive.** Call `TodoWrite` with the iteration plan — read target node, fetch dependency-graph context, optionally dispatch researcher, optionally dispatch challenger, dispatch advocate, emit output in operator-requested format. Update statuses as steps execute.
+    2. **Inputs.** The target node id (from the operator's CLI invocation), optionally the `--against "..."` challenge text, the `--format` choice (markdown default, json optional) — all threaded into the playbook via the activity verb's context note. GOALS.md is read via the `Read` tool for context.
+    3. **Step 1: fetch the target node.** Call `mcp__locutus__spec_get` with the id; if missing, surface a clear error and stop. Use the node's body, rationale, alternatives (if a decision), and back-references.
+    4. **Step 2: fetch dependency-graph context (load-bearing).** Inspect the target's `influenced_by` / `decisions` / `feature_refs` arrays (whichever apply per node kind). Call `mcp__locutus__spec_get` once with the batched id list. The fetched nodes carry their **full content** — `rationale`, `chosen_option`, `alternatives` slice — not just titles. Under DJ-133's axis-aligned model, this is the comparative research the council surfaced; do not re-derive it. Both the challenger and the advocate receive these linked nodes in their context.
+    5. **Step 3 (optional): dispatch `justify-researcher`** if the node's claims involve current-vendor or current-spec facts that warrant web verification (e.g., a decision citing a specific Neon plan tier or Stripe pricing band). Pass the node + the linked-context list + a list of specific claims to verify. Receive findings.
+    6. **Step 4 (conditional on `--against`): dispatch `spec-challenger`** with the node + linked context + the user's challenge text. Receive a structured `ChallengeBrief` (2-5 concerns).
+    7. **Step 5: dispatch `spec-advocate`** with the node + linked context + (optional) challenger brief + (optional) researcher findings. Receive the active defense.
+    8. **Step 6: emit output.**
+        - If `--format markdown` (default): synthesize a markdown document — heading with node id + title, then the defense; if adversarial, a "Concerns raised" section followed by "Response to concerns." Print to stdout.
+        - If `--format json`: emit the JSON envelope per the schema in the DJ. The `context.influenced_by[]` entries carry full upstream decision structs (rationale + alternatives); the `defense.thesis` and `defense.supporting_arguments` come from the advocate's output; the `adversarial` block is present only when `--against` was set. Empty arrays under `context` (e.g., a leaf decision with no children) emit as `[]` for shape-stability. Print to stdout.
+    9. **Stop directive.** The activity completes after the output lands on stdout; no follow-up turns.
 - [docs/agent-conventions.md](../../docs/agent-conventions.md) — minor edit if any (the one-iteration-shape convention is already noted under DJ-136 Phase 3's changes).
 
 **Tests:**
@@ -96,13 +100,20 @@ Recorded in chat 2026-05-26; settled in the DJ. Restated here for implementation
 - `TestPlaybookJustification_HasPlanToolDirective` — playbook contains the `TodoWrite` opening directive.
 - `TestPlaybookJustification_ReferencesRequiredAgents` — playbook references `spec-advocate`, `spec-challenger`, `justify-researcher` by their hyphenated agent ids.
 - `TestPlaybookJustification_ReferencesSpecGetTool` — playbook calls out `mcp__locutus__spec_get` for the node fetch.
+- `TestPlaybookJustification_RequiresDependencyTraversal` — playbook explicitly instructs the orchestrator to fetch linked nodes via the batched `spec_get` and pass them with full `rationale` + `alternatives` content.
+- `TestPlaybookJustification_DocumentsBothFormats` — playbook covers both the markdown default and the `--format json` branch with the schema reference.
 - DJ-136 Phase 1's orphan-overlay and drift-invariant tests pass against the new playbook (no overlay file exists, so no drift to check; the orphan test confirms the absence is fine).
 
-**Empirical validation** (manual): run `locutus justify dec-primary-datastore` against a populated project (winplan is the canonical test bed). Confirm the orchestrator emits a plan, dispatches the advocate, and prints a defense to stdout. Then run `locutus justify dec-primary-datastore --against "Neon's branch-per-PR ceiling at 10 will block our 30-workspace E-Day operating point"` and confirm the adversarial dialogue produces both a `ChallengeBrief` (visible in the SDK transcript) and an advocate response addressing those specific concerns.
+**Empirical validation** (manual): run multiple scenarios against winplan (the canonical test bed):
 
-**Verification:** `go build ./... && go vet ./... && go test ./internal/scaffold/... -count=1 -race`. Manual: `locutus justify` on winplan.
+1. `locutus justify dec-primary-datastore` — decision with 9 alternatives; advocate should defend Neon Postgres referencing alternatives like Supabase, Cloudflare D1, etc., not just generic Postgres claims.
+2. `locutus justify strat-multitenant-isolation` — strategy; advocate must surface its upstream decisions (`dec-primary-datastore`, `dec-identity-and-tenancy`, `dec-data-residency-and-privacy`, `dec-ai-strategy-posture`, `dec-scope-partisan-posture`) with their rationale, not just name them.
+3. `locutus justify feat-voter-universe --against "L2 propensity-score field gating is fragile under workspace migrations"` — feature + adversarial dialogue; challenger surfaces specific concerns, advocate addresses each.
+4. `locutus justify dec-primary-datastore --format json | jq '.context.influenced_by[].alternatives'` — JSON output; confirm the structural shape, confirm `alternatives` arrays are populated.
 
-**Estimated:** 3-4 hours (the playbook prose is moderate-length and the convention discipline applies).
+**Verification:** `go build ./... && go vet ./... && go test ./internal/scaffold/... -count=1 -race`. Manual: the four scenarios above on winplan.
+
+**Estimated:** 4-5 hours (the playbook prose is longer now with both formats + dep-traversal; the convention discipline applies; the JSON shape needs careful phrasing in the playbook so the orchestrator emits valid JSON without ad-hoc improvisation).
 
 ## Phase 3 — Activity registry entry
 
@@ -130,58 +141,75 @@ Recorded in chat 2026-05-26; settled in the DJ. Restated here for implementation
 
 ## Phase 4 — CLI verb at `cmd/justify.go`
 
-**Goal:** `locutus justify <id> [--against "..."]` parses, dispatches the `justification` activity via `runActivityVerb`, and streams the orchestrator's output to stdout.
+**Goal:** `locutus justify <id> [--against "..."] [--format markdown|json]` parses, dispatches the `justification` activity via `runActivityVerb`, and streams the orchestrator's output to stdout.
 
 **Files expected to change:**
 
 - New: [cmd/justify.go](../../cmd/justify.go). Body shape:
 
     ```go
-    // JustifyCmd implements `locutus justify <id> [--against "..."]`.
+    // JustifyCmd implements `locutus justify <id> [--against "..."] [--format markdown|json]`.
     // Dispatches the `justification` activity to a coding-agent runtime
     // via ACP, which executes the published playbook to produce a
     // structured defense of the spec node (optionally with adversarial
-    // dialogue when --against is provided).
+    // dialogue when --against is provided). Output format selectable
+    // for downstream consumption (markdown default for human readers;
+    // json for piping into jq, sub-orchestrators, or future dashboards).
     type JustifyCmd struct {
-        ID      string `arg:"" required:"" help:"Spec node id to justify (e.g. dec-primary-datastore, feat-voter-universe)."`
+        ID      string `arg:"" required:"" help:"Spec node id to justify (e.g. dec-primary-datastore, feat-voter-universe, strat-multitenant-isolation)."`
         Against string `help:"Challenge prompt for adversarial dialogue. When set, spec-challenger writes a structured critique first and spec-advocate responds to it."`
+        Format  string `help:"Output format: markdown (default) or json." default:"markdown" enum:"markdown,json"`
     }
 
     func (c *JustifyCmd) Run(ctx context.Context, cli *CLI) error {
-        contextNote := fmt.Sprintf("Target node: %s", c.ID)
+        var b strings.Builder
+        fmt.Fprintf(&b, "Target node: %s\n", c.ID)
+        fmt.Fprintf(&b, "Output format: %s\n", c.Format)
         if c.Against != "" {
-            contextNote += fmt.Sprintf("\n\nChallenge from user (for adversarial dialogue):\n%s", c.Against)
+            fmt.Fprintf(&b, "\nChallenge from user (for adversarial dialogue):\n%s\n", c.Against)
         }
-        return runActivityVerb(ctx, cli, "justification", contextNote)
+        return runActivityVerb(ctx, cli, "justification", b.String())
     }
     ```
+
+    Kong's `enum:"markdown,json"` does the validation; passing `--format yaml` errors at parse time with a clear message.
 
 - [cmd/cli.go](../../cmd/cli.go) — add `Justify JustifyCmd ...` to the root CLI struct under the activity-dispatching verbs section. Update any in-doc verb count from 8 to 9.
 
 **Tests:**
 
-- New `cmd/justify_test.go` — kong-parses `locutus justify dec-foo` and `locutus justify dec-foo --against "concern"` correctly. Mirror the pattern of any existing `cmd/refine_test.go` (or the equivalent test for an activity-dispatching verb).
+- New `cmd/justify_test.go` — kong-parses:
+  - `locutus justify dec-foo` (default format = markdown).
+  - `locutus justify dec-foo --against "concern"` (with adversarial flag).
+  - `locutus justify dec-foo --format json`.
+  - `locutus justify dec-foo --against "concern" --format json` (combined).
+  - `locutus justify dec-foo --format yaml` errors at parse time (kong enum validation).
 
-**Verification:** `go build ./... && go vet ./... && go test ./cmd/... -count=1 -race`. Manual: `./locutus justify --help` shows the verb and flag.
+  Mirror the pattern of any existing CLI verb test.
+
+**Verification:** `go build ./... && go vet ./... && go test ./cmd/... -count=1 -race`. Manual: `./locutus justify --help` shows the verb, both flags, and the enum-constrained format values.
 
 **Estimated:** 2-3 hours (the CLI surface is small; the test scaffolding may need new helpers if no existing pattern fits).
 
 ## Phase 5 — Tests + empirical validation
 
-**Goal:** the activity works end-to-end against a real coding-agent runtime; the test suite covers the new surface.
+**Goal:** the activity works end-to-end against a real coding-agent runtime; the test suite covers the new surface; both output formats produce expected shapes.
 
 **Tasks:**
 
 - Run the full test suite: `go test ./... -count=1 -timeout 180s`. All 28+ packages should pass.
-- Manual validation 1: `./locutus justify dec-primary-datastore` against winplan. Expected: orchestrator emits a plan; dispatches `spec-advocate`; prints a markdown defense citing Neon Postgres's branch-per-PR isolation, the Postgres-native RLS posture, the multi-tenant write path discipline. Defense should reference the actual `chosen_option` / `rationale` / `alternatives` fields on the decision, not make up new claims.
-- Manual validation 2: `./locutus justify dec-primary-datastore --against "Neon's branch-per-PR ceiling at 10 will block our 30-workspace E-Day operating point"`. Expected: `spec-challenger` produces a `ChallengeBrief` with 2-5 concerns (visible in the SDK transcript); `spec-advocate` writes a response addressing those specific concerns. The output structure should make the dialogue clear (concerns section + response section), not a generic restatement.
-- Manual validation 3: `./locutus justify nonexistent-id`. Expected: clear error from the orchestrator (the playbook's step-1 fetch returns `missing`; the orchestrator surfaces the error in plain text and stops).
+- **Manual validation 1: decision target, markdown default.** `./locutus justify dec-primary-datastore` against winplan. Expected: orchestrator emits a plan; fetches the decision + its `influences` (the strategies/features it feeds into); dispatches `spec-advocate`; prints a markdown defense referencing actual `chosen_option` / `rationale` / `alternatives` (9 of them on `dec-primary-datastore`), not generic Postgres claims.
+- **Manual validation 2: strategy target, markdown default (the dependency-traversal smoke test).** `./locutus justify strat-multitenant-isolation`. Expected: orchestrator fetches the strategy + its 5 upstream decisions (`dec-primary-datastore`, `dec-identity-and-tenancy`, `dec-data-residency-and-privacy`, `dec-ai-strategy-posture`, `dec-scope-partisan-posture`) with full rationale + alternatives via a single batched `spec_get`; the advocate's defense names the upstream decisions and their rejected alternatives explicitly, not "trust me." This is the validation that dependency-graph context expansion is actually load-bearing.
+- **Manual validation 3: adversarial dialogue.** `./locutus justify feat-voter-universe --against "L2 propensity-score field gating is fragile under workspace migrations"`. Expected: `spec-challenger` produces a `ChallengeBrief` with 2-5 concerns (visible in the SDK transcript); `spec-advocate` writes a response addressing those specific concerns. The output structure should make the dialogue clear (concerns section + response section), not a generic restatement.
+- **Manual validation 4: JSON format.** `./locutus justify dec-primary-datastore --format json | jq '.context.influenced_by[].alternatives | length'`. Expected: a numeric output per influenced_by entry showing the alternatives slice is populated (each upstream decision carries its 6-9 alternatives). Then `./locutus justify strat-multitenant-isolation --format json | jq '.context.influenced_by | map(.id)'` to confirm the strategy's upstream decision ids land in the right slot.
+- **Manual validation 5: JSON + adversarial combined.** `./locutus justify dec-primary-datastore --against "..." --format json | jq '.adversarial.concerns'`. Expected: array of `{concern, severity}` objects. Then `jq '.adversarial.response'` to confirm the advocate's response is present.
+- **Manual validation 6: error path.** `./locutus justify nonexistent-id`. Expected: clear error from the orchestrator (the playbook's step-1 fetch returns `missing`; the orchestrator surfaces the error in plain text and stops). `./locutus justify nonexistent-id --format json` should still emit a structured error envelope, not a partial JSON document.
 
-**Tests:** Beyond the unit tests in earlier phases, no new automated tests. Empirical validation is the primary signal for this activity (output quality is hard to automate against; reviewing by hand is correct here).
+**Tests:** Beyond the unit tests in earlier phases, no new automated tests. Empirical validation is the primary signal for this activity (output quality is hard to automate against; reviewing by hand is correct here). The JSON shape validation in scenarios 4-5 is the closest we get to schema testing without standing up a JSON-schema validator.
 
-**Verification:** Full test suite green; three manual scenarios produce the expected shapes.
+**Verification:** Full test suite green; six manual scenarios produce the expected shapes.
 
-**Estimated:** 2-3 hours (manual validation depends on real LLM dispatches; counted conservatively).
+**Estimated:** 3-4 hours (manual validation depends on real LLM dispatches; six scenarios across two formats × adversarial-or-not × valid-or-invalid id; counted conservatively).
 
 ## Phase 6 — Documentation
 
@@ -218,9 +246,9 @@ Recorded in chat 2026-05-26; settled in the DJ. Restated here for implementation
 
 **Estimated:** 30 minutes.
 
-## Total estimate: 12-18 hours single-stranded across 2-3 sessions
+## Total estimate: 14-20 hours single-stranded across 2-3 sessions
 
-Smaller than DJ-136 because the new code surface is genuinely small (one CLI verb, one playbook, one registry entry, frontmatter audit on existing prompts). The empirical validation in Phase 5 depends on real LLM dispatches and may extend the wall-clock; the figure is conservative.
+Slightly higher than the initial draft after folding in `--format json` and explicit dependency-graph context expansion. Still smaller than DJ-136 because the new code surface is genuinely small (one CLI verb, one playbook, one registry entry, frontmatter audit on existing prompts) and no per-runtime divergence machinery applies. The empirical validation in Phase 5 depends on real LLM dispatches across six scenarios; the figure is conservative.
 
 ## Pointers a fresh session should follow before resuming
 
@@ -232,10 +260,10 @@ Smaller than DJ-136 because the new code surface is genuinely small (one CLI ver
 
 ## What is explicitly out of scope
 
-- **Fanout (justify a parent → fan out across its child decisions).** Deferred to v2. v1 ships single-node justify only.
-- **`--format json` flag.** Deferred. Output is markdown to stdout.
-- **Per-runtime playbook overlay.** Deferred per resolved-question 5 in the DJ. The cross-runtime default suffices.
+- **Parallel-subagent per-child fanout.** Rejected, not deferred — under DJ-133's axis-aligned model + DJ-134's SpecStore, the upstream decisions' `alternatives` slices already encode the research a fanout would re-derive. The rich-context expansion in Phase 2 supersedes fanout. If a future case for structurally-distinct per-child adversarial dialogue surfaces, that's a separate verb (`locutus challenge-each <parent>` or similar), not a justify flag.
+- **Per-runtime playbook overlay.** Deferred per resolved-question 6 in the DJ. The cross-runtime default suffices.
 - **Per-runtime agent prompt overlay.** DJ-135 resolved-question 14 deferred this for agents specifically; DJ-136 didn't lift the deferral for agents (only for plans). DJ-137 honors that.
-- **`justify-splitter` / `justify-synthesizer` invocation in the v1 playbook.** Kept published as agent prompts, not used by the v1 activity.
+- **`justify-splitter` / `justify-synthesizer` invocation in the playbook.** Kept published as agent prompts so operators can invoke ad-hoc, but the playbook doesn't reference them.
 - **Hooks for justify.** Read-only activity, no need.
 - **`/goal`-driven iteration for justify.** One-shot activity, no need.
+- **`--include <id-list>` flag for manual context selection.** Rejected — dependency-graph traversal is automatic; manual selection defeats the encapsulation the verb exists to provide. The operator can already get the same effect by running `locutus justify` on each id individually if they truly want isolated defenses.

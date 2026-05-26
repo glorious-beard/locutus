@@ -4696,7 +4696,39 @@ The empirical demand is current: the user wants the verb back. The architectural
 
 **Decision.** Restore `locutus justify <id>` as a one-shot ACP-dispatched read-only activity with the minimum new surface:
 
-1. **New playbook** at `internal/scaffold/plans/justification.md` — one-shot shaped (no convergence loop). Tells the orchestrator: (a) call `mcp__locutus__spec_get` to fetch the target node; (b) optionally dispatch `justify-researcher` for grounded fact-finding if the node's claims warrant verification; (c) if `--against "..."` was passed, dispatch `spec-challenger` first with the user's challenge prompt to get a structured `ChallengeBrief`; (d) dispatch `spec-advocate` with the node + (optional) challenger brief + (optional) researcher findings; (e) print the synthesized defense as markdown to stdout. Per [[feedback-runtime-idiomatic-no-lcd]] and DJ-136's overlay convention, the cross-runtime default suffices for v1; no `<activity>.<runtime>.md` overlays.
+1. **New playbook** at `internal/scaffold/plans/justification.md` — one-shot shaped (no convergence loop). Tells the orchestrator: (a) call `mcp__locutus__spec_get` to fetch the target node; (b) **inspect the target's dependency graph** — `influenced_by`, `decisions`, `feature_refs` (whichever apply per the node kind) — and call `mcp__locutus__spec_get` again with the batched ids to fetch those linked nodes; the advocate and challenger receive them as load-bearing context (you cannot defend a strategy without naming the decisions feeding into it; same for features and approaches). (c) optionally dispatch `justify-researcher` for grounded fact-finding if the node's claims warrant verification; (d) if `--against "..."` was passed, dispatch `spec-challenger` first with the user's challenge prompt + target node + linked context to get a structured `ChallengeBrief`; (e) dispatch `spec-advocate` with the node + linked context + (optional) challenger brief + (optional) researcher findings; (f) emit the synthesized defense in the operator-requested format (`--format markdown` default → stdout markdown; `--format json` → stdout JSON per the schema below). Per [[feedback-runtime-idiomatic-no-lcd]] and DJ-136's overlay convention, the cross-runtime default suffices for v1; no `<activity>.<runtime>.md` overlays.
+
+    The JSON output schema (the `--format json` projection of the same content the markdown default renders):
+
+    ```json
+    {
+      "target": { "id": "string", "kind": "decision|feature|strategy|approach", "title": "string" },
+      "context": {
+        "influenced_by": [
+          {
+            "id": "string", "title": "string", "chosen_option": "string|null",
+            "rationale": "the upstream decision's full rationale text",
+            "alternatives": [
+              { "name": "string", "summary": "string", "rejection_reason": "string", "citations": ["string"] }
+            ]
+          }
+        ],
+        "influences":   [{ "id": "string", "title": "string" }],
+        "feature_refs": [{ "id": "string", "title": "string" }]
+      },
+      "defense": {
+        "thesis": "one-paragraph statement of why this node is right",
+        "supporting_arguments": [{ "claim": "string", "evidence": "string" }]
+      },
+      "adversarial": {
+        "challenge": "the operator's --against text, verbatim",
+        "concerns":  [{ "concern": "string", "severity": "high|medium|low" }],
+        "response":  "the advocate's response to the concerns"
+      }
+    }
+    ```
+
+    The `adversarial` block is present only when `--against` was set; absent (or `null`) otherwise. Empty arrays under `context` (e.g., a leaf decision with no children) are still emitted as `[]` for shape-stability so downstream JSON consumers don't need optional-field handling. The `context.influenced_by[]` entries carry the full upstream decision struct — `rationale` + `alternatives` slice — because that's what makes the JSON useful both as the advocate's LLM context AND as the operator-visible artifact: an operator reading the output can spot-check whether the advocate's defense actually engaged with the considered alternatives or skated past them. The shape is a natural projection of what `spec-advocate` and `spec-challenger` already produce (their prompts shape outputs around fields close to `AdversarialDefense` / `ChallengeBrief` respectively) — the playbook tells the orchestrator to emit the JSON envelope around the agents' contributions when the format flag opts in.
 
 2. **New activity registry entry** in `internal/activity/agents-default.yaml` — `justification:` with runtime preferences (`claude-code` first, then `codex`, then `gemini`). Same shape as the existing `spec_refinement` / `feature_ingestion` / `code_adoption` / `code_assimilation` entries.
 
@@ -4710,19 +4742,21 @@ The empirical demand is current: the user wants the verb back. The architectural
 
 **Resolved design questions:**
 
-1. **Output goes to stdout as markdown.** Same as the pre-DJ-135 verb did. Operators can pipe to `bat`, `pager`, or redirect to a file. No `--format` flag in v1 — JSON output is a future addition if a real consumer asks for it.
+1. **Output to stdout with `--format markdown|json` (default markdown).** Markdown matches the pre-DJ-135 verb's behavior and the operator's read-and-decide ergonomics. JSON is opt-in for downstream consumers: a coding agent invoking `locutus justify` from a slash command or MCP prompt that wants structured fields (e.g., to display concerns as an interactive checklist), a CI script piping into `jq '.adversarial.concerns'`, or a future dashboard. The schema is in the Decision section above. Including both in v1 (rather than markdown-only + deferred JSON) reflects [[feedback-no-aspirational-fields]] read in the opposite direction: when a feature has a clear consumer set (here: subordinate agents, CI tooling, future dashboards), shipping it now is cheaper than re-revisiting the verb later.
 
-2. **`--against` triggers a two-agent dialogue inside one activity invocation.** The orchestrator dispatches `spec-challenger` first with the user's challenge text + the target node; receives a `ChallengeBrief` (a structured 2-5 concern list); then dispatches `spec-advocate` with the brief in context. The advocate's defense addresses the challenger's specific concerns rather than just generic justification. This is the load-bearing UX of justify — without it the verb degrades to "an LLM defended the node," which is barely more useful than asking ChatGPT.
+2. **`--against` triggers a two-agent dialogue inside one activity invocation.** The orchestrator dispatches `spec-challenger` first with the user's challenge text + the target node + the dependency-graph context; receives a `ChallengeBrief` (a structured 2-5 concern list); then dispatches `spec-advocate` with the brief in context. The advocate's defense addresses the challenger's specific concerns rather than just generic justification. This is the load-bearing UX of justify — without it the verb degrades to "an LLM defended the node," which is barely more useful than asking ChatGPT.
 
-3. **Fanout across decisions deferred.** The pre-DJ-135 verb had a `--fanout` mode (commit `8495ce8` "fan-out adversarial challenges across underlying decisions") that justified a parent node by independently justifying each of its decision children, then synthesizing. Useful but not core. Deferred to a follow-up; v1 ships single-node justify only. If you need to justify a parent, run `locutus justify <child-id>` for each child individually.
+3. **Dependency-graph context expansion is default behavior, and the fetched nodes carry their full content — not just title summaries.** Justifying a strategy without surfacing the decisions it's built on, or justifying a feature without naming the strategies and decisions feeding it, produces "trust me" defenses with no grounding — a degenerate output the operator cannot evaluate. The playbook instructs the orchestrator to inspect the target node's `influenced_by` / `decisions` / `feature_refs` arrays (whichever apply per the node kind), fetch the linked nodes via a single batched `mcp__locutus__spec_get`, and include them in both the challenger's and the advocate's context. Critically the fetched nodes carry the **full struct** — `rationale`, `chosen_option`, and the complete `alternatives` slice — not just `{id, title}`. Under DJ-133's axis-shaped decision IDs, every decision's typed JSON struct already encodes the comparative research the council surfaced (6-9 alternatives per decision with summaries, rejection rationales, and citations, per the live winplan spec graph at `~/projects/winplan/.borg/spec/decisions/`). The advocate and challenger consume that research rather than re-derive it.
 
-4. **`justify-splitter` and `justify-synthesizer` agents stay published but unused in v1.** The splitter/synthesizer pattern was council-era plumbing for parallel-LLM-call decomposition. Under the playbook model the orchestrator handles this orchestration in its conversation context. Keep the prompts in `internal/scaffold/agents/` (they ship to runtimes via the publisher and operators may invoke them ad-hoc), but the v1 justification playbook doesn't reference them. If the v2 fanout mode lands, it likely reuses these — re-evaluate then.
+4. **No parallel-subagent fanout (rejected, not deferred).** The retired pre-DJ-135 `--fanout` mode (commit `8495ce8` "fan-out adversarial challenges across underlying decisions") dispatched one subagent per child to produce per-child briefs, then synthesized a parent-level output. That made sense when council outputs were ephemeral and the only path to a per-decision brief was generating one fresh. Under DJ-133's axis-aligned model + DJ-134's unified SpecStore, every upstream decision's brief is already durably persisted on the typed struct (the `alternatives` slice IS the per-decision research; the `rationale` IS the per-decision defense). Parallel-subagent fanout would re-derive what `spec_get` returns instantly — a clear duplication of research that costs N additional subagent dispatches per justification. The context-expansion model in resolved-question 3 above (one batched fetch, full content) supersedes fanout as a design pattern, not as a "later iteration" fallback. If a future operator wants structurally-distinct per-child briefs (e.g., adversarial dialogue against each upstream decision individually), that's a separate verb (`locutus challenge-each <parent>`?) not a flag on justify.
 
-5. **No per-runtime playbook overlay in v1.** DJ-136's `.<runtime>.md` overlay convention exists but justify doesn't benefit from per-runtime divergence: it's one-shot, read-only, no convergence loop, no idiomatic runtime affordance specific to one provider. The cross-runtime default playbook is sufficient. Re-evaluate if a real per-runtime UX win emerges (e.g., Claude Code-only ergonomics around `/goal clear` behaviour).
+5. **`justify-splitter` and `justify-synthesizer` agents stay published but unused.** Council-era plumbing for parallel-LLM-call decomposition. Under the playbook model the orchestrator handles this orchestration in its conversation context; under resolved-question 4 above, the orchestration isn't even needed. Keep the prompts in `internal/scaffold/agents/` (they ship to runtimes via the publisher and operators may invoke them ad-hoc), but the justification playbook doesn't reference them. If a real future use case surfaces, evaluate then; v1 doesn't promise them a path back.
 
-6. **CLI invocation matches the pre-DJ-135 shape** — `locutus justify <id> [--against "..."]`. Operator muscle memory carries forward. The positional `<id>` is required; `--against` is optional. No new flags.
+6. **No per-runtime playbook overlay in v1.** DJ-136's `.<runtime>.md` overlay convention exists but justify doesn't benefit from per-runtime divergence: it's one-shot, read-only, no convergence loop, no idiomatic runtime affordance specific to one provider. The cross-runtime default playbook is sufficient. Re-evaluate if a real per-runtime UX win emerges (e.g., Claude Code-only ergonomics around `/goal clear` behaviour).
 
-7. **The five agent prompts are published as-is across all three runtimes.** No per-runtime agent overlay (DJ-135 resolved-question 14 deferred that surface; DJ-136 didn't lift the deferral for agents either — only for plans). The frontmatter audit in step 4 above produces canonical content the publisher translates to each runtime's format (Codex TOML, Claude/Gemini markdown).
+7. **CLI invocation extends the pre-DJ-135 shape** — `locutus justify <id> [--against "..."] [--format markdown|json]`. The `<id>` positional and `--against` flag carry operator muscle memory from the retired verb verbatim; `--format` is new. Default is `markdown` so existing-habit invocations continue to work without thinking about it. No other flags.
+
+8. **The five agent prompts are published as-is across all three runtimes.** No per-runtime agent overlay (DJ-135 resolved-question 14 deferred that surface; DJ-136 didn't lift the deferral for agents either — only for plans). The frontmatter audit in step 4 of the Decision section produces canonical content the publisher translates to each runtime's format (Codex TOML, Claude/Gemini markdown).
 
 **Alternatives considered:**
 
@@ -4736,13 +4770,19 @@ The empirical demand is current: the user wants the verb back. The architectural
 
 - **Skip the `--against` flag and tell operators to use the chat surface of their coding agent directly.** Rejected — that puts the burden on the operator to remember the prompt scaffolding (target node lookup, structured challenge format, advocate-context construction). The verb's value is encapsulating this so it works the same way every time.
 
+- **Ship markdown-only output in v1 and defer JSON to a follow-up.** Considered for minimum-surface conservatism. Rejected after the architectural recontextualization: `locutus justify` is no longer just an operator-facing verb under the post-DJ-135 model — it's also a building block other agents may invoke (slash commands, MCP prompt consumers, sub-orchestrators) and a piping target for ad-hoc tooling. The cost of `--format json` is small (a flag, a playbook branch, a documented schema); the cost of deferring is operator-visible friction every time a real consumer hits the markdown wall and needs to write a parser. Ship both formats in v1.
+
+- **Skip dependency-graph context expansion and let the operator pre-build context manually (`locutus justify <strategy> --include dec-foo,dec-bar`).** Considered for orthogonality (operator controls what enters context). Rejected — the operator already typed the node id; the dependency graph is right there in the SpecStore; asking them to enumerate manually defeats the encapsulation the verb exists to provide. Context expansion as default behavior is what makes the verb useful for non-decision targets (strategies, features, approaches) at all.
+
+- **Parallel-subagent per-child fanout (the retired pre-DJ-135 `--fanout` mode, kept as a v2 `--children` flag).** Considered as a fallback for "give me a structurally-distinct per-child brief plus a parent synthesis." Rejected as a v2 carve-out under post-DJ-133/135 conditions. The retired verb's fanout existed because per-decision briefs were ephemeral council outputs — fanning out was the only way to materialize them. Under DJ-133's axis-shaped IDs + DJ-134's unified SpecStore, every upstream decision's brief is durably persisted on the typed struct: the `alternatives` slice is the comparative research; the `rationale` is the defense; the `chosen_option` is the verdict. Fanout would re-derive what `mcp__locutus__spec_get` returns instantly, costing N additional subagent dispatches per justify invocation. Resolved-question 3's batched context fetch with full struct content supersedes fanout as the design pattern, not as a "later iteration" fallback. Leaving fanout on the books as a v2 escape hatch invites someone to build it later under a misread of what the spec graph already provides. If a real future demand for structurally-distinct per-child adversarial dialogue surfaces, it's a separate verb (`locutus challenge-each <parent>` or similar), not a justify flag.
+
 **Consequences:**
 
 - **Code (add):**
-    - `cmd/justify.go` — CLI verb. Thin wrapper around `runActivityVerb`. ~40-60 lines including the `kong` struct, the positional `<id>` argument, the `--against` optional flag, and the context-note assembly.
-    - `internal/scaffold/plans/justification.md` — playbook. ~80-120 lines of prose telling the orchestrator the one-shot workflow (read node, optionally dispatch challenger, dispatch advocate, synthesize output). Cross-runtime default; no overlay.
+    - `cmd/justify.go` — CLI verb. Thin wrapper around `runActivityVerb`. ~50-70 lines including the `kong` struct, the positional `<id>` argument, the `--against` optional flag, the `--format markdown|json` flag (with `markdown` default), validation of the format value, and the context-note assembly (the format choice + the optional challenge text get threaded into the playbook context so the orchestrator knows which output shape to emit).
+    - `internal/scaffold/plans/justification.md` — playbook. ~100-140 lines of prose telling the orchestrator the one-shot workflow: read target node, **fetch full content of every linked node** in `influenced_by` / `decisions` / `feature_refs` via batched `mcp__locutus__spec_get` (carrying their full `rationale` + `alternatives` slice), optionally dispatch researcher, optionally dispatch challenger, dispatch advocate, emit output in the operator-requested format. Cross-runtime default; no overlay.
     - `internal/activity/agents-default.yaml` — gains a `justification:` entry with runtime preferences.
-    - `cmd/justify_test.go` — kong-parses + basic-dispatch smoke test (mirrors the existing `cmd/refine_test.go` pattern if it exists; otherwise a minimal CLI surface test).
+    - `cmd/justify_test.go` — kong-parses + basic-dispatch smoke test (mirrors the existing `cmd/refine_test.go` pattern if it exists; otherwise a minimal CLI surface test). Covers `--format markdown` (default), `--format json`, `--against`, and the combination.
 
 - **Code (modify):**
     - `internal/scaffold/agents/spec-advocate.md`, `internal/scaffold/agents/spec-challenger.md`, `internal/scaffold/agents/justify-researcher.md`, `internal/scaffold/agents/justify-splitter.md`, `internal/scaffold/agents/justify-synthesizer.md` — frontmatter audit + body cleanup. Drop `output_schema:` references (no Go-side enforcer), `models:` arrays (runtime owns model selection), `thinking: on` (runtime owns thinking config). Body prose stays largely intact; minor edits where prompts reference "the council" or "the workflow" explicitly. Walks [docs/agent-conventions.md](../docs/agent-conventions.md) per [[feedback-agent-conventions-checklist-first]].
@@ -4751,7 +4791,8 @@ The empirical demand is current: the user wants the verb back. The architectural
 - **User-visible:**
     - `locutus justify <id>` returns. `locutus justify <id> --against "your concern here"` triggers the adversarial dialogue.
     - The orchestrator emits its iteration plan via `TodoWrite` (per DJ-136 Phase 3's convention); the runner renders it inline (per DJ-136 Phase 2's plan-event surfacing) so the operator sees the work scoped before any model call lands.
-    - Output is markdown on stdout. Pipe to `bat`, redirect, or paste.
+    - Output is markdown on stdout by default. `--format json` switches to the schema in the Decision section above; pipe to `jq`, redirect to a file, or feed into downstream tooling (a sub-orchestrator agent, a CI script, a future dashboard).
+    - For non-decision targets (strategies, features, approaches) the defense automatically grounds itself in the upstream decisions' rationale + alternatives — the operator doesn't need to think about pre-loading context. JSON output includes the upstream decisions' full structs so the operator can spot-check whether the advocate engaged with the considered alternatives or skated past them.
 
 - **Documentation:**
     - [CLAUDE.md](../CLAUDE.md) — verb count updates from 8 to 9. The retired-verbs note ("`justify` retired with the council in DJ-135 phase 5") gets replaced with a current entry under the activity-dispatching verbs section.
