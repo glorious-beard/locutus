@@ -167,19 +167,18 @@ func runOnDiskMigrations() error {
 	if err != nil {
 		return fmt.Errorf("decision-id migration (DJ-133): %w", err)
 	}
-	if len(res.Renamed) == 0 {
-		return nil
-	}
-	fmt.Printf("DJ-133 decision-id migration: renamed %d decision(s).\n", len(res.Renamed))
-	for _, r := range res.Renamed {
-		composite := ""
-		if r.Composite {
-			composite = fmt.Sprintf(" (composite — secondary axes %v not reflected in id)", r.Axes[1:])
-		}
-		fmt.Printf("  - %s → %s%s\n", r.OldID, r.NewID, composite)
-		refsTouched := len(r.FeaturesRewritten) + len(r.StrategiesRewritten) + len(r.DecisionsInfluencedBy) + len(r.ApproachesRewritten)
-		if refsTouched > 0 {
-			fmt.Printf("    rewrote %d incoming reference(s) across features/strategies/decisions/approaches\n", refsTouched)
+	if len(res.Renamed) > 0 {
+		fmt.Printf("DJ-133 decision-id migration: renamed %d decision(s).\n", len(res.Renamed))
+		for _, r := range res.Renamed {
+			composite := ""
+			if r.Composite {
+				composite = fmt.Sprintf(" (composite — secondary axes %v not reflected in id)", r.Axes[1:])
+			}
+			fmt.Printf("  - %s → %s%s\n", r.OldID, r.NewID, composite)
+			refsTouched := len(r.FeaturesRewritten) + len(r.StrategiesRewritten) + len(r.DecisionsInfluencedBy) + len(r.ApproachesRewritten)
+			if refsTouched > 0 {
+				fmt.Printf("    rewrote %d incoming reference(s) across features/strategies/decisions/approaches\n", refsTouched)
+			}
 		}
 	}
 	for _, s := range res.Skipped {
@@ -187,6 +186,21 @@ func runOnDiskMigrations() error {
 			continue // not interesting on the operator's surface
 		}
 		fmt.Printf("  - skipped %s (%s)\n", s.ID, s.Reason)
+	}
+
+	// Sidecar cleanup: post-DJ-135 the .md sidecars next to .json
+	// bodies under decisions/features/strategies/bugs are vestigial
+	// (carried no narrative; mutation goes through MCP only). Remove
+	// any leftovers from prior runs. Idempotent — a project that's
+	// already been cleaned returns Scanned=0.
+	cleanup, err := migrate.CleanupSpecSidecars(fsys)
+	if err != nil {
+		return fmt.Errorf("sidecar cleanup: %w", err)
+	}
+	if len(cleanup.Removed) > 0 {
+		fmt.Printf("Removed %d vestigial .md sidecar(s) under .borg/spec/{decisions,features,strategies,bugs}/.\n", len(cleanup.Removed))
+		fmt.Println("  (Sidecars carried only {id, title, status} frontmatter and have no consumer post-DJ-135;")
+		fmt.Println("   spec.Approach .md files under .borg/spec/approaches/ are load-bearing and untouched.)")
 	}
 	return nil
 }

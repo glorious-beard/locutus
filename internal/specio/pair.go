@@ -3,6 +3,7 @@ package specio
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/glorious-beard/locutus/internal/frontmatter"
 )
@@ -42,33 +43,62 @@ func LoadPair[T any](fsys FS, basePath string) (obj T, body string, err error) {
 	return obj, body, nil
 }
 
-// SavePair writes the full typed struct to basePath.json and a human-friendly
-// markdown file to basePath.md with a minimal frontmatter header (id, title,
-// status). Writes are atomic on OSFS (write to .tmp then rename); on MemFS the
-// write is direct.
+// SavePair writes the full typed struct to basePath.json and,
+// when body is non-empty, a companion basePath.md sidecar.
+//
+// Body semantics differ by node kind:
+//   - Decisions / features / bugs: all narrative lives on the typed
+//     struct (rationale, alternatives, description, acceptance
+//     criteria, root_cause, fix_plan). Callers pass body="" — the
+//     sidecar is not written and any pre-existing one is removed.
+//   - Strategies: spec.Strategy has no Body field on the struct;
+//     the strategy's prose body lives in the .md sidecar (a legacy
+//     of the pre-DJ-135 council authoring path). Callers pass the
+//     body string and the sidecar is preserved.
+//
+// Post-DJ-135 all spec mutation flows through MCP write tools,
+// which means decisions/features/bugs only ever go through this
+// function with empty body — so their sidecars get cleaned up
+// naturally as the migration touches each node. The one-shot
+// sidecar-cleanup migration ([CleanupSpecSidecars] under internal/
+// migrate/) handles the residual case where a previous Locutus
+// build wrote frontmatter-only sidecars that this build no longer
+// emits.
+//
+// Approaches are NOT routed through this function — spec.Approach
+// stores a load-bearing markdown body that's authored and read by
+// coding agents. Approaches use SaveMarkdown / LoadMarkdown
+// directly.
+//
+// Writes are atomic on OSFS (write to .tmp then rename); on MemFS
+// the write is direct.
 func SavePair[T any](fsys FS, basePath string, obj T, body string) error {
-	// Marshal the full struct to JSON.
 	jsonData, err := json.MarshalIndent(obj, "", "  ")
 	if err != nil {
 		return fmt.Errorf("save pair marshal json: %w", err)
 	}
 	jsonData = append(jsonData, '\n')
+	if err := AtomicWriteFile(fsys, basePath+".json", jsonData, 0o644); err != nil {
+		return fmt.Errorf("save pair write json: %w", err)
+	}
 
-	// Extract id/title/status from the struct via a map intermediary.
+	if body == "" {
+		// Remove any leftover sidecar from prior builds. Missing
+		// file is fine — no .md to clean up.
+		if err := fsys.Remove(basePath + ".md"); err != nil && !isNotExistErr(err) {
+			return fmt.Errorf("save pair remove stale md: %w", err)
+		}
+		fireSpecWrite(basePath, false)
+		return nil
+	}
+
 	hdr, err := extractHeader(obj)
 	if err != nil {
 		return fmt.Errorf("save pair extract header: %w", err)
 	}
-
-	// Render the markdown with frontmatter.
 	mdData, err := frontmatter.Render(hdr, body)
 	if err != nil {
 		return fmt.Errorf("save pair render md: %w", err)
-	}
-
-	// Write JSON first, then MD.
-	if err := AtomicWriteFile(fsys, basePath+".json", jsonData, 0o644); err != nil {
-		return fmt.Errorf("save pair write json: %w", err)
 	}
 	if err := AtomicWriteFile(fsys, basePath+".md", mdData, 0o644); err != nil {
 		return fmt.Errorf("save pair write md: %w", err)
@@ -77,8 +107,10 @@ func SavePair[T any](fsys FS, basePath string, obj T, body string) error {
 	return nil
 }
 
-// extractHeader marshals obj to a generic map and pulls out the id, title, and
-// status fields for the frontmatter header.
+// extractHeader marshals obj to a generic map and pulls out the id,
+// title, and status fields for the frontmatter header. Used only by
+// SavePair when a body string is present and a sidecar is going to
+// be written.
 func extractHeader(obj any) (FrontmatterHeader, error) {
 	data, err := json.Marshal(obj)
 	if err != nil {
@@ -88,7 +120,6 @@ func extractHeader(obj any) (FrontmatterHeader, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return FrontmatterHeader{}, err
 	}
-
 	str := func(key string) string {
 		v, _ := m[key].(string)
 		return v
@@ -98,5 +129,16 @@ func extractHeader(obj any) (FrontmatterHeader, error) {
 		Title:  str("title"),
 		Status: str("status"),
 	}, nil
+}
+
+// isNotExistErr matches both fs.ErrNotExist (OSFS) and the MemFS
+// "file does not exist" sentinel for the Remove path. Locally
+// scoped to this file rather than imported from migrate to keep the
+// dependency arrow pointing the right direction.
+func isNotExistErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "file does not exist") || strings.Contains(err.Error(), "no such file")
 }
 
