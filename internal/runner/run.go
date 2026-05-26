@@ -63,6 +63,16 @@ type ActivityRun struct {
 // matching playbook overlay (DJ-136 phase 1) without a second
 // resolve.
 //
+// Per-runtime dispatch strategy (DJ-136 phase 5):
+//
+//   - claude-code: single-iteration dispatch. The overlay sent as the
+//     prompt body is a `/goal` directive whose evaluator drives the
+//     iteration loop inside Claude Code itself.
+//   - codex / gemini: multi-iteration outer loop driven by Locutus's
+//     runner. Each iteration dispatches the one-iteration default
+//     playbook; the loop terminates when the agent's final text
+//     reports `converged: true` or the iteration ceiling (20) fires.
+//
 // out is where the agent's free-text output is mirrored. progress
 // is where the dispatcher writes per-tool-call status lines and
 // error notices — separate writers so callers can route final text
@@ -98,6 +108,72 @@ func DispatchActivity(
 		return nil, fmt.Errorf("dispatch: runtime %q resolved but has no spawn descriptor", runtime)
 	}
 
+	// Claude Code drives its own iteration loop via the `/goal`
+	// directive in the published overlay; the runner does one
+	// dispatch and lets the goal evaluator handle the rest. Codex
+	// and Gemini have no equivalent affordance, so the runner wraps
+	// the one-iteration dispatch in an outer loop.
+	if runtime == "claude-code" {
+		return runOneIteration(ctx, projectRoot, runtime, spawn, playbookBody, out, progress)
+	}
+	return runOuterLoopDispatch(ctx, projectRoot, runtime, spawn, playbookBody, out, progress)
+}
+
+// runOuterLoopDispatch wraps repeated runOneIteration calls in the
+// outer loop used for codex / gemini. The first iteration receives
+// the playbook as-is; subsequent iterations receive the same body
+// (the playbook is one-iteration-shaped and the MCP daemon preserves
+// graph state across sessions, so the agent picks up where the prior
+// iteration left off).
+func runOuterLoopDispatch(
+	ctx context.Context,
+	projectRoot string,
+	runtime string,
+	spawn acp.Spawn,
+	playbookBody string,
+	out io.Writer,
+	progress io.Writer,
+) (*ActivityRun, error) {
+	const maxIterations = 20
+	var lastRun *ActivityRun
+	loop := &OuterLoopRunner{
+		MaxIterations: maxIterations,
+		Progress:      progress,
+		DispatchOne: func(ctx context.Context, iter int) (string, string, string, error) {
+			run, err := runOneIteration(ctx, projectRoot, runtime, spawn, playbookBody, out, progress)
+			if err != nil {
+				return "", "", "", err
+			}
+			lastRun = run
+			return run.FinalText, run.SessionID, run.SessionDir, nil
+		},
+	}
+	res, err := loop.Run(ctx)
+	if err != nil {
+		return lastRun, err
+	}
+	if lastRun == nil {
+		return nil, fmt.Errorf("dispatch: outer loop produced no iterations")
+	}
+	if !res.Converged {
+		fmt.Fprintf(progress, "  [warn] outer loop terminated at iteration ceiling without convergence\n")
+	}
+	return lastRun, nil
+}
+
+// runOneIteration runs one ACP session: spawn, new session, prompt,
+// stream events, write logs, return the per-iteration ActivityRun.
+// Called once for claude-code dispatches and per-iteration for the
+// codex / gemini outer loop.
+func runOneIteration(
+	ctx context.Context,
+	projectRoot string,
+	runtime string,
+	spawn acp.Spawn,
+	playbookBody string,
+	out io.Writer,
+	progress io.Writer,
+) (*ActivityRun, error) {
 	sessionDir, err := makeSessionDir(projectRoot)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: prepare session dir: %w", err)

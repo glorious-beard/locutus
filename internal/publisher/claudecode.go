@@ -137,6 +137,16 @@ func claudeCodeModelForTier(tier string) string {
 	}
 }
 
+// EnsureHooks is a no-op for Claude Code under DJ-136. The
+// runtime's `/goal` slash command (used by the spec_refinement
+// overlay) provides the enforcement surface; PreToolUse hooks
+// aren't required to make the activity safe. If a future activity
+// needs Claude Code hooks, this method gains an implementation
+// then.
+func (claudeCodePublisher) EnsureHooks(_ []CanonicalActivity, _ specio.FS) error {
+	return nil
+}
+
 // PublishActivity writes .claude/commands/locutus-<cli-verb>.md. The
 // content is the canonical (cross-runtime) plan body — Claude Code
 // treats the command body as the prompt the agent runs when the

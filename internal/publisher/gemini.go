@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/glorious-beard/locutus/internal/scaffold"
 	"github.com/glorious-beard/locutus/internal/specio"
 )
 
@@ -72,6 +73,109 @@ func (geminiPublisher) PublishAgent(agent CanonicalAgent, fsys specio.FS) error 
 	}
 	content := frontmatter + body
 	return fsys.WriteFile(dir+"/locutus-"+agent.ID+".md", []byte(content), 0o644)
+}
+
+// geminiHookFragment is the JSON shape the per-activity hook files
+// embed: a wrapper object with a `hooks` array. Each entry is an
+// event + matcher + command + args triple. EnsureHooks merges those
+// arrays into a single `.gemini/settings.json` document.
+type geminiHookFragment struct {
+	Comment string             `json:"_comment,omitempty"`
+	Hooks   []geminiHookEntry  `json:"hooks"`
+}
+
+type geminiHookEntry struct {
+	Event   string   `json:"event"`
+	Matcher string   `json:"matcher"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+}
+
+// geminiSettings is the subset of .gemini/settings.json this
+// publisher manages. Other keys the operator may have authored are
+// preserved by reading the existing file, merging hooks, and
+// writing the merged result back. We only ever touch the hooks
+// field; everything else round-trips byte-stable in the same map.
+type geminiSettings struct {
+	Hooks []geminiHookEntry      `json:"hooks,omitempty"`
+	Extra map[string]interface{} `json:"-"`
+}
+
+const geminiSettingsPath = ".gemini/settings.json"
+
+// EnsureHooks writes .gemini/settings.json's hooks field from the
+// embedded fragments. Idempotent — re-runs strip Locutus's own
+// hook entries (matched by command path) and re-add them, so the
+// file converges to the same shape regardless of how many resets
+// run. User-authored hook entries adjacent to Locutus's are
+// preserved.
+func (geminiPublisher) EnsureHooks(activities []CanonicalActivity, fsys specio.FS) error {
+	var locutusEntries []geminiHookEntry
+	for _, act := range activities {
+		fragmentBytes, ok, err := scaffold.ReadEmbeddedHook("gemini", act.Name, locutusCommand())
+		if err != nil {
+			return fmt.Errorf("read embedded hook for %s: %w", act.Name, err)
+		}
+		if !ok {
+			continue
+		}
+		var fragment geminiHookFragment
+		if err := json.Unmarshal(fragmentBytes, &fragment); err != nil {
+			return fmt.Errorf("parse embedded gemini hook for %s: %w", act.Name, err)
+		}
+		locutusEntries = append(locutusEntries, fragment.Hooks...)
+	}
+	if len(locutusEntries) == 0 {
+		return nil
+	}
+
+	if err := fsys.MkdirAll(".gemini", 0o755); err != nil {
+		return err
+	}
+
+	// Read existing settings if present so we can preserve user-
+	// authored hook entries. A missing file is fine — we'll create
+	// one with only the Locutus entries.
+	var combined map[string]interface{}
+	existing, err := fsys.ReadFile(geminiSettingsPath)
+	if err == nil && len(existing) > 0 {
+		if err := json.Unmarshal(existing, &combined); err != nil {
+			return fmt.Errorf("parse existing %s: %w", geminiSettingsPath, err)
+		}
+	}
+	if combined == nil {
+		combined = map[string]interface{}{}
+	}
+
+	// Strip prior Locutus entries by command-path match; re-append
+	// the current set. Comparing the command field is enough — the
+	// substituted {{LOCUTUS_BIN}} resolves to the same absolute
+	// path across re-runs unless the binary moved (in which case
+	// re-adding under the new path is exactly what we want).
+	locutusBin := locutusCommand()
+	var preserved []geminiHookEntry
+	if raw, ok := combined["hooks"].([]interface{}); ok {
+		for _, item := range raw {
+			b, err := json.Marshal(item)
+			if err != nil {
+				continue
+			}
+			var entry geminiHookEntry
+			if err := json.Unmarshal(b, &entry); err != nil {
+				continue
+			}
+			if entry.Command != locutusBin {
+				preserved = append(preserved, entry)
+			}
+		}
+	}
+	combined["hooks"] = append(preserved, locutusEntries...)
+
+	out, err := json.MarshalIndent(combined, "", "  ")
+	if err != nil {
+		return err
+	}
+	return fsys.WriteFile(geminiSettingsPath, append(out, '\n'), 0o600)
 }
 
 func (geminiPublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
