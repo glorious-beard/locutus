@@ -264,6 +264,13 @@ func DispatchActivity(
 			if ev.Text != "" {
 				fmt.Fprintf(progress, "  [error] %s\n", ev.Text)
 			}
+		case dispatch.EventPlan:
+			// Multi-line block; lock the progress mutex across the
+			// whole render so a concurrent tool-call line doesn't
+			// interleave with our entries.
+			heartbeat.Lock()
+			renderPlanBlock(progress, ev.PlanEntries, time.Now)
+			heartbeat.Unlock()
 		}
 	}
 

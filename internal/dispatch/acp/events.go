@@ -10,9 +10,11 @@ import (
 
 // translateUpdate converts an ACP session/update notification into the
 // dispatch.AgentEvent shape the supervisor's event loop already consumes.
-// Returns skip=true for update kinds we deliberately drop (plan,
-// availableCommandsUpdate, modeUpdate, etc. — none load-bearing for the
-// initial migration; folded in later if a phase needs them).
+// Returns skip=true for update kinds we deliberately drop
+// (availableCommandsUpdate, modeUpdate, etc. — none load-bearing for
+// the initial migration; folded in later if a phase needs them). Plan
+// notifications were dropped in DJ-135 phase 1 and re-surfaced as
+// EventPlan under DJ-136 phase 2.
 //
 // The translation is intentionally lossy: rawInput, locations, and content
 // types like diff are preserved on the AgentEvent's Raw field as the
@@ -80,10 +82,27 @@ func translateUpdate(n acpsdk.SessionNotification) (dispatch.AgentEvent, bool) {
 		}
 		return dispatch.AgentEvent{}, true
 
+	case u.Plan != nil:
+		// Full replacement, per the ACP Agent Plan spec — each
+		// notification carries the complete list, not a delta. The
+		// dispatch layer surfaces it as one EventPlan; the renderer
+		// in internal/runner produces the multi-line operator view.
+		ev.Kind = dispatch.EventPlan
+		ev.PlanEntries = make([]dispatch.PlanEntry, 0, len(u.Plan.Entries))
+		for _, e := range u.Plan.Entries {
+			ev.PlanEntries = append(ev.PlanEntries, dispatch.PlanEntry{
+				Content:  e.Content,
+				Status:   string(e.Status),
+				Priority: string(e.Priority),
+			})
+		}
+		return ev, false
+
 	default:
-		// plan, availableCommandsUpdate, currentModeUpdate, configOptionUpdate,
+		// availableCommandsUpdate, currentModeUpdate, configOptionUpdate,
 		// userMessageChunk, etc. — preserved in the archive via Raw but not
-		// surfaced as supervisor events in Phase 1.
+		// surfaced as supervisor events. Plan notifications were lifted
+		// out of this default branch in DJ-136 phase 2.
 		return dispatch.AgentEvent{}, true
 	}
 }

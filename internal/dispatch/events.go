@@ -33,7 +33,25 @@ const (
 	EventRetry      EventKind = "api_retry"
 	EventResult     EventKind = "result"
 	EventError      EventKind = "error"
+	// EventPlan carries the agent's current execution plan as a full
+	// replacement (per the ACP Agent Plan spec — each notification is
+	// the complete list, not a delta). The supervisor's progress
+	// writer surfaces these as inline multi-line plan blocks so the
+	// operator sees what the orchestrator has scheduled and how far
+	// through it the run is. DJ-136 phase 2 reverses the Phase-1
+	// scope cut that dropped these notifications on the floor.
+	EventPlan EventKind = "plan"
 )
+
+// PlanEntry is the dispatch-layer projection of one ACP plan entry.
+// Mirrors acpsdk.PlanEntry without the SDK's _meta map — operators
+// see Content + Status + Priority; archive consumers can recover
+// _meta from AgentEvent.Raw.
+type PlanEntry struct {
+	Content  string
+	Status   string // pending | in_progress | completed
+	Priority string // high | medium | low
+}
 
 // AgentEvent is a normalized event from the coding-agent stream. The acp
 // translation layer in internal/dispatch/acp/events.go converts ACP
@@ -47,7 +65,11 @@ type AgentEvent struct {
 	ToolInput map[string]any
 	Text      string
 	FilePaths []string
-	Raw       json.RawMessage
+	// PlanEntries carries the full replacement plan when Kind is
+	// EventPlan. Empty for every other event kind. The slice can be
+	// empty when the agent retracts its plan (renders as "cleared").
+	PlanEntries []PlanEntry
+	Raw         json.RawMessage
 }
 
 // SummarizeEvents produces a compact, deterministic text representation of a
