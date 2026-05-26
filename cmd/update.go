@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 
 	selfupdate "github.com/creativeprojects/go-selfupdate"
 
 	"github.com/glorious-beard/locutus/internal/activity"
 	"github.com/glorious-beard/locutus/internal/history"
+	"github.com/glorious-beard/locutus/internal/mcp"
 	"github.com/glorious-beard/locutus/internal/migrate"
 	"github.com/glorious-beard/locutus/internal/publisher"
 	"github.com/glorious-beard/locutus/internal/scaffold"
@@ -96,10 +98,27 @@ func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 	// the prereq layer sees the freshest embedded agent definitions
 	// (the spec-summarizer prompt may have changed in this binary).
 	if c.Reset {
-		fsys, _, err := projectFS()
+		fsys, root, err := projectFS()
 		if err != nil {
 			return fmt.Errorf("update --reset: %w", err)
 		}
+
+		// Stop any running MCP daemon before rewriting .borg/. The
+		// daemon loads the SpecStore once at boot and serves all
+		// reads from in-memory state; if we rewrite agents/plans or
+		// (more relevantly) if the operator's just done a git reset
+		// of .borg/spec/, the daemon's cached graph diverges from
+		// disk and every subsequent refine sees the phantom state.
+		// Stopping the daemon now means the next refine invocation
+		// forks a fresh daemon that reads the rewritten disk. Best-
+		// effort: a missing daemon is fine; failure to remove the
+		// socket logs but doesn't abort the reset.
+		if err := mcp.StopDaemon(root); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: stop mcp daemon: %v\n", err)
+		} else {
+			fmt.Println("Stopped MCP daemon (next refine will fork a fresh one against current disk state).")
+		}
+
 		report, err := scaffold.Reset(fsys)
 		if err != nil {
 			return fmt.Errorf("update --reset: %w", err)
