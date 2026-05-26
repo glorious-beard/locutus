@@ -29,7 +29,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -228,8 +227,30 @@ func DispatchActivity(
 			toolN++
 			n := toolN
 			heartbeat.Unlock()
+			line, taskID := toolProgressLine(ev, dispatchTbl)
+			heartbeat.Lock()
 			fmt.Fprintf(progress, "  [%s] %3d → %s\n",
-				time.Now().Format("15:04:05"), n, toolProgressLine(ev, dispatchTbl))
+				time.Now().Format("15:04:05"), n, line)
+			heartbeat.Unlock()
+			if taskID != "" {
+				// Async backfill: when the matching SDK message lands
+				// in the dispatchTable, emit a correlation line so the
+				// operator sees which subagent was dispatched. The
+				// callback runs on the JSON-RPC reader goroutine, so
+				// it shares the progress writer with this loop and
+				// the heartbeat goroutine — guard with the same mutex
+				// that's already protecting line atomicity.
+				dispatchTbl.Subscribe(taskID, func(info dispatchInfo) {
+					label := info.SubagentType
+					if info.Description != "" {
+						label = info.SubagentType + " · " + info.Description
+					}
+					heartbeat.Lock()
+					fmt.Fprintf(progress, "  [%s]      ↳ Task #%d = %s\n",
+						time.Now().Format("15:04:05"), n, label)
+					heartbeat.Unlock()
+				})
+			}
 			if err := writeJSONLine(toolsFile, ev); err != nil {
 				return nil, fmt.Errorf("dispatch: append tools log: %w", err)
 			}
@@ -298,20 +319,24 @@ func makeSessionDir(projectRoot string) (string, error) {
 // carries title="Task" and toolName="Agent" but rawInput={} — the
 // subagent_type + description live on the parallel SDK message
 // stream (the assistant message whose tool_use produced this Task).
-// The dispatchTable correlates the two by tool_use_id; when we find
-// a hit, the line reads as `<subagent-type> · <description>` instead
-// of the uninformative "Task → Task".
+// The dispatchTable correlates the two by tool_use_id; toolProgressLine
+// is strictly non-blocking, so on the common path where the SDK side
+// hasn't landed yet it returns a bare "Task" label AND the tool_use_id
+// (taskID) — the caller is expected to Subscribe on the table with
+// that id, and emit a backfill line when the SDK side arrives.
+//
+// On a hit (SDK already landed) the formatted label is returned with
+// taskID="" — there's nothing to backfill.
 //
 // Primary-input hint surfaces one identifying argument (id,
 // file_path, command, query, pattern) so the line carries more than
 // the tool name alone for non-Task tools.
-func toolProgressLine(ev dispatch.AgentEvent, dt *dispatchTable) string {
+func toolProgressLine(ev dispatch.AgentEvent, dt *dispatchTable) (line string, taskID string) {
 	// title is the ACP tool_call.Title field (set by the dispatcher's
 	// event translator into ev.ToolName before we override). For Claude
 	// Code's Bash/Read/Write tools it's typically the tool name; for
 	// the Task tool empirically it's literally "Task" and the rawInput
-	// is {}, so the dispatchTable lookup below is how we recover the
-	// subagent type and description.
+	// is {}.
 	title := ev.ToolName
 	// canonical is _meta.claudeCode.toolName when present — the
 	// runtime-canonical tool id (Bash / Agent / mcp__locutus__*).
@@ -320,49 +345,27 @@ func toolProgressLine(ev dispatch.AgentEvent, dt *dispatchTable) string {
 		canonical = claudeCodeToolName(ev.Raw)
 	}
 
-	// Task tool: consult the dispatchTable for subagent metadata that
-	// the ACP event itself doesn't carry. The SDK assistant message
-	// containing the tool_use arrives before this ACP tool_call event
-	// (verified empirically on a live winplan session), so the table
-	// is populated by the time we look it up.
 	if canonical == "Agent" || canonical == "Task" {
 		toolCallID := acpToolCallID(ev.Raw)
 		if dt != nil && toolCallID != "" {
-			// Wait for the SDK side to arrive — acp-go-sdk's
-			// processNotifications serializes inbound notifications
-			// in order, so in theory the SDK ext notification (which
-			// claude-agent-acp emits first) is processed before the
-			// ACP tool_call notification reaches the runner. In
-			// practice we've seen "Task → Task" lines on production
-			// runs despite that ordering, suggesting either a wider
-			// race window than the in-order claim implies OR a
-			// distinct bug in the wiring. Use a generous 2s timeout
-			// — high enough to absorb any plausible race, low
-			// enough not to stall the progress writer perceptibly
-			// when a runtime genuinely never emits the SDK side
-			// (Codex / Gemini). When the lookup misses despite the
-			// 2s wait, log at debug so a follow-up run with -vv can
-			// surface the diagnostic.
-			info, ok := dt.LookupOrWait(toolCallID, 2*time.Second)
-			if ok {
+			if info, ok := dt.Lookup(toolCallID); ok {
+				// SDK side already landed: format the full label
+				// inline, no backfill needed.
 				if info.Description != "" {
-					return fmt.Sprintf("%s · %s", info.SubagentType, info.Description)
+					return fmt.Sprintf("%s · %s", info.SubagentType, info.Description), ""
 				}
-				return info.SubagentType
+				return info.SubagentType, ""
 			}
-			slog.Debug("acp Task tool_call: dispatchTable lookup missed after wait",
-				"toolCallId", toolCallID,
-				"title", title,
-				"canonical", canonical)
+			// Miss: caller should Subscribe with this id so the
+			// late arrival emits a correlation line.
+			return "Task", toolCallID
 		}
-		// Fallback: no SDK correlation yet. Prefer the title when it
-		// adds information beyond the canonical name; otherwise just
-		// "Task" — the lookup will succeed on subsequent dispatches
-		// after the SDK stream catches up.
+		// No id to subscribe with (no _meta or no toolCallId in
+		// raw). Fall through to a best-effort title.
 		if title != "" && title != canonical && title != "Task" {
-			return fmt.Sprintf("Task → %s", title)
+			return fmt.Sprintf("Task → %s", title), ""
 		}
-		return "Task"
+		return "Task", ""
 	}
 
 	// Everything else: prefer the canonical name (it's more
@@ -377,9 +380,9 @@ func toolProgressLine(ev dispatch.AgentEvent, dt *dispatchTable) string {
 		name = "tool"
 	}
 	if hint := primaryInputHint(ev.ToolInput); hint != "" {
-		return fmt.Sprintf("%s %s", name, hint)
+		return fmt.Sprintf("%s %s", name, hint), ""
 	}
-	return name
+	return name, ""
 }
 
 // claudeCodeToolName scans an ACP SessionNotification's JSON for

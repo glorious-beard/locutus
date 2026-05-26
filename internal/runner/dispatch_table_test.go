@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -127,73 +128,102 @@ func TestToolProgressLine_TaskFromDispatchTable(t *testing.T) {
 		ToolName: "Task",
 		Raw:      rawACP,
 	}
-	got := toolProgressLine(ev, dt)
+	got, taskID := toolProgressLine(ev, dt)
 	want := "spec-candidate-survey · Candidate survey: implementation-language"
 	if got != want {
 		t.Fatalf("toolProgressLine got %q\nwant %q", got, want)
 	}
+	if taskID != "" {
+		t.Errorf("hit case should return empty taskID (no backfill needed); got %q", taskID)
+	}
 }
 
-// TestDispatchTable_LookupOrWait_UnblocksOnLateWrite simulates the
-// race fix: a lookup races a write, and the lookup blocks until the
-// write lands. Confirms (a) the lookup returns the right info once
-// the write happens (not the timeout-fallback), and (b) the wait
-// duration is bounded by the actual write delay, not the full
-// timeout.
-func TestDispatchTable_LookupOrWait_UnblocksOnLateWrite(t *testing.T) {
+// TestDispatchTable_Subscribe_FiresOnLateWrite simulates the
+// late-arrival path: a Subscribe registers when the entry is absent,
+// then the parseLine for the matching SDK message fires the callback
+// with the dispatch info. Confirms the runner's backfill mechanism
+// works without blocking the event loop.
+func TestDispatchTable_Subscribe_FiresOnLateWrite(t *testing.T) {
 	var sink bytes.Buffer
 	dt := newDispatchTable(&sink)
 
-	// Schedule a write to land 30ms into the lookup's 500ms timeout.
+	got := make(chan dispatchInfo, 1)
+	dt.Subscribe("toolu_race", func(info dispatchInfo) {
+		got <- info
+	})
+
+	// Now the SDK side lands.
 	line := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_race","name":"Agent","input":{"subagent_type":"spec-scout","description":"late arrival"}}]}}` + "\n")
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		_, _ = dt.Write(line)
-	}()
-
-	start := time.Now()
-	info, ok := dt.LookupOrWait("toolu_race", 500*time.Millisecond)
-	elapsed := time.Since(start)
-
-	if !ok {
-		t.Fatalf("LookupOrWait returned miss; want hit after late write")
+	if _, err := dt.Write(line); err != nil {
+		t.Fatalf("Write err: %v", err)
 	}
-	if info.SubagentType != "spec-scout" {
-		t.Errorf("SubagentType got %q want %q", info.SubagentType, "spec-scout")
-	}
-	if elapsed > 250*time.Millisecond {
-		t.Errorf("LookupOrWait took %v; expected to unblock soon after the 30ms write (cond.Broadcast should fire immediately)", elapsed)
+
+	select {
+	case info := <-got:
+		if info.SubagentType != "spec-scout" {
+			t.Errorf("SubagentType got %q want %q", info.SubagentType, "spec-scout")
+		}
+		if info.Description != "late arrival" {
+			t.Errorf("Description got %q want %q", info.Description, "late arrival")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Subscribe callback did not fire after the matching SDK write")
 	}
 }
 
-// TestDispatchTable_LookupOrWait_TimesOutWhenWriteNeverComes confirms
-// the upper bound on wait time: if the SDK side genuinely never
-// arrives (non-Claude runtimes, or a buggy agent), the lookup falls
-// back gracefully without hanging the progress writer.
-func TestDispatchTable_LookupOrWait_TimesOutWhenWriteNeverComes(t *testing.T) {
+// TestDispatchTable_Subscribe_FiresImmediatelyOnHit confirms the
+// synchronous path: when Subscribe is called after the entry has
+// already landed, the callback fires before Subscribe returns.
+func TestDispatchTable_Subscribe_FiresImmediatelyOnHit(t *testing.T) {
 	var sink bytes.Buffer
 	dt := newDispatchTable(&sink)
 
-	start := time.Now()
-	_, ok := dt.LookupOrWait("toolu_never_comes", 100*time.Millisecond)
-	elapsed := time.Since(start)
+	line := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_already","name":"Agent","input":{"subagent_type":"spec-scout","description":"already here"}}]}}` + "\n")
+	if _, err := dt.Write(line); err != nil {
+		t.Fatalf("Write err: %v", err)
+	}
 
-	if ok {
-		t.Fatalf("LookupOrWait returned hit; want miss after timeout")
+	fired := false
+	dt.Subscribe("toolu_already", func(info dispatchInfo) {
+		fired = true
+		if info.SubagentType != "spec-scout" {
+			t.Errorf("SubagentType got %q want %q", info.SubagentType, "spec-scout")
+		}
+	})
+	if !fired {
+		t.Error("Subscribe should fire synchronously when entry already exists")
 	}
-	if elapsed < 90*time.Millisecond {
-		t.Errorf("LookupOrWait returned in %v; expected at least ~100ms wait", elapsed)
+}
+
+// TestDispatchTable_Subscribe_MultipleSubscribersAllFire confirms a
+// rare but possible case: the same toolCallID gets subscribed to
+// twice (e.g., a future feature that wants two consumers — log + UI).
+// Both callbacks must fire on landing.
+func TestDispatchTable_Subscribe_MultipleSubscribersAllFire(t *testing.T) {
+	var sink bytes.Buffer
+	dt := newDispatchTable(&sink)
+
+	var count int
+	var mu sync.Mutex
+	dt.Subscribe("toolu_multi", func(_ dispatchInfo) { mu.Lock(); count++; mu.Unlock() })
+	dt.Subscribe("toolu_multi", func(_ dispatchInfo) { mu.Lock(); count++; mu.Unlock() })
+
+	line := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_multi","name":"Agent","input":{"subagent_type":"spec-scout","description":"x"}}]}}` + "\n")
+	if _, err := dt.Write(line); err != nil {
+		t.Fatalf("Write err: %v", err)
 	}
-	if elapsed > 250*time.Millisecond {
-		t.Errorf("LookupOrWait took %v; expected close to the 100ms timeout", elapsed)
+	mu.Lock()
+	defer mu.Unlock()
+	if count != 2 {
+		t.Errorf("expected both callbacks to fire; got count=%d", count)
 	}
 }
 
 func TestToolProgressLine_TaskFallbackWhenTableMisses(t *testing.T) {
 	// When the dispatchTable has no entry for the toolCallId, the
-	// progress line falls back to "Task" (or to the title when the
-	// title carries useful info beyond the generic "Task"). Used to
-	// verify the fallback path doesn't crash and degrades gracefully.
+	// progress line falls back to "Task" — and returns the toolCallID
+	// so the runner can Subscribe for the backfill line when the SDK
+	// side eventually lands.
 	var sink bytes.Buffer
 	dt := newDispatchTable(&sink)
 	rawACP, _ := json.Marshal(map[string]any{
@@ -208,8 +238,11 @@ func TestToolProgressLine_TaskFallbackWhenTableMisses(t *testing.T) {
 		},
 	})
 	ev := dispatch.AgentEvent{Kind: dispatch.EventToolCall, ToolName: "Task", Raw: rawACP}
-	got := toolProgressLine(ev, dt)
+	got, taskID := toolProgressLine(ev, dt)
 	if got != "Task" {
 		t.Fatalf("missing-table fallback got %q want %q", got, "Task")
+	}
+	if taskID != "toolu_missing" {
+		t.Errorf("miss case should return the toolCallID for Subscribe; got %q", taskID)
 	}
 }
