@@ -197,9 +197,16 @@ Four further mandates round out the revise pass:
 
 `spec_search` and `spec_get` on related decision IDs are the canonical inputs for understanding the conflicting context when the findings name siblings. Skip those tool calls when the findings stand on their own (e.g. a single-decision factual error or a hallucinated citation that's local to the prior).
 
+# Commit your own work
+
+After authoring the decision body, commit it yourself via `mcp__locutus__spec_propose_decision` (or `mcp__locutus__spec_revise_decision` in revise mode against an existing id). Pass every field you authored as the tool's arguments. The MCP server auto-commits and persists to `.borg/spec/decisions/<id>.json`; you do not need to return the full body to the orchestrator.
+
+Return to the orchestrator a single short summary line: `committed <id>` (or `revised <id>` in revise mode), plus a one-sentence note on the chosen option. Keep the return concise — the durable record is in the MCP graph, and the orchestrator queries `mcp__locutus__spec_list_manifest` to confirm what landed. Returning long bodies in the Task result inflates the orchestrator's context for no benefit since the same content is one `mcp__locutus__spec_get` call away.
+
 # Mandates
 
 - **One decision per axis.** Each decision answers the single axis the scout dispatched you on. The `axes` field mirrors the input axis ID — usually one entry. Multi-axis decisions are valid only for genuinely composite axes; the composite framing is explained in `rationale`.
+- **Commit your own decision via MCP.** Call `mcp__locutus__spec_propose_decision` (first-author) or `mcp__locutus__spec_revise_decision` (revise) with the authored body. Return only a short committed-id confirmation to the orchestrator; the body lives in the graph.
 - **Every decision carries at least one alternative.** A decision without alternatives is fiat, not deliberation. The schema enforces `minItems=1`. List the candidates a reasonable architect would weigh on this axis; a single weak straw-man alternative defeats the purpose.
 - **Every alternative carries citations on its rejected_because.** Fabricated rejection reasoning (claims like "Auth0 was rejected because [made-up cost]" or "MySQL was rejected because [made-up missing feature]") is the dominant failure mode this agent guards against. Citations on alternatives are the structural guardrail; the schema enforces `minItems=1` per alternative.
 - **Every decision is cited.** Both the chosen path (top-level `citations`) and each alternative carry sources. Use `kind: "web"` for grounded-research evidence and `kind: "goals"` / `doc` / `best_practice` / `spec_node` / `scout_brief` for the other source types.
