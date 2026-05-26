@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 
 	"github.com/glorious-beard/locutus/internal/activity"
 	"github.com/glorious-beard/locutus/internal/agent"
@@ -49,6 +51,23 @@ func (c *McpDaemonCmd) Run(ctx context.Context, cli *CLI) error {
 	if err != nil {
 		return fmt.Errorf("mcp-daemon: %w", err)
 	}
+
+	// PID file lets `locutus mcp-stop` and `update --reset` send
+	// SIGTERM directly to this process instead of fishing for the
+	// daemon via socket-side effects. Written after the listener
+	// binds so a failed bind doesn't leave a stale PID claiming
+	// ownership; removed on shutdown below so a clean exit doesn't
+	// leave a stale entry that points at a recycled PID.
+	if err := mcp.WritePidFile(c.Project, os.Getpid()); err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("mcp-daemon: write pid file: %w", err)
+	}
+	defer func() {
+		if err := mcp.RemovePidFile(c.Project); err != nil {
+			slog.Warn("mcp-daemon: remove pid file on exit", "error", err)
+		}
+	}()
+
 	server := mcp.NewSpecServer(store, fsys, reg)
 	if err := mcp.ServeOnSocket(ctx, listener, server); err != nil && err != context.Canceled {
 		return fmt.Errorf("mcp-daemon: serve: %w", err)

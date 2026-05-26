@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -56,10 +58,13 @@ func TestBootstrap_ForkFailsWithBogusBinary(t *testing.T) {
 	assert.Error(t, err, "EnsureDaemon should fail when fork target doesn't exist")
 }
 
-func TestStopDaemon_RemovesSocket(t *testing.T) {
-	// Live daemon → StopDaemon removes the socket file. We don't
-	// signal a PID in Phase 1 (see the TODO in bootstrap.go), so
-	// the test only asserts the socket-file removal contract.
+func TestStopDaemon_NoPidFile_RemovesStaleSocket(t *testing.T) {
+	// In-process listener, no PID file written. StopDaemon falls
+	// through to removeStaleSocket so the next bridge attempt doesn't
+	// dial a path that resolves but won't accept (the listener goroutine
+	// stays alive in the test, but the contract is "socket file gone
+	// after stop"). The PID-file-driven SIGTERM path is exercised by
+	// TestStopDaemon_LivePid_SendsSigterm.
 	projectRoot := shortTempSocketDir(t)
 	sockPath := SocketPath(projectRoot)
 	store := bootstrapTestStore(t)
@@ -80,7 +85,7 @@ func TestStopDaemon_RemovesSocket(t *testing.T) {
 		}
 	})
 
-	assert.True(t, probeDaemon(sockPath), "daemon should be probable before stop")
+	assert.True(t, probeDaemon(sockPath), "socket should be probable before stop")
 	err = StopDaemon(projectRoot)
 	assert.NoError(t, err)
 	assert.False(t, fileExists(sockPath), "socket file should be removed by StopDaemon")
@@ -90,4 +95,91 @@ func TestStopDaemon_NoDaemonIsNoOp(t *testing.T) {
 	projectRoot := shortTempSocketDir(t)
 	err := StopDaemon(projectRoot)
 	assert.NoError(t, err, "StopDaemon on a non-running daemon should be a no-op")
+}
+
+func TestStopDaemon_StalePidPointingAtDeadProcess(t *testing.T) {
+	// Boot a child process and wait for it to exit so its PID is
+	// reaped. Then write that (now-dead) PID into the PID file and
+	// call StopDaemon — it should detect the dead process via the
+	// signal-0 probe, remove the PID file, and return nil.
+	projectRoot := shortTempSocketDir(t)
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("'true' binary not available in PATH")
+	}
+	cmd := exec.Command(truePath)
+	assert.NoError(t, cmd.Run(), "true should exit cleanly")
+	deadPid := cmd.Process.Pid
+
+	assert.NoError(t, WritePidFile(projectRoot, deadPid))
+	assert.NoError(t, StopDaemon(projectRoot))
+	assert.False(t, fileExists(PidPath(projectRoot)), "PID file should be cleaned up when its process is already dead")
+}
+
+func TestStopDaemon_LivePid_SendsSigterm(t *testing.T) {
+	// Spawn a real child process (sleep 30) and record its PID. Then
+	// call StopDaemon and verify the child receives SIGTERM and exits
+	// within the wait window. sleep handles SIGTERM by exiting
+	// immediately, which is exactly the daemon's signal.NotifyContext
+	// behavior — close enough that this test exercises the same
+	// kernel mechanism end-to-end without spinning up a full daemon.
+	//
+	// Note on zombie reaping: because the test process forks sleep,
+	// SIGTERM + exit leaves a zombie entry until Wait() runs. We
+	// reap concurrently in a goroutine so StopDaemon's signal-0
+	// liveness probe doesn't lie. In production this isn't an
+	// issue — the daemon is detached from its bootstrapping CLI
+	// (Process.Release in forkDaemon), so no zombie can form from
+	// the stopping process's perspective.
+	projectRoot := shortTempSocketDir(t)
+
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("'sleep' binary not available in PATH")
+	}
+	cmd := exec.Command(sleepPath, "30")
+	assert.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+
+	reaped := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(reaped)
+	}()
+	t.Cleanup(func() {
+		// Belt-and-suspenders: if StopDaemon didn't kill it, kill it
+		// here so the test process doesn't leak a 30-second sleep.
+		_ = cmd.Process.Signal(syscall.SIGKILL)
+		select {
+		case <-reaped:
+		case <-time.After(2 * time.Second):
+		}
+	})
+
+	assert.NoError(t, WritePidFile(projectRoot, pid))
+	start := time.Now()
+	assert.NoError(t, StopDaemon(projectRoot))
+	elapsed := time.Since(start)
+
+	// Wait for the reaper goroutine to remove the zombie so signal(0)
+	// reports the true kernel state.
+	select {
+	case <-reaped:
+	case <-time.After(1 * time.Second):
+		t.Fatal("child process should have been reaped by background goroutine")
+	}
+
+	// Process should be gone now.
+	assert.Error(t, cmd.Process.Signal(syscall.Signal(0)), "child should be exited after StopDaemon")
+	assert.Less(t, elapsed, stopWaitTimeout, "StopDaemon should return well before the kill-escalation deadline for a SIGTERM-responsive child")
+	assert.False(t, fileExists(PidPath(projectRoot)), "PID file should be cleaned up")
+}
+
+func TestStopDaemon_CorruptPidFileIsError(t *testing.T) {
+	// A malformed PID file is operator-visible: don't silently swallow.
+	projectRoot := shortTempSocketDir(t)
+	pidPath := PidPath(projectRoot)
+	assert.NoError(t, writeFileMkdir(pidPath, []byte("not-a-number\n")))
+	err := StopDaemon(projectRoot)
+	assert.Error(t, err, "corrupt PID file should surface a parse error")
 }

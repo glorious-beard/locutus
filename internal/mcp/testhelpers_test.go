@@ -63,3 +63,13 @@ func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
+
+// writeFileMkdir writes data to path, creating parent dirs as needed.
+// Used by tests that want to seed a file under a not-yet-created
+// .locutus/ subdirectory.
+func writeFileMkdir(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
