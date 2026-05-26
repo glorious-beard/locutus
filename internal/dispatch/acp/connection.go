@@ -16,12 +16,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"time"
 
-	"github.com/chetan/locutus/internal/dispatch"
-	"github.com/chetan/locutus/internal/dispatch/policy"
+	"github.com/glorious-beard/locutus/internal/dispatch"
+	"github.com/glorious-beard/locutus/internal/dispatch/policy"
 	acpsdk "github.com/coder/acp-go-sdk"
 )
 
@@ -66,7 +65,15 @@ type Connection struct {
 //
 // archiveDir is reserved for a future JSON-RPC frame archive (Phase 1
 // follow-up). Pass "" to disable; today it's accepted and ignored.
-func Open(ctx context.Context, spawn Spawn, archiveDir string) (*Connection, error) {
+//
+// stderr is where the spawned subprocess's stderr is routed. Pass
+// nil to discard, or a file under the session directory to capture
+// (the latter is what runner.DispatchActivity does so operator
+// terminals stay clean — see acp-stderr.log under each session
+// folder). Routing to os.Stderr is fine for debugging but produces a
+// lot of noise for runtimes like claude-agent-acp that emit verbose
+// internal warnings on every tool call.
+func Open(ctx context.Context, spawn Spawn, archiveDir string, stderr io.Writer) (*Connection, error) {
 	if spawn.Cmd == "" {
 		return nil, errors.New("acp.Open: empty Spawn.Cmd")
 	}
@@ -74,7 +81,10 @@ func Open(ctx context.Context, spawn Spawn, archiveDir string) (*Connection, err
 	if spawn.Env != nil {
 		cmd.Env = spawn.Env
 	}
-	cmd.Stderr = os.Stderr
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	cmd.Stderr = stderr
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -143,8 +153,23 @@ func (c *Connection) Capabilities() acpsdk.AgentCapabilities {
 // rather than changing this signature (it's what dispatch.PromptConn
 // declares).
 func (c *Connection) NewSession(ctx context.Context, cwd string) (string, error) {
+	return c.NewSessionWithOptions(ctx, cwd, ClaudeSessionOptions{})
+}
+
+// NewSessionWithOptions is the variant that lets the caller opt into the
+// claude-agent-acp _meta.claudeCode.options.* surface — today that's the
+// raw-SDK-message feed (DJ-135 follow-up). Other runtimes ignore unknown
+// _meta keys per the ACP extensibility contract, so it's safe to thread
+// the same options through any runtime; the runner only fills opts when
+// the resolved runtime is claude-code.
+//
+// Existing NewSession callers are unaffected — they get a zero-value
+// ClaudeSessionOptions that adds no _meta entries.
+func (c *Connection) NewSessionWithOptions(ctx context.Context, cwd string, opts ClaudeSessionOptions) (string, error) {
+	meta := injectTraceparent(ctx, nil)
+	meta = injectClaudeOptions(meta, opts)
 	resp, err := c.conn.NewSession(ctx, acpsdk.NewSessionRequest{
-		Meta:       injectTraceparent(ctx, nil),
+		Meta:       meta,
 		Cwd:        cwd,
 		McpServers: []acpsdk.McpServer{},
 	})
@@ -168,12 +193,26 @@ func (c *Connection) NewSession(ctx context.Context, cwd string) (string, error)
 // Policy type lives in internal/dispatch/policy so implementations don't
 // need to import the acpsdk types this package translates from.
 func (c *Connection) Prompt(ctx context.Context, sessionID, text string, pol policy.Policy) (<-chan dispatch.AgentEvent, error) {
+	return c.PromptWithSDKSink(ctx, sessionID, text, pol, nil)
+}
+
+// PromptWithSDKSink is the variant that captures inbound
+// `_claude/sdkMessage` extension notifications to sdkSink (one JSON line
+// per message). Pass nil to discard. Pairs with
+// NewSessionWithOptions(...) — the session must have been created with
+// EmitRawMessages or a non-empty EmitFilter for any messages to arrive.
+//
+// The sink is written from the JSON-RPC reader goroutine; the activePrompt
+// guards Write with its own mutex so a second writer (none today) wouldn't
+// race. The caller owns the sink's lifecycle and is free to close it as
+// soon as the events channel closes.
+func (c *Connection) PromptWithSDKSink(ctx context.Context, sessionID, text string, pol policy.Policy, sdkSink io.Writer) (<-chan dispatch.AgentEvent, error) {
 	if sessionID == "" {
 		return nil, errors.New("acp.Prompt: empty sessionID")
 	}
 	sid := acpsdk.SessionId(sessionID)
 	events := make(chan dispatch.AgentEvent, 16)
-	c.client.register(sid, &activePrompt{events: events, policy: pol})
+	c.client.register(sid, &activePrompt{events: events, policy: pol, sdkSink: sdkSink})
 
 	go func() {
 		defer close(events)

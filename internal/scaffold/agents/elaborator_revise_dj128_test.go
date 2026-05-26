@@ -1,4 +1,4 @@
-// DJ-128 Phase 5 — assertions on the rewritten spec_decision_elaborator
+// DJ-128 Phase 5 — assertions on the rewritten spec-decision-elaborator
 // revise mode prompt.
 
 package agents_test
@@ -12,13 +12,13 @@ import (
 )
 
 // reviseModeSection returns the revise-mode subset of the
-// spec_decision_elaborator prompt — from the "# Revise mode" heading
+// spec-decision-elaborator prompt — from the "# Revise mode" heading
 // to the next top-level "# " heading. Tests focus assertions against
 // this section so first-author mode prose doesn't accidentally
 // satisfy a revise-mode invariant.
 func reviseModeSection(t *testing.T) string {
 	t.Helper()
-	body := loadPrompt(t, "spec_decision_elaborator.md")
+	body := loadPrompt(t, "spec-decision-elaborator.md")
 	start := strings.Index(body, "# Revise mode")
 	require.GreaterOrEqual(t, start, 0, "revise mode section must be present")
 	rest := body[start+len("# Revise mode"):]

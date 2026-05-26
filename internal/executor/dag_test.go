@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chetan/locutus/internal/executor"
+	"github.com/glorious-beard/locutus/internal/executor"
 
 	dgraph "github.com/dominikbraun/graph"
 	"github.com/stretchr/testify/assert"

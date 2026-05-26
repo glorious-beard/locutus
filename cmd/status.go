@@ -7,11 +7,18 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chetan/locutus/internal/render"
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
-	"github.com/chetan/locutus/internal/workstream"
+	"github.com/glorious-beard/locutus/internal/render"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/workstream"
 )
+
+// workstreamsDir is the on-disk root for in-flight workstreams
+// recorded by the legacy adopt path. After DJ-135 phase 5's rewire
+// the adopt verb no longer creates entries here, but `locutus status
+// --in-flight` still surfaces any leftovers from prior runs until
+// ckpt 5 prunes the in-flight machinery wholesale.
+const workstreamsDir = ".locutus/workstreams"
 
 // StatusCmd shows spec summary, and optionally in-flight plans or a
 // comprehensive snapshot.

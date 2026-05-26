@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chetan/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/spec"
 )
 
 // RenderFeature returns a Markdown section for one feature, with

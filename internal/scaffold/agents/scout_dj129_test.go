@@ -1,4 +1,4 @@
-// DJ-129 — assertions on the spec_scout prompt's new CritiqueDimensions
+// DJ-129 — assertions on the spec-scout prompt's new CritiqueDimensions
 // identification section.
 
 package agents_test
@@ -17,7 +17,7 @@ func loadScoutPrompt(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
 	require.NoError(t, err)
-	b, err := os.ReadFile(filepath.Join(wd, "spec_scout.md"))
+	b, err := os.ReadFile(filepath.Join(wd, "spec-scout.md"))
 	require.NoError(t, err)
 	return string(b)
 }

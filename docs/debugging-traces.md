@@ -1,219 +1,164 @@
 # Debugging Locutus Sessions
 
-When `locutus refine`, `locutus import`, or any other LLM-driven verb
-produces unexpected output — a council that converged on an incomplete
-spec, a critic that emitted thin findings, a synthesis that dropped
-content — the session trace is the load-bearing artifact for
-diagnosis. This guide walks the trace layout, names the common
-failure patterns, and points at the one-liners that get you to the
-relevant per-call YAML quickly.
+When `locutus refine`, `locutus import`, `locutus adopt`, or `locutus assimilate` produces unexpected output — the spec graph doesn't move, decisions don't commit, the agent stalls — the session trace under `.locutus/sessions/` is the load-bearing artifact for diagnosis. This guide walks the post-DJ-135 trace layout, names common failure patterns, and points at the one-liners that get you to the relevant event quickly.
+
+The trace shape changed meaningfully under DJ-135. Prior versions of this doc described per-step folders with `step.yaml` parents and per-SDK-call YAML children — that was the in-process council's trace, which retired with the council. The new shape captures the ACP event stream from the coding agent's session; the agent's *reasoning* (chain of thought, internal subagent dispatches) lives in *its* session log (Claude Code's `~/.claude/projects/<project-hash>/`, etc.), not in Locutus's directory.
 
 ## Where the trace lives
 
-Every Locutus verb that touches an LLM opens one session directory
-under `.locutus/sessions/`:
+Every activity-dispatching CLI verb opens one session directory under `.locutus/sessions/`:
 
 ```
 .locutus/sessions/
-  20260521/                              # YYYYMMDD
-    1407/                                # HHMM
-      30-a1b2c3/                         # SS-<short-id>
-        session.yaml                     # manifest (session id, command, trace id)
-        trace.jsonl                      # OTLP-JSON span dump (per-session)
-        calls/                           # per-step folders
-          0001-spec_scout/               # one folder per agent step
-            step.yaml                    # parent summary (token sums, child ids, duration)
-            01-single.yaml               # one child per real SDK call
-          0002-spec_scout/               # next step
-            step.yaml
-            01-reason.yaml               # split: reasoning pass
-            02-format.yaml               # split: format pass
-          ...
+  20260525/                       # YYYYMMDD
+    0707/                         # HHMM
+      310000/                     # 6-digit suffix from time-of-second
+        playbook.md               # initial user message delivered to the agent
+        events.jsonl              # full ACP event stream, one JSON line per event
+        tools.jsonl               # filtered tool_call + tool_result events
+        output.md                 # agent's final text output (concatenated EventText)
 ```
 
-`session.yaml` cross-references the OTLP-JSON trace via `trace_id`,
-and every per-call YAML carries the matching `span_id` so you can
-pivot from either surface to the other.
+That's it. Four files per session. No nested per-step folders, no per-SDK-call YAMLs — the runtime's own session log carries the per-LLM-call detail if you need it.
 
-## Per-step folder layout (post-DJ-130)
+### Inventory
 
-Each step the workflow ran produces one folder under `calls/`. The
-folder name encodes step index + agent id + optional fanout tag:
+- **`playbook.md`** — the exact playbook body delivered as the agent's initial user message, including any per-invocation context (`--target`, `--scope`, import content). First read this to confirm the playbook reached the agent intact.
+- **`events.jsonl`** — every ACP event the dispatcher observed during the session, in order. Each line is a JSON-encoded `dispatch.AgentEvent` with `Kind`, `Timestamp`, `SessionID`, `ToolName`, `ToolInput`, `Text`, `FilePaths`, and a `Raw` field carrying the underlying ACP notification.
+- **`tools.jsonl`** — same shape as events.jsonl, filtered to `Kind: "tool_call"` and `Kind: "tool_result"` events only. Fast scan for "did the agent ever call X?"
+- **`output.md`** — every `EventText` event's text concatenated, in order. Equivalent to the agent's final assistant message(s).
 
-- `0001-spec_scout/` — non-fanout step, agent `spec_scout`
-- `0042-spec_feature_elaborator-feat-dashboard/` — fanout step, per-item id `feat-dashboard`
+## Finding the right session
 
-Inside each folder:
+By timestamp — the session directory's name encodes the start time. Most-recent session today:
 
-- **`step.yaml`** — parent summary. Agent id, role, status, started/completed
-  timestamps, summed token counts across children, list of child call
-  ids in dispatch order. Read this first when looking at a step.
-- **`NN-<role>.yaml`** — per-SDK-call detail. `NN` is the 2-digit
-  child index; `<role>` names the SDK call's purpose:
-    - `single` — agent's Run was one SDK call (the common case).
-    - `reason` — reasoning pass of the DJ-130 thinking + schema split
-      (thinking on, schema cleared, tools/grounding retained).
-    - `format` — format pass of the split (thinking off, schema set,
-      tools stripped, provider's fast tier).
-
-When the adapter's `requiresThinkingSchemaSplit` predicate fires, you
-see both `01-reason.yaml` and `02-format.yaml` under the step. The
-parent `step.yaml` sums tokens across both.
-
-## Finding the right session for a failure
-
-By timestamp: the session directory's name encodes the start time
-(`YYYYMMDD/HHMM/SS-<short>`). The session you ran 30 seconds ago is
-the latest `<short-id>` folder under today's `HHMM/`.
-
-By command: every `session.yaml` carries `command:` (e.g.
-`"refine goals"`, `"import docs/X.md"`). Grep:
-
-```sh
-grep -l 'command: refine goals' .locutus/sessions/**/session.yaml
+```bash
+ls -td .locutus/sessions/$(date +%Y%m%d)/*/* | head -1
 ```
 
-By history event: when a convergence-time failure fires
-(`convergence_failed`, `convergence_stuck`, `convergence_revision_capped`,
-`decision_locked`), the matching `.borg/history/evt-*.json` event
-carries `session_id` so you can jump from the past-tense record back
-to the source trace.
+By verb — every dispatcher run logs its session dir to stderr on completion (`→ session: /path/to/dir (runtime=claude-code)`). Grab from your terminal scrollback or shell history.
 
-## Extracting structured responses
-
-Per-call YAMLs store the model's structured response in the `response:`
-field. When the response is JSON, it's quoted YAML — single-line for
-small responses, folded scalars for large ones. Get the raw JSON:
-
-```sh
-# Specific call, structured output
-yq '.response' calls/0007-spec_scout/01-single.yaml
-
-# All scout responses in a session
-for f in calls/*-spec_scout/*-single.yaml; do
-  echo "=== $f ===" ; yq '.response' "$f"
-done
-
-# Walk thinking text alongside structured output
-yq '.reasoning,.response' calls/0007-spec_scout/01-reason.yaml
-```
-
-When the response is a tool-use loop, prefer `rounds[]` over the
-top-level `response:`/`raw_message:` fields — each round captures one
-model invocation in the loop.
+By outcome — sessions where the spec graph didn't change are usually the failing ones. The on-disk spec under `.borg/spec/` is the source of truth for what landed; if `git status .borg/spec/` shows no diff after a run, the agent either didn't commit anything or got partway through before the run ended.
 
 ## Common failure patterns
 
-### Output is thin / missing content
+### Agent never calls `mcp__locutus__spec_*` tools
 
-When a structured response shows up empty (`{}`), with placeholder
-values (`"dummy"`, `"TBD"`), or with fields the model's thinking
-clearly drafted that didn't make it into the JSON — that's the
-DJ-130 motivating case: lossy serialization between thinking and
-structured output.
+Symptom: `tools.jsonl` contains only `Bash`, `Read`, `ToolSearch`, `WebSearch` events — no `mcp__locutus__*` calls.
 
-- Pre-DJ-130: you'd see one per-call YAML with thinking text full of
-  drafted strategies and a structured response that omitted them.
-- Post-DJ-130: the adapter splits automatically, so you should see
-  `01-reason.yaml` (rich thinking + prose) and `02-format.yaml`
-  (clean structured JSON). If you see thin output post-DJ-130, check
-  whether the adapter's `requiresThinkingSchemaSplit` predicate
-  actually fired for that model — grep the step folder for both
-  child files; missing `02-format.yaml` means the split was skipped.
-  Likely culprit: empty `FormatModel` on the Request, meaning the
-  executor couldn't resolve the provider's fast tier.
+Likely causes:
+- The MCP server didn't attach. Check that `.mcp.json` exists at the project root and points at `locutus mcp`. Confirm `.locutus/mcp.sock` was created during the run (best evidence: the file's mtime falls within the run window; `stat` it).
+- The agent went exploratory-first. The current playbook (`internal/scaffold/plans/spec_refinement.md`) opens with an explicit "Your very first action is to call `mcp__locutus__spec_list_manifest`" directive. If a custom playbook doesn't have that, the agent often explores filesystem before noticing the MCP tools.
 
-### Convergence failed
+One-liner to confirm MCP attached:
 
-The spec-generation council exited without converging. Walk the
-scout iterations in order — every `spec_scout` step in the session
-maps to one iteration:
-
-```sh
-for f in calls/*-spec_scout/01-*.yaml; do
-  echo "=== $f ===" ; yq '.response | fromjson | {converged: .converged, axes_open_count: (.axes_open | length), new_nodes_count: (.new_nodes | length)}' "$f"
-done
+```bash
+grep -c 'mcp__locutus__' .locutus/sessions/<date>/<time>/<sid>/tools.jsonl
 ```
 
-Look for `axes_open` not draining, dispositions stuck at `still_open`,
-or the dispatch step not firing (no elaborator step after the scout).
+Zero means the tools never got called. Non-zero means the attachment worked and the issue is elsewhere.
 
-### Loop capped on revision (DJ-126)
+### Tool call validation errors
 
-A `decision_revised` history event firing more than `LOCUTUS_DECISION_REVISION_CAP`
-times on the same axis means the revision oscillated rather than
-converged. Walk the revision chain: each revise step's
-`response.alternatives[]` carries the prior decision's rationale +
-the new alternative's argument. Oscillation looks like
-A → B → A again (the model picked the previously-rejected option).
+Symptom: `tools.jsonl` shows `tool_call_update` events with `status: "failed"` for the `mcp__locutus__spec_propose_*` tools.
 
-### Schema validation rejected (degenerate output)
+The error message is in the event's content. Common ones:
+- `validating "arguments": validating root: required: missing properties: ["X"]` — the agent omitted a required field. Per DJ-135 ckpt 4 we loosened the schema for `axes` and `surfaced_by` on decisions (server auto-backfills); other required fields are genuinely needed.
+- `id "<bad-id>" is malformed: expected kebab-case with prefix feat-, strat-, dec-, bug-, or app-` — the agent invented an id that doesn't match the regex. Usually means the agent didn't read the canonical id convention; tighten the elaborator subagent's prompt to name the convention explicitly.
+- `id "<wrong-prefix>" lacks <expected>- prefix for Kind<X>` — agent used the wrong prefix. Same fix.
 
-`degenerateXxxValidator` surfaces fire when a structured response
-trips one of the dispatcher's corrective-retry triggers (empty
-required arrays, enum drift, placeholder fields). The dispatcher
-appends a corrective turn and retries on the same provider; after
-`CorrectiveRetries` (default 2) it rotates to the next provider.
+Extract failed-tool errors quickly:
 
-Look at the per-call YAMLs in order — the first call's response
-trips the validator; subsequent calls in the same step carry the
-corrective turn appended to the input messages. If all retries fail
-the same way, the prompt or schema needs a fix, not just a retry.
-
-## OTel / YAML correlation
-
-Every per-call YAML carries `span_id` matching the `provider.generate`
-span in `trace.jsonl`. The span tree:
-
-```
-workflow.phase (one per step)
-└── agent.dispatch (one per Dispatcher.Dispatch)
-    └── llm.attempt (one per provider rotation × corrective retry)
-        └── provider.generate (one per adapter SDK call)
+```bash
+python3 -c "
+import json
+for line in open('.locutus/sessions/<sid>/events.jsonl'):
+    e = json.loads(line)
+    u = e.get('Raw', {}).get('update', {})
+    if u.get('status') == 'failed':
+        for c in u.get('content', []):
+            t = (c.get('content', {}) if isinstance(c.get('content'), dict) else {}).get('text', '')
+            if t: print(t[:300])
+"
 ```
 
-A reader holding a span id from `trace.jsonl` can find the matching
-per-call YAML by grepping `calls/*/NN-*.yaml` for that span_id. A
-reader holding a per-call YAML can find its span (and ancestors) in
-`trace.jsonl` by the same id.
+### Spec graph never advances past iteration 1
+
+Symptom: `tools.jsonl` shows the scout subagent dispatched once, candidate-surveys fanned out, but no `spec_propose_decision` calls landed.
+
+Likely causes:
+- The candidate-survey subagents are doing heavy grounding (web search) and the timeout fires before they return. The pre-DJ-135 council had a hard 5-minute budget per workflow phase; the new model has whatever timeout the CLI is bound to. Try a simpler GOALS.md (fewer axes), or live with a longer wall-clock.
+- The decision-elaborator subagent returned a body the playbook didn't notice. Check the Task tool result event for the elaborator dispatch — if the returned body is well-formed but the orchestrator's next action isn't a `spec_propose_decision`, the playbook's prose isn't clear enough about the propose-after-elaborate step.
+
+### Loop never converges (20-iteration cap fires)
+
+Symptom: `output.md` reports the iteration cap fired with axes still open or concerns still active.
+
+Per the convergence-by-construction discipline in `internal/scaffold/plans/spec_refinement.md`:
+- If a concern recurs across two iterations with no new evidence, the playbook says to flip it to `wontfix`. If you see the same concern texts iterations 1, 2, 3, … the orchestrating agent isn't applying the wontfix discipline. Tighten the playbook prose.
+- If axes are still open at the cap, the scout isn't surfacing them as decided. Check `tools.jsonl` for the scout's `axes_open` output across iterations — if it's the same axis names every time, the elaborator path isn't committing decisions for them (see "Spec graph never advances" above).
+
+### Upstream / network errors mid-stream
+
+Symptom: `events.jsonl` ends with an `EventError` event containing something like `Internal error: API Error: Unable to connect to API (ECONNRESET)`.
+
+Not architectural — upstream API hiccups happen. Re-run usually succeeds. If they recur consistently, check the runtime's own session log (Claude Code's `~/.claude/projects/...`) for additional error context.
+
+## Cross-referencing with the runtime's session log
+
+Locutus captures the ACP event stream — what the dispatcher *observed*. The full story (the agent's reasoning, its prompt-engineering choices, sub-prompts to subagents) lives in the runtime's own session log:
+
+- **Claude Code** — `~/.claude/projects/<sanitized-project-path>/<session-id>.jsonl`. The session id is the same id Locutus's events log carries on every event's `SessionID` field.
+- **Codex** — TBD (validated empirically when Codex empirical run lands).
+- **Gemini CLI** — TBD.
+
+Cross-reference: grab the SessionID from any line in Locutus's `events.jsonl`, then grep the runtime's session directory for that id.
 
 ## Useful one-liners
 
-```sh
-# Total tokens for a session (sums step.yaml totals)
-yq -s 'map(.total_tokens // 0) | add' calls/*/step.yaml
+```bash
+# How many MCP tool calls did the agent make?
+wc -l .locutus/sessions/<sid>/tools.jsonl
 
-# All steps that errored
-grep -l 'status: error' calls/*/step.yaml
+# Which MCP tools did it call, with counts?
+python3 -c "
+import json, collections
+counts = collections.Counter()
+for line in open('.locutus/sessions/<sid>/events.jsonl'):
+    e = json.loads(line)
+    if e['Kind'] != 'tool_call': continue
+    cc = e.get('Raw', {}).get('update', {}).get('_meta', {}).get('claudeCode', {}).get('toolName', '')
+    if cc: counts[cc] += 1
+for k, v in counts.most_common():
+    print(f'{v:4d}  {k}')
+"
 
-# Find which step(s) fired the thinking+schema split (have 2+ child calls)
-for d in calls/*/; do
-  n=$(ls "$d" | grep -E '^[0-9]+-' | wc -l)
-  [ "$n" -gt 1 ] && echo "$d (children: $n)"
-done
+# Show every propose/revise tool call's arguments (the agent's actual decision body).
+python3 -c "
+import json
+for line in open('.locutus/sessions/<sid>/events.jsonl'):
+    e = json.loads(line)
+    u = e.get('Raw', {}).get('update', {})
+    cc = u.get('_meta', {}).get('claudeCode', {}).get('toolName', '')
+    if cc and 'propose' in cc or 'revise' in cc:
+        if u.get('sessionUpdate') == 'tool_call':
+            print(cc)
+            print(json.dumps(u.get('rawInput', {}), indent=2)[:1000])
+            print('---')
+"
 
-# Walk concerns across all critic outputs
-for f in calls/*-*critic*/01-*.yaml; do
-  yq '.response | fromjson | .issues[]?.weakness' "$f"
-done
-
-# Compare reasoning vs format for a specific split step
-diff <(yq '.response' calls/0007-spec_scout/01-reason.yaml) \
-     <(yq '.response' calls/0007-spec_scout/02-format.yaml)
+# What were the agent's free-text outputs? (the orchestrator's narration)
+grep '"Kind":"text"' .locutus/sessions/<sid>/events.jsonl | python3 -c "
+import json, sys
+for line in sys.stdin:
+    e = json.loads(line)
+    t = e.get('Text', '')
+    if t: print(t)
+"
 ```
 
 ## What NOT to do
 
-- **Don't edit per-call YAMLs.** `.borg/spec/` is the source of truth
-  for the spec graph; the session traces are observability. Editing a
-  YAML won't change what the model returned.
-- **Don't infer convergence from `trace.jsonl` alone.** The history
-  events under `.borg/history/` are the authoritative record of
-  whether the loop converged and what it produced. The session trace
-  shows *how* convergence was attempted; `.borg/history/` records *what*
-  was decided.
-- **Don't assume both `reason.yaml` and `format.yaml` will always
-  exist together.** Single-call steps (thinking off, no schema, or a
-  hypothetical future model that handles the combination cleanly)
-  produce one `01-single.yaml` and no split children. The folder
-  shape is uniform; the child count varies.
+- **Don't read events.jsonl as a single object.** It's JSON Lines — one object per line. `jq -s` or `python3 -c 'json.load(...)'` will fail; use line-by-line parsing.
+- **Don't infer agent state from `output.md` alone.** Output is the agent's final assistant text. Tool calls and tool results happen in the middle of the conversation and don't show up there — always cross-reference with `tools.jsonl`.
+- **Don't trust LLM-side `WorkflowEvent` semantics that show up in old code or DJs.** The pre-DJ-135 council emitted typed workflow events that the dispatcher mapped to specific sinks. That whole layer retired; the only events in the new path are the raw ACP events captured here.

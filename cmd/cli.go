@@ -27,10 +27,11 @@ type CLI struct {
 	Status     StatusCmd     `cmd:"" help:"Show spec summary: state, drift, validation errors."`
 	History    HistoryCmd    `cmd:"" help:"Query the past-tense record of spec changes."`
 	Explain    ExplainCmd    `cmd:"" help:"Render a spec node's rationale, alternatives, and back-references (no LLM)."`
-	Justify    JustifyCmd    `cmd:"" help:"Have the spec advocate write a defense for a node, optionally vs a challenge."`
 	List       ListCmd       `cmd:"" help:"Find spec node ids matching a free-text query (no LLM)."`
 
-	Mcp McpCmd `cmd:"" help:"Start the MCP server."`
+	Mcp       McpCmd       `cmd:"" help:"Start the MCP server (forks a per-project daemon if not already running and bridges stdio to its socket)."`
+	McpDaemon McpDaemonCmd `cmd:"" name:"mcp-daemon" help:"Internal: run the per-project MCP daemon. Use 'locutus mcp' instead." hidden:""`
+	McpStop   McpStopCmd   `cmd:"" name:"mcp-stop" help:"Stop the per-project MCP daemon (removes the .locutus/mcp.sock so the accept loop unwinds)."`
 
 	// mcpMode is set programmatically by McpCmd.Run before any work
 	// starts so RenderMode reflects "this process is serving MCP."
@@ -54,7 +55,6 @@ const EnvKeyLogLevel = "LOCUTUS_LOG_LEVEL"
 func (c *CLI) AfterApply() error {
 	level := resolveLogLevel(c.Verbose, c.Debug, os.Getenv(EnvKeyLogLevel))
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
-	globalCLI = c
 	registerSearchHook()
 	return nil
 }

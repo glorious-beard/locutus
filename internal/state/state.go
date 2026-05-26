@@ -3,7 +3,7 @@ package state
 import (
 	"time"
 
-	"github.com/chetan/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/spec"
 )
 
 // ReconcileStatus represents the observed lifecycle state of an Approach.

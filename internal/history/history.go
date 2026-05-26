@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // EventID composes the canonical event id used as both the JSON

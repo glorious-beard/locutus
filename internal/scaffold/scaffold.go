@@ -12,10 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chetan/locutus/internal/agent"
-	"github.com/chetan/locutus/internal/frontmatter"
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/frontmatter"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // Embed only .md scaffold prompts. Test files (`*_test.go`) coexist
@@ -29,6 +28,15 @@ import (
 //go:embed agents/*.md
 var agentsFS embed.FS
 
+// plansFS embeds the canonical activity-playbook content (DJ-135
+// phase 5). Each .md is keyed by activity name (spec_refinement.md,
+// feature_ingestion.md, etc.) and copied to .borg/plans/ at init
+// time. The publisher (Phase 4) reads from .borg/plans/ to emit
+// runtime-specific slash commands.
+//
+//go:embed plans/*.md
+var plansFS embed.FS
+
 // directories is the set of directories created by Scaffold.
 var directories = []string{
 	".borg",
@@ -40,6 +48,7 @@ var directories = []string{
 	".borg/spec/entities",
 	".borg/history",
 	".borg/agents",
+	".borg/plans",
 	".agents/skills",
 	".borg/state",
 }
@@ -89,16 +98,17 @@ func Scaffold(fsys specio.FS, projectName string) error {
 		return fmt.Errorf("copy agent files: %w", err)
 	}
 
-	// 6. Seed .borg/models.yaml from the embedded defaults so users can
-	// edit per-project model preferences (provider order, tier candidates)
-	// without rebuilding or setting LOCUTUS_MODELS_CONFIG. The runtime
-	// reads from this path on every invocation; absent file falls back
-	// to the embedded bytes.
-	if err := writeIfMissing(fsys, ".borg/models.yaml", func() ([]byte, error) {
-		return agent.EmbeddedModelsYAML(), nil
-	}); err != nil {
-		return err
+	// 5b. Copy embedded activity playbooks (DJ-135 phase 5). Same
+	// idempotent semantics as agent files — existing playbooks are
+	// not overwritten on `init`; `update --reset` is the explicit
+	// refresh path.
+	if err := copyEmbedded(fsys, plansFS, "plans", ".borg/plans"); err != nil {
+		return fmt.Errorf("copy plan files: %w", err)
 	}
+
+	// .borg/models.yaml retired in DJ-135 phase 5. Locutus no longer
+	// makes LLM calls directly; the coding-agent runtime (Claude Code
+	// etc.) handles model selection per its own configuration.
 
 	return nil
 }
@@ -130,6 +140,7 @@ func copyEmbedded(fsys specio.FS, embedded embed.FS, root, targetPrefix string) 
 type ResetReport struct {
 	AgentsReset   []string // FS-relative paths of agent files written
 	AgentsRemoved []string // FS-relative paths of agent files deleted (no longer in the embedded scaffold)
+	PlansReset    []string // FS-relative paths of activity-playbook files written (DJ-135 phase 5)
 	ModelsReset   bool     // true if .borg/models.yaml was rewritten
 }
 
@@ -204,6 +215,34 @@ func Reset(fsys specio.FS) (*ResetReport, error) {
 		return report, err
 	}
 
+	// Overwrite each embedded activity playbook (DJ-135 phase 5).
+	// No orphan-removal pass for plans yet — the activity registry
+	// drives which plans actually publish, so an extra .md sitting
+	// in .borg/plans/ from an old binary is harmless until it
+	// matches a registered activity name.
+	if err := fs.WalkDir(plansFS, "plans", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			rel := path[len("plans"):]
+			return fsys.MkdirAll(".borg/plans"+rel, 0o755)
+		}
+		rel := path[len("plans"):]
+		target := ".borg/plans" + rel
+		data, err := plansFS.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read embedded plan %s: %w", path, err)
+		}
+		if err := fsys.WriteFile(target, data, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", target, err)
+		}
+		report.PlansReset = append(report.PlansReset, target)
+		return nil
+	}); err != nil {
+		return report, err
+	}
+
 	// Remove orphan agent .md files — files in the project's
 	// .borg/agents/ whose id is no longer in the embedded scaffold.
 	// ListDir returns FS-relative paths; we filter to .md and
@@ -225,48 +264,24 @@ func Reset(fsys specio.FS) (*ResetReport, error) {
 		}
 	}
 
-	// Overwrite models.yaml.
-	if err := fsys.MkdirAll(".borg", 0o755); err != nil {
-		return report, err
-	}
-	if err := fsys.WriteFile(".borg/models.yaml", agent.EmbeddedModelsYAML(), 0o644); err != nil {
-		return report, fmt.Errorf("write .borg/models.yaml: %w", err)
-	}
-	report.ModelsReset = true
+	// models.yaml retired with the in-process LLM dispatch (see
+	// Scaffold). No models.yaml is written by Reset; existing files
+	// on legacy projects can be removed manually.
 
 	return report, nil
 }
 
-// LoadAgent reads one AgentDef by id, preferring the project's
-// `.borg/agents/<id>.md` so an advanced user's per-project edits win.
-// Falls back to the embedded scaffold copy when the project file is
-// missing — supports tests and freshly-built binaries running on
-// uninitialized FSes. The scaffold is the source of truth for the
-// initial prompt; project copies are user-owned overrides.
-//
-// Used by cascade and cmd to load `rewriter` / `synthesizer` (and
-// any future single-shot helper that has a scaffold .md). Helpers
-// without a scaffold .md (intake, advocate, challenger) inline their
-// prompts in Go because there's nothing to override.
-func LoadAgent(fsys specio.FS, id string) (agent.AgentDef, error) {
-	if data, err := fsys.ReadFile(".borg/agents/" + id + ".md"); err == nil {
-		return parseAgentDef(data)
-	}
-	data, err := agentsFS.ReadFile("agents/" + id + ".md")
-	if err != nil {
-		return agent.AgentDef{}, fmt.Errorf("load agent %q: project copy missing and embedded copy unreadable: %w", id, err)
-	}
-	return parseAgentDef(data)
-}
+// LoadAgent retired in DJ-135 phase 5 — the council-side agent.AgentDef
+// type retired with the council. The publisher reads canonical agents
+// directly via frontmatter into its own CanonicalAgent shape; nothing
+// else loads agents through this path.
 
-func parseAgentDef(data []byte) (agent.AgentDef, error) {
-	var def agent.AgentDef
-	body, err := frontmatter.Parse(data, &def)
+func parseAgentDef(data []byte) ([]byte, error) {
+	body, err := frontmatter.Parse(data, &struct{}{})
 	if err != nil {
-		return def, fmt.Errorf("parse agent frontmatter: %w", err)
+		return nil, fmt.Errorf("parse agent frontmatter: %w", err)
 	}
-	def.SystemPrompt = body
-	return def, nil
+	return []byte(body), nil
 }
 
 // writeIfMissing writes a file only if it does not already exist (idempotency).

@@ -9,9 +9,9 @@
 package reconcile
 
 import (
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
-	"github.com/chetan/locutus/internal/state"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/state"
 )
 
 // Classification is the reconciler's verdict on a single Approach: what

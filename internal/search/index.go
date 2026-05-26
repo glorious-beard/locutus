@@ -13,7 +13,7 @@ import (
 	"github.com/blugelabs/bluge"
 	enanalyzer "github.com/blugelabs/bluge/analysis/lang/en"
 	"github.com/blugelabs/bluge/search"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // Index is a handle to the persisted spec FTS index. Stateless for

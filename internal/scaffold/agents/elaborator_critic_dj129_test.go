@@ -1,4 +1,4 @@
-// DJ-129 — assertions on the new spec_critic_elaborator prompt.
+// DJ-129 — assertions on the new spec-critic-elaborator prompt.
 
 package agents_test
 
@@ -14,7 +14,7 @@ import (
 
 func loadCriticElaboratorPrompt(t *testing.T) string {
 	t.Helper()
-	return loadPrompt(t, "spec_critic_elaborator.md")
+	return loadPrompt(t, "spec-critic-elaborator.md")
 }
 
 // loadPrompt reads one prompt file from the canonical scaffold dir.

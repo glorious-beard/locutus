@@ -3,7 +3,7 @@ package specio
 import (
 	"fmt"
 
-	"github.com/chetan/locutus/internal/frontmatter"
+	"github.com/glorious-beard/locutus/internal/frontmatter"
 	"gopkg.in/yaml.v3"
 )
 

@@ -3,8 +3,8 @@ package check
 import (
 	"os/exec"
 
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // osCommander runs commands via os/exec. It's the default Commander used by

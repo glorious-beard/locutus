@@ -1,4 +1,4 @@
-// DJ-133 — assertions on the rewritten spec_decision_elaborator id
+// DJ-133 — assertions on the rewritten spec-decision-elaborator id
 // section. Under DJ-133 the elaborator no longer mints a slug from the
 // chosen option; it copies the axis ID verbatim into the decision's id.
 
@@ -17,7 +17,7 @@ import (
 // cross-references elsewhere in the file.
 func idSection(t *testing.T) string {
 	t.Helper()
-	body := loadPrompt(t, "spec_decision_elaborator.md")
+	body := loadPrompt(t, "spec-decision-elaborator.md")
 	// Anchor on a heading that starts at column 0 — a leading newline
 	// before "### id" disambiguates the heading line from an inline
 	// `### id` backtick reference.
@@ -40,7 +40,7 @@ func idSection(t *testing.T) string {
 // an axis-shaped example.
 func TestDecisionElaboratorPromptDescribesAxisAsID(t *testing.T) {
 	section := idSection(t)
-	assert.NotEmpty(t, section, "### id section must exist in spec_decision_elaborator.md")
+	assert.NotEmpty(t, section, "### id section must exist in spec-decision-elaborator.md")
 	assert.Contains(t, section, "Copy the input axis ID verbatim",
 		"DJ-133: the id section must instruct the model to copy the axis id verbatim")
 	assert.Contains(t, section, "dec-oltp-store",

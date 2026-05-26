@@ -1,4 +1,4 @@
-// Spec-lookup tools the spec_reconciler agent uses to navigate the
+// Spec-lookup tools the spec-reconciler agent uses to navigate the
 // persisted spec lazily instead of receiving the entire ExistingSpec
 // inlined into its prompt.
 //
@@ -20,7 +20,6 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,10 +29,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/chetan/locutus/internal/agent/adapters"
-	"github.com/chetan/locutus/internal/search"
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/search"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // validSpecID restricts spec ids to the kebab-case shape locutus
@@ -732,104 +730,10 @@ func summaryByID(m SpecManifest) map[string]string {
 	return out
 }
 
-// RegisterSpecTools registers spec_list_manifest, spec_get, and
-// spec_search against the given tool registry. The store carries the
-// unified in-process spec graph (DJ-134) — every tool handler
-// dispatches against it. cmd/llm.go constructs the store at startup,
-// registers it on the executor via SetSpecStore, and passes it here.
-//
-// The registration is idempotent at the registry level —
-// re-registering the same name overrides the prior entry. Callers
-// gate on a sync.Once so the production path runs exactly once per
-// process.
-//
-// Tool descriptions stay in the registration call (per the
-// agent-conventions rule introduced alongside DJ-134): system prompts
-// state when/why to call each tool; the registered description states
-// what the tool does and what its result shape carries.
-func RegisterSpecTools(registry *ToolRegistry, store *SpecStore) {
-	if registry == nil || store == nil {
-		return
-	}
-	registry.Register(adapters.ToolDef{
-		Name:        ToolNameSpecListManifest,
-		Description: "Returns a compact index of every spec node grouped by kind (features, strategies, decisions, bugs, approaches). Each entry carries id, title, optional kind (for strategies), a one-line summary truncated to ~200 chars, an `origin` field (`settled` for nodes loaded from .borg/spec/ on session start, `in_flight` for nodes added or revised by the council this iteration), and a `working` flag (true when a fanout dispatch is actively rewriting the node — its body may change before the next read). Use this to navigate the spec graph without dumping every node's full content; pair it with spec_get when you need bodies.",
-		InputSchema: map[string]any{
-			"type":                 "object",
-			"properties":           map[string]any{},
-			"required":             []any{},
-			"additionalProperties": false,
-		},
-		Handler: TypedHandler(func(ctx context.Context, _ struct{}) (SpecManifest, error) {
-			return store.ListManifest(), nil
-		}),
-	})
-	registry.Register(adapters.ToolDef{
-		Name:        ToolNameSpecGet,
-		Description: "Returns the full bodies of N spec nodes by id in one call. Input is `{ids: [string]}` — an array of ids; passing a single id is valid as a one-element array. Output is `{results, available_ids?, working?}`: `results` is `{id: {status, body?, working?, reason?}}` with every requested id present exactly once. status is `settled` (id resolved on-disk-loaded body), `in_flight` (id resolved in-memory council-proposed body), or `missing` (id couldn't be resolved — reason names the failure). For misses, `available_ids` carries the per-kind id catalogue (e.g. `{decision: [\"dec-a\",\"dec-b\"]}`) surfaced once per kind regardless of how many ids of that kind missed. PREFER one batched call over N sequential single-id calls — sequential calls cost rounds against the tool-loop cap; one batched call costs one round regardless of id count.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"ids": map[string]any{
-					"type":        "array",
-					"items":       map[string]any{"type": "string"},
-					"description": "Array of spec node ids with known prefixes (feat-, strat-, dec-, bug-, app-). Pass every id you need in one call.",
-					"minItems":    1,
-				},
-			},
-			"required":             []any{"ids"},
-			"additionalProperties": false,
-		},
-		Handler: TypedHandler(func(ctx context.Context, in SpecGetInput) (SpecGetResult, error) {
-			return store.GetSpec(in.IDs), nil
-		}),
-	})
-	registry.Register(adapters.ToolDef{
-		Name:        ToolNameSpecSearch,
-		Description: SpecSearchToolDescription,
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"query": map[string]any{
-					"type":        "string",
-					"description": "Free-text query. Phrase queries via double-quotes (e.g. \"row level security\") and trailing-* prefix queries (e.g. auth*) are supported.",
-				},
-				"kind": map[string]any{
-					"type":        "string",
-					"enum":        []any{"feature", "strategy", "decision", "bug", "approach"},
-					"description": "Optional kind filter. Omitted means all kinds.",
-				},
-				"limit": map[string]any{
-					"type":        "integer",
-					"description": "Optional cap on returned hits. Default 20, max 100 (values outside this range are clamped). The TotalMatches field signals when the slice is truncated.",
-				},
-			},
-			"required":             []any{"query"},
-			"additionalProperties": false,
-		},
-		Handler: TypedHandler(func(ctx context.Context, in SpecSearchInput) (SpecSearchResult, error) {
-			limit := in.Limit
-			if limit <= 0 || limit > specSearchAgentMaxLimit {
-				limit = specSearchAgentDefaultLimit
-			}
-			opts := search.Options{Kind: in.Kind, Limit: limit}
-			hits, total, err := store.Search(in.Query, opts)
-			if err != nil {
-				return SpecSearchResult{}, err
-			}
-			result := SpecSearchResult{TotalMatches: total}
-			for _, h := range hits {
-				result.Hits = append(result.Hits, SpecSearchHit{
-					ID:    h.ID,
-					Title: h.Title,
-					Kind:  h.Kind,
-					Score: h.Score,
-				})
-			}
-			return result, nil
-		}),
-	})
-}
+// RegisterSpecTools retired in DJ-135 phase 5. The council-side
+// ToolRegistry it registered against is gone; the spec graph is now
+// exposed via internal/mcp.NewSpecServer (which calls store.ListManifest /
+// GetSpec / Search directly, sharing the same SpecStore).
 
 // SpecSearchToolDescription documents the tool surface — what it
 // does, when to reach for it, and how to interpret the per-field

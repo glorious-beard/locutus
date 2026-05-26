@@ -32,8 +32,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
 	"gopkg.in/yaml.v3"
 )
 

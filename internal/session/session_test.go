@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chetan/locutus/internal/session"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/session"
+	"github.com/glorious-beard/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

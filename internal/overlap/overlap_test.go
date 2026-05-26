@@ -3,8 +3,8 @@ package overlap_test
 import (
 	"testing"
 
-	"github.com/chetan/locutus/internal/overlap"
-	"github.com/chetan/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/overlap"
+	"github.com/glorious-beard/locutus/internal/spec"
 	"github.com/stretchr/testify/assert"
 )
 

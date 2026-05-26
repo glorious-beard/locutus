@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chetan/locutus/internal/check"
+	"github.com/glorious-beard/locutus/internal/check"
 	"github.com/pterm/pterm"
 )
 

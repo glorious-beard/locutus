@@ -2,18 +2,18 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 
 	selfupdate "github.com/creativeprojects/go-selfupdate"
 
-	"github.com/chetan/locutus/internal/agent"
-	"github.com/chetan/locutus/internal/history"
-	"github.com/chetan/locutus/internal/migrate"
-	"github.com/chetan/locutus/internal/prereqs"
-	"github.com/chetan/locutus/internal/scaffold"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/activity"
+	"github.com/glorious-beard/locutus/internal/history"
+	"github.com/glorious-beard/locutus/internal/mcp"
+	"github.com/glorious-beard/locutus/internal/migrate"
+	"github.com/glorious-beard/locutus/internal/publisher"
+	"github.com/glorious-beard/locutus/internal/scaffold"
 )
 
 const updateRepo = "glorious-beard/locutus"
@@ -38,7 +38,7 @@ const updateRepo = "glorious-beard/locutus"
 //
 //   - --check-pre-reqs runs every prereq function (currently:
 //     SummariesPresent — fill missing spec summaries via the
-//     spec_summarizer agent). Implicit when --offline is not set;
+//     spec-summarizer agent). Implicit when --offline is not set;
 //     opt-in when --offline IS set so the dev compile-and-run loop can
 //     still satisfy prereqs without going over the network for the
 //     binary check.
@@ -54,14 +54,19 @@ const updateRepo = "glorious-beard/locutus"
 type UpdateCmd struct {
 	Reset        bool `help:"Overwrite the project's scaffolded agents and models.yaml with the running binary's embedded versions. Local edits to those files will be lost. Defaults to off so casual binary updates don't surprise users with overwritten edits."`
 	Offline      bool `help:"Skip the GitHub release check and download. Useful when working without network or paired with --reset to refresh local files from the current binary."`
-	CheckPreReqs bool `name:"check-pre-reqs" help:"Run prerequisite checks (fill missing spec summaries, etc.) using LLM calls. Implicit when --offline is not set; opt-in with this flag when --offline IS set so a dev compile-and-run loop can still satisfy prereqs without going over the network for the binary check."`
+	// CheckPreReqs retired in DJ-135 phase 5. The legacy prereq
+	// surface ran an LLM-driven summary backfill; the new ACP-
+	// dispatched model authors summaries at propose time so the
+	// backfill isn't needed. If summary regeneration is wanted, a
+	// dedicated activity (e.g. `update_summaries`) lands as a
+	// follow-up.
 }
 
 func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 	// Bare --offline (no --reset, no --check-pre-reqs) has nothing to
 	// do — be clear about it rather than running a silent no-op the
 	// user might mistake for a successful update.
-	if c.Offline && !c.Reset && !c.CheckPreReqs {
+	if c.Offline && !c.Reset {
 		fmt.Println("Nothing to do: --offline skips the binary check, --reset is not set, and --check-pre-reqs is not set.")
 		fmt.Println("Pair --offline with --reset (refresh local files) or --check-pre-reqs (run prereq checks) — or run plain `update` to do everything.")
 		return nil
@@ -79,10 +84,10 @@ func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 
 	// 2. If we just downloaded a new binary, the running process still
 	// has the OLD embedded artifacts. Resetting or running prereqs now
-	// would use stale embedded scaffolds (the new spec_summarizer might
+	// would use stale embedded scaffolds (the new spec-summarizer might
 	// have a different prompt). Bail out and tell the user to re-run
 	// with --offline using the new binary.
-	if binaryUpdated && (c.Reset || c.CheckPreReqs) {
+	if binaryUpdated && c.Reset {
 		fmt.Println("Skipping --reset / --check-pre-reqs: the new binary's embedded artifacts haven't loaded into this process.")
 		fmt.Println("Run `locutus update --offline --reset --check-pre-reqs` from your project to refresh scaffolds and run prereqs from the new binary.")
 		return nil
@@ -91,36 +96,54 @@ func (c *UpdateCmd) Run(ctx context.Context, cli *CLI) error {
 	// 3. Optional: refresh scaffolded artifacts from the running
 	// binary's embed.FS. Requires a project FS. Run before prereqs so
 	// the prereq layer sees the freshest embedded agent definitions
-	// (the spec_summarizer prompt may have changed in this binary).
+	// (the spec-summarizer prompt may have changed in this binary).
 	if c.Reset {
-		fsys, _, err := projectFS()
+		fsys, root, err := projectFS()
 		if err != nil {
 			return fmt.Errorf("update --reset: %w", err)
 		}
+
+		// Stop any running MCP daemon before rewriting .borg/. The
+		// daemon loads the SpecStore once at boot and serves all
+		// reads from in-memory state; if we rewrite agents/plans or
+		// (more relevantly) if the operator's just done a git reset
+		// of .borg/spec/, the daemon's cached graph diverges from
+		// disk and every subsequent refine sees the phantom state.
+		// Stopping the daemon now means the next refine invocation
+		// forks a fresh daemon that reads the rewritten disk. Best-
+		// effort: a missing daemon is fine; failure to remove the
+		// socket logs but doesn't abort the reset.
+		if err := mcp.StopDaemon(root); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: stop mcp daemon: %v\n", err)
+		} else {
+			fmt.Println("Stopped MCP daemon (next refine will fork a fresh one against current disk state).")
+		}
+
 		report, err := scaffold.Reset(fsys)
 		if err != nil {
 			return fmt.Errorf("update --reset: %w", err)
 		}
 		printResetReport(report)
+
+		// DJ-135 phase 4: after refreshing .borg/ canonicals from the
+		// embedded scaffold, re-publish the per-runtime subagent and
+		// slash-command copies so updates to the canonical prompt set
+		// reach every coding-agent runtime in one command.
+		reg, err := activity.NewRegistry(fsys)
+		if err != nil {
+			return fmt.Errorf("update --reset: activity registry: %w", err)
+		}
+		if err := publisher.Publish(fsys, reg); err != nil {
+			return fmt.Errorf("update --reset: publish runtime files: %w", err)
+		}
 	}
 
 	// 4. Run one-shot on-disk migrations. DJ-133 renames every
 	// persisted `dec-<chosen-option>` to `dec-<primary-axis>` and
 	// rewrites incoming references. Idempotent — a graph that's
-	// already fully axis-shaped is a no-op. Runs when we have a
-	// project FS to migrate (either --reset or a prereq pass is going
-	// to run).
-	if c.Reset || c.shouldRunPrereqs() {
+	// already fully axis-shaped is a no-op.
+	if c.Reset {
 		if err := runOnDiskMigrations(); err != nil {
-			return err
-		}
-	}
-
-	// 5. Run prerequisite checks. Implicit when --offline is not set;
-	// opt-in via --check-pre-reqs when --offline is set (the dev
-	// compile-and-run loop).
-	if c.shouldRunPrereqs() {
-		if err := c.runPrereqs(ctx, cli); err != nil {
 			return err
 		}
 	}
@@ -144,19 +167,18 @@ func runOnDiskMigrations() error {
 	if err != nil {
 		return fmt.Errorf("decision-id migration (DJ-133): %w", err)
 	}
-	if len(res.Renamed) == 0 {
-		return nil
-	}
-	fmt.Printf("DJ-133 decision-id migration: renamed %d decision(s).\n", len(res.Renamed))
-	for _, r := range res.Renamed {
-		composite := ""
-		if r.Composite {
-			composite = fmt.Sprintf(" (composite — secondary axes %v not reflected in id)", r.Axes[1:])
-		}
-		fmt.Printf("  - %s → %s%s\n", r.OldID, r.NewID, composite)
-		refsTouched := len(r.FeaturesRewritten) + len(r.StrategiesRewritten) + len(r.DecisionsInfluencedBy) + len(r.ApproachesRewritten)
-		if refsTouched > 0 {
-			fmt.Printf("    rewrote %d incoming reference(s) across features/strategies/decisions/approaches\n", refsTouched)
+	if len(res.Renamed) > 0 {
+		fmt.Printf("DJ-133 decision-id migration: renamed %d decision(s).\n", len(res.Renamed))
+		for _, r := range res.Renamed {
+			composite := ""
+			if r.Composite {
+				composite = fmt.Sprintf(" (composite — secondary axes %v not reflected in id)", r.Axes[1:])
+			}
+			fmt.Printf("  - %s → %s%s\n", r.OldID, r.NewID, composite)
+			refsTouched := len(r.FeaturesRewritten) + len(r.StrategiesRewritten) + len(r.DecisionsInfluencedBy) + len(r.ApproachesRewritten)
+			if refsTouched > 0 {
+				fmt.Printf("    rewrote %d incoming reference(s) across features/strategies/decisions/approaches\n", refsTouched)
+			}
 		}
 	}
 	for _, s := range res.Skipped {
@@ -165,85 +187,22 @@ func runOnDiskMigrations() error {
 		}
 		fmt.Printf("  - skipped %s (%s)\n", s.ID, s.Reason)
 	}
+
+	// Sidecar cleanup: post-DJ-135 the .md sidecars next to .json
+	// bodies under decisions/features/strategies/bugs are vestigial
+	// (carried no narrative; mutation goes through MCP only). Remove
+	// any leftovers from prior runs. Idempotent — a project that's
+	// already been cleaned returns Scanned=0.
+	cleanup, err := migrate.CleanupSpecSidecars(fsys)
+	if err != nil {
+		return fmt.Errorf("sidecar cleanup: %w", err)
+	}
+	if len(cleanup.Removed) > 0 {
+		fmt.Printf("Removed %d vestigial .md sidecar(s) under .borg/spec/{decisions,features,strategies,bugs}/.\n", len(cleanup.Removed))
+		fmt.Println("  (Sidecars carried only {id, title, status} frontmatter and have no consumer post-DJ-135;")
+		fmt.Println("   spec.Approach .md files under .borg/spec/approaches/ are load-bearing and untouched.)")
+	}
 	return nil
-}
-
-// shouldRunPrereqs implements the flag matrix the design pins down:
-//
-//	update                         → run
-//	update --reset                 → run
-//	update --offline               → skip
-//	update --offline --reset       → skip
-//	update --check-pre-reqs        → run
-//	update --offline --check-pre-reqs → run
-func (c *UpdateCmd) shouldRunPrereqs() bool {
-	return !c.Offline || c.CheckPreReqs
-}
-
-// runPrereqs invokes every prereq check in turn with regen=true. New
-// prereqs added here as the surface grows; today there's just the
-// SummariesPresent check. When the list grows past two or three, the
-// hardcoded sequence becomes a slice or config struct.
-//
-// cli is threaded through so the prereq workflow's per-call events
-// render on the same CLI sink the rest of the verb's UI would use —
-// for `update --check-pre-reqs` on a legacy project, that's the only
-// console feedback the operator gets, so wiring it is load-bearing.
-func (c *UpdateCmd) runPrereqs(ctx context.Context, cli *CLI) error {
-	fsys, root, err := projectFS()
-	if err != nil {
-		return fmt.Errorf("update --check-pre-reqs: %w", err)
-	}
-
-	sctx, closeFn, err := buildPrereqsContext(cli, fsys, root)
-	if err != nil {
-		return fmt.Errorf("update --check-pre-reqs: %w", err)
-	}
-	defer closeFn()
-
-	if err := prereqs.EnsureSpecsContainSummaries(ctx, sctx, true); err != nil {
-		var sErr *prereqs.SummariesError
-		if errors.As(err, &sErr) {
-			// SummariesError carries a friendly message; surface it
-			// directly without wrapping noise.
-			return fmt.Errorf("prereqs: %s", sErr.Error())
-		}
-		return fmt.Errorf("prereqs: %w", err)
-	}
-	fmt.Println("Prereqs satisfied: every spec node has a Summary.")
-	return nil
-}
-
-// buildPrereqsContext constructs a SummariesContext with an LLM
-// executor + dispatcher pair AND a CLI sink for spinner feedback. The
-// dispatcher is registered against the project filesystem so the
-// spec_summarizer's spec_list_manifest / spec_get tools (DJ-094) bind
-// to the same files the rest of the command operates on. The sink is
-// the CLI's per-mode default (cli pterm spinners or plain log lines)
-// so the prereq's per-summarizer-call lifecycle renders consistently
-// with every other workflow-driven verb.
-//
-// Returns a close function the caller defers — closes the session
-// recorder AND the CLI sink (in that order so any final events still
-// flush before the spinner teardown).
-func buildPrereqsContext(cli *CLI, fsys specio.FS, root string) (prereqs.SummariesContext, func(), error) {
-	llm, rec, err := recordingLLM(fsys, root, "update --check-pre-reqs")
-	if err != nil {
-		return prereqs.SummariesContext{}, func() {}, err
-	}
-	llm, sink, closeSink := withProgressSink(cli, llm)
-	closeFn := func() {
-		if rec != nil {
-			_ = rec.Close()
-		}
-		closeSink()
-	}
-	return prereqs.SummariesContext{
-		FSys:       fsys,
-		Executor:   llm,
-		Dispatcher: agent.NewDispatcher(llm),
-		Sink:       sink,
-	}, closeFn, nil
 }
 
 // runBinaryUpdate runs the GitHub release check and downloads a newer

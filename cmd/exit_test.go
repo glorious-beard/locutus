@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/chetan/locutus/cmd"
+	"github.com/glorious-beard/locutus/cmd"
 	"github.com/stretchr/testify/assert"
 )
 

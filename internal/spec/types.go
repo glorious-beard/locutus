@@ -105,7 +105,7 @@ type Citation struct {
 	// captures grounded-research evidence fetched by the decision-
 	// elaborator: Reference holds the URL, Excerpt holds the verbatim
 	// quote so the citation survives the page changing.
-	Kind string `json:"kind" yaml:"kind" jsonschema:"enum=goals,enum=doc,enum=best_practice,enum=spec_node,enum=scout_brief,enum=web,description=The source category. goals=GOALS.md clause; doc=user-imported feature document; best_practice=named engineering principle; spec_node=another node in the spec graph; scout_brief=fact from the spec_scout's output (this variant requires Excerpt to keep provenance durable); web=URL fetched as grounded research evidence (Reference is the URL; Excerpt carries the verbatim quote)."`
+	Kind string `json:"kind" yaml:"kind" jsonschema:"enum=goals,enum=doc,enum=best_practice,enum=spec_node,enum=scout_brief,enum=web,description=The source category. goals=GOALS.md clause; doc=user-imported feature document; best_practice=named engineering principle; spec_node=another node in the spec graph; scout_brief=fact from the spec-scout's output (this variant requires Excerpt to keep provenance durable); web=URL fetched as grounded research evidence (Reference is the URL; Excerpt carries the verbatim quote)."`
 	// Reference identifies the source: a path ("GOALS.md",
 	// "docs/dashboard.md"), a named principle ("12-factor app: stateless
 	// processes"), or a spec node id ("strat-frontend").

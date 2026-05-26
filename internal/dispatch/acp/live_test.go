@@ -42,8 +42,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chetan/locutus/internal/dispatch"
-	"github.com/chetan/locutus/internal/dispatch/acp"
+	"github.com/glorious-beard/locutus/internal/dispatch"
+	"github.com/glorious-beard/locutus/internal/dispatch/acp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -68,7 +68,7 @@ func TestLiveACP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	conn, err := acp.Open(ctx, spawn, "")
+	conn, err := acp.Open(ctx, spawn, "", nil /* discard subprocess stderr in tests */)
 	require.NoError(t, err, "acp.Open should succeed for %s", agentID)
 	defer func() { _ = conn.Close() }()
 

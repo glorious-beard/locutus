@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chetan/locutus/internal/history"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/history"
+	"github.com/glorious-beard/locutus/internal/specio"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

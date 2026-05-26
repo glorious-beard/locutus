@@ -16,7 +16,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // inlineImagePattern matches GitHub-flavored markdown inline images:

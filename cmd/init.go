@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/chetan/locutus/internal/dispatch/acp"
-	"github.com/chetan/locutus/internal/render"
-	"github.com/chetan/locutus/internal/scaffold"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/activity"
+	"github.com/glorious-beard/locutus/internal/dispatch/acp"
+	"github.com/glorious-beard/locutus/internal/publisher"
+	"github.com/glorious-beard/locutus/internal/render"
+	"github.com/glorious-beard/locutus/internal/scaffold"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // InitCmd initializes a new spec-driven project.
@@ -27,6 +29,20 @@ func (c *InitCmd) Run(cli *CLI) error {
 	fsys := specio.NewOSFS(".")
 	if err := scaffold.Scaffold(fsys, name); err != nil {
 		return fmt.Errorf("init: %w", err)
+	}
+
+	// DJ-135 phase 4: emit per-runtime subagent + slash-command copies
+	// so a freshly-initialized project picks up the Locutus MCP
+	// attachment, agent canonicals, and (when authored) activity
+	// playbooks in every supported coding-agent runtime. Re-emission
+	// is idempotent; locutus update --reset is the explicit refresh
+	// path operators run after a binary update.
+	reg, err := activity.NewRegistry(fsys)
+	if err != nil {
+		return fmt.Errorf("init: activity registry: %w", err)
+	}
+	if err := publisher.Publish(fsys, reg); err != nil {
+		return fmt.Errorf("init: publish runtime files: %w", err)
 	}
 
 	// Detect git and either warn or wire up .gitignore. The spec is meant

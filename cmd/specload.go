@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // RunDiff loads the spec graph from fsys and computes the blast radius for

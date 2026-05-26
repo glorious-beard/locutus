@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/specio"
 	"gopkg.in/yaml.v3"
 )
 

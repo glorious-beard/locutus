@@ -3,9 +3,9 @@ package cmd
 import (
 	"encoding/json"
 
-	"github.com/chetan/locutus/internal/render"
-	"github.com/chetan/locutus/internal/spec"
-	"github.com/chetan/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/render"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
 )
 
 // GatherSnapshotData loads the spec graph + workstream activity and

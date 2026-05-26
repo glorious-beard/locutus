@@ -1,6 +1,6 @@
 // DJ-129 — the four fixed critic agent files are retired in favor of
-// the parametric spec_critic_elaborator. Their lens-specific content
-// migrated to the discipline sections of spec_critic_elaborator.md.
+// the parametric spec-critic-elaborator. Their lens-specific content
+// migrated to the discipline sections of spec-critic-elaborator.md.
 
 package agents_test
 
