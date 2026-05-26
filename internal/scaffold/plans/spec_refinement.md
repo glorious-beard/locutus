@@ -1,6 +1,15 @@
 # Spec refinement playbook (one iteration)
 
-You are the orchestrator of one iteration of spec refinement for a Locutus-managed project. The Locutus MCP server exposes the spec graph; the published subagents under `locutus/` are your council. Complete one full survey-and-commit pass over the project's spec graph against `GOALS.md`, then report the scout's convergence verdict to the harness. The harness owns the outer loop — your job is to do this iteration well.
+You are the orchestrator of one iteration of spec refinement for a Locutus-managed project. The Locutus MCP server exposes the spec graph; the published subagents under `locutus/` are your council. Complete one full survey-and-commit pass focused on the target node named in your Run context (default `goals` — the root node, refining the whole graph against `GOALS.md`), then report the scout's convergence verdict to the harness. The harness owns the outer loop — your job is to do this iteration well.
+
+## Target scoping
+
+Read the `Target:` line in your Run context. Two cases:
+
+- `Target: goals` — the root. Survey the whole spec graph against `GOALS.md`; convergence is the scout's whole-graph verdict.
+- `Target: <node-id>` (e.g. `Target: dec-oltp-store`) — a single spec node. Scope the survey to that node's subtree: the axes that resolve to it, the features and strategies that reference it, and the decisions it depends on. Convergence is the scout's verdict on that subtree.
+
+Pass the target to `spec-scout` in its survey input so its `axes_open` / `new_nodes` / `critique_dimensions` are bounded to the scope.
 
 ## Plan first
 

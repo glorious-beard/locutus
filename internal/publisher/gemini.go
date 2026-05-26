@@ -83,10 +83,10 @@ func (geminiPublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) er
 description = %s
 prompt = %s
 `,
-		strings.ReplaceAll(act.Name, "_", "-"),
+		act.CLIVerb,
 		tomlString(fmt.Sprintf("Locutus activity: %s", act.Name)),
 		tomlMultilineString(act.PlanBody),
 	)
-	path := fmt.Sprintf("%s/locutus-%s.toml", dir, strings.ReplaceAll(act.Name, "_", "-"))
+	path := fmt.Sprintf("%s/locutus-%s.toml", dir, act.CLIVerb)
 	return fsys.WriteFile(path, []byte(content), 0o644)
 }

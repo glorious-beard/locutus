@@ -85,12 +85,15 @@ func TestPlaybookOverlay_NoOrphanOverlays(t *testing.T) {
 	}
 }
 
-// TestPlaybookOverlay_DriftInvariants — for each overlay, the same
-// set of mcp__locutus__* tool names, hyphenated agent ids, and the
-// same activity verb anchor are mentioned in both files. Difference
-// is allowed in prose, framing, loop discipline, and runtime-specific
-// directives (e.g. /goal); the invariants below are what the agent
-// MUST be able to do regardless of which body it's running against.
+// TestPlaybookOverlay_DriftInvariants — overlays must only reference
+// `mcp__locutus__*` tools and hyphenated `spec-*` agents that the
+// default playbook also references. The check is subset, not strict
+// equality — the canonical case is a thin overlay that delegates to
+// the runtime's slash command (the slash command body is the default
+// playbook, so the agent reaches the same tools / agents through
+// that path). The invariant catches drift: overlays that mention a
+// renamed tool / a retired agent / a typo'd id, all of which would
+// only manifest when the overlay ran.
 func TestPlaybookOverlay_DriftInvariants(t *testing.T) {
 	files := listPlanFiles(t)
 	for _, f := range files {
@@ -108,20 +111,30 @@ func TestPlaybookOverlay_DriftInvariants(t *testing.T) {
 		ovBody, err := os.ReadFile(f)
 		require.NoError(t, err)
 
-		defTools := extractTokens(string(defBody), tokenMCPTool)
-		ovTools := extractTokens(string(ovBody), tokenMCPTool)
-		assert.ElementsMatchf(t, defTools, ovTools,
-			"overlay %s and default %s reference different mcp__locutus__ tool sets — overlays must keep the same tool surface as the default",
-			f, defaultPath)
+		defTools := toSet(extractTokens(string(defBody), tokenMCPTool))
+		for _, t2 := range extractTokens(string(ovBody), tokenMCPTool) {
+			assert.Containsf(t, defTools, t2,
+				"overlay %s references mcp tool %q not present in default %s — overlays must not introduce tools the default doesn't know about",
+				f, t2, defaultPath)
+		}
 
-		defAgents := extractTokens(string(defBody), tokenHyphenAgent)
-		ovAgents := extractTokens(string(ovBody), tokenHyphenAgent)
-		assert.ElementsMatchf(t, defAgents, ovAgents,
-			"overlay %s and default %s reference different spec-* agent ids — overlays must keep the same agent surface as the default",
-			f, defaultPath)
+		defAgents := toSet(extractTokens(string(defBody), tokenHyphenAgent))
+		for _, a := range extractTokens(string(ovBody), tokenHyphenAgent) {
+			assert.Containsf(t, defAgents, a,
+				"overlay %s references agent id %q not present in default %s — overlays must not introduce agents the default doesn't know about",
+				f, a, defaultPath)
+		}
 
 		_ = runtime // runtime carried for future invariants (e.g. /goal presence on claude-code)
 	}
+}
+
+func toSet(xs []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(xs))
+	for _, x := range xs {
+		out[x] = struct{}{}
+	}
+	return out
 }
 
 // extractTokens returns the deduplicated, sorted set of tokens of a

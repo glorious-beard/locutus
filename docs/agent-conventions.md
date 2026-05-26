@@ -18,9 +18,11 @@ Canonical agent prompts ship from `internal/scaffold/agents/` and get **publishe
 
 | Runtime | Subagent path | Slash command path | MCP config |
 |---|---|---|---|
-| Claude Code | `.claude/agents/locutus/<id>.md` | `.claude/commands/locutus-<activity>.md` | `.mcp.json` |
-| Codex | `.codex/agents/locutus-<id>.toml` | `.codex/commands/locutus-<activity>.toml` | `.codex/config.toml` |
-| Gemini | `.gemini/extensions/locutus/agents/locutus-<id>.md` | `.gemini/extensions/locutus/commands/locutus-<activity>.toml` | `.gemini/extensions/locutus/extension.json` |
+| Claude Code | `.claude/agents/locutus/<id>.md` | `.claude/commands/locutus-<cli-verb>.md` | `.mcp.json` |
+| Codex | `.codex/agents/locutus-<id>.toml` | `.codex/commands/locutus-<cli-verb>.toml` | `.codex/config.toml` |
+| Gemini | `.gemini/extensions/locutus/agents/locutus-<id>.md` | `.gemini/extensions/locutus/commands/locutus-<cli-verb>.toml` | `.gemini/extensions/locutus/extension.json` |
+
+The `<cli-verb>` is the short name operators recognize (`refine`, `import`, `adopt`, `assimilate`) — mapped from the activity name via `CanonicalActivity.CLIVerb` in the publisher. Operators reach for `/locutus-refine` more readily than `/locutus-spec-refinement`; the short form matches the CLI verb that dispatches the same activity.
 
 What the publisher carries through (per `internal/publisher/publisher.go`):
 

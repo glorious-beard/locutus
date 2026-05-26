@@ -137,15 +137,18 @@ func claudeCodeModelForTier(tier string) string {
 	}
 }
 
-// PublishActivity writes .claude/commands/locutus-<name>.md. The
-// content is the canonical plan body — Claude Code treats the
-// command body as the prompt the agent runs when the slash command
-// fires.
+// PublishActivity writes .claude/commands/locutus-<cli-verb>.md. The
+// content is the canonical (cross-runtime) plan body — Claude Code
+// treats the command body as the prompt the agent runs when the
+// slash command fires. The DJ-136 claude-code overlay invokes this
+// slash command from a `/goal` directive; the slash command body
+// itself stays runtime-neutral so the overlay can layer the loop
+// discipline on top.
 func (claudeCodePublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
 	dir := ".claude/commands"
 	if err := fsys.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	path := fmt.Sprintf("%s/locutus-%s.md", dir, strings.ReplaceAll(act.Name, "_", "-"))
+	path := fmt.Sprintf("%s/locutus-%s.md", dir, act.CLIVerb)
 	return fsys.WriteFile(path, []byte(act.PlanBody), 0o644)
 }

@@ -17,7 +17,7 @@ import (
 // dropped in this rewrite. Each was tied to council orchestration; if
 // the new model needs equivalent semantics they land in a follow-up.
 type RefineCmd struct {
-	Target string `arg:"" optional:"" help:"Spec node id to focus on (or 'goals' / omitted for whole-graph refinement). Passed through to the playbook agent as additional context."`
+	Target string `arg:"" optional:"" default:"goals" help:"Spec node id to focus on. Defaults to 'goals' (the root node — refines the whole graph against GOALS.md). Pass a specific id (e.g. 'dec-oltp-store') to scope the run to that subtree."`
 }
 
 func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
@@ -25,11 +25,14 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 }
 
 // contextNote returns the per-invocation context appended to the
-// playbook body before dispatch. Empty for whole-graph refinement;
-// "Focus on spec node X." when a target is named.
+// playbook body before dispatch. Refine always has a target — the
+// default is "goals" (the root node), and a specific spec id scopes
+// the run to that node's subtree. The Target field is populated to
+// "goals" by Kong's default tag when the arg is omitted.
 func (c *RefineCmd) contextNote() string {
-	if c.Target == "" || c.Target == "goals" {
-		return ""
+	target := c.Target
+	if target == "" {
+		target = "goals"
 	}
-	return fmt.Sprintf("Focus this refinement run on spec node %q.", c.Target)
+	return fmt.Sprintf("Target: %s", target)
 }

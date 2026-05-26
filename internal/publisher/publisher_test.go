@@ -186,22 +186,23 @@ func TestPublisher_SlashCommandPointsAtCanonicalPlan(t *testing.T) {
 	reg := buildRegistry(t)
 	require.NoError(t, Publish(fsys, reg))
 
-	// Claude Code: .claude/commands/locutus-spec-refinement.md
-	cc, err := readAsString(fsys, ".claude/commands/locutus-spec-refinement.md")
+	// Claude Code: .claude/commands/locutus-refine.md (CLI-verb slug;
+	// see CanonicalActivity.CLIVerb).
+	cc, err := readAsString(fsys, ".claude/commands/locutus-refine.md")
 	require.NoError(t, err)
 	assert.Contains(t, cc, "spec_refinement playbook")
 	assert.Contains(t, cc, "Dispatch spec-scout")
 
-	// Codex: .codex/commands/locutus-spec-refinement.toml
-	codex, err := readAsString(fsys, ".codex/commands/locutus-spec-refinement.toml")
+	// Codex: .codex/commands/locutus-refine.toml
+	codex, err := readAsString(fsys, ".codex/commands/locutus-refine.toml")
 	require.NoError(t, err)
-	assert.Contains(t, codex, `name = "locutus-spec-refinement"`)
+	assert.Contains(t, codex, `name = "locutus-refine"`)
 	assert.Contains(t, codex, "Dispatch spec-scout")
 
-	// Gemini: .gemini/extensions/locutus/commands/locutus-spec-refinement.toml
-	gem, err := readAsString(fsys, ".gemini/extensions/locutus/commands/locutus-spec-refinement.toml")
+	// Gemini: .gemini/extensions/locutus/commands/locutus-refine.toml
+	gem, err := readAsString(fsys, ".gemini/extensions/locutus/commands/locutus-refine.toml")
 	require.NoError(t, err)
-	assert.Contains(t, gem, `name = "locutus-spec-refinement"`)
+	assert.Contains(t, gem, `name = "locutus-refine"`)
 	assert.Contains(t, gem, "prompt = '''")
 }
 
@@ -212,7 +213,7 @@ func TestPublisher_SkipsCommandsWhenPlanMissing(t *testing.T) {
 
 	// .claude/commands/ should not exist OR should be empty —
 	// activity plan was never authored, no slash command emitted.
-	_, err := fsys.ReadFile(".claude/commands/locutus-spec-refinement.md")
+	_, err := fsys.ReadFile(".claude/commands/locutus-refine.md")
 	assert.Error(t, err, "no plan body → no slash command")
 }
 
