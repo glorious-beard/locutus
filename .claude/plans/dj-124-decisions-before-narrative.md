@@ -2,7 +2,7 @@
 
 > **Governing DJ:** [DJ-124](../../docs/DECISION_JOURNAL.md#dj-124) (to be added). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
 >
-> **Status:** Phases 1-8 landed in commits `9cc3595` → `73002ae` (worktree `worktree-dj-124-decisions-before-narrative`). Phase 5 was decomposed into Stage A (schema flip + reconciler simplification, `788d9a8`) and Stage C (workflow re-architecture, `072bb8d`); Stage B (`8b4e565`) carried Phase 4's narrative-elaborator prompt rewrites. Phase 9 (winplan re-run validation) is pending live model execution. Phase 10 (DJ-124 status flip to `shipping`) is conditional on Phase 9.
+> **Status:** SUPERSEDED by DJ-135 on 2026-05-26. The Go-orchestrated council *execution* layer retires; the council *shape* this DJ defined (decisions-before-narrative, scout-as-judge convergence, the agent set, the unified import flow) carries forward verbatim as the activity playbook at `internal/scaffold/plans/spec_refinement.md`. See DJ-135 resolved-question 1: "the council shape is right; the execution layer is what's brittle." Historical: Phases 1-8 landed in commits `9cc3595` → `73002ae`; the WorkflowExecutor those phases shipped retired in DJ-135 Phase 5.
 > **Surface area:** schema changes (small) + workflow re-architecture (substantial) + scaffold prompt rewrites + import flow unification.
 > **Discipline (per memory):** tests → design pause in chat → code; mid-impl failures trigger design judgment, not test patching. Each phase verifies independently before moving on. **Prompt edits walk [docs/agent-conventions.md](../../docs/agent-conventions.md) end-to-end before drafting** per [[feedback-agent-conventions-checklist-first]].
 

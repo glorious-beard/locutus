@@ -2,7 +2,7 @@
 
 > **Governing DJ:** [DJ-126](../../docs/DECISION_JOURNAL.md#dj-126-decision-re-elaboration-for-cross-decision-contradictions-extends-dj-124-with-existing-decision-revision-depends-on-dj-125-concern-model). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
 >
-> **Status:** Phases 1-6 landed; Phase 7 (winplan validation) + Phase 8 (DJ-126 status flip to shipping) pending external validation.
+> **Status:** SUPERSEDED by DJ-135 on 2026-05-26. The Go-side revise-dispatch machinery retires with the WorkflowExecutor; the cross-decision-contradiction revise discipline carries forward into the playbook via the MCP `spec_revise_decision` tool + the cascade-revisions playbook step. Historical: Phases 1-6 landed 2026-05-19.
 > **Prerequisite:** [DJ-125](../../docs/DECISION_JOURNAL.md#dj-125) must land first — DJ-126's dispatch is keyed on `Concern.RelatedDecisionIDs`, which DJ-125 introduces.
 > **Surface area:** new `revise-decisions` step in the iteration template + dispatch closure + decision-elaborator revise-mode prompt + `mergeDecisions` replace-by-axis-ID logic + per-axis revision-count cap + DJ-103 `decision_revised` event.
 > **Discipline (per memory):** tests → design pause in chat → code; mid-impl failures trigger design judgment, not test patching. Each phase verifies independently before moving on. **Prompt edits walk [docs/agent-conventions.md](../../docs/agent-conventions.md) end-to-end before drafting** per [[feedback-agent-conventions-checklist-first]].

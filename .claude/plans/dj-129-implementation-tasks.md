@@ -1,6 +1,6 @@
 # DJ-129 Dimension-Driven Critics — Implementation Plan
 
-> **Status:** DONE (Phases 1-6 + 8 landed 2026-05-20; Phase 7 winplan validation deferred to user — requires real LLM API calls).
+> **Status:** SUPERSEDED by DJ-135 on 2026-05-26 — same supersession as `dj-129-dimension-driven-critics.md`. The dimension-driven critic discipline carries forward into the activity playbook; the Go-side dispatch retires with the WorkflowExecutor. Historical: DONE — Phases 1-6 + 8 landed 2026-05-20.
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >

@@ -2,7 +2,7 @@
 
 > **Governing DJ:** [DJ-121: Coarsen Pre-Planning to Workstream Grain; Agent Owns Step Decomposition via Worktree Checklist](../../docs/DECISION_JOURNAL.md#dj-121-coarsen-pre-planning-to-workstream-grain-agent-owns-step-decomposition-via-worktree-checklist-refines-dj-010-dj-074-dj-120) in `docs/DECISION_JOURNAL.md`. The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes that don't belong in the DJ.
 >
-> **Status:** Phases 1-8 complete 2026-05-14. Phase 9 (final `PlanStep` removal) pending until all consumers have been observed on the new contract in practice.
+> **Status:** SUPERSEDED by DJ-135 on 2026-05-26. Workstream-grain pre-planning + worktree-checklist model retires under the activity-playbook + ACP-dispatch design; the principle that "the agent owns step decomposition" carries forward and is strengthened by DJ-135. Historical: Phases 1-8 complete 2026-05-14; Phase 9 retired with the WorkflowExecutor.
 > **Surface area:** ~110 references to `PlanStep` / `StepProgress` / `.Steps` across 25 files at the start; soft-deprecate path leaves most parseable while routing new behaviour through workstream-grain APIs.
 > **Discipline (per memory):** tests → design pause in chat → code; mid-impl failures trigger design judgment, not test patching. Each phase verifies independently before moving on.
 

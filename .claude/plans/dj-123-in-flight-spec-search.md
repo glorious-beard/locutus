@@ -2,7 +2,7 @@
 
 > **Governing DJ:** [DJ-123: In-Flight Spec Search for Council Agents (Extends DJ-094 / DJ-116 to Mid-Council State)](../../docs/DECISION_JOURNAL.md). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes that don't belong in the DJ.
 >
-> **Status:** designed; implementation not started.
+> **Status:** SUPERSEDED by DJ-134 on 2026-05-23 + DJ-135 on 2026-05-26. The Swappable wrapper stack retires in DJ-134 (the in-flight-vs-settled distinction is now an entry-tag in the unified SpecStore); the MCP `spec_get` / `spec_search` tools exposed in DJ-135 inherit the in-flight-aware reads. Historical: designed; implementation not started.
 > **Surface area:** `internal/search/` (~150 LOC for the in-memory adapter) + `internal/agent/spec_tools.go` wiring + 2 elaborator prompt rewrites + 1 reconciler prompt addition + `internal/agent/workflow_spec_generation.go` plumbing + eval-test fixture extension.
 > **Discipline (per memory):** tests → design pause in chat → code; mid-impl failures trigger design judgment, not test patching. Each phase verifies independently before moving on. **Prompt edits walk [docs/agent-conventions.md](../../docs/agent-conventions.md) end-to-end before drafting** per [[feedback-agent-conventions-checklist-first]] — the DJ-122 spec_gate.md churn was the cost of treating that doc as background knowledge.
 
