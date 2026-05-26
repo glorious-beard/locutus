@@ -108,6 +108,8 @@ func TestSpecServer_RegistersAllWriteTools(t *testing.T) {
 	assert.Contains(t, names, "spec_propose_feature")
 	assert.Contains(t, names, "spec_propose_strategy")
 	assert.Contains(t, names, "spec_revise_decision")
+	assert.Contains(t, names, "spec_revise_feature")
+	assert.Contains(t, names, "spec_revise_strategy")
 }
 
 func TestSpecServer_SpecListManifest_ReturnsAllKinds(t *testing.T) {
@@ -337,6 +339,134 @@ func TestSpecServer_SpecReviseDecision_RejectsMissingID(t *testing.T) {
 	})
 	assert.NoError(t, err, "tool should respond, not fail at the transport level")
 	assert.True(t, res.IsError, "expected tool-level error for missing decision")
+}
+
+func TestSpecServer_SpecReviseFeature_RewritesExisting(t *testing.T) {
+	// Mirror the revise_decision test: pre-seed a feature with a known
+	// created_at, call spec_revise_feature, confirm the body changed
+	// AND created_at is preserved AND updated_at advanced.
+	originalCreatedAt := time.Now().Add(-48 * time.Hour).UTC().Truncate(time.Second)
+	session, store := newTestServer(t, func(store *agent.SpecStore) {
+		_ = store.Begin()
+		_ = store.Put(agent.KindDecision, "dec-storage", spec.Decision{
+			ID:         "dec-storage",
+			Title:      "Choose Postgres",
+			Summary:    "summary",
+			Status:     spec.DecisionStatusActive,
+			Confidence: 1.0,
+			Rationale:  "Strong relational semantics.",
+			Axes:       []string{"storage"},
+			SurfacedBy: []string{"goal-multi-tenancy"},
+			CreatedAt:  originalCreatedAt,
+			UpdatedAt:  originalCreatedAt,
+		}, agent.OriginSettled)
+		_ = store.Put(agent.KindFeature, "feat-dashboard", spec.Feature{
+			ID:        "feat-dashboard",
+			Title:     "Original title",
+			Summary:   "original summary",
+			Status:    spec.FeatureStatusActive,
+			Decisions: []string{"dec-storage"},
+			CreatedAt: originalCreatedAt,
+			UpdatedAt: originalCreatedAt,
+		}, agent.OriginSettled)
+		_ = store.Commit()
+	})
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "spec_revise_feature",
+		Arguments: map[string]any{
+			"id":          "feat-dashboard",
+			"title":       "Revised title",
+			"summary":     "revised summary",
+			"status":      "active",
+			"description": "Description now reflects the revised storage decision body.",
+			"decisions":   []string{"dec-storage"},
+		},
+	})
+	assert.NoError(t, err)
+	assert.False(t, res.IsError, "expected success; got: %+v", res)
+
+	got := store.GetSpec([]string{"feat-dashboard"})
+	feature, ok := got.Results["feat-dashboard"].Body.(spec.Feature)
+	assert.True(t, ok)
+	assert.Equal(t, "Revised title", feature.Title)
+	assert.Equal(t, "Description now reflects the revised storage decision body.", feature.Description)
+	assert.True(t, feature.CreatedAt.Equal(originalCreatedAt), "revise preserves created_at")
+	assert.True(t, feature.UpdatedAt.After(originalCreatedAt), "revise bumps updated_at")
+}
+
+func TestSpecServer_SpecReviseFeature_RejectsMissingID(t *testing.T) {
+	session, _ := newTestServer(t, nil)
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "spec_revise_feature",
+		Arguments: map[string]any{
+			"id":        "feat-nonexistent",
+			"title":     "Title",
+			"status":    "active",
+			"decisions": []string{"dec-x"},
+		},
+	})
+	assert.NoError(t, err)
+	assert.True(t, res.IsError, "expected tool-level error for missing feature")
+}
+
+func TestSpecServer_SpecReviseStrategy_RewritesExisting(t *testing.T) {
+	session, store := newTestServer(t, func(store *agent.SpecStore) {
+		_ = store.Begin()
+		_ = store.Put(agent.KindDecision, "dec-storage", spec.Decision{
+			ID:         "dec-storage",
+			Title:      "Choose Postgres",
+			Status:     spec.DecisionStatusActive,
+			Confidence: 1.0,
+			Rationale:  "Strong relational semantics.",
+			Axes:       []string{"storage"},
+			SurfacedBy: []string{"goal-test"},
+		}, agent.OriginSettled)
+		_ = store.Put(agent.KindStrategy, "strat-storage-platform", spec.Strategy{
+			ID:        "strat-storage-platform",
+			Title:     "Original storage platform",
+			Kind:      spec.StrategyKindFoundational,
+			Status:    "active",
+			Decisions: []string{"dec-storage"},
+		}, agent.OriginSettled)
+		_ = store.Commit()
+	})
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "spec_revise_strategy",
+		Arguments: map[string]any{
+			"id":        "strat-storage-platform",
+			"title":     "Revised storage platform",
+			"summary":   "Now with read replicas",
+			"kind":      "foundational",
+			"status":    "active",
+			"decisions": []string{"dec-storage"},
+		},
+	})
+	assert.NoError(t, err)
+	assert.False(t, res.IsError, "expected success; got: %+v", res)
+
+	got := store.GetSpec([]string{"strat-storage-platform"})
+	strategy, ok := got.Results["strat-storage-platform"].Body.(spec.Strategy)
+	assert.True(t, ok)
+	assert.Equal(t, "Revised storage platform", strategy.Title)
+	assert.Equal(t, "Now with read replicas", strategy.Summary)
+}
+
+func TestSpecServer_SpecReviseStrategy_RejectsMissingID(t *testing.T) {
+	session, _ := newTestServer(t, nil)
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "spec_revise_strategy",
+		Arguments: map[string]any{
+			"id":        "strat-nonexistent",
+			"title":     "Title",
+			"kind":      "foundational",
+			"status":    "active",
+			"decisions": []string{"dec-x"},
+		},
+	})
+	assert.NoError(t, err)
+	assert.True(t, res.IsError, "expected tool-level error for missing strategy")
 }
 
 func TestSpecServer_SpecProposeDecision_RejectsWrongIDPrefix(t *testing.T) {

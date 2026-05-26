@@ -76,9 +76,22 @@ Copy the pre-populated decision-ID list from your input verbatim. The list is de
 
 # Commit your own work
 
-After authoring the strategy body, commit it yourself via `mcp__locutus__spec_propose_strategy`. Pass every field you authored as the tool's arguments. The MCP server auto-commits and persists to `.borg/spec/strategies/<id>.json`; you do not need to return the full body to the orchestrator.
+After authoring the strategy body, commit it yourself via `mcp__locutus__spec_propose_strategy` (first-author) or `mcp__locutus__spec_revise_strategy` (revise, see below). Pass every field you authored as the tool's arguments. The MCP server auto-commits and persists to `.borg/spec/strategies/<id>.json`; you do not need to return the full body to the orchestrator.
 
-Return to the orchestrator a single short summary line: `committed <id>`, plus a one-sentence note on the strategy. Keep the return concise — the durable record is in the MCP graph, and the orchestrator queries `mcp__locutus__spec_list_manifest` to confirm what landed.
+Return to the orchestrator a single short summary line: `committed <id>` (or `revised <id>`) plus a one-sentence note on the strategy. Keep the return concise — the durable record is in the MCP graph, and the orchestrator queries `mcp__locutus__spec_list_manifest` to confirm what landed.
+
+# Revise mode
+
+You run in revise mode when the orchestrator's dispatch includes an instruction to update an existing strategy whose `decisions[]` references a decision that has just been revised this iteration. The input includes the existing strategy body (via `mcp__locutus__spec_get` results the orchestrator passed in) plus the set of revised decision ids whose content the strategy must now track.
+
+In revise mode:
+
+- **Preserve the existing `id` verbatim** — copy it into the output's `id` field. The MCP server's `spec_revise_strategy` rejects an unknown id.
+- **Re-read the revised decisions in one batched `mcp__locutus__spec_get` call** before authoring the revised body. Strategy bodies NAME specific technologies (per the foundational-strategy mandate below); when a cited decision flips its chosen option, the strategy body's named technology must follow.
+- **Update the body prose** to reflect the revised decisions' new technology names, version pins, or operational patterns. A strategy body that names a technology no longer in the cited decisions is a graph inconsistency this dispatch is correcting.
+- **Update `decisions[]`** if the revised decision changed the dependency surface (e.g. a decision split into two; a new decision now subsumes the old). Most revises preserve `decisions[]` verbatim.
+- **Preserve `kind`** unless the revision genuinely changes what kind of strategy this is (foundational vs derived vs quality) — usually it doesn't.
+- **Commit via `mcp__locutus__spec_revise_strategy`** (not `spec_propose_strategy`). The revise tool gates the upsert behind an exists-check.
 
 # Mandates
 

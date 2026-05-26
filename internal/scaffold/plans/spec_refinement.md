@@ -25,7 +25,7 @@ Likewise: do not run `WebSearch`, `WebFetch`, `Read`, `Bash`, or `Grep` from the
   - `mcp__locutus__spec_get` — batched body fetch. Input `{ids: [...]}`. Pass every id you need in one call; never loop a per-id `spec_get`.
   - `mcp__locutus__spec_search` — ranked free-text search. Input `{query, kind?, limit?}`. Use for topic-scoped questions ("what do we have on auth?").
   - `mcp__locutus__spec_propose_decision`, `mcp__locutus__spec_propose_feature`, `mcp__locutus__spec_propose_strategy` — upsert. Auto-commits per call; subscribers see `notifications/resources/updated` on `spec://manifest`.
-  - `mcp__locutus__spec_revise_decision` — same shape as `spec_propose_decision`, but preserves `created_at` and rejects unknown ids.
+  - `mcp__locutus__spec_revise_decision`, `mcp__locutus__spec_revise_feature`, `mcp__locutus__spec_revise_strategy` — same shape as the corresponding propose tools, but the id MUST already exist. Decision and feature revisions preserve the original `created_at`; strategies have no timestamp fields today so the revise tool is purely an exists-check gate.
 - **Resource** `spec://manifest` — the same JSON `spec_list_manifest` returns. Subscribe once at the start of the run if your client supports it; you'll see live updates as you commit.
 - **Subagents** (use Claude Code's `Task` tool to dispatch one, naming the agent by the subagent id; the published subagents live under `.claude/agents/locutus/<id>.md` and Claude Code auto-loads them):
   - `spec-scout` — survey + convergence judgement. Reads GOALS.md and the manifest, emits axes_open, new_nodes, critique_dimensions, concern_dispositions, and `converged`.
@@ -56,11 +56,13 @@ Run iterations until the scout reports `converged: true` (handled inside step 1 
 
 4. **Critique.** For each entry in `critique_dimensions`, dispatch `spec-critic-elaborator`. Critics' concerns become inputs to the next iteration's scout — you don't act on them directly here.
 
-5. **Reconcile.** Dispatch `spec-reconciler` once. It walks the graph for cross-decision integrity issues and applies revisions via `mcp__locutus__spec_revise_decision` itself (self-commit, same pattern as the elaborators).
+5. **Reconcile.** Dispatch `spec-reconciler` once. It walks the graph for cross-decision integrity issues and applies revisions via `mcp__locutus__spec_revise_decision` itself (self-commit, same pattern as the elaborators). The reconciler returns the list of revised decision ids in its summary so step 6 below can cascade.
 
-6. **Confirm landings.** Call `mcp__locutus__spec_list_manifest` once. The manifest is the source of truth for what landed this iteration; trust it over your own conversation memory.
+6. **Cascade revisions to features and strategies.** For each decision id the reconciler revised (and for any decision that this iteration's `spec-decision-elaborator` calls produced a meaningful body change for — including first-author commits whose body differs materially from prior settled content on the same axis): find features and strategies whose `decisions[]` array references that decision. Call `mcp__locutus__spec_list_manifest` once, then `mcp__locutus__spec_get` on the candidate features/strategies in one batched call to read their bodies. Dispatch `spec-feature-elaborator` or `spec-strategy-elaborator` in revise mode for each affected node — the elaborator's input includes the revised decision context plus the existing feature/strategy body. The elaborator updates fields that need to track the revised decision (description, acceptance_criteria, body, decisions[]) and self-commits via `mcp__locutus__spec_revise_feature` or `mcp__locutus__spec_revise_strategy`. When no decisions were revised this iteration, step 6 is a no-op; skip it.
 
-7. **Loop.** Return to step 1 — dispatch a new scout. The scout's next reading of the manifest (now reflecting this iteration's commits) is the convergence check. Steps 2-6 of this iteration are complete; the next iteration starts with another scout dispatch. There is no path between this step and `## Done` that does not pass through another scout dispatch.
+7. **Confirm landings.** Call `mcp__locutus__spec_list_manifest` once. The manifest is the source of truth for what landed this iteration; trust it over your own conversation memory.
+
+8. **Loop.** Return to step 1 — dispatch a new scout. The scout's next reading of the manifest (now reflecting this iteration's commits) is the convergence check. Steps 2-7 of this iteration are complete; the next iteration starts with another scout dispatch. There is no path between this step and `## Done` that does not pass through another scout dispatch.
 
 ## Convergence by construction
 

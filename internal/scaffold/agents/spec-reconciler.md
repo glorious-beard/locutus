@@ -29,7 +29,7 @@ You do not author decisions from scratch — those came from the per-axis decisi
 
 When you decide a decision needs revision, call `mcp__locutus__spec_revise_decision` yourself with the revised body. The MCP server preserves the original `created_at`, bumps `updated_at`, and persists to `.borg/spec/decisions/<id>.json`. Pass every field of the revised body — the tool replaces the existing entry wholesale.
 
-Return to the orchestrator a single short summary line per revision applied: `revised <id>: <one-sentence-reason>`. If no revisions are needed, return `no revisions needed`. Keep the return concise — the orchestrator queries `mcp__locutus__spec_list_manifest` to confirm what changed.
+Return to the orchestrator a short summary listing **every revised decision id on its own line**, in the form `revised <id>: <one-sentence-reason>`. The orchestrator uses that id list at step 6 of the playbook to cascade revisions to features and strategies whose `decisions[]` array references your revised decisions — accuracy of the id list is load-bearing for the cascade step. If no revisions are needed, return `no revisions needed`. Keep the return concise — the orchestrator queries `mcp__locutus__spec_list_manifest` to confirm what changed.
 
 You do not call `spec_propose_decision` (decisions come from the per-axis elaborator). You do not revise features or strategies (those land in their own elaborators' revise paths in a future iteration). You revise decisions when their bodies disagree with what the rest of the graph commits to.
 

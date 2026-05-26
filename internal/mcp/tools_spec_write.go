@@ -28,6 +28,10 @@ const (
 	descSpecProposeStrategy = "Propose a new engineering strategy (upsert semantics on id). Input is the full strategy body. The id must use the strat- prefix. decisions is required and lists the decision ids this strategy depends on; every entry must reference a decision present in the graph. On success the manifest is persisted to .borg/spec/strategies/<id>.json and every subscriber to spec://manifest receives notifications/resources/updated."
 
 	descSpecReviseDecision = "Revise an existing architectural decision. Same input shape as spec_propose_decision, but the id MUST already exist — the server preserves the original created_at and bumps updated_at to now. Use this when modifying a decision that has been published (versus spec_propose_decision which resets the timestamps). On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
+
+	descSpecReviseFeature = "Revise an existing product feature. Same input shape as spec_propose_feature, but the id MUST already exist — the server preserves the original created_at and bumps updated_at to now. Use this to update a feature's description, acceptance criteria, or decisions[] when downstream decision revisions change the user-visible behavior or constraint set the feature commits to. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
+
+	descSpecReviseStrategy = "Revise an existing engineering strategy. Same input shape as spec_propose_strategy, but the id MUST already exist. Use this to update a strategy's body, decisions[], or commands when downstream decision revisions change the technology stack or operational pattern the strategy commits to. spec.Strategy has no created_at/updated_at fields today; this tool exists primarily for symmetry with spec_revise_decision and spec_revise_feature plus to gate the upsert behind an exists-check. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
 )
 
 // Input schemas mirror spec.Decision / spec.Feature / spec.Strategy
@@ -143,6 +147,14 @@ type proposeStrategyInput struct {
 // because timestamps aren't agent-facing fields.
 type reviseDecisionInput = proposeDecisionInput
 
+// reviseFeatureInput mirrors proposeFeatureInput; same shape, same
+// rationale as reviseDecisionInput. The id-must-exist gate lives in
+// the handler.
+type reviseFeatureInput = proposeFeatureInput
+
+// reviseStrategyInput mirrors proposeStrategyInput.
+type reviseStrategyInput = proposeStrategyInput
+
 // registerWriteTools wires the four write tools onto the server. Each
 // handler opens a SpecStore transaction, validates input via the Put
 // type-assert / id-prefix checks, commits, and emits a
@@ -218,6 +230,43 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore) {
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Revised decision %s.", in.ID)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "spec_revise_feature",
+		Description: descSpecReviseFeature,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in reviseFeatureInput) (*mcp.CallToolResult, any, error) {
+		createdAt, ok := existingFeatureCreatedAt(store, in.ID)
+		if !ok {
+			return errorResult(fmt.Sprintf("spec_revise_feature: feature %q does not exist; use spec_propose_feature to create it", in.ID)), nil, nil
+		}
+		body, err := buildFeatureBody(in, createdAt)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		if err := commitOne(store, agent.KindFeature, in.ID, body); err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		publishManifestUpdate(ctx, server)
+		return textResult(fmt.Sprintf("Revised feature %s.", in.ID)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "spec_revise_strategy",
+		Description: descSpecReviseStrategy,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in reviseStrategyInput) (*mcp.CallToolResult, any, error) {
+		if !strategyExists(store, in.ID) {
+			return errorResult(fmt.Sprintf("spec_revise_strategy: strategy %q does not exist; use spec_propose_strategy to create it", in.ID)), nil, nil
+		}
+		body, err := buildStrategyBody(in)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		if err := commitOne(store, agent.KindStrategy, in.ID, body); err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		publishManifestUpdate(ctx, server)
+		return textResult(fmt.Sprintf("Revised strategy %s.", in.ID)), nil, nil
 	})
 }
 
@@ -329,6 +378,36 @@ func existingDecisionCreatedAt(store *agent.SpecStore, id string) (time.Time, bo
 		return time.Time{}, false
 	}
 	return d.CreatedAt, true
+}
+
+// existingFeatureCreatedAt mirrors existingDecisionCreatedAt for the
+// spec_revise_feature path.
+func existingFeatureCreatedAt(store *agent.SpecStore, id string) (time.Time, bool) {
+	res := store.GetSpec([]string{id})
+	entry, ok := res.Results[id]
+	if !ok || entry.Status == agent.SpecGetMissing {
+		return time.Time{}, false
+	}
+	f, ok := entry.Body.(spec.Feature)
+	if !ok {
+		return time.Time{}, false
+	}
+	return f.CreatedAt, true
+}
+
+// strategyExists is the existence-check used by spec_revise_strategy.
+// spec.Strategy has no created_at/updated_at fields today, so the
+// revise path doesn't need to recover a timestamp the way decisions
+// and features do — it only needs to gate the upsert behind an
+// "id must already exist" check.
+func strategyExists(store *agent.SpecStore, id string) bool {
+	res := store.GetSpec([]string{id})
+	entry, ok := res.Results[id]
+	if !ok || entry.Status == agent.SpecGetMissing {
+		return false
+	}
+	_, ok = entry.Body.(spec.Strategy)
+	return ok
 }
 
 // textResult and errorResult build a *CallToolResult with a single

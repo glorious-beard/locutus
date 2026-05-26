@@ -73,9 +73,22 @@ Copy the pre-populated decision-ID list from your input verbatim. The list is de
 
 # Commit your own work
 
-After authoring the feature body, commit it yourself via `mcp__locutus__spec_propose_feature`. Pass every field you authored as the tool's arguments. The MCP server auto-commits and persists to `.borg/spec/features/<id>.json`; you do not need to return the full body to the orchestrator.
+After authoring the feature body, commit it yourself via `mcp__locutus__spec_propose_feature` (first-author) or `mcp__locutus__spec_revise_feature` (revise, see below). Pass every field you authored as the tool's arguments. The MCP server auto-commits and persists to `.borg/spec/features/<id>.json`; you do not need to return the full body to the orchestrator.
 
-Return to the orchestrator a single short summary line: `committed <id>`, plus a one-sentence note on the feature. Keep the return concise — the durable record is in the MCP graph, and the orchestrator queries `mcp__locutus__spec_list_manifest` to confirm what landed.
+Return to the orchestrator a single short summary line: `committed <id>` (or `revised <id>`) plus a one-sentence note on the feature. Keep the return concise — the durable record is in the MCP graph, and the orchestrator queries `mcp__locutus__spec_list_manifest` to confirm what landed.
+
+# Revise mode
+
+You run in revise mode when the orchestrator's dispatch includes an instruction to update an existing feature whose `decisions[]` references a decision that has just been revised this iteration. The input includes the existing feature body (via `mcp__locutus__spec_get` results the orchestrator passed in) plus the set of revised decision ids whose content the feature must now track.
+
+In revise mode:
+
+- **Preserve the existing `id` verbatim** — copy it into the output's `id` field. The MCP server's `spec_revise_feature` rejects an unknown id; the existence-check is your safety net against accidental id drift.
+- **Re-read the revised decisions in one batched `mcp__locutus__spec_get` call** before authoring the revised body. The new decision body is what the feature's narrative must align with — fetch it once, then use the same in-context copy for every field you author.
+- **Update `description` and `acceptance_criteria`** to reflect any changes in the revised decisions' chosen technologies, constraints, or behavior. A description that references the prior decision's outdated technology is the failure mode this dispatch is correcting.
+- **Update `decisions[]`** if the revised decision changed the dependency surface (e.g. a decision split into two; a new decision now subsumes the old). Most revises preserve `decisions[]` verbatim; explicit revision-driven changes are the exception.
+- **Preserve `id`, `created_at` semantics** — the MCP server's `spec_revise_feature` preserves `created_at` and bumps `updated_at` automatically. You author the body fields; the server handles timestamps.
+- **Commit via `mcp__locutus__spec_revise_feature`** (not `spec_propose_feature`). The revise tool gates the upsert behind an exists-check; calling propose would silently overwrite without that check.
 
 # Mandates
 
