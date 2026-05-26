@@ -35,7 +35,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/glorious-beard/locutus/internal/activity"
 	"github.com/glorious-beard/locutus/internal/dispatch"
 	"github.com/glorious-beard/locutus/internal/dispatch/acp"
 	"github.com/glorious-beard/locutus/internal/dispatch/policy"
@@ -52,10 +51,17 @@ type ActivityRun struct {
 	FinalText  string
 }
 
-// DispatchActivity composes runtime resolution + ACP spawn + prompt
-// + event streaming + session recording into one call. Returns when
-// the ACP stream closes (clean session end), the context cancels,
-// or a permanent error occurs.
+// DispatchActivity composes ACP spawn + prompt + event streaming +
+// session recording into one call. Returns when the ACP stream
+// closes (clean session end), the context cancels, or a permanent
+// error occurs.
+//
+// runtime is the resolved coding-agent runtime id (claude-code /
+// codex / gemini) — the caller is expected to have resolved it via
+// activity.Registry.Resolve before calling. Resolution at the CLI
+// edge keeps the runner stateless and lets the caller load the
+// matching playbook overlay (DJ-136 phase 1) without a second
+// resolve.
 //
 // out is where the agent's free-text output is mirrored. progress
 // is where the dispatcher writes per-tool-call status lines and
@@ -72,13 +78,13 @@ func DispatchActivity(
 	ctx context.Context,
 	projectRoot string,
 	activityName string,
+	runtime string,
 	playbookBody string,
-	reg *activity.Registry,
 	out io.Writer,
 	progress io.Writer,
 ) (*ActivityRun, error) {
-	if reg == nil {
-		return nil, fmt.Errorf("dispatch: registry is required")
+	if runtime == "" {
+		return nil, fmt.Errorf("dispatch: runtime is required")
 	}
 	if out == nil {
 		out = io.Discard
@@ -87,10 +93,6 @@ func DispatchActivity(
 		progress = io.Discard
 	}
 
-	runtime, err := reg.Resolve(activityName, nil /* exec.LookPath */)
-	if err != nil {
-		return nil, fmt.Errorf("dispatch: %w", err)
-	}
 	spawn, ok := acp.AgentSpawns[runtime]
 	if !ok {
 		return nil, fmt.Errorf("dispatch: runtime %q resolved but has no spawn descriptor", runtime)
