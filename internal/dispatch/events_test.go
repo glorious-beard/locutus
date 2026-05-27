@@ -20,6 +20,7 @@ func TestEventKind_String(t *testing.T) {
 		{EventRetry, "api_retry"},
 		{EventResult, "result"},
 		{EventError, "error"},
+		{EventPlan, "plan"},
 	}
 	for _, c := range cases {
 		assert.Equal(t, c.want, string(c.kind), "EventKind constant value mismatch")

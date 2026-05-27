@@ -33,6 +33,8 @@ type CLI struct {
 	McpDaemon McpDaemonCmd `cmd:"" name:"mcp-daemon" help:"Internal: run the per-project MCP daemon. Use 'locutus mcp' instead." hidden:""`
 	McpStop   McpStopCmd   `cmd:"" name:"mcp-stop" help:"Stop the per-project MCP daemon (removes the .locutus/mcp.sock so the accept loop unwinds)."`
 
+	HookValidateDecision HookValidateDecisionCmd `cmd:"" name:"hook-validate-decision" help:"Internal: validate a proposed decision (DJ-136 phase 5 hook). Reads JSON on stdin, exits non-zero on invariant violation." hidden:""`
+
 	// mcpMode is set programmatically by McpCmd.Run before any work
 	// starts so RenderMode reflects "this process is serving MCP."
 	// Not a CLI flag — invocation is the signal.

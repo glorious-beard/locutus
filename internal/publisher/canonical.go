@@ -74,11 +74,40 @@ type CanonicalAgent struct {
 // HasPlan distinguishes "no slash command yet" (activity registered
 // but plan not authored) from "plan file unreadable" (which surfaces
 // as an error at load time).
+//
+// CLIVerb is the operator-facing short name (`refine`, `import`,
+// `adopt`, `assimilate`) that mirrors the CLI verb dispatching this
+// activity. Per-runtime publishers use it to name the emitted slash
+// command — operators recognize `/locutus-refine` more readily than
+// `/locutus-spec-refinement`. The mapping is closed (one CLI verb
+// per activity); unknown activities fall back to the hyphen-form of
+// the activity name so the publisher stays usable when a project
+// registers a custom activity that has no matching CLI verb.
 type CanonicalActivity struct {
 	Name     string
 	Runtimes []string
 	PlanBody string
 	HasPlan  bool
+	CLIVerb  string
+}
+
+// cliVerbForActivity maps the canonical activity-name set to the
+// CLI-verb short names. Stable across releases — used to name slash
+// commands across every runtime. The fallback (hyphen-form of the
+// activity name) is the safety net for projects that register custom
+// activities with no matching CLI verb.
+func cliVerbForActivity(activityName string) string {
+	switch activityName {
+	case "spec_refinement":
+		return "refine"
+	case "feature_ingestion":
+		return "import"
+	case "code_adoption":
+		return "adopt"
+	case "code_assimilation":
+		return "assimilate"
+	}
+	return strings.ReplaceAll(activityName, "_", "-")
 }
 
 // Canonical bundles the inputs for one publisher run: the agent set
@@ -112,7 +141,11 @@ func LoadCanonical(fsys specio.FS, reg *activity.Registry) (Canonical, error) {
 	runtimes := map[string]struct{}{}
 	for _, name := range reg.Names() {
 		act, _ := reg.Lookup(name)
-		canonical := CanonicalActivity{Name: name, Runtimes: act.Runtimes}
+		canonical := CanonicalActivity{
+			Name:     name,
+			Runtimes: act.Runtimes,
+			CLIVerb:  cliVerbForActivity(name),
+		}
 		body, ok, err := loadPlan(fsys, name)
 		if err != nil {
 			return Canonical{}, err

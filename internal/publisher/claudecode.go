@@ -137,15 +137,28 @@ func claudeCodeModelForTier(tier string) string {
 	}
 }
 
-// PublishActivity writes .claude/commands/locutus-<name>.md. The
-// content is the canonical plan body — Claude Code treats the
-// command body as the prompt the agent runs when the slash command
-// fires.
+// EnsureHooks is a no-op for Claude Code under DJ-136. The
+// runtime's `/goal` slash command (used by the spec_refinement
+// overlay) provides the enforcement surface; PreToolUse hooks
+// aren't required to make the activity safe. If a future activity
+// needs Claude Code hooks, this method gains an implementation
+// then.
+func (claudeCodePublisher) EnsureHooks(_ []CanonicalActivity, _ specio.FS) error {
+	return nil
+}
+
+// PublishActivity writes .claude/commands/locutus-<cli-verb>.md. The
+// content is the canonical (cross-runtime) plan body — Claude Code
+// treats the command body as the prompt the agent runs when the
+// slash command fires. The DJ-136 claude-code overlay invokes this
+// slash command from a `/goal` directive; the slash command body
+// itself stays runtime-neutral so the overlay can layer the loop
+// discipline on top.
 func (claudeCodePublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
 	dir := ".claude/commands"
 	if err := fsys.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	path := fmt.Sprintf("%s/locutus-%s.md", dir, strings.ReplaceAll(act.Name, "_", "-"))
+	path := fmt.Sprintf("%s/locutus-%s.md", dir, act.CLIVerb)
 	return fsys.WriteFile(path, []byte(act.PlanBody), 0o644)
 }

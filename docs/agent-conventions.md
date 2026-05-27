@@ -18,9 +18,11 @@ Canonical agent prompts ship from `internal/scaffold/agents/` and get **publishe
 
 | Runtime | Subagent path | Slash command path | MCP config |
 |---|---|---|---|
-| Claude Code | `.claude/agents/locutus/<id>.md` | `.claude/commands/locutus-<activity>.md` | `.mcp.json` |
-| Codex | `.codex/agents/locutus-<id>.toml` | `.codex/commands/locutus-<activity>.toml` | `.codex/config.toml` |
-| Gemini | `.gemini/extensions/locutus/agents/locutus-<id>.md` | `.gemini/extensions/locutus/commands/locutus-<activity>.toml` | `.gemini/extensions/locutus/extension.json` |
+| Claude Code | `.claude/agents/locutus/<id>.md` | `.claude/commands/locutus-<cli-verb>.md` | `.mcp.json` |
+| Codex | `.codex/agents/locutus-<id>.toml` | `.codex/commands/locutus-<cli-verb>.toml` | `.codex/config.toml` |
+| Gemini | `.gemini/extensions/locutus/agents/locutus-<id>.md` | `.gemini/extensions/locutus/commands/locutus-<cli-verb>.toml` | `.gemini/extensions/locutus/extension.json` |
+
+The `<cli-verb>` is the short name operators recognize (`refine`, `import`, `adopt`, `assimilate`) — mapped from the activity name via `CanonicalActivity.CLIVerb` in the publisher. Operators reach for `/locutus-refine` more readily than `/locutus-spec-refinement`; the short form matches the CLI verb that dispatches the same activity.
 
 What the publisher carries through (per `internal/publisher/publisher.go`):
 
@@ -48,6 +50,20 @@ Conventions specific to playbooks:
 - **Name subagents by their hyphenated id.** Claude Code's Task tool, Codex's equivalent, and Gemini's all reference subagents by their published filename basename. Use `spec-decision-elaborator`, not "the decision elaborator."
 - **Encode the convergence-by-construction discipline explicitly.** The previous Go-coded council retired because it couldn't reliably converge — critics re-raised concerns, decisions stalled, runs timed out. The playbook's prose has to push the orchestrating agent to commit aggressively and let revisions fix what needs fixing. See the "Convergence by construction" section in `spec_refinement.md` for the canonical formulation.
 - **No anti-pattern lists in playbooks either.** Same model autocomplete behavior applies. Describe the desired iteration shape positively; don't enumerate failure modes the agent should avoid.
+- **One-iteration shape (DJ-136).** Activity playbooks describe **one iteration** of work; the harness owns the outer loop. On Claude Code that harness is the `/goal` evaluator the publisher emits as a slash command around the playbook. On Codex / Gemini that harness is Locutus's runner driving an outer dispatch loop between iterations. A playbook MUST end with a plain-text convergence verdict line the harness can read (canonical form: `converged: true` or `converged: false; <reason>`). A playbook MUST NOT contain its own "loop until converged" framing — that prose competes with the harness for ownership of the termination decision and was the driver of the iteration-stuck failure mode the May 2026 winplan run surfaced.
+- **Request the runtime's plan tool early.** Playbooks open with a directive to call `TodoWrite` (Claude Code) or the runtime's equivalent plan tool. The runner surfaces plan entries inline (DJ-136 phase 2's `EventPlan` rendering) so the operator sees what the orchestrator scheduled and how far through it the run is. Without this directive the plan-tool affordance goes unused and the operator's view is tool-call-only.
+
+### Per-runtime playbook overlays (DJ-136)
+
+Activity playbooks live at `internal/scaffold/plans/<activity>.md` as the cross-runtime default. A runtime that needs an idiomatic framing (e.g. Claude Code's `/goal`-driven outer loop) gets a sibling overlay at `internal/scaffold/plans/<activity>.<runtime>.md` whose body **totally replaces** the default for that runtime. The loader (`scaffold.ResolvePlaybook`) prefers the overlay when present and falls back to the default otherwise.
+
+The runtime token in the overlay filename matches an `internal/dispatch/acp/registry.go` `AgentSpawns` key (`claude-code` / `codex` / `gemini`); overlays for unregistered runtimes are rejected by `TestPlaybookOverlay_NoOrphanOverlays`. Every overlay must:
+
+- Have a sibling default `<activity>.md` to fall back to (orphan-overlay test).
+- Reference the same `mcp__locutus__*` tool surface as the default (drift-invariant test).
+- Reference the same `spec-*` agent ids as the default (drift-invariant test).
+
+Difference is allowed in prose, framing, loop discipline, and runtime-specific directives (e.g. a `/goal` line on the Claude Code overlay). Drift management is human discipline plus the grep-invariant test — there is no sync-tracking header convention.
 
 ## Anti-patterns to avoid in prompts
 

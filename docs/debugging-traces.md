@@ -98,6 +98,17 @@ Per the convergence-by-construction discipline in `internal/scaffold/plans/spec_
 - If a concern recurs across two iterations with no new evidence, the playbook says to flip it to `wontfix`. If you see the same concern texts iterations 1, 2, 3, … the orchestrating agent isn't applying the wontfix discipline. Tighten the playbook prose.
 - If axes are still open at the cap, the scout isn't surfacing them as decided. Check `tools.jsonl` for the scout's `axes_open` output across iterations — if it's the same axis names every time, the elaborator path isn't committing decisions for them (see "Spec graph never advances" above).
 
+Under DJ-136 the outer loop is harness-driven; the cap-fire signal lives in different places per runtime:
+
+- **claude-code**: the `/goal` evaluator's "no, because …" reasoning lives in the runtime's own session log (under `~/.claude/projects/...`). The evaluator runs after each turn and either keeps going or stops; if it stops at the cap, the verdict reasoning is in the evaluator's log alongside the final `output.md`. Cross-reference the evaluator log with the playbook's verdict line in `output.md`.
+- **codex / gemini**: Locutus's runner emits one progress line per iteration transition (`→ iteration N of 20`) and an explicit `✗ iteration ceiling reached` when the cap fires. Each iteration's session lives under its own `.locutus/sessions/<date>/<time>/<sid>/`; the runner re-dispatches across separate ACP sessions so per-iteration archives are independent and can be walked individually.
+
+### Hook denial blocks a tool call
+
+Symptom (codex / gemini only): a `spec_propose_decision` call surfaces as a hook denial in the agent's session, often with a "decision id … must start with `dec-`" reason.
+
+DJ-136 phase 5 lands the `locutus hook-validate-decision` subcommand wired up via `.codex/config.toml` `[[hooks]]` or `.gemini/settings.json` hooks array. The hook reads the proposed decision input and rejects malformed ids before the MCP write tool fires. The structured reason on stderr is the operator's evidence — fix the elaborator's id-shape adherence (DJ-133: `dec-<axis-id>`) and re-run. Claude Code under DJ-136 doesn't fire this hook because the `/goal` path uses convergence-by-construction discipline at the playbook layer instead.
+
 ### Upstream / network errors mid-stream
 
 Symptom: `events.jsonl` ends with an `EventError` event containing something like `Internal error: API Error: Unable to connect to API (ECONNRESET)`.

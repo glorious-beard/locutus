@@ -41,6 +41,13 @@ type RuntimePublisher interface {
 	// shaped slash command. Skipped at the orchestrator layer when
 	// HasPlan is false (no plan body, no slash command).
 	PublishActivity(act CanonicalActivity, projectFS specio.FS) error
+	// EnsureHooks writes any mechanical-enforcement hooks the
+	// runtime supports for the registered activity set (DJ-136
+	// phase 5+). Codex and Gemini emit fragments here; Claude Code
+	// is a no-op because DJ-136 uses /goal for enforcement rather
+	// than hooks on that runtime. Called once per Publish() after
+	// per-activity slash commands have landed.
+	EnsureHooks(activities []CanonicalActivity, projectFS specio.FS) error
 }
 
 // publishers is the runtime-id → implementation registry. Populated
@@ -87,6 +94,9 @@ func Publish(fsys specio.FS, reg *activity.Registry) error {
 			if err := pub.PublishActivity(act, fsys); err != nil {
 				return fmt.Errorf("publisher %s: activity %s: %w", rt, act.Name, err)
 			}
+		}
+		if err := pub.EnsureHooks(canonical.Activities, fsys); err != nil {
+			return fmt.Errorf("publisher %s: hooks: %w", rt, err)
 		}
 	}
 	return nil

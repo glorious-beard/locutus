@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/glorious-beard/locutus/internal/scaffold"
 	"github.com/glorious-beard/locutus/internal/specio"
 )
 
@@ -70,6 +71,46 @@ developer_instructions = %s
 	return fsys.WriteFile(path, []byte(content), 0o644)
 }
 
+// EnsureHooks appends Locutus's TOML hook fragments to
+// .codex/config.toml — one [[hooks]] table per activity that ships
+// a hook (today: spec_refinement). The append is idempotent
+// across re-runs because EnsureMCPConfig truncates the file first;
+// EnsureHooks runs after slash commands but writes its delimited
+// section that EnsureMCPConfig overwrites on the next reset.
+//
+// The fragment template carries the literal {{LOCUTUS_BIN}}
+// placeholder that scaffold.ReadEmbeddedHook substitutes with the
+// resolved locutus binary path (same path EnsureMCPConfig uses).
+func (codexPublisher) EnsureHooks(activities []CanonicalActivity, fsys specio.FS) error {
+	var sections []string
+	for _, act := range activities {
+		fragment, ok, err := scaffold.ReadEmbeddedHook("codex", act.Name, locutusCommand())
+		if err != nil {
+			return fmt.Errorf("read embedded hook for %s: %w", act.Name, err)
+		}
+		if !ok {
+			continue
+		}
+		sections = append(sections, strings.TrimRight(string(fragment), "\n"))
+	}
+	if len(sections) == 0 {
+		return nil
+	}
+	existing, err := fsys.ReadFile(codexMCPConfigPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", codexMCPConfigPath, err)
+	}
+	const marker = "\n# === locutus hooks (DJ-136) ===\n"
+	// Strip any prior locutus-hooks section so re-runs converge to a
+	// single block without duplicating tables.
+	if idx := strings.Index(string(existing), marker); idx >= 0 {
+		existing = existing[:idx]
+	}
+	updated := append(existing, []byte(marker)...)
+	updated = append(updated, []byte(strings.Join(sections, "\n\n")+"\n")...)
+	return fsys.WriteFile(codexMCPConfigPath, updated, 0o600)
+}
+
 func (codexPublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
 	dir := ".codex/commands"
 	if err := fsys.MkdirAll(dir, 0o755); err != nil {
@@ -79,11 +120,11 @@ func (codexPublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) err
 description = %s
 developer_instructions = %s
 `,
-		strings.ReplaceAll(act.Name, "_", "-"),
+		act.CLIVerb,
 		tomlString(fmt.Sprintf("Locutus activity: %s", act.Name)),
 		tomlMultilineString(act.PlanBody),
 	)
-	path := fmt.Sprintf("%s/locutus-%s.toml", dir, strings.ReplaceAll(act.Name, "_", "-"))
+	path := fmt.Sprintf("%s/locutus-%s.toml", dir, act.CLIVerb)
 	return fsys.WriteFile(path, []byte(content), 0o644)
 }
 
