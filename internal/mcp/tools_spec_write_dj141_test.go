@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -39,4 +40,15 @@ func TestBuildAntiGoalBodyExactlyOneOf(t *testing.T) {
 	a, err := buildAntiGoalBody(proposeAntiGoalInput{ID: "agoal-x", Title: "X", Body: "b", Origin: "dec-product-scope-boundary"}, timeZero())
 	require.NoError(t, err)
 	assert.Equal(t, "dec-product-scope-boundary", a.Origin)
+}
+
+func TestUpdateGoalsMdHashInputHasNoSyncedAtField(t *testing.T) {
+	// DJ-141: synced_at is server-stamped, never agent-supplied. The
+	// input struct must not carry a SyncedAt field (the agent has no
+	// clock; on the winplan run it fabricated a midnight timestamp).
+	var in updateGoalsMdHashInput
+	in.Hash = "sha256:abc"
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "synced_at")
 }

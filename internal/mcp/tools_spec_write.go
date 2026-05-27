@@ -75,7 +75,7 @@ const (
 	// step 1 (the LLM-driven diff matcher) when the bytes haven't
 	// changed. The handler does a read-modify-write on .borg/manifest.json
 	// so every other top-level field is preserved.
-	descSpecUpdateGoalsMdHash = "Update .borg/manifest.json's goals_md_hash and goals_md_synced_at fields with the supplied values (DJ-139). The Phase 6 refine-goals playbook calls this tool at the end of a successful goal-layer sync; the next run reads the hash back and short-circuits the matcher when GOALS.md hasn't changed. Input is {hash, synced_at} where hash is the sha256:<hex> digest of the current GOALS.md bytes (use the canonical spec.ComputeGoalsMdHash helper to produce it) and synced_at is the RFC3339 timestamp of the sync. The handler preserves every other manifest field; hash is required and rejected when empty so a typo doesn't accidentally drop the audit-trail timestamp without recording a state change."
+	descSpecUpdateGoalsMdHash = "Update .borg/manifest.json's goals_md_hash and goals_md_synced_at fields (DJ-139). The Phase 6 refine-goals playbook calls this tool at the end of a successful goal-layer sync; the next run reads the hash back and short-circuits the matcher when GOALS.md hasn't changed. Input is {hash} where hash is the sha256:<hex> digest of the current GOALS.md bytes (use the canonical spec.ComputeGoalsMdHash helper to produce it). The sync timestamp is stamped server-side from the wall clock — the agent does not supply it. The handler preserves every other manifest field; hash is required and rejected when empty so a typo doesn't accidentally drop the audit-trail timestamp without recording a state change."
 )
 
 // Input schemas mirror spec.Decision / spec.Feature / spec.Strategy
@@ -271,8 +271,7 @@ type markApproachDriftedInput struct {
 // the store's write mutex so concurrent clients can't race on the
 // non-hash fields of the manifest).
 type updateGoalsMdHashInput struct {
-	Hash     string `json:"hash" jsonschema:"sha256:<hex> digest of the current GOALS.md bytes (use spec.ComputeGoalsMdHash to produce). Required; empty values are rejected."`
-	SyncedAt string `json:"synced_at" jsonschema:"RFC3339 timestamp of the sync (typically time.Now().UTC().Format(time.RFC3339))."`
+	Hash string `json:"hash" jsonschema:"sha256:<hex> digest of the current GOALS.md bytes (use spec.ComputeGoalsMdHash to produce). Required; empty values are rejected. The sync timestamp is recorded server-side from the wall clock — there is no agent-supplied timestamp field."`
 }
 
 // registerWriteTools wires the spec_propose_* / spec_revise_* /
@@ -588,15 +587,7 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		if hash == "" {
 			return errorResult("spec_update_goals_md_hash: hash is required"), nil, nil
 		}
-		syncedAt := time.Now().UTC()
-		if s := strings.TrimSpace(in.SyncedAt); s != "" {
-			parsed, err := time.Parse(time.RFC3339, s)
-			if err != nil {
-				return errorResult(fmt.Sprintf("spec_update_goals_md_hash: synced_at must be RFC3339 (got %q): %v", s, err)), nil, nil
-			}
-			syncedAt = parsed
-		}
-		if err := store.UpdateGoalsMdHash(hash, syncedAt); err != nil {
+		if err := store.UpdateGoalsMdHash(hash, time.Now().UTC()); err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
 		return textResult(fmt.Sprintf("Updated goals_md_hash to %s.", hash)), nil, nil
