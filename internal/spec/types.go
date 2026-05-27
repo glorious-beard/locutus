@@ -227,11 +227,22 @@ type Feature struct {
 }
 
 // Manifest holds top-level project metadata.
+//
+// GoalsMdHash and GoalsMdSyncedAt are the short-circuit signal for the
+// Phase 6 `refine goals` playbook (DJ-139). At the start of a run the
+// playbook hashes GOALS.md and compares it against GoalsMdHash; on
+// match it skips the goal-layer sync entirely. On mismatch it dispatches
+// the diff-and-apply matcher and ends by calling the
+// spec_update_goals_md_hash MCP tool to record the new hash and the
+// time of the sync. Both fields are omitempty so legacy manifests
+// (pre-DJ-139) round-trip cleanly with zero values.
 type Manifest struct {
-	ProjectName string    `json:"project_name" yaml:"project_name"`
-	Version     string    `json:"version" yaml:"version"`
-	Model       string    `json:"model,omitempty" yaml:"model,omitempty"`
-	CreatedAt   time.Time `json:"created_at" yaml:"created_at"`
+	ProjectName     string    `json:"project_name" yaml:"project_name"`
+	Version         string    `json:"version" yaml:"version"`
+	Model           string    `json:"model,omitempty" yaml:"model,omitempty"`
+	CreatedAt       time.Time `json:"created_at" yaml:"created_at"`
+	GoalsMdHash     string    `json:"goals_md_hash,omitempty" yaml:"goals_md_hash,omitempty"`
+	GoalsMdSyncedAt time.Time `json:"goals_md_synced_at,omitempty" yaml:"goals_md_synced_at,omitempty"`
 }
 
 // Goal is the persisted LLM interpretation of one atomic in-scope

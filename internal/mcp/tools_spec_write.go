@@ -66,6 +66,15 @@ const (
 	// approach_drifted history event, and (c) precision improvements
 	// (witness-state hashing) are deferred to a follow-up DJ.
 	descSpecMarkApproachDrifted = "Mark an Approach as drifted by setting its invalidated_by_event_id field. Use this tool during a `--with` strong-bias cascade to flag every approach in the reference-graph closure (children of rewritten features/strategies plus approaches whose decisions[] cites a flipped decision). The drift mark signals that synthesis is stale; the approach's body is NOT modified by this call — re-synthesis is adopt's responsibility, not the cascade's. Input is {approach_id, event_id} where approach_id must start with app- and resolve to a known approach, and event_id is the id of the originating spec_biased or approach_drifted history event (callers use the spec_biased root event's id). Idempotent on the same (approach_id, event_id) pair. Rejects unknown approach ids, non-Approach kinds, and empty event_id."
+
+	// descSpecUpdateGoalsMdHash — DJ-139 phase 4 short-circuit signal.
+	// The `refine goals` playbook (DJ-139 phase 6) calls this tool at
+	// the end of a successful goal-layer sync so the next run can
+	// compare the persisted hash against hash(GOALS.md_now) and skip
+	// step 1 (the LLM-driven diff matcher) when the bytes haven't
+	// changed. The handler does a read-modify-write on .borg/manifest.json
+	// so every other top-level field is preserved.
+	descSpecUpdateGoalsMdHash = "Update .borg/manifest.json's goals_md_hash and goals_md_synced_at fields with the supplied values (DJ-139). The Phase 6 refine-goals playbook calls this tool at the end of a successful goal-layer sync; the next run reads the hash back and short-circuits the matcher when GOALS.md hasn't changed. Input is {hash, synced_at} where hash is the sha256:<hex> digest of the current GOALS.md bytes (use the canonical spec.ComputeGoalsMdHash helper to produce it) and synced_at is the RFC3339 timestamp of the sync. The handler preserves every other manifest field; hash is required and rejected when empty so a typo doesn't accidentally drop the audit-trail timestamp without recording a state change."
 )
 
 // Input schemas mirror spec.Decision / spec.Feature / spec.Strategy
@@ -250,6 +259,15 @@ type deleteAntiGoalInput struct {
 type markApproachDriftedInput struct {
 	ApproachID string `json:"approach_id" jsonschema:"Approach id with app- prefix. Must resolve to an existing approach in the spec graph."`
 	EventID    string `json:"event_id" jsonschema:"Id of the history event that drifted this approach — typically the spec_biased root event id of the current --with run. Stored verbatim on Approach.invalidated_by_event_id."`
+}
+
+// updateGoalsMdHashInput shapes the spec_update_goals_md_hash tool's
+// payload. The Phase 6 refine-goals playbook calls this once at the
+// end of a sync; the handler preserves every other manifest field via
+// a read-modify-write through agent.WriteManifestHash.
+type updateGoalsMdHashInput struct {
+	Hash     string `json:"hash" jsonschema:"sha256:<hex> digest of the current GOALS.md bytes (use spec.ComputeGoalsMdHash to produce). Required; empty values are rejected."`
+	SyncedAt string `json:"synced_at" jsonschema:"RFC3339 timestamp of the sync (typically time.Now().UTC().Format(time.RFC3339))."`
 }
 
 // registerWriteTools wires the spec_propose_* / spec_revise_* /
@@ -538,6 +556,28 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Marked approach %s drifted by event %s.", approachID, eventID)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "spec_update_goals_md_hash",
+		Description: descSpecUpdateGoalsMdHash,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in updateGoalsMdHashInput) (*mcp.CallToolResult, any, error) {
+		hash := strings.TrimSpace(in.Hash)
+		if hash == "" {
+			return errorResult("spec_update_goals_md_hash: hash is required"), nil, nil
+		}
+		syncedAt := time.Now().UTC()
+		if s := strings.TrimSpace(in.SyncedAt); s != "" {
+			parsed, err := time.Parse(time.RFC3339, s)
+			if err != nil {
+				return errorResult(fmt.Sprintf("spec_update_goals_md_hash: synced_at must be RFC3339 (got %q): %v", s, err)), nil, nil
+			}
+			syncedAt = parsed
+		}
+		if err := agent.WriteManifestHash(store.FS(), hash, syncedAt); err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		return textResult(fmt.Sprintf("Updated goals_md_hash to %s.", hash)), nil, nil
 	})
 }
 
