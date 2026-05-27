@@ -72,12 +72,30 @@ type Event struct {
 	Rationale    string    `json:"rationale,omitempty"`
 	Alternatives []string  `json:"alternatives,omitempty"`
 
+	// CausedBy links this event to a parent event that triggered
+	// it — populated for child events of a `--with` cascade
+	// (DJ-138). Walks form the audit tree that
+	// `locutus history --since <bias-event-id>` traverses. Empty
+	// when the event is a root or pre-DJ-138.
+	CausedBy string `json:"caused_by,omitempty"`
+
 	// Supersede carries the cascade payload for EventKindNodeSuperseded
 	// events. Empty for other event kinds. The structured form lets
 	// downstream readers (locutus history, narrative regenerator) walk
 	// the cascade scope without re-parsing the spec graph at the time
 	// of the event.
 	Supersede *SupersedeRecord `json:"supersede,omitempty"`
+
+	// Biased carries the spec_biased event payload (DJ-138).
+	// Populated only on the root event of a `--with` cascade run;
+	// downstream cascade events carry CausedBy pointing at the
+	// biased event's id.
+	Biased *BiasedRecord `json:"biased,omitempty"`
+
+	// ApproachDrifted carries the per-approach drift payload
+	// (DJ-138). Populated only on EventKindApproachDrifted events
+	// emitted while a cascade closes its reference-graph walk.
+	ApproachDrifted *ApproachDriftedRecord `json:"approach_drifted,omitempty"`
 }
 
 // EventKindNodeSuperseded marks a refine --supersede event. Carries
