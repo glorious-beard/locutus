@@ -212,7 +212,8 @@ type proposeGoalInput struct {
 	ID           string `json:"id" jsonschema:"Goal id with goal- prefix; the slug encodes the in-scope claim (e.g. goal-strategic-planning-tool, goal-multi-tenancy)."`
 	Title        string `json:"title" jsonschema:"One-line human-readable headline naming the in-scope claim (e.g. 'Strategic planning tool')."`
 	Body         string `json:"body" jsonschema:"The claim's substance — a complete sentence or short paragraph describing what's in scope. The body is what downstream nodes cite when they advance this goal."`
-	SourceClause string `json:"source_clause" jsonschema:"Verbatim text from GOALS.md that this goal interprets. Load-bearing for the diff-and-apply sync algorithm — preserves the goal's id across GOALS.md rephrasings by matching against this clause."`
+	SourceClause string `json:"source_clause,omitempty" jsonschema:"For an ANCHORED goal: verbatim text from GOALS.md that this goal interprets. Supply exactly one of source_clause or origin. Load-bearing for the diff-and-apply sync — preserves the goal's id across GOALS.md rephrasings by matching against this clause."`
+	Origin       string `json:"origin,omitempty" jsonschema:"For an UNANCHORED goal (DJ-141): a short free-text note naming where the claim came from when it has NO verbatim GOALS.md excerpt — e.g. 'mission statement' or a scope-encoding decision id like 'dec-product-scope-boundary'. Supply exactly one of source_clause or origin. Unanchored goals are never deleted merely for being absent from GOALS.md."`
 }
 
 // reviseGoalInput mirrors proposeGoalInput; the behavioral
@@ -237,7 +238,8 @@ type proposeAntiGoalInput struct {
 	ID           string   `json:"id" jsonschema:"AntiGoal id with agoal- prefix; the slug encodes the out-of-scope claim (e.g. agoal-fundraising, agoal-hardware-design)."`
 	Title        string   `json:"title" jsonschema:"One-line human-readable headline naming the exclusion (e.g. 'Fundraising tracking')."`
 	Body         string   `json:"body" jsonschema:"The exclusion's substance — a complete sentence describing what's out of scope. Consumed by import-conflict-detection when judging whether an incoming feature lands inside the exclusion."`
-	SourceClause string   `json:"source_clause" jsonschema:"Verbatim text from GOALS.md that this anti-goal interprets. Load-bearing for the diff-and-apply sync algorithm — preserves the anti-goal's id across GOALS.md rephrasings."`
+	SourceClause string   `json:"source_clause,omitempty" jsonschema:"For an ANCHORED anti-goal: verbatim text from GOALS.md that this anti-goal interprets. Supply exactly one of source_clause or origin. Load-bearing for the diff-and-apply sync algorithm — preserves the anti-goal's id across GOALS.md rephrasings."`
+	Origin       string   `json:"origin,omitempty" jsonschema:"For an UNANCHORED anti-goal (DJ-141): a short free-text note naming where the exclusion came from when it has NO verbatim GOALS.md excerpt — e.g. 'mission statement' or a scope-encoding decision id like 'dec-product-scope-boundary'. Supply exactly one of source_clause or origin. Unanchored anti-goals are never deleted merely for being absent from GOALS.md."`
 	CededTo      []string `json:"ceded_to,omitempty" jsonschema:"Optional list of incumbents owning the ceded space (e.g. ['Carta', 'AngelList'] for a fundraising-tracking exclusion). Consumed by the import-conflict-detection playbook to phrase 'this feature would put us into <incumbent>'s space' reports. Omit when the exclusion is bounded by domain rather than by competitor."`
 	KeptIn       []string `json:"kept_in,omitempty" jsonschema:"Optional list of carve-out clauses that stay in scope despite the broader exclusion (e.g. ['runway forecasting for product timeline planning'] within an out-of-scope fundraising claim). Consumed by carve-out fit judgment during import. Omit when the exclusion is total."`
 }
@@ -698,10 +700,29 @@ func buildStrategyBody(in proposeStrategyInput) (spec.Strategy, error) {
 	}, nil
 }
 
+// validateProvenance enforces DJ-141's exactly-one-of rule: a goal-
+// layer node is either anchored (source_clause set, a verbatim GOALS.md
+// excerpt) or unanchored (origin set, a provenance note for an inferred
+// claim) — never both, never neither.
+func validateProvenance(sourceClause, origin string) error {
+	hasClause := strings.TrimSpace(sourceClause) != ""
+	hasOrigin := strings.TrimSpace(origin) != ""
+	switch {
+	case hasClause && hasOrigin:
+		return fmt.Errorf("supply exactly one of source_clause or origin, not both (an anchored node has source_clause; an unanchored node has origin)")
+	case !hasClause && !hasOrigin:
+		return fmt.Errorf("supply exactly one of source_clause or origin: set source_clause for a verbatim GOALS.md claim, or origin (e.g. 'mission statement') for an inferred claim")
+	}
+	return nil
+}
+
 // buildGoalBody assembles a spec.Goal from the input. createdAt
 // zero-value means "set to now" (propose); non-zero preserves the
 // supplied value (revise).
 func buildGoalBody(in proposeGoalInput, createdAt time.Time) (spec.Goal, error) {
+	if err := validateProvenance(in.SourceClause, in.Origin); err != nil {
+		return spec.Goal{}, err
+	}
 	now := time.Now().UTC()
 	if createdAt.IsZero() {
 		createdAt = now
@@ -711,6 +732,7 @@ func buildGoalBody(in proposeGoalInput, createdAt time.Time) (spec.Goal, error) 
 		Title:        in.Title,
 		Body:         in.Body,
 		SourceClause: in.SourceClause,
+		Origin:       in.Origin,
 		CreatedAt:    createdAt,
 		UpdatedAt:    now,
 	}, nil
@@ -721,6 +743,9 @@ func buildGoalBody(in proposeGoalInput, createdAt time.Time) (spec.Goal, error) 
 // verbatim — nil-vs-empty distinction matters for the omitempty JSON
 // encoding, so we don't coerce to empty.
 func buildAntiGoalBody(in proposeAntiGoalInput, createdAt time.Time) (spec.AntiGoal, error) {
+	if err := validateProvenance(in.SourceClause, in.Origin); err != nil {
+		return spec.AntiGoal{}, err
+	}
 	now := time.Now().UTC()
 	if createdAt.IsZero() {
 		createdAt = now
@@ -730,6 +755,7 @@ func buildAntiGoalBody(in proposeAntiGoalInput, createdAt time.Time) (spec.AntiG
 		Title:        in.Title,
 		Body:         in.Body,
 		SourceClause: in.SourceClause,
+		Origin:       in.Origin,
 		CededTo:      in.CededTo,
 		KeptIn:       in.KeptIn,
 		CreatedAt:    createdAt,
