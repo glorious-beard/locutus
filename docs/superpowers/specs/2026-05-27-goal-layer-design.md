@@ -1,9 +1,9 @@
 # Goal-layer node kinds: `Goal` and `AntiGoal`
 
 **Design lock date:** 2026-05-27
-**Status:** design (brainstormed; pending plan + implementation)
+**Status:** design (brainstorm artifact; the canonical project record is [DJ-139](../../decisions/dj-139-goal-layer-node-kinds.md))
 **Predecessor:** [DJ-138](../../decisions/dj-138-refine-with-bias-cascade.md) (strong-bias cascade, ships before this)
-**Anticipated successor:** a new DJ entry (number TBD) once design crystallizes for implementation
+**Successor:** [DJ-139](../../decisions/dj-139-goal-layer-node-kinds.md) — formalized as the project's decision-journal entry; this brainstorm artifact remains for historical reference.
 
 ## Why this exists
 
