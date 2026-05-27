@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSpecRefinementPlaybookReferencesGoalDiffMatcher — Step 0 dispatches
@@ -50,9 +51,9 @@ func TestSpecRefinementPlaybookDescribesThreeStepsInOrder(t *testing.T) {
 	syncIdx := strings.Index(body, "## Step 0")
 	iterIdx := strings.Index(body, "## The iteration")
 	citeIdx := strings.Index(body, "## Step N+1")
-	assert.Greater(t, syncIdx, -1, "playbook must have a Step 0 header (goal-layer sync)")
-	assert.Greater(t, iterIdx, -1, "playbook must preserve the existing iteration section")
-	assert.Greater(t, citeIdx, -1, "playbook must have a Step N+1 (citation walk) header")
+	require.Greater(t, syncIdx, -1, "playbook must have a Step 0 header (goal-layer sync)")
+	require.Greater(t, iterIdx, -1, "playbook must preserve the existing iteration section")
+	require.Greater(t, citeIdx, -1, "playbook must have a Step N+1 (citation walk) header")
 	assert.Less(t, syncIdx, iterIdx,
 		"Step 0 (sync) must come before the iteration section")
 	assert.Less(t, iterIdx, citeIdx,
@@ -83,6 +84,6 @@ func TestSpecRefinementPlaybookReferencesBootstrapAffordance(t *testing.T) {
 		"playbook must scope the bootstrap affordance to the first run")
 	assert.Contains(t, lower, "secondary",
 		"playbook must describe scope-encoding decisions as a secondary claim source on bootstrap")
-	assert.Contains(t, body, "scope",
+	assert.Contains(t, lower, "scope-encoding",
 		"playbook must name the scope-encoding decisions the bootstrap affordance applies to")
 }

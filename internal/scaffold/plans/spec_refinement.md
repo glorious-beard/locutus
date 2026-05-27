@@ -21,7 +21,7 @@ Pass the target to `spec-scout` in its survey input so its `axes_open` / `new_no
 
 Your very first action this iteration is to call `TodoWrite` (or your runtime's equivalent plan tool, if it exposes one) with the entries you intend to execute. Mark each entry `in_progress` when you start it and `completed` when it lands. The harness renders your plan entries inline so the operator sees what you've scheduled and how far through it you are. Update as work progresses, not in a batch at the end.
 
-A reasonable opening plan covers nine step labels: Goal-layer sync, Survey, Decide open axes, Elaborate new nodes, Critique, Reconcile, Cascade revisions, Confirm landings, Citation walk, Report verdict. You will add or split entries as the matcher returns its diff and the survey returns axes and new-node lists. When Step 0's short-circuit fires, mark the sync entry `completed` with a one-line note ("hash matches; sync skipped") and move on.
+A reasonable opening plan covers ten step labels: Goal-layer sync, Survey, Decide open axes, Elaborate new nodes, Critique, Reconcile, Cascade revisions, Confirm landings, Citation walk, Report verdict. You will add or split entries as the matcher returns its diff and the survey returns axes and new-node lists. When Step 0's short-circuit fires, mark the sync entry `completed` with a one-line note ("hash matches; sync skipped") and move on.
 
 ## Start here
 
@@ -114,7 +114,7 @@ Walk it inline (no subagent dispatch — this step is orchestrator judgment agai
    - Read its body. Identify which current goals the node materially advances — that is, the goal's capability is the node's contribution to it. List those ids in `advances`.
    - Identify which current anti-goals the node respects — that is, the node's scope deliberately stops at the anti-goal's exclusion. List those ids in `respects`.
    - When a previously-cited id was deleted in Step 0, drop it from the list; when a previously-cited id was renamed in Step 0 (id preserved, body updated), keep it.
-4. **Commit citation updates.** For each candidate whose `.advances` or `.respects` array changed, call the matching `mcp__locutus__spec_revise_decision` / `spec_revise_feature` / `spec_revise_strategy` with the existing body fields unchanged and the new citation arrays populated. The revise tool accepts both fields as optional; populate only the ones that changed.
+4. **Commit citation updates.** For each candidate whose `.advances` or `.respects` array changed, call the matching `mcp__locutus__spec_revise_decision` / `spec_revise_feature` / `spec_revise_strategy`. The revise tool is a full-input upsert: pass every existing body field verbatim (id, title, status, rationale/description, alternatives, decisions[], etc. — read them from your `spec_get` batch in step 1) and set the citation arrays to the final values. The tool replaces both citation slices wholesale, so include the complete updated list (not a delta).
 
 Convergence on the citation walk: it's a single pass. When every candidate has been judged and the updates committed, the citation walk is done.
 
