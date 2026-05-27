@@ -286,6 +286,50 @@ func RenderBug(n spec.BugNode, l *spec.Loaded) string {
 	return b.String()
 }
 
+// RenderGoal returns a Markdown section for one goal node (DJ-141).
+// When the goal is unanchored (SourceClause == "" && Origin != ""),
+// the origin provenance is shown in place of the source-clause line.
+func RenderGoal(n spec.GoalNode) string {
+	var b strings.Builder
+	g := n.Spec
+	fmt.Fprintf(&b, "### `%s` — %s\n\n", g.ID, g.Title)
+	if strings.TrimSpace(g.Body) != "" {
+		b.WriteString(strings.TrimSpace(g.Body))
+		b.WriteString("\n\n")
+	}
+	if strings.TrimSpace(g.SourceClause) != "" {
+		fmt.Fprintf(&b, "**Source clause:** %s\n\n", g.SourceClause)
+	} else if g.Origin != "" {
+		fmt.Fprintf(&b, "**Origin (unanchored):** %s\n\n", g.Origin)
+	}
+	return b.String()
+}
+
+// RenderAntiGoal returns a Markdown section for one anti-goal node (DJ-141).
+// When the anti-goal is unanchored (SourceClause == "" && Origin != ""),
+// the origin provenance is shown in place of the source-clause line.
+func RenderAntiGoal(n spec.AntiGoalNode) string {
+	var b strings.Builder
+	ag := n.Spec
+	fmt.Fprintf(&b, "### `%s` — %s\n\n", ag.ID, ag.Title)
+	if strings.TrimSpace(ag.Body) != "" {
+		b.WriteString(strings.TrimSpace(ag.Body))
+		b.WriteString("\n\n")
+	}
+	if strings.TrimSpace(ag.SourceClause) != "" {
+		fmt.Fprintf(&b, "**Source clause:** %s\n\n", ag.SourceClause)
+	} else if ag.Origin != "" {
+		fmt.Fprintf(&b, "**Origin (unanchored):** %s\n\n", ag.Origin)
+	}
+	if len(ag.CededTo) > 0 {
+		fmt.Fprintf(&b, "**Ceded to:** %s\n\n", strings.Join(ag.CededTo, ", "))
+	}
+	if len(ag.KeptIn) > 0 {
+		fmt.Fprintf(&b, "**Kept in:** %s\n\n", strings.Join(ag.KeptIn, ", "))
+	}
+	return b.String()
+}
+
 // relevantStrategies returns the strategy ids that reference any of
 // the given decision ids. Sorted unique.
 func relevantStrategies(decisionIDs []string, l *spec.Loaded) []string {

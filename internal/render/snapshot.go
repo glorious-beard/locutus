@@ -24,8 +24,16 @@ type SnapshotData struct {
 	// depends on it — so these are emitted alongside the feature /
 	// strategy / decision counts rather than rolled into the main
 	// counts table.
-	GoalCount     int                     `json:"goal_count"`
-	AntiGoalCount int                     `json:"antigoal_count"`
+	GoalCount     int `json:"goal_count"`
+	AntiGoalCount int `json:"antigoal_count"`
+	// AnchoredGoalCount and UnanchoredGoalCount split GoalCount by
+	// provenance (DJ-141). Anchored: SourceClause != "". Unanchored:
+	// Origin != "" and SourceClause == "".
+	AnchoredGoalCount   int      `json:"anchored_goal_count"`
+	UnanchoredGoalCount int      `json:"unanchored_goal_count"`
+	// UnanchoredGoals lists "<id> — <title> (<origin>)" for the
+	// informational "inferred scope" section (DJ-141).
+	UnanchoredGoals     []string `json:"unanchored_goals,omitempty"`
 	Strategies    []SnapshotStrategy      `json:"strategies"`
 	Features      []SnapshotFeature       `json:"features"`
 	Decisions     []SnapshotDecision      `json:"decisions"`
@@ -206,6 +214,18 @@ func BuildSnapshotData(l *spec.Loaded, stages spec.StageMap, projectName string,
 		GoalCount:     len(l.Goals),
 		AntiGoalCount: len(l.AntiGoals),
 	}
+
+	// Populate anchored/unanchored split (DJ-141).
+	for _, g := range l.Goals {
+		if strings.TrimSpace(g.Spec.SourceClause) != "" {
+			data.AnchoredGoalCount++
+		} else {
+			data.UnanchoredGoalCount++
+			data.UnanchoredGoals = append(data.UnanchoredGoals,
+				fmt.Sprintf("%s — %s (%s)", g.Spec.ID, g.Spec.Title, g.Spec.Origin))
+		}
+	}
+	sort.Strings(data.UnanchoredGoals)
 
 	keepKind := func(k string) bool {
 		if len(filters.Kinds) == 0 {
@@ -498,10 +518,18 @@ func SnapshotMarkdown(d SnapshotData) string {
 
 	// Goal-layer counts (DJ-139). Omitted when both counts are zero —
 	// projects pre-goal-layer-sync shouldn't pay rendering cost for an
-	// empty section.
+	// empty section. Anchored/unanchored split added by DJ-141.
 	if d.GoalCount > 0 || d.AntiGoalCount > 0 {
 		b.WriteString("## Goal layer\n\n")
-		fmt.Fprintf(&b, "**Goals:** %d · **Anti-goals:** %d\n\n", d.GoalCount, d.AntiGoalCount)
+		fmt.Fprintf(&b, "**Goals:** %d (Anchored: %d · Unanchored: %d) · **Anti-goals:** %d\n\n",
+			d.GoalCount, d.AnchoredGoalCount, d.UnanchoredGoalCount, d.AntiGoalCount)
+		if len(d.UnanchoredGoals) > 0 {
+			b.WriteString("_Inferred scope not yet stated in GOALS.md — candidates to make explicit:_\n\n")
+			for _, g := range d.UnanchoredGoals {
+				fmt.Fprintf(&b, "- %s\n", g)
+			}
+			b.WriteString("\n")
+		}
 	}
 
 	if strings.TrimSpace(d.Goals) != "" {

@@ -159,6 +159,86 @@ func TestSnapshotJSON_RoundTrips(t *testing.T) {
 	}
 }
 
+func TestSnapshotSplitsAnchoredUnanchored(t *testing.T) {
+	fs := specio.NewMemFS()
+	require.NoError(t, fs.MkdirAll(".borg/spec/goals", 0o755))
+	require.NoError(t, fs.MkdirAll(".borg/spec/antigoals", 0o755))
+	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
+
+	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+
+	// Anchored goal: SourceClause is non-empty.
+	require.NoError(t, specio.SavePair(fs, ".borg/spec/goals/goal-anchored", spec.Goal{
+		ID: "goal-anchored", Title: "Anchored goal", Body: "Some anchored goal.",
+		SourceClause: "verbatim sentence from GOALS.md",
+		CreatedAt:    now, UpdatedAt: now,
+	}, ""))
+
+	// Unanchored goal: Origin is set, SourceClause is empty.
+	require.NoError(t, specio.SavePair(fs, ".borg/spec/goals/goal-inferred", spec.Goal{
+		ID: "goal-inferred", Title: "Inferred goal", Body: "An inferred goal.",
+		Origin:    "mission statement",
+		CreatedAt: now, UpdatedAt: now,
+	}, ""))
+
+	loaded, err := spec.LoadSpec(fs)
+	require.NoError(t, err)
+	stages := spec.DeriveStages(loaded, fs)
+
+	data := BuildSnapshotData(loaded, stages, "test-proj", SnapshotFilters{})
+	md := SnapshotMarkdown(data)
+
+	assert.Contains(t, md, "Anchored:")
+	assert.Contains(t, md, "Unanchored:")
+	assert.Contains(t, md, "Inferred scope not yet stated in GOALS.md")
+	assert.Contains(t, md, "goal-inferred")
+	assert.Contains(t, md, "mission statement")
+	// The anchored count should be 1 and unanchored 1.
+	assert.Contains(t, md, "Anchored: 1")
+	assert.Contains(t, md, "Unanchored: 1")
+}
+
+func TestExplainGoal_UnanchoredShowsOrigin(t *testing.T) {
+	fs := specio.NewMemFS()
+	require.NoError(t, fs.MkdirAll(".borg/spec/goals", 0o755))
+	require.NoError(t, fs.MkdirAll(".borg/spec/antigoals", 0o755))
+	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))
+
+	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+
+	// Unanchored goal: SourceClause empty, Origin set.
+	require.NoError(t, specio.SavePair(fs, ".borg/spec/goals/goal-inferred", spec.Goal{
+		ID: "goal-inferred", Title: "Inferred goal", Body: "Inferred from context.",
+		Origin:    "mission statement",
+		CreatedAt: now, UpdatedAt: now,
+	}, ""))
+
+	// Anchored goal: SourceClause set.
+	require.NoError(t, specio.SavePair(fs, ".borg/spec/goals/goal-anchored", spec.Goal{
+		ID: "goal-anchored", Title: "Anchored goal", Body: "Comes from GOALS.md.",
+		SourceClause: "verbatim clause",
+		CreatedAt:    now, UpdatedAt: now,
+	}, ""))
+
+	loaded, err := spec.LoadSpec(fs)
+	require.NoError(t, err)
+	stages := spec.DeriveStages(loaded, fs)
+
+	// Unanchored goal explain output must contain "unanchored" and the origin text.
+	out, err := ExplainNode(loaded, stages, "goal-inferred")
+	require.NoError(t, err)
+	assert.Contains(t, out, "unanchored")
+	assert.Contains(t, out, "mission statement")
+	assert.NotContains(t, out, "Source clause:", "unanchored node should not show source-clause label")
+
+	// Anchored goal explain output must contain the source clause, not the origin label.
+	out2, err := ExplainNode(loaded, stages, "goal-anchored")
+	require.NoError(t, err)
+	assert.Contains(t, out2, "Source clause:")
+	assert.Contains(t, out2, "verbatim clause")
+	assert.NotContains(t, out2, "unanchored", "anchored node must not show unanchored label")
+}
+
 func TestSnapshotMarkdown_EmptyGraph(t *testing.T) {
 	fs := specio.NewMemFS()
 	require.NoError(t, fs.MkdirAll(".borg/spec/features", 0o755))

@@ -49,8 +49,20 @@ func ExplainNode(l *spec.Loaded, stage spec.StageMap, id string) (string, error)
 			return "", fmt.Errorf("explain: bug %q not found", id)
 		}
 		return decorateExplain(id, RenderBug(*n, l)), nil
+	case strings.HasPrefix(id, "goal-"):
+		n := l.GoalNodeByID(id)
+		if n == nil {
+			return "", fmt.Errorf("explain: goal %q not found", id)
+		}
+		return decorateExplain(id, RenderGoal(*n)), nil
+	case strings.HasPrefix(id, "agoal-"):
+		n := l.AntiGoalNodeByID(id)
+		if n == nil {
+			return "", fmt.Errorf("explain: anti-goal %q not found", id)
+		}
+		return decorateExplain(id, RenderAntiGoal(*n)), nil
 	}
-	return "", fmt.Errorf("explain: id %q has unknown prefix (want dec-, feat-, strat-, app-, or bug-)", id)
+	return "", fmt.Errorf("explain: id %q has unknown prefix (want dec-, feat-, strat-, app-, bug-, goal-, or agoal-)", id)
 }
 
 // decorateExplain wraps a per-node Markdown section with a top-level

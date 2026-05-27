@@ -163,7 +163,9 @@ func TestSnapshotMarkdownRendersGoalLayerSection(t *testing.T) {
 		data := render.SnapshotData{GoalCount: 3, AntiGoalCount: 2}
 		md := render.SnapshotMarkdown(data)
 		assert.Contains(t, md, "## Goal layer")
-		assert.Contains(t, md, "**Goals:** 3 · **Anti-goals:** 2")
+		// New format includes anchored/unanchored split (DJ-141).
+		assert.Contains(t, md, "**Goals:** 3")
+		assert.Contains(t, md, "**Anti-goals:** 2")
 	})
 
 	t.Run("section omitted when both counts zero", func(t *testing.T) {
@@ -178,6 +180,8 @@ func TestSnapshotMarkdownRendersGoalLayerSection(t *testing.T) {
 		md := render.SnapshotMarkdown(data)
 		assert.Contains(t, md, "## Goal layer",
 			"section renders when either count is non-zero")
-		assert.Contains(t, md, "**Goals:** 0 · **Anti-goals:** 1")
+		// New format includes anchored/unanchored split (DJ-141).
+		assert.Contains(t, md, "**Goals:** 0")
+		assert.Contains(t, md, "**Anti-goals:** 1")
 	})
 }
