@@ -23,12 +23,12 @@ The load-bearing field for preserving ids is `source_clause` — the verbatim ex
 You receive as user messages:
 
 - **Current `GOALS.md`** — the full file as it stands today. Read it once; identify each atomic in-scope claim (becomes a `goal-*`) and each atomic out-of-scope carve-out (becomes an `agoal-*`). One sentence usually maps to one claim; a paragraph may carry several; a bulleted list usually maps one bullet to one claim.
-- **Existing goal-layer nodes** — a JSON array of every current `goal-*` and `agoal-*` node, each with `id`, `kind` (`goal` or `agoal`), `title`, `body`, `source_clause`, and for `agoal-*` nodes the `ceded_to` and `kept_in` arrays.
-- **Optional bootstrap hint** — on the one-time first run for a project that already carries scope-encoding decisions (e.g. `dec-product-scope-boundary`), the user message names them as secondary sources. Treat their bodies as additional claim sources alongside `GOALS.md`; on subsequent runs `GOALS.md` is the sole source.
+- **Existing goal-layer nodes** — a JSON array of every current `goal-*` and `agoal-*` node, each with `id`, `kind` (`goal` or `agoal`), `title`, `body`, `source_clause`, `origin`, and for `agoal-*` nodes the `ceded_to` and `kept_in` arrays. Each node is tagged by **provenance**: an **anchored** node carries a non-empty `source_clause` (a verbatim `GOALS.md` excerpt); an **unanchored** node carries an empty `source_clause` and a non-empty `origin` note (e.g. `"mission statement"`, `"dec-product-scope-boundary"`) recording where an inferred claim came from when `GOALS.md` carries no sentence for it. Provenance decides whether a node is eligible for deletion-by-absence (below).
+- **Optional bootstrap hint** — on the one-time first run for a project that already carries scope-encoding decisions (e.g. `dec-product-scope-boundary`), the user message names them as secondary sources and instructs first-run bootstrap. Treat their bodies — and the implicit scope in the `GOALS.md` mission statement — as claim sources. Claims sourced this way have **no verbatim `GOALS.md` excerpt**, so emit them as **unanchored** `added` entries: omit `source_clause` and set `origin` to the backing decision id (e.g. `"dec-product-scope-boundary"`) or `"mission statement"`. Only claims with genuine verbatim In/Out-of-Scope text in `GOALS.md` are emitted anchored. Never back-form a `source_clause` from a decision body — that fabricates provenance the next sync would then fail to match. On subsequent runs the goal layer is non-empty and `GOALS.md` is the sole source.
 
 # Task
 
-Walk the four diff categories below in order. Each existing node lands in exactly one of `unchanged` / `modified` / `deleted`; each current `GOALS.md` claim either matches an existing node (folding into `unchanged` or `modified`) or surfaces in `added`.
+Walk the six diff categories below in order. Each existing node lands in exactly one of `unchanged` / `modified` / `deleted` / `promoted` / `contradicted`; each current `GOALS.md` claim either matches an existing node (folding into `unchanged`, `modified`, or `promoted`) or surfaces in `added` or `contradicted`.
 
 ## unchanged
 
@@ -52,7 +52,9 @@ For every `modified` entry emit:
 
 ## deleted
 
-The existing node has no corresponding claim in current `GOALS.md`. Either the project genuinely retired the claim (e.g. `agoal-events` removed after the team decided to add event-attendance tracking) or the claim merged into a sibling node (see "claim merge" above). Emit:
+**Only anchored nodes are eligible for this category.** An unanchored node never claimed a `GOALS.md` clause, so its absence from `GOALS.md` is meaningless — it is **never deleted** by absence. An unanchored node leaves the graph only via the `contradicted` category (below) or an operator's explicit delete, never here.
+
+The existing anchored node has no corresponding claim in current `GOALS.md`. Either the project genuinely retired the claim (e.g. `agoal-events` removed after the team decided to add event-attendance tracking) or the claim merged into a sibling node (see "claim merge" above). Emit:
 
 - `id` — the existing node's id.
 - `reason` — one sentence naming why this node has no current match. Examples: `"no corresponding clause in current GOALS.md — claim retired"`; `"merged into agoal-fundraising"`; `"superseded by goal-strategic-planning-tool which now covers the full scope"`.
@@ -66,10 +68,30 @@ A current `GOALS.md` claim has no matching existing node. Either the project is 
 - `kind` — `goal` for in-scope claims, `agoal` for out-of-scope carve-outs. Polarity is structural; the orchestrator's tool dispatch keys off this field.
 - `title` — concise human-readable noun phrase. For `goal-*` the headline of the in-scope capability ("Strategic planning tool"); for `agoal-*` the headline of what's excluded ("Fundraising tracking", "Direct voter contact execution").
 - `body` — multi-sentence LLM interpretation of the claim. Names the domain language the source clause uses and the boundary the claim establishes.
-- `source_clause` — verbatim excerpt from current `GOALS.md`. The anchor the next diff pass will match against.
+- `source_clause` *(anchored only)* — verbatim excerpt from current `GOALS.md`; **or** `origin` *(unanchored only)* — a provenance note when the claim has no `GOALS.md` sentence (e.g. `"mission statement"`, `"dec-product-scope-boundary"`). Emit exactly one.
 - `ceded_to` — for `agoal` only. Same shape as `new_ceded_to` above.
 - `kept_in` — for `agoal` only. Same shape as `new_kept_in` above.
 - `proposed_slug` — the suffix the orchestrator appends to mint the node's id. Lowercase, hyphen-separated, two-to-four words. For an in-scope claim about strategic planning the slug is `strategic-planning-tool` (orchestrator mints `goal-strategic-planning-tool`); for a fundraising carve-out the slug is `fundraising` (orchestrator mints `agoal-fundraising`). The matcher proposes; the orchestrator finalises after collision checks.
+
+## promoted
+
+A current `GOALS.md` claim semantically matches an existing **unanchored** node's `body` at the same polarity. The operator has stated, in `GOALS.md`, a claim the goal layer was already carrying as an inferred (origin-backed) node. This is a promotion, not a new node: the id is preserved and the node becomes anchored. Emit:
+
+- `id` — the existing unanchored node's id, copied verbatim.
+- `new_source_clause` — the verbatim `GOALS.md` excerpt the node now anchors to. The orchestrator sets this and clears `origin`, flipping the node to anchored.
+- `new_body` — the interpretation prose, refreshed against the now-explicit clause when the wording sharpens it; otherwise the existing body.
+
+Match by semantic overlap between the new clause and the unanchored node's `body` (these nodes have no `source_clause` to match against). Prefer promotion over `added` whenever an unanchored node plainly covers the new claim — minting a new node would duplicate the claim and orphan the unanchored node.
+
+## contradicted
+
+A current `GOALS.md` claim asserts the **opposite polarity** of an existing node — an in-scope assertion against an `agoal-*` that cedes it, or an out-of-scope carve-out against a `goal-*`. Polarity lives in the node type, so the id cannot survive the flip. `GOALS.md` is canonical, so the contradicting claim wins. Emit:
+
+- `retire_id` — the existing opposite-polarity node to delete.
+- `new_node` — the full `added`-shape payload for the new-polarity node the claim now establishes (anchored: it has a verbatim `source_clause`).
+- `citing_ids` — the ids of every `dec-*` / `feat-*` / `strat-*` / `app-*` node whose `.advances` / `.respects` currently cites `retire_id`. The orchestrator surfaces these for content review, because deleting the node drops their citation but does not fix their content.
+
+Use `contradicted` only for genuine polarity conflict. A claim that merely refines or agrees with an existing node is `modified`/`promoted`, not `contradicted`.
 
 ## Worked example
 
@@ -129,9 +151,11 @@ Note: `agoal-budget-tracking`'s `source_clause` matched verbatim against the new
 
 # Mandates
 
-- **Preserve ids by matching `source_clause`.** Each existing node lands in exactly one of `unchanged`, `modified`, or `deleted`. The id stays the same across `unchanged` and `modified`; only `deleted` removes the id from the graph. New ids are minted exclusively for `added` entries via `proposed_slug`.
-- **Every existing node is accounted for.** The union of `unchanged` + `modified` + `deleted` covers the full input set of existing `goal-*` and `agoal-*` ids. Omitting an existing node from all three would leave the orchestrator unable to apply the diff coherently.
-- **Every current `GOALS.md` claim is accounted for.** Each atomic claim in current `GOALS.md` corresponds to one entry across `unchanged` + `modified` + `added`. A claim with no entry would silently disappear when the orchestrator applies the diff.
-- **Match by `source_clause` first, body second.** The body is your interpretation; the source clause is the ground-truth anchor. When in doubt about which existing node a new claim corresponds to, the highest semantic overlap on `source_clause` (and the domain language inside it) wins.
+- **Preserve ids by matching `source_clause` (anchored) or `body` (unanchored).** Each existing node lands in exactly one of `unchanged`, `modified`, `deleted`, `promoted`, or `contradicted`. The id stays the same across `unchanged`, `modified`, and `promoted`; only `deleted` and `contradicted` remove an id from the graph. New ids are minted exclusively for `added` entries (and the `new_node` inside `contradicted`) via `proposed_slug`.
+- **Every existing node is accounted for.** The union of `unchanged` + `modified` + `deleted` + `promoted` + `contradicted` covers the full input set of existing `goal-*` and `agoal-*` ids. Omitting an existing node from all five would leave the orchestrator unable to apply the diff coherently.
+- **Every current `GOALS.md` claim is accounted for.** Each atomic claim in current `GOALS.md` corresponds to one entry across `unchanged` + `modified` + `promoted` + `added` + `contradicted`. A claim with no entry would silently disappear when the orchestrator applies the diff.
+- **Anchored-only deletion by absence.** Only anchored nodes (non-empty `source_clause`) are eligible for the `deleted` category. Unanchored nodes (non-empty `origin`, empty `source_clause`) are never deleted by absence — they leave the graph only through `contradicted` or an operator's explicit delete.
+- **Match anchored nodes by `source_clause` first, body second.** The body is your interpretation; the source clause is the ground-truth anchor. When in doubt about which existing anchored node a new claim corresponds to, the highest semantic overlap on `source_clause` (and the domain language inside it) wins.
+- **Match unanchored nodes by body for `promoted`.** Unanchored nodes have no `source_clause`; match by semantic overlap between the current `GOALS.md` claim and the node's `body`. Prefer `promoted` over `added` when the overlap is clear.
 - **Polarity is structural.** Out-of-scope claims become `agoal-*` even when the surrounding `GOALS.md` framing is positive ("we focus on planning, not execution" carries an `agoal` for "execution"). In-scope claims become `goal-*`. The matcher reads the claim's polarity from the carve-out language ("out of scope", "owned by", "ceded to", "explicitly not"), not from the sentence's surface positivity.
 - **Return the diff and nothing else.** The matcher's job ends at the structured output. Authoring `.advances` / `.respects` citations, recomputing the manifest hash, calling MCP tools — all happen in the orchestrator's subsequent steps. A matcher that proposes citations or calls tools is exceeding scope.

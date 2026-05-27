@@ -48,17 +48,30 @@ func TestSpecGoalDiffMatcherPromptFrontmatterHasHyphenatedID(t *testing.T) {
 	require.True(t, found, "frontmatter must declare id:")
 }
 
-// TestSpecGoalDiffMatcherPromptDescribesFourDiffCategories — the
-// matcher's output is a structured diff with exactly four categories
-// (Unchanged, Modified, Deleted, Added). The prompt must walk each
-// one so the model knows the full shape it's emitting.
-func TestSpecGoalDiffMatcherPromptDescribesFourDiffCategories(t *testing.T) {
+// TestSpecGoalDiffMatcherPromptDescribesSixDiffCategories — the
+// matcher's output is a structured diff with exactly six categories
+// (Unchanged, Modified, Deleted, Added, Promoted, Contradicted). The
+// prompt must walk each one so the model knows the full shape it's emitting.
+func TestSpecGoalDiffMatcherPromptDescribesSixDiffCategories(t *testing.T) {
 	body := loadPrompt(t, specGoalDiffMatcherFilename)
 	_, prose := splitFrontmatter(t, body)
-	for _, category := range []string{"unchanged", "modified", "deleted", "added"} {
+	for _, category := range []string{"unchanged", "modified", "deleted", "added", "promoted", "contradicted"} {
 		assert.Contains(t, strings.ToLower(prose), category,
 			"prompt must describe the %q diff category", category)
 	}
+}
+
+// DJ-141 — the matcher must distinguish anchored (source_clause-backed)
+// from unanchored (origin-backed) nodes, restrict delete-by-absence to
+// anchored nodes, and describe the promoted/contradicted moves.
+func TestSpecGoalDiffMatcherPromptDescribesProvenance(t *testing.T) {
+	body := loadPrompt(t, specGoalDiffMatcherFilename)
+	lower := strings.ToLower(body)
+	for _, term := range []string{"anchored", "unanchored", "origin", "promoted", "contradicted"} {
+		assert.Contains(t, lower, term, "matcher prompt must describe %q (DJ-141)", term)
+	}
+	assert.Contains(t, lower, "never deleted",
+		"prompt must state unanchored nodes are never deleted by absence from GOALS.md")
 }
 
 // TestSpecGoalDiffMatcherPromptReferencesSourceClauseAnchor — the
