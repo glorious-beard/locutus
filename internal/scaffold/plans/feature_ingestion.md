@@ -4,7 +4,7 @@ You are the orchestrator of one iteration of feature ingestion for a Locutus-man
 
 ## Plan first
 
-Your very first action this iteration is to call `TodoWrite` (or your runtime's equivalent plan tool, if it exposes one) with the entries you intend to execute. Mark each entry `in_progress` when you start it and `completed` when it lands. The harness renders your plan entries inline so the operator sees what you've scheduled and how far through it you are. A reasonable opening plan covers six steps: fetch the goal layer, identify the feature's domain, test the feature against `agoal-*` bodies, branch on the outcome (admit / draft diff / stop), commit on admit, report. Update as work progresses, not in a batch at the end.
+Your very first action this iteration is to call `TodoWrite` (or your runtime's equivalent plan tool, if it exposes one) with the entries you intend to execute. Mark each entry `in_progress` when you start it and `completed` when it lands. The harness renders your plan entries inline so the operator sees what you've scheduled and how far through it you are. A reasonable opening plan covers six steps in this order: identify the feature's domain (Step 1), fetch the goal layer (Step 2), test the feature against `agoal-*` bodies (Step 3), branch on the outcome (Step 4 — admit / draft diff / stop), surface axes the admission opens (Step 5, optional), report (final). Update as work progresses, not in a batch at the end.
 
 ## Start here
 
@@ -71,7 +71,7 @@ Call `mcp__locutus__spec_propose_feature` once with the full body and the goal-l
 }
 ```
 
-The `advances` list carries every `goal-*` id the feature materially advances; the `respects` list carries every `agoal-*` id the feature navigates under a carve-out. Polarity is structural: `goal-*` ids go in `advances`, `agoal-*` ids go in `respects`. Pass the complete lists — the propose tool replaces both slices wholesale on each call.
+The `advances` list carries every `goal-*` id the feature materially advances; the `respects` list carries every `agoal-*` id the feature navigates under a carve-out. (The tool's registered description carries the polarity and slice-replacement semantics — read it once and lean on it rather than repeating the rules here.)
 
 Proceed to Step 5.
 
@@ -109,15 +109,24 @@ When Branch A admitted the feature, dispatch `spec-scout` once to survey the gra
 
 ## Report
 
-Produce a short report at the end of the iteration. The last line of your report is a plain-text outcome verdict — the harness reads this line.
+Produce a short report at the end of the iteration. Import is structurally one-shot — the iteration completes the moment one branch terminates — so the last line of your report is the canonical `converged: true` verdict the outer-loop harness (`internal/runner/loop.go`) reads to release the run.
 
-The verdict line takes one of these exact forms:
+Format the final two lines as:
+
+```text
+outcome: <one of the three forms below>
+converged: true
+```
+
+The three `outcome:` forms:
 
 - `outcome: admitted; feat-<slug>` — Branch A landed the feature.
 - `outcome: diff_drafted; <conflicting-agoal-ids>` — Branch B emitted a GOALS.md diff and stopped.
 - `outcome: blocked; <conflicting-agoal-ids>` — Branch C stopped on an irreducible conflict.
 
-Above the verdict line, write the operator-facing summary in this shape:
+The `outcome:` line is the operator's at-a-glance summary; the `converged: true` line directly below it tells the harness the iteration is complete.
+
+Above those two lines, write the operator-facing summary in this shape:
 
 - **Domain** — the one-or-two-phrase summary of the feature's domain from Step 1.
 - **Goal-layer test** — a one-paragraph summary of which `goal-*` ids the feature advances and which `agoal-*` ids it overlaps (with the carve-out status: fits under existing `kept_in`, no plausible carve-out, or extension proposed).

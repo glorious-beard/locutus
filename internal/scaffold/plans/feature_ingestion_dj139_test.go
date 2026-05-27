@@ -94,10 +94,41 @@ func TestFeatureIngestionPlaybookDescribesGoalsMdDiffDrafter(t *testing.T) {
 // knows to set them inline on the same call.
 func TestFeatureIngestionPlaybookPopulatesAdvancesAndRespectsOnAdmit(t *testing.T) {
 	body := loadFeatureIngestion(t)
-	assert.Contains(t, body, "advances",
-		"playbook must name the advances citation array populated on admission")
-	assert.Contains(t, body, "respects",
-		"playbook must name the respects citation array populated on admission")
+	// Match the JSON field form (with surrounding quotes) so the
+	// assertion catches the field name rather than the English verb
+	// "advances" or noun "respects" that also appears in the prose.
+	assert.Contains(t, body, `"advances":`,
+		"playbook must show the advances citation array as a JSON field in the propose-tool example")
+	assert.Contains(t, body, `"respects":`,
+		"playbook must show the respects citation array as a JSON field in the propose-tool example")
 	assert.Contains(t, body, "mcp__locutus__spec_propose_feature",
 		"playbook must name the propose tool that accepts the citation fields")
+}
+
+// TestFeatureIngestionPlaybookOrdersThreeBranches — the three-branch
+// outcome (Branch A admit / Branch B draft diff / Branch C stop) is
+// structurally load-bearing for the import flow. Reordering or
+// removing one of the branches would change which feature-vs-goal
+// states the agent can land in. Mirrors the step-order test in
+// spec_refinement_dj139_test.go.
+func TestFeatureIngestionPlaybookOrdersThreeBranches(t *testing.T) {
+	body := loadFeatureIngestion(t)
+	aIdx := strings.Index(body, "#### Branch A")
+	bIdx := strings.Index(body, "#### Branch B")
+	cIdx := strings.Index(body, "#### Branch C")
+	require.Greater(t, aIdx, -1, "playbook must have a Branch A heading (admit)")
+	require.Greater(t, bIdx, -1, "playbook must have a Branch B heading (draft diff)")
+	require.Greater(t, cIdx, -1, "playbook must have a Branch C heading (stop on irreducible conflict)")
+	assert.Less(t, aIdx, bIdx, "Branch A (admit) must come before Branch B (draft diff)")
+	assert.Less(t, bIdx, cIdx, "Branch B (draft diff) must come before Branch C (stop)")
+}
+
+// TestFeatureIngestionPlaybookEmitsConvergedVerdict — the OuterLoopRunner
+// at internal/runner/loop.go terminates on `converged: true`. Without
+// the canonical verdict line, codex/gemini imports would iterate to
+// the activity's max_iterations ceiling (20) on every successful run.
+func TestFeatureIngestionPlaybookEmitsConvergedVerdict(t *testing.T) {
+	body := loadFeatureIngestion(t)
+	assert.Contains(t, body, "converged: true",
+		"playbook must emit `converged: true` so the outer-loop harness terminates after the one-shot import")
 }
