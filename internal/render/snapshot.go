@@ -25,6 +25,27 @@ type SnapshotData struct {
 	Approaches           []SnapshotApproach      `json:"approaches,omitempty"`
 	Bugs                 []SnapshotBug           `json:"bugs,omitempty"`
 	Validation           SnapshotValidationBlock `json:"validation"`
+
+	// RecentBiased lists the N most-recent --with cascade root
+	// events (DJ-138 phase 6), newest first. Empty when no biases
+	// have run. The operator reads this section to see what
+	// recent cascades touched the graph; the audit subtree under
+	// each entry is walkable via `locutus history --since
+	// <bias-event-id>`.
+	RecentBiased []SnapshotBiasedEvent `json:"recent_biased,omitempty"`
+}
+
+// SnapshotBiasedEvent is the rendered form of a spec_biased
+// history event for the snapshot's "Recent biases" section.
+// Truncates bias_text to a scannable preview length; the full
+// audit is in the history log.
+type SnapshotBiasedEvent struct {
+	EventID      string    `json:"event_id"`
+	Timestamp    time.Time `json:"timestamp"`
+	TargetID     string    `json:"target_id"`
+	BiasPreview  string    `json:"bias_preview"`
+	ACPSessionID string    `json:"acp_session_id,omitempty"`
+	BlastRadius  string    `json:"blast_radius"`
 }
 
 // StatusCountsBlock summarizes node counts by status across kinds.
@@ -489,6 +510,21 @@ func SnapshotMarkdown(d SnapshotData) string {
 		for _, bg := range d.Bugs {
 			b.WriteString(renderSnapshotBug(bg))
 			b.WriteString("---\n\n")
+		}
+	}
+
+	if len(d.RecentBiased) > 0 {
+		b.WriteString("## Recent biases\n\n")
+		fmt.Fprintf(&b, "%d recent `--with` cascade(s); newest first. Walk a cascade's subtree via `locutus history --since <event-id>`.\n\n", len(d.RecentBiased))
+		for _, ev := range d.RecentBiased {
+			fmt.Fprintf(&b, "- **%s** → `%s` (%s)\n",
+				ev.Timestamp.Format("2006-01-02 15:04"), ev.TargetID, ev.BlastRadius)
+			fmt.Fprintf(&b, "  bias: %s\n", ev.BiasPreview)
+			fmt.Fprintf(&b, "  event: `%s`", ev.EventID)
+			if ev.ACPSessionID != "" {
+				fmt.Fprintf(&b, "  · session: `%s`", ev.ACPSessionID)
+			}
+			b.WriteString("\n\n")
 		}
 	}
 
