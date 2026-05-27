@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/glorious-beard/locutus/internal/agent"
+	"github.com/glorious-beard/locutus/internal/history"
 	"github.com/glorious-beard/locutus/internal/spec"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -32,6 +33,26 @@ const (
 	descSpecReviseFeature = "Revise an existing product feature. Same input shape as spec_propose_feature, but the id MUST already exist — the server preserves the original created_at and bumps updated_at to now. Use this to update a feature's description, acceptance criteria, decisions[], or citation fields when downstream decision revisions change the user-visible behavior or constraint set the feature commits to. Optional citation fields advances (goal-* ids advanced) and respects (agoal-* ids navigated under a carve-out) carry the polarity rule from propose: goal-* in advances, agoal-* in respects. A revise call replaces these slices wholesale; pass the full updated list, not a delta. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
 
 	descSpecReviseStrategy = "Revise an existing engineering strategy. Same input shape as spec_propose_strategy, but the id MUST already exist. Use this to update a strategy's body, decisions[], commands, or citation fields when downstream decision revisions change the technology stack or operational pattern the strategy commits to. spec.Strategy has no created_at/updated_at fields today; this tool exists primarily for symmetry with spec_revise_decision and spec_revise_feature plus to gate the upsert behind an exists-check. Optional citation fields advances (goal-* ids advanced) and respects (agoal-* ids navigated under a carve-out) carry the polarity rule from propose: goal-* in advances, agoal-* in respects. A revise call replaces these slices wholesale; pass the full updated list, not a delta. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
+
+	// Goal-layer write surface (DJ-139). Goals and AntiGoals are the
+	// persisted LLM interpretation of GOALS.md — leaves in the
+	// cascade sense; other kinds cite them through informational
+	// .advances / .respects fields rather than structural decisions[].
+	// The delete tools are the first non-append-only mutations in the
+	// spec graph; they exist because GOALS.md edits can drop scope
+	// claims and the persisted interpretation has to follow.
+
+	descSpecProposeGoal = "Propose a new goal-* node (upsert semantics on id). Goals are the persisted LLM interpretation of GOALS.md — one atomic in-scope claim per node (DJ-139). Required fields: id (must use the goal- prefix; example: goal-strategic-planning-tool), title (one-line headline), body (the claim's substance), source_clause (the exact phrasing from GOALS.md that this goal interprets — load-bearing for the diff-and-apply sync algorithm that preserves ids across GOALS.md rephrasings). The server fills created_at + updated_at = now; use spec_revise_goal instead when revising an existing goal so created_at is preserved. On success the node lands at .borg/spec/goals/<id>.json and every subscriber to spec://manifest receives notifications/resources/updated."
+
+	descSpecReviseGoal = "Revise an existing goal-* node. Same input shape as spec_propose_goal, but the id MUST already exist — the server preserves the original created_at and bumps updated_at to now. Use this when the LLM's interpretation of a GOALS.md clause shifts (e.g. the source_clause text was rephrased, or the body now reflects a sharper reading of what's in scope). Editing source_clause is the path the diff-and-apply sync uses to track GOALS.md rephrasings without minting new ids. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
+
+	descSpecDeleteGoal = "Delete a goal-* node. Removes the entry from the in-memory store AND from the on-disk file .borg/spec/goals/<id>.json. Goal deletion exists because GOALS.md edits can drop scope claims; when the LLM's interpretation of GOALS.md no longer includes a particular goal, the persisted node disappears with it. Required fields: id (goal- prefix; example: goal-strategic-planning-tool) and reason (a complete sentence naming why the node is being deleted; recorded verbatim on the goal_deleted history event as the audit trail that survives the node). Returns a tool-level error when the id is unknown — callers learn that the delete didn't happen rather than treating the no-op as success. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
+
+	descSpecProposeAntiGoal = "Propose a new agoal-* node (upsert semantics on id). AntiGoals are the persisted LLM interpretation of GOALS.md's out-of-scope claims — one atomic exclusion per node (DJ-139). Required fields: id (must use the agoal- prefix; example: agoal-fundraising), title (one-line headline), body (the exclusion's substance), source_clause (the exact phrasing from GOALS.md that this anti-goal interprets — load-bearing for the diff-and-apply sync algorithm that preserves ids across GOALS.md rephrasings). Optional fields: ceded_to (incumbents owning the ceded space, e.g. ['Carta', 'AngelList'] for a fundraising-tracking exclusion — consumed by the import-conflict-detection playbook), kept_in (carve-out clauses that stay in scope despite the broader exclusion, e.g. ['runway forecasting for product timeline planning'] — consumed by carve-out fit judgment during import). The server fills created_at + updated_at = now; use spec_revise_antigoal to preserve created_at on an existing id. On success the node lands at .borg/spec/antigoals/<id>.json and every subscriber to spec://manifest receives notifications/resources/updated."
+
+	descSpecReviseAntiGoal = "Revise an existing agoal-* node. Same input shape as spec_propose_antigoal, but the id MUST already exist — the server preserves the original created_at and bumps updated_at to now. Use this when the LLM's interpretation of a GOALS.md out-of-scope clause shifts (the source_clause was rephrased, the body sharpens what's excluded, or the ceded_to / kept_in lists change). A revise call replaces ceded_to and kept_in wholesale; pass the full updated lists, not a delta. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
+
+	descSpecDeleteAntiGoal = "Delete an agoal-* node. Removes the entry from the in-memory store AND from the on-disk file .borg/spec/antigoals/<id>.json. Anti-goal deletion exists because GOALS.md edits can lift carve-outs; when an out-of-scope claim no longer appears in GOALS.md the persisted node disappears with it. Required fields: id (agoal- prefix; example: agoal-fundraising) and reason (a complete sentence naming why the node is being deleted; recorded verbatim on the antigoal_deleted history event as the audit trail that survives the node). Returns a tool-level error when the id is unknown. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
 
 	// descSpecMarkApproachDrifted — DJ-138 cascade drift surface.
 	// The cascade playbook calls this tool once per approach in the
@@ -174,6 +195,54 @@ type reviseFeatureInput = proposeFeatureInput
 // reviseStrategyInput mirrors proposeStrategyInput.
 type reviseStrategyInput = proposeStrategyInput
 
+// proposeGoalInput shapes spec_propose_goal's payload. Mirrors
+// spec.Goal at the agent-facing field level; the handler fills
+// CreatedAt + UpdatedAt server-side.
+type proposeGoalInput struct {
+	ID           string `json:"id" jsonschema:"Goal id with goal- prefix; the slug encodes the in-scope claim (e.g. goal-strategic-planning-tool, goal-multi-tenancy)."`
+	Title        string `json:"title" jsonschema:"One-line human-readable headline naming the in-scope claim (e.g. 'Strategic planning tool')."`
+	Body         string `json:"body" jsonschema:"The claim's substance — a complete sentence or short paragraph describing what's in scope. The body is what downstream nodes cite when they advance this goal."`
+	SourceClause string `json:"source_clause" jsonschema:"Verbatim text from GOALS.md that this goal interprets. Load-bearing for the diff-and-apply sync algorithm — preserves the goal's id across GOALS.md rephrasings by matching against this clause."`
+}
+
+// reviseGoalInput mirrors proposeGoalInput; the behavioral
+// distinction (preserve created_at, require existing id) lives in
+// the handler.
+type reviseGoalInput = proposeGoalInput
+
+// deleteGoalInput shapes spec_delete_goal's payload. Narrow by
+// design: every delete is one tool call, and the reason field is
+// required so the goal_deleted history event records why the node
+// disappeared.
+type deleteGoalInput struct {
+	ID     string `json:"id" jsonschema:"Goal id with goal- prefix. Must resolve to an existing goal in the spec graph."`
+	Reason string `json:"reason" jsonschema:"A complete sentence naming why this goal is being deleted (e.g. 'claim dropped from GOALS.md in the 2026-05-27 edit'). Recorded verbatim on the goal_deleted history event so the audit trail survives the node."`
+}
+
+// proposeAntiGoalInput shapes spec_propose_antigoal's payload.
+// Mirrors spec.AntiGoal — adds CededTo and KeptIn over the Goal
+// shape because anti-goals carry the carve-out detail the import-
+// conflict-detection playbook reads.
+type proposeAntiGoalInput struct {
+	ID           string   `json:"id" jsonschema:"AntiGoal id with agoal- prefix; the slug encodes the out-of-scope claim (e.g. agoal-fundraising, agoal-hardware-design)."`
+	Title        string   `json:"title" jsonschema:"One-line human-readable headline naming the exclusion (e.g. 'Fundraising tracking')."`
+	Body         string   `json:"body" jsonschema:"The exclusion's substance — a complete sentence describing what's out of scope. Consumed by import-conflict-detection when judging whether an incoming feature lands inside the exclusion."`
+	SourceClause string   `json:"source_clause" jsonschema:"Verbatim text from GOALS.md that this anti-goal interprets. Load-bearing for the diff-and-apply sync algorithm — preserves the anti-goal's id across GOALS.md rephrasings."`
+	CededTo      []string `json:"ceded_to,omitempty" jsonschema:"Optional list of incumbents owning the ceded space (e.g. ['Carta', 'AngelList'] for a fundraising-tracking exclusion). Consumed by the import-conflict-detection playbook to phrase 'this feature would put us into <incumbent>'s space' reports. Omit when the exclusion is bounded by domain rather than by competitor."`
+	KeptIn       []string `json:"kept_in,omitempty" jsonschema:"Optional list of carve-out clauses that stay in scope despite the broader exclusion (e.g. ['runway forecasting for product timeline planning'] within an out-of-scope fundraising claim). Consumed by carve-out fit judgment during import. Omit when the exclusion is total."`
+}
+
+// reviseAntiGoalInput mirrors proposeAntiGoalInput; preserve-
+// created_at behavior lives in the handler.
+type reviseAntiGoalInput = proposeAntiGoalInput
+
+// deleteAntiGoalInput mirrors deleteGoalInput for the agoal-
+// surface.
+type deleteAntiGoalInput struct {
+	ID     string `json:"id" jsonschema:"AntiGoal id with agoal- prefix. Must resolve to an existing antigoal in the spec graph."`
+	Reason string `json:"reason" jsonschema:"A complete sentence naming why this antigoal is being deleted (e.g. 'the fundraising carve-out was lifted in the 2026-05-27 GOALS.md edit'). Recorded verbatim on the antigoal_deleted history event."`
+}
+
 // markApproachDriftedInput shapes the spec_mark_approach_drifted
 // tool's payload. Narrow by design — every drift mark is one tool
 // call, surfaced in tools.jsonl so post-mortem session walks see
@@ -183,11 +252,20 @@ type markApproachDriftedInput struct {
 	EventID    string `json:"event_id" jsonschema:"Id of the history event that drifted this approach — typically the spec_biased root event id of the current --with run. Stored verbatim on Approach.invalidated_by_event_id."`
 }
 
-// registerWriteTools wires the four write tools onto the server. Each
-// handler opens a SpecStore transaction, validates input via the Put
-// type-assert / id-prefix checks, commits, and emits a
-// notifications/resources/updated for spec://manifest.
-func registerWriteTools(server *mcp.Server, store *agent.SpecStore) {
+// registerWriteTools wires the spec_propose_* / spec_revise_* /
+// spec_delete_* tools onto the server. Each handler opens a
+// SpecStore transaction (or, for delete, calls the dedicated
+// DeleteGoal / DeleteAntiGoal methods which are self-contained),
+// validates input via the Put type-assert / id-prefix checks,
+// persists, and emits a notifications/resources/updated for
+// spec://manifest.
+//
+// hist is the historian used by tools that record audit events
+// (today: spec_delete_goal and spec_delete_antigoal). May be nil —
+// tools that need history skip event recording when nil so non-
+// production wiring (in-memory tests, the daemon's no-historian
+// boot path) stays viable.
+func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *history.Historian) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_propose_decision",
 		Description: descSpecProposeDecision,
@@ -295,6 +373,128 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore) {
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Revised strategy %s.", in.ID)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "spec_propose_goal",
+		Description: descSpecProposeGoal,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in proposeGoalInput) (*mcp.CallToolResult, any, error) {
+		body, err := buildGoalBody(in, time.Time{} /* createdAt = now */)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		if err := commitOne(store, agent.KindGoal, in.ID, body); err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		publishManifestUpdate(ctx, server)
+		return textResult(fmt.Sprintf("Proposed goal %s.", in.ID)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "spec_revise_goal",
+		Description: descSpecReviseGoal,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in reviseGoalInput) (*mcp.CallToolResult, any, error) {
+		createdAt, ok := existingGoalCreatedAt(store, in.ID)
+		if !ok {
+			return errorResult(fmt.Sprintf("spec_revise_goal: goal %q does not exist; use spec_propose_goal to create it", in.ID)), nil, nil
+		}
+		body, err := buildGoalBody(in, createdAt)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		if err := commitOne(store, agent.KindGoal, in.ID, body); err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		publishManifestUpdate(ctx, server)
+		return textResult(fmt.Sprintf("Revised goal %s.", in.ID)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "spec_delete_goal",
+		Description: descSpecDeleteGoal,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in deleteGoalInput) (*mcp.CallToolResult, any, error) {
+		id := strings.TrimSpace(in.ID)
+		reason := strings.TrimSpace(in.Reason)
+		if id == "" {
+			return errorResult("spec_delete_goal: id is required"), nil, nil
+		}
+		if reason == "" {
+			return errorResult("spec_delete_goal: reason is required (the audit event captures why the goal was deleted; an empty reason defeats the purpose)"), nil, nil
+		}
+		if !strings.HasPrefix(id, "goal-") {
+			return errorResult(fmt.Sprintf("spec_delete_goal: id %q lacks goal- prefix", id)), nil, nil
+		}
+		if err := store.DeleteGoal(id); err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		if hist != nil {
+			if err := history.RecordGoalDeleted(hist, id, reason); err != nil {
+				return errorResult(fmt.Sprintf("spec_delete_goal: record history: %v", err)), nil, nil
+			}
+		}
+		publishManifestUpdate(ctx, server)
+		return textResult(fmt.Sprintf("Deleted goal %s.", id)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "spec_propose_antigoal",
+		Description: descSpecProposeAntiGoal,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in proposeAntiGoalInput) (*mcp.CallToolResult, any, error) {
+		body, err := buildAntiGoalBody(in, time.Time{} /* createdAt = now */)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		if err := commitOne(store, agent.KindAntiGoal, in.ID, body); err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		publishManifestUpdate(ctx, server)
+		return textResult(fmt.Sprintf("Proposed antigoal %s.", in.ID)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "spec_revise_antigoal",
+		Description: descSpecReviseAntiGoal,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in reviseAntiGoalInput) (*mcp.CallToolResult, any, error) {
+		createdAt, ok := existingAntiGoalCreatedAt(store, in.ID)
+		if !ok {
+			return errorResult(fmt.Sprintf("spec_revise_antigoal: antigoal %q does not exist; use spec_propose_antigoal to create it", in.ID)), nil, nil
+		}
+		body, err := buildAntiGoalBody(in, createdAt)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		if err := commitOne(store, agent.KindAntiGoal, in.ID, body); err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		publishManifestUpdate(ctx, server)
+		return textResult(fmt.Sprintf("Revised antigoal %s.", in.ID)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "spec_delete_antigoal",
+		Description: descSpecDeleteAntiGoal,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in deleteAntiGoalInput) (*mcp.CallToolResult, any, error) {
+		id := strings.TrimSpace(in.ID)
+		reason := strings.TrimSpace(in.Reason)
+		if id == "" {
+			return errorResult("spec_delete_antigoal: id is required"), nil, nil
+		}
+		if reason == "" {
+			return errorResult("spec_delete_antigoal: reason is required (the audit event captures why the antigoal was deleted; an empty reason defeats the purpose)"), nil, nil
+		}
+		if !strings.HasPrefix(id, "agoal-") {
+			return errorResult(fmt.Sprintf("spec_delete_antigoal: id %q lacks agoal- prefix", id)), nil, nil
+		}
+		if err := store.DeleteAntiGoal(id); err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		if hist != nil {
+			if err := history.RecordAntiGoalDeleted(hist, id, reason); err != nil {
+				return errorResult(fmt.Sprintf("spec_delete_antigoal: record history: %v", err)), nil, nil
+			}
+		}
+		publishManifestUpdate(ctx, server)
+		return textResult(fmt.Sprintf("Deleted antigoal %s.", id)), nil, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -426,6 +626,77 @@ func buildStrategyBody(in proposeStrategyInput) (spec.Strategy, error) {
 		Advances:      in.Advances,
 		Respects:      in.Respects,
 	}, nil
+}
+
+// buildGoalBody assembles a spec.Goal from the input. createdAt
+// zero-value means "set to now" (propose); non-zero preserves the
+// supplied value (revise).
+func buildGoalBody(in proposeGoalInput, createdAt time.Time) (spec.Goal, error) {
+	now := time.Now().UTC()
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	return spec.Goal{
+		ID:           in.ID,
+		Title:        in.Title,
+		Body:         in.Body,
+		SourceClause: in.SourceClause,
+		CreatedAt:    createdAt,
+		UpdatedAt:    now,
+	}, nil
+}
+
+// buildAntiGoalBody assembles a spec.AntiGoal. Same createdAt
+// semantics as buildGoalBody. CededTo and KeptIn are passed through
+// verbatim — nil-vs-empty distinction matters for the omitempty JSON
+// encoding, so we don't coerce to empty.
+func buildAntiGoalBody(in proposeAntiGoalInput, createdAt time.Time) (spec.AntiGoal, error) {
+	now := time.Now().UTC()
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	return spec.AntiGoal{
+		ID:           in.ID,
+		Title:        in.Title,
+		Body:         in.Body,
+		SourceClause: in.SourceClause,
+		CededTo:      in.CededTo,
+		KeptIn:       in.KeptIn,
+		CreatedAt:    createdAt,
+		UpdatedAt:    now,
+	}, nil
+}
+
+// existingGoalCreatedAt looks up the current created_at on a
+// settled or in-flight goal. Returns (time.Time{}, false) when the
+// id is unknown — the revise tool surfaces that as a tool-level
+// error.
+func existingGoalCreatedAt(store *agent.SpecStore, id string) (time.Time, bool) {
+	res := store.GetSpec([]string{id})
+	entry, ok := res.Results[id]
+	if !ok || entry.Status == agent.SpecGetMissing {
+		return time.Time{}, false
+	}
+	g, ok := entry.Body.(spec.Goal)
+	if !ok {
+		return time.Time{}, false
+	}
+	return g.CreatedAt, true
+}
+
+// existingAntiGoalCreatedAt mirrors existingGoalCreatedAt for the
+// agoal- surface.
+func existingAntiGoalCreatedAt(store *agent.SpecStore, id string) (time.Time, bool) {
+	res := store.GetSpec([]string{id})
+	entry, ok := res.Results[id]
+	if !ok || entry.Status == agent.SpecGetMissing {
+		return time.Time{}, false
+	}
+	ag, ok := entry.Body.(spec.AntiGoal)
+	if !ok {
+		return time.Time{}, false
+	}
+	return ag.CreatedAt, true
 }
 
 // existingDecisionCreatedAt looks up the current created_at on a

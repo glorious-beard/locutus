@@ -27,7 +27,7 @@ func TestBootstrap_DiscoversLiveDaemon(t *testing.T) {
 	store := bootstrapTestStore(t)
 	listener, err := ListenSocket(sockPath)
 	assert.NoError(t, err)
-	server := NewSpecServer(store, nil, nil)
+	server := NewSpecServer(store, nil, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -70,7 +70,7 @@ func TestStopDaemon_NoPidFile_RemovesStaleSocket(t *testing.T) {
 	store := bootstrapTestStore(t)
 	listener, err := ListenSocket(sockPath)
 	assert.NoError(t, err)
-	server := NewSpecServer(store, nil, nil)
+	server := NewSpecServer(store, nil, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

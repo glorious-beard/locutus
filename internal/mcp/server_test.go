@@ -36,7 +36,7 @@ func newTestServer(t *testing.T, seed func(*agent.SpecStore)) (*mcp.ClientSessio
 		seed(store)
 	}
 
-	server := NewSpecServer(store, nil, nil)
+	server := NewSpecServer(store, nil, nil, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 
 	_, err = server.Connect(ctx, serverTransport, nil)
@@ -110,6 +110,13 @@ func TestSpecServer_RegistersAllWriteTools(t *testing.T) {
 	assert.Contains(t, names, "spec_revise_decision")
 	assert.Contains(t, names, "spec_revise_feature")
 	assert.Contains(t, names, "spec_revise_strategy")
+	// DJ-139 phase 3: goal-layer write surface.
+	assert.Contains(t, names, "spec_propose_goal")
+	assert.Contains(t, names, "spec_revise_goal")
+	assert.Contains(t, names, "spec_delete_goal")
+	assert.Contains(t, names, "spec_propose_antigoal")
+	assert.Contains(t, names, "spec_revise_antigoal")
+	assert.Contains(t, names, "spec_delete_antigoal")
 }
 
 func TestSpecServer_SpecListManifest_ReturnsAllKinds(t *testing.T) {

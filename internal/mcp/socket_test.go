@@ -34,7 +34,7 @@ func startSocketDaemon(t *testing.T, seed func(*agent.SpecStore)) (string, *agen
 		seed(store)
 	}
 
-	server := NewSpecServer(store, nil, nil)
+	server := NewSpecServer(store, nil, nil, nil)
 	listener, err := ListenSocket(sockPath)
 	assert.NoError(t, err)
 
@@ -179,7 +179,7 @@ func TestSocketDaemon_ServeRespectsContextCancel(t *testing.T) {
 
 	store, err := agent.NewSpecStore(specio.NewMemFS())
 	assert.NoError(t, err)
-	server := NewSpecServer(store, nil, nil)
+	server := NewSpecServer(store, nil, nil, nil)
 	listener, err := ListenSocket(sockPath)
 	assert.NoError(t, err)
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/glorious-beard/locutus/internal/activity"
 	"github.com/glorious-beard/locutus/internal/agent"
+	"github.com/glorious-beard/locutus/internal/history"
 	"github.com/glorious-beard/locutus/internal/specio"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -39,6 +40,13 @@ const implementationVersion = "dj-135-phase-1"
 // (cmd/mcp_daemon.go) both are supplied so the prompts surface is
 // live alongside the tools.
 //
+// hist is the historian the write tools use to record audit events
+// for irreversible operations (DJ-139 added the first such case: the
+// goal-* / agoal-* delete tools). May be nil for tests and code paths
+// that don't need history; nil-historian simply skips event recording
+// on the write side. Production wiring in cmd/mcp_daemon.go supplies
+// a real Historian rooted at .borg/history.
+//
 // Subscriptions: the SDK ignores resources/subscribe unless
 // ServerOptions.SubscribeHandler is non-nil. We provide a no-op
 // handler so the SDK accepts the subscription and tracks the session
@@ -46,7 +54,7 @@ const implementationVersion = "dj-135-phase-1"
 // the write tools call (*Server).ResourceUpdated which dispatches to
 // every tracked subscriber regardless of which session originated the
 // write. Multi-session coordination falls out naturally.
-func NewSpecServer(store *agent.SpecStore, fsys specio.FS, reg *activity.Registry) *mcp.Server {
+func NewSpecServer(store *agent.SpecStore, fsys specio.FS, reg *activity.Registry, hist *history.Historian) *mcp.Server {
 	if store == nil {
 		panic("mcp.NewSpecServer: store is required")
 	}
@@ -58,7 +66,7 @@ func NewSpecServer(store *agent.SpecStore, fsys specio.FS, reg *activity.Registr
 		},
 	)
 	registerReadTools(server, store)
-	registerWriteTools(server, store)
+	registerWriteTools(server, store, hist)
 	registerResources(server, store)
 	if fsys != nil && reg != nil {
 		// Surface activity-playbook prompts. Errors here log via the

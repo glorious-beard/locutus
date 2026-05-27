@@ -2,7 +2,9 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"sync"
 
@@ -573,6 +575,79 @@ func (s *SpecStore) Put(kind SpecKind, id string, body any, origin SpecManifestO
 		return fmt.Errorf("SpecStore.Put: unknown kind %q", kind)
 	}
 	return s.rebuildIndex()
+}
+
+// DeleteGoal removes a goal-* node from the in-memory map AND from
+// the on-disk JSON file under .borg/spec/goals/<id>.json. Pre-DJ-139
+// the spec model was append-only; deletion arrives with the goal
+// layer because GOALS.md edits can drop scope claims, and the
+// persisted interpretation has to follow. Callers that need an audit
+// trail of the deletion record a goal_deleted history event
+// separately via history.RecordGoalDeleted — DeleteGoal itself stays
+// concerned only with the store + filesystem state.
+//
+// Returns an error if the id doesn't have the goal- prefix, if no
+// entry exists for the id, or if the on-disk file removal fails. On
+// disk-removal failure the in-memory entry is restored so the store
+// stays consistent with disk.
+//
+// DeleteGoal is self-contained (no Begin/Commit dance required) —
+// the operation is a single atomic mutation of one map + one file.
+func (s *SpecStore) DeleteGoal(id string) error {
+	id = strings.TrimSpace(id)
+	if !strings.HasPrefix(id, "goal-") {
+		return fmt.Errorf("SpecStore.DeleteGoal: id %q lacks goal- prefix", id)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.goals[id]
+	if !ok {
+		return fmt.Errorf("SpecStore.DeleteGoal: goal %q not in store", id)
+	}
+	delete(s.goals, id)
+	path := ".borg/spec/goals/" + id + ".json"
+	if err := s.fsys.Remove(path); err != nil && !isNotExistErr(err) {
+		// Restore the in-memory entry so the store reflects what's on
+		// disk. The caller sees the error and can retry or surface it.
+		s.goals[id] = entry
+		return fmt.Errorf("SpecStore.DeleteGoal: remove %s: %w", path, err)
+	}
+	return s.rebuildIndex()
+}
+
+// DeleteAntiGoal mirrors DeleteGoal for the agoal- prefix and the
+// .borg/spec/antigoals/ disk path. Same semantics: in-memory + on-
+// disk removal, error on unknown id, restore-on-disk-failure.
+func (s *SpecStore) DeleteAntiGoal(id string) error {
+	id = strings.TrimSpace(id)
+	if !strings.HasPrefix(id, "agoal-") {
+		return fmt.Errorf("SpecStore.DeleteAntiGoal: id %q lacks agoal- prefix", id)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.antiGoals[id]
+	if !ok {
+		return fmt.Errorf("SpecStore.DeleteAntiGoal: antigoal %q not in store", id)
+	}
+	delete(s.antiGoals, id)
+	path := ".borg/spec/antigoals/" + id + ".json"
+	if err := s.fsys.Remove(path); err != nil && !isNotExistErr(err) {
+		s.antiGoals[id] = entry
+		return fmt.Errorf("SpecStore.DeleteAntiGoal: remove %s: %w", path, err)
+	}
+	return s.rebuildIndex()
+}
+
+// isNotExistErr returns true when err is the not-exist sentinel from
+// the underlying FS implementation. DeleteGoal / DeleteAntiGoal
+// tolerate a missing file (the in-memory entry was the source of
+// truth; the file simply hadn't persisted yet or was hand-removed)
+// so the operation is idempotent against a divergent on-disk state.
+// Both MemFS and OSFS wrap fs.ErrNotExist via fs.PathError, so the
+// stdlib errors.Is check catches both paths without coupling to the
+// implementation.
+func isNotExistErr(err error) bool {
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 // workingPriorLocked preserves the working flag across a Put against

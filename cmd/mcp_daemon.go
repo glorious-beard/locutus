@@ -8,6 +8,7 @@ import (
 
 	"github.com/glorious-beard/locutus/internal/activity"
 	"github.com/glorious-beard/locutus/internal/agent"
+	"github.com/glorious-beard/locutus/internal/history"
 	"github.com/glorious-beard/locutus/internal/mcp"
 	"github.com/glorious-beard/locutus/internal/specio"
 )
@@ -68,7 +69,13 @@ func (c *McpDaemonCmd) Run(ctx context.Context, cli *CLI) error {
 		}
 	}()
 
-	server := mcp.NewSpecServer(store, fsys, reg)
+	// History under .borg/history captures audit events for write
+	// tools that perform irreversible operations (DJ-139 introduced
+	// the first such case: the goal-* / agoal-* delete tools record
+	// goal_deleted / antigoal_deleted events here).
+	hist := history.NewHistorian(fsys, ".borg/history")
+
+	server := mcp.NewSpecServer(store, fsys, reg, hist)
 	if err := mcp.ServeOnSocket(ctx, listener, server); err != nil && err != context.Canceled {
 		return fmt.Errorf("mcp-daemon: serve: %w", err)
 	}
