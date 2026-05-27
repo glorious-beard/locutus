@@ -40,11 +40,31 @@ func listPlanFiles(t *testing.T) []string {
 	return out
 }
 
+// knownModes are the playbook resolution-mode suffixes (DJ-140).
+// They may trail the runtime token in a filename
+// (<activity>.<runtime>.<mode>.md or <activity>.<mode>.md) and are
+// stripped before the runtime token is read.
+var knownModes = []string{"interactive", "headless"}
+
 // parsePlanName splits a plan filename into (activity, runtime, isOverlay).
-// "spec_refinement.md"             → ("spec_refinement", "",            false)
-// "spec_refinement.claude-code.md" → ("spec_refinement", "claude-code", true)
+// "spec_refinement.md"                          → ("spec_refinement", "",            false)
+// "spec_refinement.claude-code.md"              → ("spec_refinement", "claude-code", true)
+// "spec_refinement.claude-code.interactive.md"  → ("spec_refinement", "claude-code", true)
+// "spec_refinement.interactive.md"              → ("spec_refinement", "",            false)
+//
+// A trailing mode suffix (DJ-140) is stripped before reading the
+// runtime token, so a provider+mode overlay still validates its
+// runtime against AgentSpawns. A bare <activity>.<mode>.md (no
+// provider) is mode-only — it has no runtime to validate.
 func parsePlanName(name string) (activity, runtime string, isOverlay bool) {
 	stem := strings.TrimSuffix(name, ".md")
+	// Strip a trailing known mode suffix (".interactive" / ".headless").
+	for _, m := range knownModes {
+		if strings.HasSuffix(stem, "."+m) {
+			stem = strings.TrimSuffix(stem, "."+m)
+			break
+		}
+	}
 	// The activity name is snake_case. Runtime ids are hyphen-case or
 	// single-word lowercase (claude-code / codex / gemini). The split
 	// is on the first '.' after the stem — since activity names never

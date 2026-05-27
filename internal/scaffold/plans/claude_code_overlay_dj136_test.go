@@ -18,7 +18,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const claudeCodeOverlayFile = "spec_refinement.claude-code.md"
+// DJ-140 phase 3: the /goal overlay is interactive-only — renamed
+// with the .interactive mode suffix so headless ACP dispatch falls
+// through to the one-iteration default. The overlay content is
+// unchanged.
+const claudeCodeOverlayFile = "spec_refinement.claude-code.interactive.md"
 
 // loadClaudeCodeOverlay returns the canonical overlay content.
 func loadClaudeCodeOverlay(t *testing.T) string {
