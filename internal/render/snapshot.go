@@ -29,17 +29,17 @@ type SnapshotData struct {
 	// AnchoredGoalCount and UnanchoredGoalCount split GoalCount by
 	// provenance (DJ-141). Anchored: SourceClause != "". Unanchored:
 	// Origin != "" and SourceClause == "".
-	AnchoredGoalCount   int      `json:"anchored_goal_count"`
-	UnanchoredGoalCount int      `json:"unanchored_goal_count"`
+	AnchoredGoalCount   int `json:"anchored_goal_count"`
+	UnanchoredGoalCount int `json:"unanchored_goal_count"`
 	// UnanchoredGoals lists "<id> — <title> (<origin>)" for the
 	// informational "inferred scope" section (DJ-141).
-	UnanchoredGoals     []string `json:"unanchored_goals,omitempty"`
-	Strategies    []SnapshotStrategy      `json:"strategies"`
-	Features      []SnapshotFeature       `json:"features"`
-	Decisions     []SnapshotDecision      `json:"decisions"`
-	Approaches    []SnapshotApproach      `json:"approaches,omitempty"`
-	Bugs          []SnapshotBug           `json:"bugs,omitempty"`
-	Validation    SnapshotValidationBlock `json:"validation"`
+	UnanchoredGoals []string                `json:"unanchored_goals,omitempty"`
+	Strategies      []SnapshotStrategy      `json:"strategies"`
+	Features        []SnapshotFeature       `json:"features"`
+	Decisions       []SnapshotDecision      `json:"decisions"`
+	Approaches      []SnapshotApproach      `json:"approaches,omitempty"`
+	Bugs            []SnapshotBug           `json:"bugs,omitempty"`
+	Validation      SnapshotValidationBlock `json:"validation"`
 	// FeaturesWithoutGoalAnchors lists feature ids whose `.advances`
 	// field is empty (DJ-139 phase 8). Sorted alphabetically for
 	// deterministic rendering. Informational — the operator decides
