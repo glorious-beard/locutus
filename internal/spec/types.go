@@ -280,11 +280,17 @@ func (m Manifest) MarshalJSON() ([]byte, error) {
 // them but don't author them directly. SourceClause is the anchor
 // the diff-and-apply sync algorithm uses to preserve IDs across
 // GOALS.md rephrasings.
+//
+// Origin records provenance for unanchored nodes (DJ-141): a free-text
+// note ("mission statement", "dec-product-scope-boundary") set when
+// SourceClause is empty. Exactly one of {SourceClause, Origin} is
+// non-empty.
 type Goal struct {
 	ID           string    `json:"id" yaml:"id"`
 	Title        string    `json:"title" yaml:"title"`
 	Body         string    `json:"body" yaml:"body"`
 	SourceClause string    `json:"source_clause" yaml:"source_clause"`
+	Origin       string    `json:"origin,omitempty" yaml:"origin,omitempty"`
 	CreatedAt    time.Time `json:"created_at" yaml:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at" yaml:"updated_at"`
 }
@@ -302,11 +308,17 @@ type Goal struct {
 // the broader exclusion (e.g. "runway forecasting for product
 // timeline planning"); the LLM consumes them alongside Body when
 // judging boundary navigation during import conflict resolution.
+//
+// Origin records provenance for unanchored nodes (DJ-141): a free-text
+// note ("mission statement", "dec-product-scope-boundary") set when
+// SourceClause is empty. Exactly one of {SourceClause, Origin} is
+// non-empty.
 type AntiGoal struct {
 	ID           string    `json:"id" yaml:"id"`
 	Title        string    `json:"title" yaml:"title"`
 	Body         string    `json:"body" yaml:"body"`
 	SourceClause string    `json:"source_clause" yaml:"source_clause"`
+	Origin       string    `json:"origin,omitempty" yaml:"origin,omitempty"`
 	CededTo      []string  `json:"ceded_to,omitempty" yaml:"ceded_to,omitempty"`
 	KeptIn       []string  `json:"kept_in,omitempty" yaml:"kept_in,omitempty"`
 	CreatedAt    time.Time `json:"created_at" yaml:"created_at"`
