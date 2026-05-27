@@ -281,6 +281,19 @@ func BuildSnapshotData(l *spec.Loaded, stages spec.StageMap, projectName string,
 	// filtered view — the at-risk surface should describe the graph as
 	// it is, not as the operator's filter pretends. Sorted by id for
 	// deterministic test output.
+	//
+	// Why there's no symmetric StrategiesWithoutAntiGoalAnchors (and no
+	// symmetric features-without-respects) surface (DJ-139 CC-3):
+	// .advances and .respects are not interchangeable polarities even
+	// though they share the slice-of-ids shape. .advances is the
+	// load-bearing forward-direction citation — every spec node should
+	// exist to advance some goal, and an empty .advances on a feature is
+	// a real "at risk" signal worth surfacing. .respects is conditional
+	// boundary-navigation — most strategies legitimately don't navigate
+	// any anti-goal (they sit clearly inside the in-scope region),
+	// emitting an "at risk: no .respects" warning would flag the common
+	// case as suspect. The asymmetry is intentional; the snapshot
+	// surfaces the load-bearing direction only.
 	var withoutAnchors []string
 	for _, f := range l.Features {
 		if len(f.Spec.Advances) == 0 {

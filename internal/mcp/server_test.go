@@ -144,6 +144,55 @@ func TestSpecServer_SpecListManifest_ReturnsAllKinds(t *testing.T) {
 	assert.Equal(t, agent.OriginSettled, manifest.Decisions[0].Origin)
 }
 
+// TestSpecListManifestToolReturnsGoalsMdHash — DJ-139 LB-1. The Phase 6
+// refine-goals orchestrator reads the manifest via spec_list_manifest
+// to discover the persisted hash + synced_at; without those fields on
+// the wire the short-circuit signal is unreachable and the matcher
+// dispatches every run even when GOALS.md is unchanged.
+func TestSpecListManifestToolReturnsGoalsMdHash(t *testing.T) {
+	ctx := context.Background()
+
+	fsys := specio.NewMemFS()
+	// Seed a manifest with the hash fields populated so the tool has
+	// something to surface.
+	manifest := spec.Manifest{
+		ProjectName:     "locutus",
+		Version:         "0.1.0",
+		CreatedAt:       time.Date(2026, 4, 1, 9, 0, 0, 0, time.UTC),
+		GoalsMdHash:     "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		GoalsMdSyncedAt: time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC),
+	}
+	data, err := json.Marshal(manifest)
+	assert.NoError(t, err)
+	assert.NoError(t, fsys.MkdirAll(".borg", 0o755))
+	assert.NoError(t, fsys.WriteFile(".borg/manifest.json", data, 0o644))
+
+	store, err := agent.NewSpecStore(fsys)
+	assert.NoError(t, err)
+
+	server := NewSpecServer(store, nil, nil, nil)
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	_, err = server.Connect(ctx, serverTransport, nil)
+	assert.NoError(t, err)
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "test"}, nil)
+	session, err := client.Connect(ctx, clientTransport, nil)
+	assert.NoError(t, err)
+	t.Cleanup(func() { session.Close() })
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "spec_list_manifest"})
+	assert.NoError(t, err)
+	assert.False(t, res.IsError)
+	assert.NotNil(t, res.StructuredContent)
+
+	manifestJSON, err := json.Marshal(res.StructuredContent)
+	assert.NoError(t, err)
+
+	var got agent.SpecManifest
+	assert.NoError(t, json.Unmarshal(manifestJSON, &got))
+	assert.Equal(t, manifest.GoalsMdHash, got.GoalsMdHash, "tool must surface goals_md_hash for the Phase 6 short-circuit signal")
+	assert.True(t, got.GoalsMdSyncedAt.Equal(manifest.GoalsMdSyncedAt), "tool must surface goals_md_synced_at")
+}
+
 func TestSpecServer_SpecGet_BatchedResults(t *testing.T) {
 	session, _ := newTestServer(t, func(store *agent.SpecStore) {
 		seedDecision(store, "dec-storage", "Choose Postgres")

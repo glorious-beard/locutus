@@ -154,3 +154,51 @@ func TestSpecStoreUpdateGoalsMdHashRejectsEmptyHash(t *testing.T) {
 	err := store.UpdateGoalsMdHash("", time.Now().UTC())
 	require.Error(t, err)
 }
+
+// TestSpecStoreListManifestSurfacesGoalsMdHash — the Phase 6 refine-goals
+// playbook orchestrator reads ListManifest() to discover whether GOALS.md
+// has changed since the last sync. The short-circuit signal lives on
+// .borg/manifest.json's goals_md_hash + goals_md_synced_at, so
+// ListManifest() must surface those fields. Without this, the
+// orchestrator has no MCP-tool path to the hash and the Phase 4 cost
+// optimization plumbing never fires (LB-1, DJ-139 final cross-phase
+// review).
+func TestSpecStoreListManifestSurfacesGoalsMdHash(t *testing.T) {
+	fsys := specio.NewMemFS()
+	seedManifest(t, fsys)
+	store := newStore(t, fsys)
+
+	hash := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	syncedAt := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, store.UpdateGoalsMdHash(hash, syncedAt))
+
+	m := store.ListManifest()
+	assert.Equal(t, hash, m.GoalsMdHash, "ListManifest must surface goals_md_hash so the orchestrator can short-circuit")
+	assert.True(t, m.GoalsMdSyncedAt.Equal(syncedAt), "ListManifest must surface goals_md_synced_at")
+}
+
+// TestSpecStoreListManifestGoalsMdHashEmptyOnLegacyManifest — a legacy
+// pre-DJ-139 manifest (no hash fields yet) surfaces empty hash + zero
+// time through ListManifest. The orchestrator treats "empty hash" as
+// "no previous sync; do the full bootstrap pass."
+func TestSpecStoreListManifestGoalsMdHashEmptyOnLegacyManifest(t *testing.T) {
+	fsys := specio.NewMemFS()
+	seedManifest(t, fsys) // no GoalsMdHash field
+	store := newStore(t, fsys)
+
+	m := store.ListManifest()
+	assert.Empty(t, m.GoalsMdHash, "legacy manifest surfaces empty hash through ListManifest")
+	assert.True(t, m.GoalsMdSyncedAt.IsZero(), "legacy manifest surfaces zero synced_at")
+}
+
+// TestSpecStoreListManifestGoalsMdHashEmptyWhenNoManifest — a greenfield
+// project with no .borg/manifest.json at all surfaces empty hash + zero
+// time without erroring. Same caller-side semantics as the legacy case.
+func TestSpecStoreListManifestGoalsMdHashEmptyWhenNoManifest(t *testing.T) {
+	fsys := specio.NewMemFS()
+	store := newStore(t, fsys)
+
+	m := store.ListManifest()
+	assert.Empty(t, m.GoalsMdHash)
+	assert.True(t, m.GoalsMdSyncedAt.IsZero())
+}

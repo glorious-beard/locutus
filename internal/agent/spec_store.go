@@ -321,6 +321,20 @@ func (s *SpecStore) ListManifest() SpecManifest {
 			Working: e.working,
 		})
 	}
+
+	// Surface manifest-level metadata so the Phase 6 refine-goals
+	// orchestrator can short-circuit the matcher dispatch when
+	// GOALS.md hasn't changed since the last sync (DJ-139 LB-1).
+	// readManifestHashLocked assumes the lock is held — we're inside
+	// the RLock taken at the top of this method, which is the contract
+	// (mirrors SpecStore.GoalsMdHash()'s use of the same helper). Read
+	// errors are swallowed: a malformed manifest is a separate concern
+	// from the manifest index, and an empty hash is the correct "no
+	// previous sync" signal anyway.
+	if hash, syncedAt, err := readManifestHashLocked(s.fsys); err == nil {
+		m.GoalsMdHash = hash
+		m.GoalsMdSyncedAt = syncedAt
+	}
 	return m
 }
 

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -456,7 +457,16 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		publishManifestUpdate(ctx, server)
 		if hist != nil {
 			if err := history.RecordGoalDeleted(hist, id, reason); err != nil {
-				return errorResult(fmt.Sprintf("spec_delete_goal: record history: %v", err)), nil, nil
+				// LB-2 (DJ-139 final cross-phase review): the on-disk
+				// delete already succeeded, so returning errorResult
+				// would lie about disk state — callers retrying on
+				// errorResult would hit a "goal not in store" error on
+				// the second attempt. Log the audit failure and return
+				// success-with-warning so the caller sees what actually
+				// landed plus the audit-trail caveat.
+				slog.Error("mcp: spec_delete_goal: history record failed after on-disk delete succeeded",
+					"id", id, "reason", reason, "error", err)
+				return textResult(fmt.Sprintf("Warning: deleted goal %s but failed to record audit event: %v", id, err)), nil, nil
 			}
 		}
 		return textResult(fmt.Sprintf("Deleted goal %s.", id)), nil, nil
@@ -521,7 +531,15 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		publishManifestUpdate(ctx, server)
 		if hist != nil {
 			if err := history.RecordAntiGoalDeleted(hist, id, reason); err != nil {
-				return errorResult(fmt.Sprintf("spec_delete_antigoal: record history: %v", err)), nil, nil
+				// LB-2: same shape as spec_delete_goal — the on-disk
+				// delete succeeded, so report success-with-warning
+				// rather than errorResult. Returning an error here
+				// would misrepresent the disk state and break retry
+				// semantics (the next attempt would fail with "agoal
+				// not in store").
+				slog.Error("mcp: spec_delete_antigoal: history record failed after on-disk delete succeeded",
+					"id", id, "reason", reason, "error", err)
+				return textResult(fmt.Sprintf("Warning: deleted antigoal %s but failed to record audit event: %v", id, err)), nil, nil
 			}
 		}
 		return textResult(fmt.Sprintf("Deleted antigoal %s.", id)), nil, nil

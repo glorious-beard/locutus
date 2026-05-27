@@ -28,6 +28,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/glorious-beard/locutus/internal/search"
 	"github.com/glorious-beard/locutus/internal/spec"
@@ -54,14 +55,25 @@ var validSpecID = regexp.MustCompile(`^(goal|agoal|feat|strat|dec|bug|app)-[a-z0
 // are grouped by kind so the model can scan the whole index at a
 // glance and drill into a specific category without cross-array
 // filtering.
+//
+// GoalsMdHash and GoalsMdSyncedAt are manifest-level metadata mirrored
+// from .borg/manifest.json (DJ-139). The Phase 6 `refine goals`
+// orchestrator hashes GOALS.md at run start and compares against
+// GoalsMdHash to decide whether to short-circuit the matcher dispatch
+// when GOALS.md hasn't changed since the last sync. Empty hash + zero
+// timestamp signal "no previous sync — do the full bootstrap pass."
+// Both fields are omitempty so legacy / greenfield manifests round-trip
+// cleanly without polluting the index shape.
 type SpecManifest struct {
-	Goals      []SpecManifestEntry `json:"goals,omitempty"`
-	AntiGoals  []SpecManifestEntry `json:"antigoals,omitempty"`
-	Features   []SpecManifestEntry `json:"features,omitempty"`
-	Strategies []SpecManifestEntry `json:"strategies,omitempty"`
-	Decisions  []SpecManifestEntry `json:"decisions,omitempty"`
-	Bugs       []SpecManifestEntry `json:"bugs,omitempty"`
-	Approaches []SpecManifestEntry `json:"approaches,omitempty"`
+	Goals           []SpecManifestEntry `json:"goals,omitempty"`
+	AntiGoals       []SpecManifestEntry `json:"antigoals,omitempty"`
+	Features        []SpecManifestEntry `json:"features,omitempty"`
+	Strategies      []SpecManifestEntry `json:"strategies,omitempty"`
+	Decisions       []SpecManifestEntry `json:"decisions,omitempty"`
+	Bugs            []SpecManifestEntry `json:"bugs,omitempty"`
+	Approaches      []SpecManifestEntry `json:"approaches,omitempty"`
+	GoalsMdHash     string              `json:"goals_md_hash,omitempty"`
+	GoalsMdSyncedAt time.Time           `json:"goals_md_synced_at,omitempty"`
 }
 
 // SpecManifestEntry is one node's index entry. Summary is a single-
