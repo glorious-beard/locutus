@@ -204,3 +204,44 @@ func TestCountStages_TalliesCorrectly(t *testing.T) {
 	assert.Equal(t, 1, d.Implementing)
 	assert.Equal(t, 0, d.Done)
 }
+
+// TestLoadSpecPopulatesGoalsAndAntiGoals — DJ-139 phase 8. LoadSpec
+// must walk `.borg/spec/goals/` and `.borg/spec/antigoals/` and
+// populate the typed slices + by-id lookups so snapshot rendering
+// and other read paths can see the goal layer.
+func TestLoadSpecPopulatesGoalsAndAntiGoals(t *testing.T) {
+	fs := specio.NewMemFS()
+	require.NoError(t, fs.MkdirAll(".borg/spec/goals", 0o755))
+	require.NoError(t, fs.MkdirAll(".borg/spec/antigoals", 0o755))
+
+	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+
+	require.NoError(t, specio.SavePair(fs, ".borg/spec/goals/goal-realtime", Goal{
+		ID: "goal-realtime", Title: "Realtime", Body: "Sub-second updates.",
+		SourceClause: "Build SaaS", CreatedAt: now, UpdatedAt: now,
+	}, ""))
+	require.NoError(t, specio.SavePair(fs, ".borg/spec/goals/goal-multi-tenancy", Goal{
+		ID: "goal-multi-tenancy", Title: "Multi-tenancy", Body: "Support multiple orgs.",
+		SourceClause: "Build SaaS", CreatedAt: now, UpdatedAt: now,
+	}, ""))
+	require.NoError(t, specio.SavePair(fs, ".borg/spec/antigoals/agoal-fundraising", AntiGoal{
+		ID: "agoal-fundraising", Title: "Fundraising tracking",
+		Body: "We do not track fundraising.", SourceClause: "Build SaaS",
+		CededTo: []string{"Carta"}, CreatedAt: now, UpdatedAt: now,
+	}, ""))
+
+	l, err := LoadSpec(fs)
+	require.NoError(t, err)
+
+	assert.Len(t, l.Goals, 2)
+	assert.Len(t, l.AntiGoals, 1)
+
+	if g := l.GoalNodeByID("goal-realtime"); assert.NotNil(t, g) {
+		assert.Equal(t, "Realtime", g.Spec.Title)
+		assert.Equal(t, "Build SaaS", g.Spec.SourceClause)
+	}
+	if ag := l.AntiGoalNodeByID("agoal-fundraising"); assert.NotNil(t, ag) {
+		assert.Equal(t, []string{"Carta"}, ag.Spec.CededTo)
+	}
+	assert.Nil(t, l.GoalNodeByID("goal-missing"), "missing ids return nil")
+}

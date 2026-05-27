@@ -20,6 +20,8 @@ type Loaded struct {
 	Manifest  *Manifest
 	GoalsBody string
 
+	Goals      []GoalNode
+	AntiGoals  []AntiGoalNode
 	Features   []FeatureNode
 	Strategies []StrategyNode
 	Decisions  []DecisionNode
@@ -27,6 +29,8 @@ type Loaded struct {
 	Bugs       []BugNode
 
 	// Lookup tables.
+	goalByID     map[string]*GoalNode
+	antiGoalByID map[string]*AntiGoalNode
 	featureByID  map[string]*FeatureNode
 	strategyByID map[string]*StrategyNode
 	decisionByID map[string]*DecisionNode
@@ -44,6 +48,27 @@ type Loaded struct {
 	// Validation surfaces produced at load time.
 	DanglingRefs []DanglingRef
 	Orphans      []Orphan
+}
+
+// GoalNode pairs a Goal with its (typically empty) markdown body and
+// a per-load error. Goals are persisted as JSON-only under
+// `.borg/spec/goals/`, so Body is usually empty — Goal.Body on the
+// typed struct carries the prose. The wrapper mirrors FeatureNode so
+// snapshot-rendering paths stay uniform across kinds.
+type GoalNode struct {
+	Spec    Goal
+	Body    string
+	LoadErr error
+}
+
+// AntiGoalNode pairs an AntiGoal with its (typically empty) markdown
+// body and a per-load error. Persistence shape parallels Goal —
+// `.borg/spec/antigoals/<id>.json`, no .md sidecar — and the prose
+// lives on AntiGoal.Body.
+type AntiGoalNode struct {
+	Spec    AntiGoal
+	Body    string
+	LoadErr error
 }
 
 // FeatureNode pairs a Feature with its markdown body and a per-load
@@ -120,6 +145,8 @@ type Orphan struct {
 // corrupt.
 func LoadSpec(fsys specio.FS) (*Loaded, error) {
 	l := &Loaded{
+		goalByID:                   map[string]*GoalNode{},
+		antiGoalByID:               map[string]*AntiGoalNode{},
 		featureByID:                map[string]*FeatureNode{},
 		strategyByID:               map[string]*StrategyNode{},
 		decisionByID:               map[string]*DecisionNode{},
@@ -143,6 +170,22 @@ func LoadSpec(fsys specio.FS) (*Loaded, error) {
 		l.GoalsBody = string(data)
 	}
 
+	if pairs, err := specio.WalkPairs[Goal](fsys, ".borg/spec/goals"); err == nil {
+		for _, p := range pairs {
+			l.Goals = append(l.Goals, GoalNode{Spec: p.Object, Body: p.Body, LoadErr: p.Err})
+		}
+		for i := range l.Goals {
+			l.goalByID[l.Goals[i].Spec.ID] = &l.Goals[i]
+		}
+	}
+	if pairs, err := specio.WalkPairs[AntiGoal](fsys, ".borg/spec/antigoals"); err == nil {
+		for _, p := range pairs {
+			l.AntiGoals = append(l.AntiGoals, AntiGoalNode{Spec: p.Object, Body: p.Body, LoadErr: p.Err})
+		}
+		for i := range l.AntiGoals {
+			l.antiGoalByID[l.AntiGoals[i].Spec.ID] = &l.AntiGoals[i]
+		}
+	}
 	if pairs, err := specio.WalkPairs[Feature](fsys, ".borg/spec/features"); err == nil {
 		for _, p := range pairs {
 			l.Features = append(l.Features, FeatureNode{Spec: p.Object, Body: p.Body, LoadErr: p.Err})
@@ -337,6 +380,12 @@ func (l *Loaded) DecisionsInfluencedByDecision(decisionID string) []string {
 func (l *Loaded) StrategiesInfluencedByStrategy(strategyID string) []string {
 	return l.strategyInfluences[strategyID]
 }
+
+// GoalNode lookup by id; nil if absent.
+func (l *Loaded) GoalNodeByID(id string) *GoalNode { return l.goalByID[id] }
+
+// AntiGoalNode lookup by id; nil if absent.
+func (l *Loaded) AntiGoalNodeByID(id string) *AntiGoalNode { return l.antiGoalByID[id] }
 
 // FeatureNode lookup by id; nil if absent.
 func (l *Loaded) FeatureNodeByID(id string) *FeatureNode { return l.featureByID[id] }

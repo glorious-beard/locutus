@@ -14,17 +14,29 @@ import (
 // Markdown renderer consumes the same struct so the two formats
 // always agree on what's in a snapshot.
 type SnapshotData struct {
-	ProjectName          string                  `json:"project_name,omitempty"`
-	GeneratedAt          time.Time               `json:"generated_at"`
-	StatusCounts         StatusCountsBlock       `json:"status_counts"`
-	ImplementationStages StageDistributionBlock  `json:"implementation_stages"`
-	Goals                string                  `json:"goals,omitempty"`
-	Strategies           []SnapshotStrategy      `json:"strategies"`
-	Features             []SnapshotFeature       `json:"features"`
-	Decisions            []SnapshotDecision      `json:"decisions"`
-	Approaches           []SnapshotApproach      `json:"approaches,omitempty"`
-	Bugs                 []SnapshotBug           `json:"bugs,omitempty"`
-	Validation           SnapshotValidationBlock `json:"validation"`
+	ProjectName          string                 `json:"project_name,omitempty"`
+	GeneratedAt          time.Time              `json:"generated_at"`
+	StatusCounts         StatusCountsBlock      `json:"status_counts"`
+	ImplementationStages StageDistributionBlock `json:"implementation_stages"`
+	Goals                string                 `json:"goals,omitempty"`
+	// GoalCount and AntiGoalCount surface the goal-layer node counts
+	// (DJ-139). The goal layer is informational — nothing structurally
+	// depends on it — so these are emitted alongside the feature /
+	// strategy / decision counts rather than rolled into the main
+	// counts table.
+	GoalCount     int                     `json:"goal_count"`
+	AntiGoalCount int                     `json:"antigoal_count"`
+	Strategies    []SnapshotStrategy      `json:"strategies"`
+	Features      []SnapshotFeature       `json:"features"`
+	Decisions     []SnapshotDecision      `json:"decisions"`
+	Approaches    []SnapshotApproach      `json:"approaches,omitempty"`
+	Bugs          []SnapshotBug           `json:"bugs,omitempty"`
+	Validation    SnapshotValidationBlock `json:"validation"`
+	// FeaturesWithoutGoalAnchors lists feature ids whose `.advances`
+	// field is empty (DJ-139 phase 8). Sorted alphabetically for
+	// deterministic rendering. Informational — the operator decides
+	// what to do; the surface just names what's there.
+	FeaturesWithoutGoalAnchors []string `json:"features_without_goal_anchors,omitempty"`
 
 	// RecentBiased lists the N most-recent --with cascade root
 	// events (DJ-138 phase 6), newest first. Empty when no biases
@@ -119,18 +131,18 @@ type SnapshotFeature struct {
 
 // SnapshotDecision is one decision's content plus back-refs.
 type SnapshotDecision struct {
-	ID                  string                `json:"id"`
-	Title               string                `json:"title"`
-	Status              string                `json:"status"`
-	Confidence          float64               `json:"confidence"`
-	ImplementationStage string                `json:"implementation_stage"`
-	Rationale           string                `json:"rationale,omitempty"`
-	ArchitectRationale  string                `json:"architect_rationale,omitempty"`
-	Alternatives        []spec.Alternative    `json:"alternatives,omitempty"`
-	Citations           []spec.Citation       `json:"citations,omitempty"`
-	InfluencedBy        []string              `json:"influenced_by,omitempty"`
-	Influences          []string              `json:"influences,omitempty"`
-	ReferencedBy        SnapshotDecisionRefs  `json:"referenced_by"`
+	ID                  string               `json:"id"`
+	Title               string               `json:"title"`
+	Status              string               `json:"status"`
+	Confidence          float64              `json:"confidence"`
+	ImplementationStage string               `json:"implementation_stage"`
+	Rationale           string               `json:"rationale,omitempty"`
+	ArchitectRationale  string               `json:"architect_rationale,omitempty"`
+	Alternatives        []spec.Alternative   `json:"alternatives,omitempty"`
+	Citations           []spec.Citation      `json:"citations,omitempty"`
+	InfluencedBy        []string             `json:"influenced_by,omitempty"`
+	Influences          []string             `json:"influences,omitempty"`
+	ReferencedBy        SnapshotDecisionRefs `json:"referenced_by"`
 }
 
 // SnapshotDecisionRefs holds the inverse-index lookups for a decision.
@@ -188,9 +200,11 @@ type SnapshotOrphan struct {
 // agree on the visible set.
 func BuildSnapshotData(l *spec.Loaded, stages spec.StageMap, projectName string, filters SnapshotFilters) SnapshotData {
 	data := SnapshotData{
-		ProjectName: projectName,
-		GeneratedAt: time.Now().UTC(),
-		Goals:       l.GoalsBody,
+		ProjectName:   projectName,
+		GeneratedAt:   time.Now().UTC(),
+		Goals:         l.GoalsBody,
+		GoalCount:     len(l.Goals),
+		AntiGoalCount: len(l.AntiGoals),
 	}
 
 	keepKind := func(k string) bool {
@@ -261,6 +275,20 @@ func BuildSnapshotData(l *spec.Loaded, stages spec.StageMap, projectName string,
 		Drafted: dist.Drafted, Planned: dist.Planned,
 		Implementing: dist.Implementing, Done: dist.Done, Drifted: dist.Drifted,
 	}
+
+	// Features without goal anchors: every feature whose .advances is
+	// empty (DJ-139 phase 8). Walks the full feature set, not the
+	// filtered view — the at-risk surface should describe the graph as
+	// it is, not as the operator's filter pretends. Sorted by id for
+	// deterministic test output.
+	var withoutAnchors []string
+	for _, f := range l.Features {
+		if len(f.Spec.Advances) == 0 {
+			withoutAnchors = append(withoutAnchors, f.Spec.ID)
+		}
+	}
+	sort.Strings(withoutAnchors)
+	data.FeaturesWithoutGoalAnchors = withoutAnchors
 
 	for _, dr := range l.DanglingRefs {
 		data.Validation.DanglingRefs = append(data.Validation.DanglingRefs, SnapshotDanglingRef{
@@ -455,6 +483,14 @@ func SnapshotMarkdown(d SnapshotData) string {
 		d.ImplementationStages.Drifted,
 	)
 
+	// Goal-layer counts (DJ-139). Omitted when both counts are zero —
+	// projects pre-goal-layer-sync shouldn't pay rendering cost for an
+	// empty section.
+	if d.GoalCount > 0 || d.AntiGoalCount > 0 {
+		b.WriteString("## Goal layer\n\n")
+		fmt.Fprintf(&b, "**Goals:** %d · **Anti-goals:** %d\n\n", d.GoalCount, d.AntiGoalCount)
+	}
+
 	if strings.TrimSpace(d.Goals) != "" {
 		b.WriteString("## Goals\n\n")
 		for _, line := range strings.Split(strings.TrimSpace(d.Goals), "\n") {
@@ -528,7 +564,7 @@ func SnapshotMarkdown(d SnapshotData) string {
 		}
 	}
 
-	if len(d.Validation.DanglingRefs) > 0 || len(d.Validation.Orphans) > 0 {
+	if len(d.Validation.DanglingRefs) > 0 || len(d.Validation.Orphans) > 0 || len(d.FeaturesWithoutGoalAnchors) > 0 {
 		b.WriteString("## Validation\n\n")
 		if len(d.Validation.DanglingRefs) > 0 {
 			fmt.Fprintf(&b, "**Dangling references (%d):**\n\n", len(d.Validation.DanglingRefs))
@@ -542,6 +578,13 @@ func SnapshotMarkdown(d SnapshotData) string {
 			fmt.Fprintf(&b, "**Orphans (%d):** nodes with no incoming references — informational only.\n\n", len(d.Validation.Orphans))
 			for _, o := range d.Validation.Orphans {
 				fmt.Fprintf(&b, "- `%s/%s`\n", o.Kind, o.ID)
+			}
+			b.WriteString("\n")
+		}
+		if len(d.FeaturesWithoutGoalAnchors) > 0 {
+			fmt.Fprintf(&b, "**Features without goal anchors (%d):** features whose `.advances` is empty — informational only.\n\n", len(d.FeaturesWithoutGoalAnchors))
+			for _, id := range d.FeaturesWithoutGoalAnchors {
+				fmt.Fprintf(&b, "- `%s`\n", id)
 			}
 			b.WriteString("\n")
 		}
