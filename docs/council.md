@@ -189,8 +189,50 @@ Walks the graph for dangling references, axis duplication, contradictory commitm
 ### Retired agents
 
 - **`spec_architect`** (integrity-revise gate) — was a Locutus-side backstop after the council loop converged. The new model has the orchestrating coding agent itself catch integrity at the reconciler step; the standalone architect retired with the workflow that drove it.
-- **`spec_advocate` / `spec_challenger`** (justify verb) — the `locutus justify` verb retired in DJ-135 ckpt 5. If an advocate/challenger workflow returns, it ships as a separate activity (`justify_brief`?) with its own playbook.
 - **`spec_gate`, `spec_outliner`, `spec_finding_clusterer`, `spec_summarizer`** — supporting agents that were council-internal. Canonical files still ship for forward compatibility, but no current playbook dispatches them.
+
+## The justify sub-council (DJ-137)
+
+The `locutus justify <id>` verb dispatches its own one-shot activity (`justification`) with a separate playbook and a distinct sub-council. It retired with the rest of the council in DJ-135 phase 5 and was restored under DJ-137 (2026-05-26) using the same agent prompts the council deletion left behind (they sit in `internal/scaffold/agents/` and the publisher emits them to every detected runtime).
+
+```mermaid
+graph TD
+    Start(["locutus justify &lt;id&gt; [--against ...] [--format markdown|json]"])
+    Start --> Target["mcp__locutus__spec_get: fetch target node"]
+    Target --> Context["mcp__locutus__spec_get: batched fetch of dependency-graph context (full struct: rationale + alternatives)"]
+    Context --> ResearchGate{"Need grounded research?"}
+    ResearchGate -- "yes (vendor/version/spec claims)" --> Researcher["justify-researcher: web-grounded findings"]
+    ResearchGate -- "no" --> ChallengeGate
+    Researcher --> ChallengeGate{"--against set?"}
+    ChallengeGate -- "yes" --> Challenger["spec-challenger: 2-5 structured concerns"]
+    ChallengeGate -- "no" --> Advocate
+    Challenger --> Advocate["spec-advocate: active defense; addresses each concern when challenger ran"]
+    Advocate --> Emit{"Output format?"}
+    Emit -- "markdown" --> EmitMD["stdout: markdown defense + optional Concerns / Response sections"]
+    Emit -- "json" --> EmitJSON["stdout: JSON envelope per DJ-137 schema"]
+
+    classDef agent fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef tool fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef gate fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
+    classDef terminal fill:#dcfce7,stroke:#16a34a,color:#14532d
+
+    class Researcher,Challenger,Advocate agent
+    class Target,Context tool
+    class ResearchGate,ChallengeGate,Emit gate
+    class EmitMD,EmitJSON terminal
+```
+
+The sub-council is **one-shot**, not iterative — no scout, no convergence loop, no outer harness. The orchestrator runs to completion and the verb returns. Read-only on the spec graph (no `spec_propose_*` calls); mistakes are inert.
+
+Per DJ-137's dependency-graph context expansion: the second `spec_get` call is batched (one call, full list of upstream ids) and returns each linked node's **full struct** — `rationale`, `chosen_option`, and the complete `alternatives` slice. Under DJ-133's axis-shaped ids the alternatives slice IS the council's comparative research; the advocate consumes it rather than re-deriving it. A justify run against a strategy or feature WITHOUT this expansion would produce "trust me" defenses with no grounding — an output the operator cannot evaluate.
+
+The agent set the playbook may dispatch:
+
+- **`spec-advocate`** — writes a 2-4 paragraph defense; when a challenger brief is present, responds point-by-point with verdict labels (`held_up` / `partially_held_up` / `broke_down`).
+- **`spec-challenger`** — writes 2-5 adversarial concerns against the operator's `--against "..."` text. Each concern names the weakness, evidence, and a counterproposal.
+- **`justify-researcher`** — web-grounded fact-finding subagent. Optional; dispatched when the node's claims involve current-vendor / current-spec facts that warrant verification.
+
+Two further agents (`justify-splitter`, `justify-synthesizer`) ship as published prompts for ad-hoc invocation but the v1 playbook does not dispatch them. They were council-era plumbing for per-decision fanout; DJ-137's rich-context expansion replaces fanout as the design pattern.
 
 ## Convergence by construction
 

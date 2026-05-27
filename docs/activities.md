@@ -6,7 +6,7 @@ This doc covers the activity registry (`internal/activity/`), the per-runtime pu
 
 An **activity** is a named unit of coding work. Each one declares an ordered preference list of coding-agent runtimes capable of executing it. At dispatch time the resolver walks the preference list and returns the first runtime whose ACP-server binary is detectable on `$PATH`.
 
-The four activities Locutus ships today map 1:1 to the CLI verbs that dispatch them:
+The five activities Locutus ships today map 1:1 to the CLI verbs that dispatch them:
 
 | Activity | CLI verb | Playbook source |
 |---|---|---|
@@ -14,8 +14,22 @@ The four activities Locutus ships today map 1:1 to the CLI verbs that dispatch t
 | `feature_ingestion` | `locutus import` | `.borg/plans/feature_ingestion.md` |
 | `code_adoption` | `locutus adopt` | `.borg/plans/code_adoption.md` |
 | `code_assimilation` | `locutus assimilate` | `.borg/plans/code_assimilation.md` |
+| `justification` | `locutus justify` | `.borg/plans/justification.md` |
 
 Adding a new activity is three files: a registry entry in `agents.yaml`, a playbook in `internal/scaffold/plans/<activity>.md`, and (optionally) a CLI verb that calls `runActivityVerb(ctx, cli, activityName, contextNote)`.
+
+### The `justification` activity (DJ-137)
+
+`locutus justify <id> [--against "..."] [--format markdown|json]` dispatches `justification` — a one-shot, read-only activity that produces a structured defense of a named spec node. The playbook fetches the target via `mcp__locutus__spec_get`, performs a batched dependency-graph context fetch (full struct content: `rationale` + `alternatives`), optionally dispatches `justify-researcher` for grounded fact-checking and `spec-challenger` for adversarial dialogue (when `--against` is set), then dispatches `spec-advocate` to produce the defense.
+
+Output formats:
+
+- **`--format markdown`** (default) — human-readable defense with optional `## Concerns raised` and `## Response to concerns` sections when adversarial dialogue ran.
+- **`--format json`** — structured envelope per the schema in [DJ-137](DECISION_JOURNAL.md#dj-137). The `context.influenced_by[]` array carries the full upstream-decision structs (`rationale` + `alternatives` slice with `name` / `summary` / `rejection_reason` / `citations`) so downstream tooling can spot-check whether the advocate engaged with the considered alternatives.
+
+The activity is **read-only** — no `spec_propose_*` calls, no hooks, no `/goal` outer loop. The orchestrator runs to completion and the verb returns. Missing-id errors surface as a structured error envelope in the requested format (so a JSON-piping consumer doesn't trip on a bare error message).
+
+See [docs/council.md](council.md#the-justify-sub-council-dj-137) for the per-agent reference and the dialogue-flow diagram.
 
 ## `agents.yaml`
 

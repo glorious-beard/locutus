@@ -2,7 +2,16 @@
 
 > **Governing DJ:** [DJ-137](../../docs/DECISION_JOURNAL.md#dj-137). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
 >
-> **Status:** designed; implementation not started.
+> **Status:** DONE — Phases 1-6 landed 2026-05-26 on branch `dj-137-justify-activity`. Per-phase summary:
+>
+> - **Phase 1** ✓ — Frontmatter audit on the five surviving agent prompts. Dropped `output_schema:` (referenced Go types retired in DJ-135 phase 5). Kept `models:` / `thinking:` / `grounding:` (consistent with the rest of the post-DJ-135 agent set; documented in commit message). Body cleanup on splitter + synthesizer to reframe council-era "the system fanned the challenge out" phrasing as "the orchestrator dispatched". Three new tests in `internal/scaffold/agents/justify_agents_dj137_test.go`.
+> - **Phase 2** ✓ — `internal/scaffold/plans/justification.md` authored. One-shot shape (no convergence loop). Opens with `TodoWrite` directive per DJ-136 phase 3 convention. Six steps: read target, fetch dependency-graph context with full struct content, optionally dispatch researcher, optionally dispatch challenger (gated on `--against`), dispatch advocate, emit output in operator-chosen format (markdown / json per DJ-137 schema). Error envelope for missing-id targets in both formats. Six new tests in `internal/scaffold/plans/justification_dj137_test.go`.
+> - **Phase 3** ✓ — `justification:` entry in `internal/activity/agents-default.yaml` with the three-runtime preference list. One new test in `internal/activity/registry_test.go` plus the existing `LoadsEmbeddedDefaults` test extended to assert the entry.
+> - **Phase 4** ✓ — `cmd/justify.go` with `JustifyCmd { ID, Against, Format }` and kong-enum-validated `--format markdown|json`. `cmd/cli.go` registers it under the activity-dispatching verbs section. Eight new tests in `cmd/justify_test.go` covering all flag combinations + the `contextNote` shape contract.
+> - **Phase 5** ✓ — Full test suite + vet green across all 30+ packages on the merged result. Empirical validation against winplan deferred to a follow-up session.
+> - **Phase 6** ✓ — `CLAUDE.md` (verb count 8→9, new entry in activity-dispatching section, retired-verbs note updated), `docs/council.md` (new "Justify sub-council" section with Mermaid dialogue-flow diagram, agent-set reference; retired-agents section pruned), `docs/activities.md` (5-entry table, new "The `justification` activity" subsection).
+>
+> Empirical validation against real LLM dispatches (the six manual scenarios in Phase 5) is the called-out follow-up.
 > **Predecessors:** [DJ-135](../../docs/DECISION_JOURNAL.md#dj-135) (council retirement that removed the pre-existing `cmd/justify.go` + Go-side justify dispatchers; the activity registry + publisher this plan extends); [DJ-136](../../docs/DECISION_JOURNAL.md#dj-136) (per-runtime idiomatic dispatch — DJ-137 assumes it has shipped, specifically Phase 2's plan-update event surfacing in the runner).
 > **Surface area:** small. ~40-60 lines of CLI (one new `cmd/justify.go`), ~80-120 lines of new playbook prose (`internal/scaffold/plans/justification.md`), a one-line addition to `internal/activity/agents-default.yaml`, a frontmatter audit pass across 5 existing agent prompts, plus tests + docs.
 > **Discipline (per memory):**

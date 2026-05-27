@@ -35,14 +35,15 @@ When these documents conflict with any other file in the repo, `docs/` and `.cla
 
 ## Command Surface
 
-8 verbs (DJ-101 set) + 3 MCP subcommands (DJ-135).
+9 verbs (DJ-101 set + DJ-137 `justify`) + 3 MCP subcommands (DJ-135).
 
-**Activity-dispatching verbs (4):**
+**Activity-dispatching verbs (5):**
 
 1. `locutus refine [target]` — dispatch the `spec_refinement` activity. Optional positional `<target>` becomes a focus note appended to the playbook.
 2. `locutus import [source]` — dispatch the `feature_ingestion` activity. Content comes from `<source>` file path or stdin.
 3. `locutus adopt [--scope X]` — dispatch the `code_adoption` activity. Optional `--scope` becomes a focus note.
 4. `locutus assimilate` — dispatch the `code_assimilation` activity.
+5. `locutus justify <id> [--against "..."] [--format markdown|json]` — dispatch the `justification` activity. Produces a structured defense of the named spec node by dispatching `spec-advocate` (and optionally `spec-challenger` + `justify-researcher`). Read-only; one-shot. JSON output schema documented in DJ-137.
 
 Each blocks until the ACP session closes (Q3 of DJ-135 phase 5). Sessions land under `.locutus/sessions/<date>/<time>/<sid>/`.
 
@@ -67,7 +68,7 @@ Each blocks until the ACP session closes (Q3 of DJ-135 phase 5). Sessions land u
 - `locutus mcp-daemon --project <root>` — Internal: the long-lived singleton. Operators don't invoke directly; `mcp` forks it via `EnsureDaemon` when no daemon is responsive.
 - `locutus mcp-stop` — Remove the per-project socket so the accept loop unwinds.
 
-The `justify` verb retired with the council in DJ-135 phase 5. The `refine --brief / --supersede / --diff / --rollback` and `history --narrative / --regenerate-narrative` flags retired alongside; if you need them back, they land as ACP-dispatched activities in a follow-up.
+The `justify` verb retired with the council in DJ-135 phase 5 and was restored under DJ-137 (2026-05-26) as an ACP-dispatched activity reusing the surviving `spec-advocate` / `spec-challenger` / `justify-researcher` agent prompts. The `refine --brief / --supersede / --diff / --rollback` and `history --narrative / --regenerate-narrative` flags retired alongside; if you need them back, they land as ACP-dispatched activities in a follow-up.
 
 ## Build & Test
 

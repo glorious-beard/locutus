@@ -6,7 +6,6 @@ models:
   - {provider: anthropic, tier: balanced}
   - {provider: googleai, tier: balanced}
   - {provider: openai, tier: balanced}
-output_schema: AdversarialDefense
 ---
 You are the spec advocate. A user has asked you to defend a specific
 spec node — explain why this decision/feature/strategy/approach is the

@@ -6,7 +6,6 @@ models:
   - {provider: anthropic, tier: balanced}
   - {provider: googleai, tier: balanced}
   - {provider: openai, tier: balanced}
-output_schema: ChallengeBrief
 ---
 You are the spec challenger. A user has flagged a possible weakness
 in a specific spec node and wants you to formulate the strongest

@@ -21,6 +21,22 @@ func TestNewRegistry_LoadsEmbeddedDefaults(t *testing.T) {
 	assert.Contains(t, names, "feature_ingestion")
 	assert.Contains(t, names, "code_adoption")
 	assert.Contains(t, names, "code_assimilation")
+	// DJ-137: justify CLI verb dispatches the justification activity.
+	assert.Contains(t, names, "justification")
+}
+
+// TestActivityRegistry_LoadsJustification — DJ-137 phase 3:
+// the justification activity is registered with the same three-
+// runtime preference list as the existing activities.
+func TestActivityRegistry_LoadsJustification(t *testing.T) {
+	reg, err := NewRegistry(nil)
+	require.NoError(t, err)
+
+	act, ok := reg.Lookup("justification")
+	require.True(t, ok, "justification must be in the embedded default registry")
+	assert.Equal(t, "justification", act.Name)
+	assert.Equal(t, []string{"claude-code", "codex", "gemini"}, act.Runtimes,
+		"justification's runtime preference list must match the cross-runtime default shape")
 }
 
 func TestActivityRegistry_ResolvesByName(t *testing.T) {
