@@ -74,7 +74,9 @@ func runActivityVerb(ctx context.Context, _ *CLI, activityName, contextNote stri
 // Returns (body, sourcePath, err). sourcePath is surfaced in the
 // dispatch banner so the operator sees which file produced the body.
 func loadActivityPlaybook(fsys specio.FS, activityName, runtime string) (string, string, error) {
-	data, source, err := scaffold.ResolvePlaybook(fsys, ".borg/plans", activityName, runtime)
+	// ACP dispatch always uses the headless body (DJ-140); the
+	// interactive variant is selected by the publisher for slash commands.
+	data, source, err := scaffold.ResolvePlaybook(fsys, ".borg/plans", activityName, runtime, scaffold.ModeHeadless)
 	if err != nil {
 		return "", source, err
 	}
