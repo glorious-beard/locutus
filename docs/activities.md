@@ -6,11 +6,12 @@ This doc covers the activity registry (`internal/activity/`), the per-runtime pu
 
 An **activity** is a named unit of coding work. Each one declares an ordered preference list of coding-agent runtimes capable of executing it. At dispatch time the resolver walks the preference list and returns the first runtime whose ACP-server binary is detectable on `$PATH`.
 
-The five activities Locutus ships today map 1:1 to the CLI verbs that dispatch them:
+The six activities Locutus ships today map to the CLI verbs that dispatch them. Most are 1:1; the `refine` verb dispatches one of two activities depending on whether `--with` is present.
 
 | Activity | CLI verb | Playbook source |
 |---|---|---|
-| `spec_refinement` | `locutus refine` | `.borg/plans/spec_refinement.md` |
+| `spec_refinement` | `locutus refine [<id>]` (no `--with`) | `.borg/plans/spec_refinement.md` |
+| `spec_bias` | `locutus refine <id> --with "<bias>"` | `.borg/plans/spec_bias.md` |
 | `feature_ingestion` | `locutus import` | `.borg/plans/feature_ingestion.md` |
 | `code_adoption` | `locutus adopt` | `.borg/plans/code_adoption.md` |
 | `code_assimilation` | `locutus assimilate` | `.borg/plans/code_assimilation.md` |
@@ -31,6 +32,16 @@ The activity is **read-only** — no `spec_propose_*` calls, no hooks, no `/goal
 
 See [docs/council.md](council.md#the-justify-sub-council-dj-137) for the per-agent reference and the dialogue-flow diagram.
 
+### The `spec_bias` activity (DJ-138)
+
+`locutus refine <id> --with "<bias>"` dispatches `spec_bias` — a write-cascade activity that applies a strong-bias natural-language instruction to a Decision / Feature / Strategy target and propagates the implications through the spec graph. The playbook reads the target via `mcp__locutus__spec_get`, walks the reference-graph closure (forward from a Decision target; backward then forward from a Feature/Strategy target), applies mutations via the existing `spec_revise_*` / `spec_propose_*` MCP tools, then marks every affected approach drifted via `mcp__locutus__spec_mark_approach_drifted`. Convergence is *full closure walk produces zero new mutations* — bounded by the activity's `max_iterations` cap (default 20).
+
+The activity is a **strong-bias cascade**: the operator opted in by typing `--with` and the playbook is written to obey aggressively (add-and-promote a new option without a confirmation gate, add proactive citations to features that should cite a flipped decision but don't yet, create new decisions when the bias implies an axis with no decision). Mid-cascade failures leave the graph in a partially-updated state — recovery is idempotent re-run (the playbook detects nodes whose state already reflects the bias and skips them) or `git reset --hard` over `.borg/spec/`. There is no transactional spec rollback.
+
+The cascade records a `spec_biased` root event at dispatch time and links every downstream `spec_revised` / `spec_proposed` / `approach_drifted` event back to the root via `caused_by`. `locutus status --full` surfaces the 10 most-recent cascades in a "Recent biases" section; `locutus history --since <bias-event-id>` walks the cascade subtree chronologically.
+
+Target validation tightens here vs. plain `refine`: Approach (`app-`) and Bug (`bug-`) ids are rejected as refine targets entirely (in both `--with` and plain modes — DJ-138 resolved-question 6). Goal (`goals`) is additionally rejected under `--with` because cascading from the root would over-blast the graph. See [DJ-138](decisions/dj-138-refine-with-bias-cascade.md) for the full design and the alternatives considered.
+
 ## `agents.yaml`
 
 The activity registry is loaded from `agents.yaml`. Locutus ships an embedded default (`internal/activity/agents-default.yaml`); per-project overrides go in `.borg/agents.yaml`.
@@ -44,9 +55,12 @@ activities:
       - claude-code
       - codex
       - gemini
+    max_iterations: 20  # optional; defaults to 20 (DJ-138 phase 1)
 ```
 
 Runtime ids must match keys in `internal/dispatch/acp/registry.go` AgentSpawns — currently `claude-code`, `codex`, `gemini`. Adding a new runtime means landing a Spawn entry there first; agents.yaml entries pointing at unknown runtimes are rejected at registry-load time, not at first-dispatch time.
+
+`max_iterations` is the per-activity ceiling for the outer-loop runner — moved out of the hardcoded `const maxIterations = 20` in `internal/runner/run.go` and into the registry per [DJ-138](decisions/dj-138-refine-with-bias-cascade.md) phase 1 so projects can tune iteration budgets per activity. Omitted fields default to 20 (back-compat with hand-written `.borg/agents.yaml`).
 
 The default ships `claude-code` first for every activity. Empirical task-tool fit data (DJ-135 §"Reference state") suggests different runtimes excel at different activities — Codex for planning-heavy work, Claude Code for spec deliberation — but those preferences land as targeted overrides in a follow-up rather than baked into the shipping default.
 

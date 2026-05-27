@@ -19,6 +19,9 @@ The read tools wrap `agent.SpecStore` directly (the DJ-134 unified store). The w
 | `spec_propose_feature` | `{id, title, summary?, status, description?, acceptance_criteria?, decisions, approaches?}` | Upsert. `decisions` is required and must reference existing decision ids. |
 | `spec_propose_strategy` | `{id, title, summary?, kind, status, decisions, approaches?, prerequisites?, commands?, skills?, influenced_by?}` | Upsert. Same shape as feature plus strategy-specific fields. |
 | `spec_revise_decision` | same as `spec_propose_decision` | Same input shape as propose, but the id MUST already exist; the server preserves the original `created_at` and bumps `updated_at`. |
+| `spec_revise_feature` | same as `spec_propose_feature` | Same as propose, id must exist. |
+| `spec_revise_strategy` | same as `spec_propose_strategy` | Same as propose, id must exist. |
+| `spec_mark_approach_drifted` | `{approach_id, event_id}` | Sets `Approach.invalidated_by_event_id` on the named approach. Called by the `spec_bias` cascade playbook (DJ-138) once per approach in the reference-graph closure. Idempotent on (approach_id, event_id). Rejects non-Approach ids and empty event_id. |
 
 Coding agents see the tools prefixed with the MCP server name in their tool catalogue: `mcp__locutus__spec_list_manifest`, etc. Playbooks reference the prefixed form.
 

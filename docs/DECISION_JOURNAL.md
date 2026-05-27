@@ -22,7 +22,7 @@ Full text for each decision lives under [`decisions/`](decisions/). Cross-refere
 
 | # | Title | Status | Full text |
 |---|---|---|---|
-| <a id="dj-138"></a>DJ-138 | Add `--with "<bias>"` Strong-Bias Cascade to `locutus refine` for Targeted Override of... | design | [open](decisions/dj-138-refine-with-bias-cascade.md) |
+| <a id="dj-138"></a>DJ-138 | Add `--with "<bias>"` Strong-Bias Cascade to `locutus refine` for Targeted Override of... | shipping | [open](decisions/dj-138-refine-with-bias-cascade.md) |
 | <a id="dj-137"></a>DJ-137 | Restore `locutus justify` as an ACP-Dispatched Activity | shipping | [open](decisions/dj-137-justify-activity.md) |
 | <a id="dj-136"></a>DJ-136 | Per-Runtime Idiomatic Dispatch Layer | shipping | [open](decisions/dj-136-per-runtime-idiomatic.md) |
 | <a id="dj-135"></a>DJ-135 | Locutus Pivots from In-Process Council to Activity-Driven Multi-Runtime Execution via ACP and MCP | shipped 2026-05-26 | [open](decisions/dj-135-multi-runtime-pivot.md) |
