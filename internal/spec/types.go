@@ -54,6 +54,18 @@ type Decision struct {
 	// omitempty so legacy / unlocked decisions look identical on-disk
 	// to their pre-DJ-128 form.
 	Locked bool `json:"locked,omitempty" yaml:"locked,omitempty" jsonschema:"description=True when the per-axis revision cap fired on this decision and the loop committed its latest revision as the ship-quality answer (DJ-128 cap-as-commit). Locked decisions are excluded from subsequent revise dispatches; the deliberation log in alternatives preserves what was contested. False for decisions that converged organically."`
+	// Advances lists goal-* ids this decision exists to advance
+	// (DJ-139). Forward direction: the decision is justified because
+	// it advances one or more in-scope goals. Optional informational
+	// citation — not a structural dependency. Empty / nil for
+	// decisions authored before the goal layer existed.
+	Advances []string `json:"advances,omitempty" yaml:"advances,omitempty"`
+	// Respects lists agoal-* ids this decision was checked against
+	// and admitted anyway (DJ-139). Boundary-navigation direction:
+	// the decision touches an anti-goal's exclusion but was admitted
+	// (typically because a kept_in carve-out covers its surface).
+	// Optional informational citation — not a structural dependency.
+	Respects []string `json:"respects,omitempty" yaml:"respects,omitempty"`
 }
 
 // Alternative represents a considered but not chosen option for a decision.
@@ -153,6 +165,12 @@ type Strategy struct {
 	Commands      map[string]string `json:"commands,omitempty" yaml:"commands,omitempty"`
 	Skills        []string          `json:"skills,omitempty" yaml:"skills,omitempty"`
 	InfluencedBy  []string          `json:"influenced_by,omitempty" yaml:"influenced_by,omitempty"`
+	// Advances / Respects: see Decision.Advances / Decision.Respects
+	// (DJ-139). Forward direction lists goal-* ids the strategy
+	// advances; respects lists agoal-* ids navigated under a carve-out.
+	// Both optional and informational.
+	Advances []string `json:"advances,omitempty" yaml:"advances,omitempty"`
+	Respects []string `json:"respects,omitempty" yaml:"respects,omitempty"`
 }
 
 // Entity represents a domain model entity extracted from code during
@@ -197,6 +215,13 @@ type Feature struct {
 	AcceptanceCriteria []string      `json:"acceptance_criteria,omitempty" yaml:"acceptance_criteria,omitempty"`
 	Decisions          []string      `json:"decisions,omitempty" yaml:"decisions,omitempty" jsonschema:"description=Decision IDs this feature depends on. The scout determines membership during gap analysis; every entry must reference a decision present in the graph at integrity-check time.,minItems=1"`
 	Approaches         []string      `json:"approaches,omitempty" yaml:"approaches,omitempty"`
+	// Advances / Respects: see Decision.Advances / Decision.Respects
+	// (DJ-139). Forward direction lists goal-* ids the feature
+	// advances; respects lists agoal-* ids navigated under a carve-out.
+	// Populated by the citation walk in spec_refinement and by
+	// feature_ingestion on admission. Both optional and informational.
+	Advances           []string      `json:"advances,omitempty" yaml:"advances,omitempty"`
+	Respects           []string      `json:"respects,omitempty" yaml:"respects,omitempty"`
 	CreatedAt          time.Time     `json:"created_at" yaml:"created_at"`
 	UpdatedAt          time.Time     `json:"updated_at" yaml:"updated_at"`
 }

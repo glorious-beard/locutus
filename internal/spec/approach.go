@@ -42,6 +42,17 @@ type Approach struct {
 	// as the blast-radius input the next adopt run consumes.
 	InvalidatedByEventID string `yaml:"invalidated_by_event_id,omitempty"`
 
+	// Advances lists goal-* ids this approach exists to advance
+	// (DJ-139). Forward direction: the approach is justified because
+	// it advances one or more in-scope goals (typically inherited
+	// from its parent feature or strategy at synthesis time).
+	// Optional informational citation — not a structural dependency.
+	Advances []string `json:"advances,omitempty" yaml:"advances,omitempty"`
+	// Respects lists agoal-* ids this approach was checked against
+	// and admitted anyway (DJ-139). Boundary-navigation direction.
+	// Optional informational citation — not a structural dependency.
+	Respects []string `json:"respects,omitempty" yaml:"respects,omitempty"`
+
 	CreatedAt time.Time `yaml:"created_at"`
 	UpdatedAt time.Time `yaml:"updated_at"`
 }

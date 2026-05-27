@@ -21,17 +21,17 @@ import (
 // and notifies subscribers. The MCP client never sees transaction
 // state.
 const (
-	descSpecProposeDecision = "Propose a new architectural decision OR revise an existing one (upsert semantics on id). Input is the full decision body; the server fills created_at + updated_at = now (use spec_revise_decision instead when you need to preserve the original created_at). The id must use the dec- prefix; per DJ-133 the id equals dec-<axis-id> where <axis-id> names the question being answered (e.g. dec-oltp-store, dec-auth-provider). On success the manifest is persisted to .borg/spec/decisions/<id>.json and every subscriber to spec://manifest receives notifications/resources/updated."
+	descSpecProposeDecision = "Propose a new architectural decision OR revise an existing one (upsert semantics on id). Input is the full decision body; the server fills created_at + updated_at = now (use spec_revise_decision instead when you need to preserve the original created_at). The id must use the dec- prefix; per DJ-133 the id equals dec-<axis-id> where <axis-id> names the question being answered (e.g. dec-oltp-store, dec-auth-provider). Optional citation fields (DJ-139): advances lists goal-* ids this decision exists to advance (forward direction — the goals this decision is justified by); respects lists agoal-* ids this decision was checked against and admitted under a carve-out (boundary-navigation direction — the anti-goals it sits next to without violating). Polarity is load-bearing: goal-* ids go in advances; agoal-* ids go in respects. Both are informational links, not structural dependencies. On success the manifest is persisted to .borg/spec/decisions/<id>.json and every subscriber to spec://manifest receives notifications/resources/updated."
 
-	descSpecProposeFeature = "Propose a new product feature (upsert semantics on id). Input is the full feature body — the server fills created_at + updated_at = now. The id must use the feat- prefix. decisions is required and lists the decision ids this feature depends on; every entry must reference a decision present in the graph. On success the manifest is persisted to .borg/spec/features/<id>.json and every subscriber to spec://manifest receives notifications/resources/updated."
+	descSpecProposeFeature = "Propose a new product feature (upsert semantics on id). Input is the full feature body — the server fills created_at + updated_at = now. The id must use the feat- prefix. decisions is required and lists the decision ids this feature depends on; every entry must reference a decision present in the graph. Optional citation fields (DJ-139): advances lists goal-* ids this feature exists to advance (forward direction); respects lists agoal-* ids this feature was checked against and admitted under a carve-out (boundary-navigation direction). Polarity is load-bearing: goal-* ids go in advances; agoal-* ids go in respects. Both are informational links, not structural dependencies. On success the manifest is persisted to .borg/spec/features/<id>.json and every subscriber to spec://manifest receives notifications/resources/updated."
 
-	descSpecProposeStrategy = "Propose a new engineering strategy (upsert semantics on id). Input is the full strategy body. The id must use the strat- prefix. decisions is required and lists the decision ids this strategy depends on; every entry must reference a decision present in the graph. On success the manifest is persisted to .borg/spec/strategies/<id>.json and every subscriber to spec://manifest receives notifications/resources/updated."
+	descSpecProposeStrategy = "Propose a new engineering strategy (upsert semantics on id). Input is the full strategy body. The id must use the strat- prefix. decisions is required and lists the decision ids this strategy depends on; every entry must reference a decision present in the graph. Optional citation fields (DJ-139): advances lists goal-* ids this strategy exists to advance (forward direction); respects lists agoal-* ids this strategy was checked against and admitted under a carve-out (boundary-navigation direction). Polarity is load-bearing: goal-* ids go in advances; agoal-* ids go in respects. Both are informational links, not structural dependencies. On success the manifest is persisted to .borg/spec/strategies/<id>.json and every subscriber to spec://manifest receives notifications/resources/updated."
 
-	descSpecReviseDecision = "Revise an existing architectural decision. Same input shape as spec_propose_decision, but the id MUST already exist — the server preserves the original created_at and bumps updated_at to now. Use this when modifying a decision that has been published (versus spec_propose_decision which resets the timestamps). On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
+	descSpecReviseDecision = "Revise an existing architectural decision. Same input shape as spec_propose_decision, but the id MUST already exist — the server preserves the original created_at and bumps updated_at to now. Use this when modifying a decision that has been published (versus spec_propose_decision which resets the timestamps). Optional citation fields advances (goal-* ids advanced) and respects (agoal-* ids navigated under a carve-out) — the same polarity rule applies as on propose: goal-* in advances, agoal-* in respects. A revise call replaces these slices wholesale; pass the full updated list, not a delta. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
 
-	descSpecReviseFeature = "Revise an existing product feature. Same input shape as spec_propose_feature, but the id MUST already exist — the server preserves the original created_at and bumps updated_at to now. Use this to update a feature's description, acceptance criteria, or decisions[] when downstream decision revisions change the user-visible behavior or constraint set the feature commits to. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
+	descSpecReviseFeature = "Revise an existing product feature. Same input shape as spec_propose_feature, but the id MUST already exist — the server preserves the original created_at and bumps updated_at to now. Use this to update a feature's description, acceptance criteria, decisions[], or citation fields when downstream decision revisions change the user-visible behavior or constraint set the feature commits to. Optional citation fields advances (goal-* ids advanced) and respects (agoal-* ids navigated under a carve-out) carry the polarity rule from propose: goal-* in advances, agoal-* in respects. A revise call replaces these slices wholesale; pass the full updated list, not a delta. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
 
-	descSpecReviseStrategy = "Revise an existing engineering strategy. Same input shape as spec_propose_strategy, but the id MUST already exist. Use this to update a strategy's body, decisions[], or commands when downstream decision revisions change the technology stack or operational pattern the strategy commits to. spec.Strategy has no created_at/updated_at fields today; this tool exists primarily for symmetry with spec_revise_decision and spec_revise_feature plus to gate the upsert behind an exists-check. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
+	descSpecReviseStrategy = "Revise an existing engineering strategy. Same input shape as spec_propose_strategy, but the id MUST already exist. Use this to update a strategy's body, decisions[], commands, or citation fields when downstream decision revisions change the technology stack or operational pattern the strategy commits to. spec.Strategy has no created_at/updated_at fields today; this tool exists primarily for symmetry with spec_revise_decision and spec_revise_feature plus to gate the upsert behind an exists-check. Optional citation fields advances (goal-* ids advanced) and respects (agoal-* ids navigated under a carve-out) carry the polarity rule from propose: goal-* in advances, agoal-* in respects. A revise call replaces these slices wholesale; pass the full updated list, not a delta. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
 
 	// descSpecMarkApproachDrifted — DJ-138 cascade drift surface.
 	// The cascade playbook calls this tool once per approach in the
@@ -69,6 +69,8 @@ type proposeDecisionInput struct {
 	Axes         []string          `json:"axes,omitempty" jsonschema:"Stable slug-IDs of the foundational axes this decision answers (DJ-124). Strongly recommended for queryability; defaults to [the id's axis-suffix] when omitted so convergence-by-construction commits aren't blocked by missing axis enumeration. A revise pass can add axes later."`
 	SurfacedBy   []string          `json:"surfaced_by,omitempty" jsonschema:"Spec node ids (goal / feature / strategy) that surfaced the axis this decision answers. Optional — the publisher can backfill from graph topology if missing."`
 	InfluencedBy []string          `json:"influenced_by,omitempty" jsonschema:"Optional list of related spec node ids that informed this decision."`
+	Advances     []string          `json:"advances,omitempty" jsonschema:"Optional list of goal-* ids this decision exists to advance (DJ-139, forward direction). Only goal-* ids belong here; anti-goal navigation goes in respects. Informational — not a structural dependency. Empty / omitted is fine when no goal-layer attribution applies yet."`
+	Respects     []string          `json:"respects,omitempty" jsonschema:"Optional list of agoal-* ids this decision was checked against and admitted under a carve-out (DJ-139, boundary-navigation direction). Only agoal-* ids belong here; forward-direction goal references go in advances. Informational — not a structural dependency."`
 }
 
 // mcpAlternative mirrors spec.Alternative with MCP-SDK-compatible
@@ -138,6 +140,8 @@ type proposeFeatureInput struct {
 	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty" jsonschema:"Concrete user-observable criteria that determine when the feature is done. Each entry is one criterion."`
 	Decisions          []string `json:"decisions" jsonschema:"Decision ids this feature depends on. At least one entry is required; every entry must reference a decision present in the graph."`
 	Approaches         []string `json:"approaches,omitempty" jsonschema:"Optional list of approach ids that implement this feature."`
+	Advances           []string `json:"advances,omitempty" jsonschema:"Optional list of goal-* ids this feature exists to advance (DJ-139, forward direction). Only goal-* ids belong here; anti-goal navigation goes in respects. Informational — not a structural dependency. Empty / omitted is fine when no goal-layer attribution applies yet."`
+	Respects           []string `json:"respects,omitempty" jsonschema:"Optional list of agoal-* ids this feature was checked against and admitted under a carve-out (DJ-139, boundary-navigation direction). Only agoal-* ids belong here; forward-direction goal references go in advances. Informational — not a structural dependency."`
 }
 
 type proposeStrategyInput struct {
@@ -152,6 +156,8 @@ type proposeStrategyInput struct {
 	Commands      map[string]string `json:"commands,omitempty" jsonschema:"Optional named command set for adopters. Keys are command names; values are the command strings."`
 	Skills        []string          `json:"skills,omitempty" jsonschema:"Optional list of skills required to execute this strategy."`
 	InfluencedBy  []string          `json:"influenced_by,omitempty" jsonschema:"Optional list of related spec node ids that informed this strategy."`
+	Advances      []string          `json:"advances,omitempty" jsonschema:"Optional list of goal-* ids this strategy exists to advance (DJ-139, forward direction). Only goal-* ids belong here; anti-goal navigation goes in respects. Informational — not a structural dependency. Empty / omitted is fine when no goal-layer attribution applies yet."`
+	Respects      []string          `json:"respects,omitempty" jsonschema:"Optional list of agoal-* ids this strategy was checked against and admitted under a carve-out (DJ-139, boundary-navigation direction). Only agoal-* ids belong here; forward-direction goal references go in advances. Informational — not a structural dependency."`
 }
 
 // reviseDecisionInput intentionally mirrors proposeDecisionInput. The
@@ -372,6 +378,8 @@ func buildDecisionBody(in proposeDecisionInput, createdAt time.Time) (spec.Decis
 		Axes:         axes,
 		SurfacedBy:   in.SurfacedBy,
 		InfluencedBy: in.InfluencedBy,
+		Advances:     in.Advances,
+		Respects:     in.Respects,
 		CreatedAt:    createdAt,
 		UpdatedAt:    now,
 	}, nil
@@ -393,6 +401,8 @@ func buildFeatureBody(in proposeFeatureInput, createdAt time.Time) (spec.Feature
 		AcceptanceCriteria: in.AcceptanceCriteria,
 		Decisions:          in.Decisions,
 		Approaches:         in.Approaches,
+		Advances:           in.Advances,
+		Respects:           in.Respects,
 		CreatedAt:          createdAt,
 		UpdatedAt:          now,
 	}, nil
@@ -413,6 +423,8 @@ func buildStrategyBody(in proposeStrategyInput) (spec.Strategy, error) {
 		Commands:      in.Commands,
 		Skills:        in.Skills,
 		InfluencedBy:  in.InfluencedBy,
+		Advances:      in.Advances,
+		Respects:      in.Respects,
 	}, nil
 }
 
