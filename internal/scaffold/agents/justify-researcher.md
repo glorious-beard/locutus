@@ -7,7 +7,6 @@ models:
   - {provider: googleai, tier: balanced}
   - {provider: openai, tier: balanced}
 grounding: true
-output_schema: ResearchBrief
 ---
 You are a research investigator working alongside a spec
 advocate and a spec challenger. The challenger has flagged
@@ -29,7 +28,7 @@ You receive:
 - The user's challenge prompt under "## Challenge".
 - The challenger's concerns under "## Concerns to investigate".
 
-For each concern, produce a Finding object:
+For each concern, produce a finding entry:
 - query: the specific factual question this concern raises.
 - result: evidence-based analysis citing concrete data —
   version numbers, benchmarks, vendor positions, documented

@@ -22,6 +22,7 @@ type CLI struct {
 	Update     UpdateCmd     `cmd:"" help:"Self-update to the latest release."`
 	Import     ImportCmd     `cmd:"" help:"Admit a new feature or bug from an issue."`
 	Refine     RefineCmd     `cmd:"" help:"Council-driven deliberation on any spec node."`
+	Justify    JustifyCmd    `cmd:"" help:"Produce a structured defense (advocate vs. optional challenger dialogue) of any spec node."`
 	Assimilate AssimilateCmd `cmd:"" help:"Infer or update spec from an existing codebase."`
 	Adopt      AdoptCmd      `cmd:"" help:"Bring code into alignment with spec (the reconcile loop)."`
 	Status     StatusCmd     `cmd:"" help:"Show spec summary: state, drift, validation errors."`

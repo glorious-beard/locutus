@@ -41,3 +41,8 @@ activities:
       - claude-code
       - codex
       - gemini
+  justification:
+    runtimes:
+      - claude-code
+      - codex
+      - gemini
