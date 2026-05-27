@@ -9,15 +9,19 @@ import (
 	"time"
 )
 
-// OuterLoopRunner drives multi-iteration dispatch for runtimes that
-// can't run their own goal-evaluator loop (codex / gemini under
-// DJ-136). claude-code is single-dispatch because the overlay's
-// `/goal` directive owns iteration in the runtime itself.
+// OuterLoopRunner drives multi-iteration headless dispatch for every
+// runtime (claude-code / codex / gemini under DJ-140). DJ-136 had
+// claude-code single-dispatch on the assumption its `/goal` directive
+// owned iteration in the runtime itself, but `/goal` is an
+// interactive-session-scoped built-in unavailable in the headless
+// `claude-agent-acp` dispatch path — so under DJ-140 the harness drives
+// convergence uniformly. The `/goal` overlay survives only as an
+// interactive slash command (see ResolvePlaybook's mode axis).
 //
 // The runner is structured around a `DispatchOne` callback so the
 // loop logic can be unit-tested without spinning up an ACP
-// subprocess. Production wires `DispatchOne` to the same single-
-// session dispatch claude-code uses; tests substitute a stub.
+// subprocess. Production wires `DispatchOne` to the per-iteration
+// single-session dispatch (runOneIteration); tests substitute a stub.
 type OuterLoopRunner struct {
 	// MaxIterations bounds the loop. The DJ specifies 20 as the
 	// shipping default. Per-call override is supported for tests
