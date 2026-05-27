@@ -427,12 +427,18 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		if err := store.DeleteGoal(id); err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
+		// Publish the manifest update before recording history so
+		// subscribers see the actual disk state. If history recording
+		// fails after the delete is already on disk, the manifest is
+		// still correctly reported as updated; the history-write
+		// failure is a separate audit-trail concern, not a reason to
+		// withhold the manifest notification.
+		publishManifestUpdate(ctx, server)
 		if hist != nil {
 			if err := history.RecordGoalDeleted(hist, id, reason); err != nil {
 				return errorResult(fmt.Sprintf("spec_delete_goal: record history: %v", err)), nil, nil
 			}
 		}
-		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Deleted goal %s.", id)), nil, nil
 	})
 
@@ -488,12 +494,16 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		if err := store.DeleteAntiGoal(id); err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
+		// Publish the manifest update before recording history (see
+		// the matching note in spec_delete_goal): the on-disk delete
+		// is the load-bearing state change; the history record is an
+		// audit-trail concern that must not gate the manifest signal.
+		publishManifestUpdate(ctx, server)
 		if hist != nil {
 			if err := history.RecordAntiGoalDeleted(hist, id, reason); err != nil {
 				return errorResult(fmt.Sprintf("spec_delete_antigoal: record history: %v", err)), nil, nil
 			}
 		}
-		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Deleted antigoal %s.", id)), nil, nil
 	})
 

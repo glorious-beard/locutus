@@ -128,3 +128,55 @@ func TestSpecStoreDeleteGoalRejectsWrongPrefix(t *testing.T) {
 	err = store.DeleteAntiGoal("goal-strategic-planning-tool")
 	assert.Error(t, err, "DeleteAntiGoal on goal- id is rejected")
 }
+
+// TestDeleteGoalRefusesDuringOpenTransaction confirms the consistency
+// invariant: DeleteGoal cannot run between Begin and Commit/Rollback
+// because rollback would restore the in-memory entry while the disk
+// file would remain gone (delete writes through to disk immediately).
+// Refusing the operation at the boundary turns a silent invariant into
+// a loud error.
+func TestDeleteGoalRefusesDuringOpenTransaction(t *testing.T) {
+	fsys := specio.NewMemFS()
+	store, err := NewSpecStore(fsys)
+	require.NoError(t, err)
+
+	// Seed a goal so the delete would otherwise succeed.
+	require.NoError(t, store.Begin())
+	require.NoError(t, store.Put(KindGoal, "goal-test", spec.Goal{
+		ID:           "goal-test",
+		Title:        "Test",
+		Body:         "body",
+		SourceClause: "clause",
+	}, OriginSettled))
+	require.NoError(t, store.Commit())
+
+	// Open a transaction, then try to delete.
+	require.NoError(t, store.Begin())
+	err = store.DeleteGoal("goal-test")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "transaction")
+}
+
+// TestDeleteAntiGoalRefusesDuringOpenTransaction — parallel to the
+// goal case for the agoal- prefix.
+func TestDeleteAntiGoalRefusesDuringOpenTransaction(t *testing.T) {
+	fsys := specio.NewMemFS()
+	store, err := NewSpecStore(fsys)
+	require.NoError(t, err)
+
+	// Seed an antigoal so the delete would otherwise succeed.
+	require.NoError(t, store.Begin())
+	require.NoError(t, store.Put(KindAntiGoal, "agoal-test", spec.AntiGoal{
+		ID:           "agoal-test",
+		Title:        "Test",
+		Body:         "body",
+		SourceClause: "clause",
+	}, OriginSettled))
+	require.NoError(t, store.Commit())
+
+	// Open a transaction, then try to delete.
+	require.NoError(t, store.Begin())
+	err = store.DeleteAntiGoal("agoal-test")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "transaction")
+}

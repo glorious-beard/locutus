@@ -593,6 +593,11 @@ func (s *SpecStore) Put(kind SpecKind, id string, body any, origin SpecManifestO
 //
 // DeleteGoal is self-contained (no Begin/Commit dance required) —
 // the operation is a single atomic mutation of one map + one file.
+// It refuses to run while a transaction is open: the delete writes
+// through to disk immediately, but a subsequent Rollback would
+// restore the in-memory map from the pre-Begin snapshot, leaving the
+// in-memory entry alive while the on-disk file is gone. Fail loud at
+// the boundary instead of carrying that silent invariant forward.
 func (s *SpecStore) DeleteGoal(id string) error {
 	id = strings.TrimSpace(id)
 	if !strings.HasPrefix(id, "goal-") {
@@ -600,6 +605,9 @@ func (s *SpecStore) DeleteGoal(id string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.tx != nil {
+		return fmt.Errorf("SpecStore.DeleteGoal: transaction open — delete writes through to disk immediately and is not snapshot-aware; commit or rollback the transaction first")
+	}
 	entry, ok := s.goals[id]
 	if !ok {
 		return fmt.Errorf("SpecStore.DeleteGoal: goal %q not in store", id)
@@ -617,7 +625,9 @@ func (s *SpecStore) DeleteGoal(id string) error {
 
 // DeleteAntiGoal mirrors DeleteGoal for the agoal- prefix and the
 // .borg/spec/antigoals/ disk path. Same semantics: in-memory + on-
-// disk removal, error on unknown id, restore-on-disk-failure.
+// disk removal, error on unknown id, restore-on-disk-failure, and
+// refusal during an open transaction (see DeleteGoal for the
+// rationale).
 func (s *SpecStore) DeleteAntiGoal(id string) error {
 	id = strings.TrimSpace(id)
 	if !strings.HasPrefix(id, "agoal-") {
@@ -625,6 +635,9 @@ func (s *SpecStore) DeleteAntiGoal(id string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.tx != nil {
+		return fmt.Errorf("SpecStore.DeleteAntiGoal: transaction open — delete writes through to disk immediately and is not snapshot-aware; commit or rollback the transaction first")
+	}
 	entry, ok := s.antiGoals[id]
 	if !ok {
 		return fmt.Errorf("SpecStore.DeleteAntiGoal: antigoal %q not in store", id)
