@@ -112,6 +112,15 @@ func (codexPublisher) EnsureHooks(activities []CanonicalActivity, fsys specio.FS
 }
 
 func (codexPublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
+	// Resolve with mode=interactive (DJ-140 phase 4). Codex has no
+	// interactive overlay for any activity, so this always falls
+	// through to the cross-runtime default body — the one-iteration
+	// playbook, not the /goal wrapper (Codex has no interactive
+	// convergence primitive).
+	body, _, err := scaffold.ResolvePlaybook(fsys, ".borg/plans", act.Name, "codex", scaffold.ModeInteractive)
+	if err != nil {
+		return err
+	}
 	dir := ".codex/commands"
 	if err := fsys.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -122,7 +131,7 @@ developer_instructions = %s
 `,
 		act.CLIVerb,
 		tomlString(fmt.Sprintf("Locutus activity: %s", act.Name)),
-		tomlMultilineString(act.PlanBody),
+		tomlMultilineString(string(body)),
 	)
 	path := fmt.Sprintf("%s/locutus-%s.toml", dir, act.CLIVerb)
 	return fsys.WriteFile(path, []byte(content), 0o644)

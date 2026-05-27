@@ -2,10 +2,12 @@
 // per-runtime idiomatic dispatch layer. Two tests:
 //
 //   - TestPublisherEmitsRefineSlashCommand: after a scaffold pass,
-//     .claude/commands/locutus-refine.md exists with the cross-runtime
-//     one-iteration playbook body. The overlay invokes this slash
-//     command from its /goal directive, so this file's presence is
-//     the entry point for the iteration loop on Claude Code.
+//     .claude/commands/locutus-refine.md exists. This fixture seeds no
+//     interactive overlay, so under DJ-140 the publisher's mode=interactive
+//     resolution falls through to the cross-runtime one-iteration
+//     playbook body. (When the claude-code interactive overlay IS
+//     present in .borg/plans/, this command becomes the /goal wrapper
+//     instead — see dj140_test.go.)
 //
 //   - TestPublisherEmitsRefineSlashCommandHasIterationDirectives:
 //     beyond mere existence, the published body actually carries the

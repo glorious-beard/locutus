@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/glorious-beard/locutus/internal/scaffold"
 	"github.com/glorious-beard/locutus/internal/specio"
 )
 
@@ -148,17 +149,23 @@ func (claudeCodePublisher) EnsureHooks(_ []CanonicalActivity, _ specio.FS) error
 }
 
 // PublishActivity writes .claude/commands/locutus-<cli-verb>.md. The
-// content is the canonical (cross-runtime) plan body — Claude Code
-// treats the command body as the prompt the agent runs when the
-// slash command fires. The DJ-136 claude-code overlay invokes this
-// slash command from a `/goal` directive; the slash command body
-// itself stays runtime-neutral so the overlay can layer the loop
-// discipline on top.
+// body is resolved with mode=interactive (DJ-140 phase 4): for the
+// spec_refinement activity this lands the claude-code interactive
+// overlay (the `/goal` convergence wrapper at
+// spec_refinement.claude-code.interactive.md), since interactive
+// convergence works inside a Claude Code TUI session. Activities
+// without an interactive overlay fall through to the cross-runtime
+// default body, unchanged. Claude Code treats the command body as the
+// prompt the agent runs when the slash command fires.
 func (claudeCodePublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
+	body, _, err := scaffold.ResolvePlaybook(fsys, ".borg/plans", act.Name, "claude-code", scaffold.ModeInteractive)
+	if err != nil {
+		return err
+	}
 	dir := ".claude/commands"
 	if err := fsys.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	path := fmt.Sprintf("%s/locutus-%s.md", dir, act.CLIVerb)
-	return fsys.WriteFile(path, []byte(act.PlanBody), 0o644)
+	return fsys.WriteFile(path, body, 0o644)
 }
