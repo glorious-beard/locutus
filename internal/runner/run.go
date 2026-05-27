@@ -63,15 +63,18 @@ type ActivityRun struct {
 // matching playbook overlay (DJ-136 phase 1) without a second
 // resolve.
 //
-// Per-runtime dispatch strategy (DJ-136 phase 5):
+// Unified outer-loop dispatch (DJ-140):
 //
-//   - claude-code: single-iteration dispatch. The overlay sent as the
-//     prompt body is a `/goal` directive whose evaluator drives the
-//     iteration loop inside Claude Code itself.
-//   - codex / gemini: multi-iteration outer loop driven by Locutus's
-//     runner. Each iteration dispatches the one-iteration default
-//     playbook; the loop terminates when the agent's final text
-//     reports `converged: true` or the iteration ceiling (20) fires.
+// Every runtime — claude-code, codex, gemini — runs through the
+// Locutus-driven outer loop. Each iteration dispatches the
+// one-iteration default playbook; the loop terminates when the
+// agent's final text reports `converged: true` or the iteration
+// ceiling (maxIterations) fires. Earlier (DJ-136 phase 5) claude-code
+// short-circuited to a single dispatch on the assumption that its
+// `/goal` evaluator drives convergence internally, but `/goal` is an
+// interactive-only Claude Code feature unavailable in the headless
+// ACP dispatch path. So the harness drives convergence uniformly for
+// all runtimes; see dispatchUsesOuterLoop.
 //
 // out is where the agent's free-text output is mirrored. progress
 // is where the dispatcher writes per-tool-call status lines and
@@ -112,21 +115,25 @@ func DispatchActivity(
 		return nil, fmt.Errorf("dispatch: runtime %q resolved but has no spawn descriptor", runtime)
 	}
 
-	// Claude Code drives its own iteration loop via the `/goal`
-	// directive in the published overlay; the runner does one
-	// dispatch and lets the goal evaluator handle the rest. Codex
-	// and Gemini have no equivalent affordance, so the runner wraps
-	// the one-iteration dispatch in an outer loop bounded by
-	// maxIterations (resolved by the caller from the activity
-	// registry per DJ-138 phase 1).
-	if runtime == "claude-code" {
-		return runOneIteration(ctx, projectRoot, runtime, spawn, playbookBody, out, progress)
-	}
+	// Every runtime is driven by the Locutus outer loop (DJ-140). The
+	// loop wraps the one-iteration dispatch and is bounded by
+	// maxIterations (resolved by the caller from the activity registry
+	// per DJ-138 phase 1). dispatchUsesOuterLoop documents and locks
+	// this intent — there is no longer a per-runtime branch here.
 	return runOuterLoopDispatch(ctx, projectRoot, runtime, spawn, playbookBody, maxIterations, out, progress)
 }
 
+// dispatchUsesOuterLoop reports whether the runtime's headless
+// dispatch is driven by the Locutus outer loop. Per DJ-140 this is
+// true for every runtime — Claude Code's /goal evaluator is
+// interactive-only and unavailable in the headless ACP dispatch
+// path, so the harness drives convergence uniformly.
+func dispatchUsesOuterLoop(runtime string) bool {
+	return true
+}
+
 // runOuterLoopDispatch wraps repeated runOneIteration calls in the
-// outer loop used for codex / gemini. The first iteration receives
+// outer loop used for every runtime (DJ-140). The first iteration receives
 // the playbook as-is; subsequent iterations receive the same body
 // (the playbook is one-iteration-shaped and the MCP daemon preserves
 // graph state across sessions, so the agent picks up where the prior
@@ -169,8 +176,8 @@ func runOuterLoopDispatch(
 
 // runOneIteration runs one ACP session: spawn, new session, prompt,
 // stream events, write logs, return the per-iteration ActivityRun.
-// Called once for claude-code dispatches and per-iteration for the
-// codex / gemini outer loop.
+// Called per-iteration by runOuterLoopDispatch for every runtime
+// (DJ-140).
 func runOneIteration(
 	ctx context.Context,
 	projectRoot string,
