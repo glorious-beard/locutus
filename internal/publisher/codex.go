@@ -111,13 +111,13 @@ func (codexPublisher) EnsureHooks(activities []CanonicalActivity, fsys specio.FS
 	return fsys.WriteFile(codexMCPConfigPath, updated, 0o600)
 }
 
-func (codexPublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
+func (p codexPublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
 	// Resolve with mode=interactive (DJ-140 phase 4). Codex has no
 	// interactive overlay for any activity, so this always falls
 	// through to the cross-runtime default body — the one-iteration
 	// playbook, not the /goal wrapper (Codex has no interactive
 	// convergence primitive).
-	body, _, err := scaffold.ResolvePlaybook(fsys, ".borg/plans", act.Name, "codex", scaffold.ModeInteractive)
+	body, _, err := scaffold.ResolvePlaybook(fsys, ".borg/plans", act.Name, p.Name(), scaffold.ModeInteractive)
 	if err != nil {
 		return err
 	}

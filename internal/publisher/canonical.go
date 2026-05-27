@@ -86,7 +86,6 @@ type CanonicalAgent struct {
 type CanonicalActivity struct {
 	Name     string
 	Runtimes []string
-	PlanBody string
 	HasPlan  bool
 	CLIVerb  string
 }
@@ -146,11 +145,10 @@ func LoadCanonical(fsys specio.FS, reg *activity.Registry) (Canonical, error) {
 			Runtimes: act.Runtimes,
 			CLIVerb:  cliVerbForActivity(name),
 		}
-		body, ok, err := loadPlan(fsys, name)
+		_, ok, err := loadPlan(fsys, name)
 		if err != nil {
 			return Canonical{}, err
 		}
-		canonical.PlanBody = body
 		canonical.HasPlan = ok
 		activities = append(activities, canonical)
 		for _, rt := range act.Runtimes {

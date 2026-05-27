@@ -157,8 +157,8 @@ func (claudeCodePublisher) EnsureHooks(_ []CanonicalActivity, _ specio.FS) error
 // without an interactive overlay fall through to the cross-runtime
 // default body, unchanged. Claude Code treats the command body as the
 // prompt the agent runs when the slash command fires.
-func (claudeCodePublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
-	body, _, err := scaffold.ResolvePlaybook(fsys, ".borg/plans", act.Name, "claude-code", scaffold.ModeInteractive)
+func (p claudeCodePublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
+	body, _, err := scaffold.ResolvePlaybook(fsys, ".borg/plans", act.Name, p.Name(), scaffold.ModeInteractive)
 	if err != nil {
 		return err
 	}

@@ -178,13 +178,13 @@ func (geminiPublisher) EnsureHooks(activities []CanonicalActivity, fsys specio.F
 	return fsys.WriteFile(geminiSettingsPath, append(out, '\n'), 0o600)
 }
 
-func (geminiPublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
+func (p geminiPublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
 	// Resolve with mode=interactive (DJ-140 phase 4). Gemini has no
 	// interactive overlay for any activity, so this always falls
 	// through to the cross-runtime default body — the one-iteration
 	// playbook, not the /goal wrapper (Gemini has no interactive
 	// convergence primitive).
-	body, _, err := scaffold.ResolvePlaybook(fsys, ".borg/plans", act.Name, "gemini", scaffold.ModeInteractive)
+	body, _, err := scaffold.ResolvePlaybook(fsys, ".borg/plans", act.Name, p.Name(), scaffold.ModeInteractive)
 	if err != nil {
 		return err
 	}
