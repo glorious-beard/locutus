@@ -157,15 +157,6 @@ type txSnapshot struct {
 	approaches map[string]*approachEntry
 }
 
-// FS returns the underlying filesystem the store reads and writes
-// through. Exposed for callers (e.g. the spec_update_goals_md_hash
-// MCP tool) that need to operate on project-root paths outside the
-// spec graph itself — manifest, GOALS.md — without re-plumbing the
-// fsys through every constructor signature.
-func (s *SpecStore) FS() specio.FS {
-	return s.fsys
-}
-
 // NewSpecStore constructs a store seeded from the on-disk graph under
 // `.borg/spec/`. Missing directories (greenfield) are not an error —
 // the store starts empty. All loaded nodes are tagged OriginSettled.

@@ -1,6 +1,9 @@
 package spec
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Decision represents an architectural or implementation decision.
 //
@@ -243,6 +246,27 @@ type Manifest struct {
 	CreatedAt       time.Time `json:"created_at" yaml:"created_at"`
 	GoalsMdHash     string    `json:"goals_md_hash,omitempty" yaml:"goals_md_hash,omitempty"`
 	GoalsMdSyncedAt time.Time `json:"goals_md_synced_at,omitempty" yaml:"goals_md_synced_at,omitempty"`
+}
+
+// MarshalJSON implements json.Marshaler. We hand-roll the encoder so
+// GoalsMdSyncedAt — a zero time.Time — gets omitted on disk. Go's
+// encoding/json doesn't honor `omitempty` on time.Time zero values,
+// and emitting "0001-01-01T00:00:00Z" on greenfield projects
+// pollutes the manifest with a sentinel that isn't a real sync
+// timestamp.
+func (m Manifest) MarshalJSON() ([]byte, error) {
+	type manifestAlias Manifest // alias to bypass the custom MarshalJSON when re-encoding
+	out := struct {
+		manifestAlias
+		GoalsMdSyncedAt *time.Time `json:"goals_md_synced_at,omitempty"`
+	}{
+		manifestAlias: manifestAlias(m),
+	}
+	if !m.GoalsMdSyncedAt.IsZero() {
+		ts := m.GoalsMdSyncedAt
+		out.GoalsMdSyncedAt = &ts
+	}
+	return json.Marshal(out)
 }
 
 // Goal is the persisted LLM interpretation of one atomic in-scope

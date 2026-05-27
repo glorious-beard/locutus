@@ -106,16 +106,19 @@ func TestManifestBackwardCompatWithoutGoalsMdHashFields(t *testing.T) {
 	assert.Equal(t, "", m.GoalsMdHash, "missing goals_md_hash must decode as empty string")
 	assert.True(t, m.GoalsMdSyncedAt.IsZero(), "missing goals_md_synced_at must decode as zero time")
 
-	// Re-encode and verify the empty string field is omitted (omitempty
-	// works for strings). time.Time's zero value isn't a Go-encoding
-	// zero, so goals_md_synced_at will appear with the RFC3339 zero
-	// time — that's fine: decoding it back produces IsZero() true,
-	// matching the original semantics. The empty-hash omission is the
-	// load-bearing guarantee here, because it gates the Phase 6
-	// short-circuit comparison.
+	// Re-encode and verify both new fields are omitted on disk.
+	// The empty-string GoalsMdHash relies on encoding/json's standard
+	// omitempty behavior. The zero-time GoalsMdSyncedAt relies on the
+	// custom MarshalJSON on spec.Manifest — Go's encoding/json does
+	// not treat a zero time.Time as a zero value for omitempty, so
+	// without the custom marshaler a sentinel "0001-01-01T00:00:00Z"
+	// would land on disk and contradict the docstring's clean-round-
+	// trip promise. The empty-hash omission is the load-bearing
+	// guarantee that gates the Phase 6 short-circuit comparison.
 	out, err := json.Marshal(m)
 	require.NoError(t, err)
 	assert.NotContains(t, string(out), "goals_md_hash", "empty goals_md_hash must be omitted")
+	assert.NotContains(t, string(out), "goals_md_synced_at", "zero goals_md_synced_at must be omitted")
 
 	// Sanity: the kept fields survive.
 	assert.Contains(t, string(out), "winplan")

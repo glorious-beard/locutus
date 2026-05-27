@@ -264,7 +264,9 @@ type markApproachDriftedInput struct {
 // updateGoalsMdHashInput shapes the spec_update_goals_md_hash tool's
 // payload. The Phase 6 refine-goals playbook calls this once at the
 // end of a sync; the handler preserves every other manifest field via
-// a read-modify-write through agent.WriteManifestHash.
+// a read-modify-write through SpecStore.UpdateGoalsMdHash (held under
+// the store's write mutex so concurrent clients can't race on the
+// non-hash fields of the manifest).
 type updateGoalsMdHashInput struct {
 	Hash     string `json:"hash" jsonschema:"sha256:<hex> digest of the current GOALS.md bytes (use spec.ComputeGoalsMdHash to produce). Required; empty values are rejected."`
 	SyncedAt string `json:"synced_at" jsonschema:"RFC3339 timestamp of the sync (typically time.Now().UTC().Format(time.RFC3339))."`
@@ -574,7 +576,7 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 			}
 			syncedAt = parsed
 		}
-		if err := agent.WriteManifestHash(store.FS(), hash, syncedAt); err != nil {
+		if err := store.UpdateGoalsMdHash(hash, syncedAt); err != nil {
 			return errorResult(err.Error()), nil, nil
 		}
 		return textResult(fmt.Sprintf("Updated goals_md_hash to %s.", hash)), nil, nil
