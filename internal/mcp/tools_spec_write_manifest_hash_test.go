@@ -2,8 +2,9 @@
 //
 // The Phase 6 `refine goals` playbook calls this tool at the end of
 // a successful goal-layer sync. The handler writes the supplied hash
-// + synced_at through an atomic read-modify-write that preserves
-// every other manifest field.
+// through an atomic read-modify-write that preserves every other
+// manifest field; synced_at is server-stamped from the wall clock
+// (DJ-141), not agent-supplied.
 
 package mcp
 
@@ -22,8 +23,9 @@ import (
 )
 
 // TestSpecUpdateGoalsMdHashWritesManifest — call the MCP tool with a
-// concrete hash + synced_at; confirm the manifest on disk carries
-// the new values AND every other manifest field survives unchanged.
+// concrete hash; confirm the manifest on disk carries the new hash, a
+// server-stamped synced_at within the call window, AND every other
+// manifest field survives unchanged.
 func TestSpecUpdateGoalsMdHashWritesManifest(t *testing.T) {
 	fsys := specio.NewMemFS()
 	original := spec.Manifest{
@@ -50,17 +52,17 @@ func TestSpecUpdateGoalsMdHashWritesManifest(t *testing.T) {
 	t.Cleanup(func() { session.Close() })
 
 	hash := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	syncedAt := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
 
+	before := time.Now().UTC()
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "spec_update_goals_md_hash",
 		Arguments: map[string]any{
-			"hash":      hash,
-			"synced_at": syncedAt.Format(time.RFC3339),
+			"hash": hash,
 		},
 	})
 	require.NoError(t, err)
 	assert.False(t, res.IsError, "expected success; got: %+v", res)
+	after := time.Now().UTC()
 
 	// Read the manifest back; assert the hash landed and every other
 	// field survived.
@@ -70,7 +72,9 @@ func TestSpecUpdateGoalsMdHashWritesManifest(t *testing.T) {
 	require.NoError(t, json.Unmarshal(got, &m))
 
 	assert.Equal(t, hash, m.GoalsMdHash)
-	assert.True(t, m.GoalsMdSyncedAt.Equal(syncedAt))
+	// DJ-141: synced_at is server-stamped, so it lands within the call window.
+	assert.False(t, m.GoalsMdSyncedAt.Before(before), "synced_at must be stamped at/after the call started")
+	assert.False(t, m.GoalsMdSyncedAt.After(after), "synced_at must be stamped at/before the call returned")
 	assert.Equal(t, original.ProjectName, m.ProjectName, "tool must preserve project_name")
 	assert.Equal(t, original.Version, m.Version, "tool must preserve version")
 	assert.Equal(t, original.Model, m.Model, "tool must preserve model")
@@ -100,8 +104,7 @@ func TestSpecUpdateGoalsMdHashRejectsEmptyHash(t *testing.T) {
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "spec_update_goals_md_hash",
 		Arguments: map[string]any{
-			"hash":      "",
-			"synced_at": time.Now().UTC().Format(time.RFC3339),
+			"hash": "",
 		},
 	})
 	require.NoError(t, err)
