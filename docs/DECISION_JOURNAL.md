@@ -22,7 +22,7 @@ Full text for each decision lives under [`decisions/`](decisions/). Cross-refere
 
 | # | Title | Status | Full text |
 |---|---|---|---|
-| <a id="dj-139"></a>DJ-139 | Persist the LLM's Interpretation of `GOALS.md` as First-Class `goal-*` and `agoal-*` Graph Nodes... | design | [open](decisions/dj-139-goal-layer-node-kinds.md) |
+| <a id="dj-139"></a>DJ-139 | Persist the LLM's Interpretation of `GOALS.md` as First-Class `goal-*` and `agoal-*` Graph Nodes... | shipping | [open](decisions/dj-139-goal-layer-node-kinds.md) |
 | <a id="dj-138"></a>DJ-138 | Add `--with "<bias>"` Strong-Bias Cascade to `locutus refine` for Targeted Override of... | shipping | [open](decisions/dj-138-refine-with-bias-cascade.md) |
 | <a id="dj-137"></a>DJ-137 | Restore `locutus justify` as an ACP-Dispatched Activity | shipping | [open](decisions/dj-137-justify-activity.md) |
 | <a id="dj-136"></a>DJ-136 | Per-Runtime Idiomatic Dispatch Layer | shipping | [open](decisions/dj-136-per-runtime-idiomatic.md) |

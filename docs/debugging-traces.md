@@ -64,7 +64,7 @@ Symptom: `tools.jsonl` shows `tool_call_update` events with `status: "failed"` f
 
 The error message is in the event's content. Common ones:
 - `validating "arguments": validating root: required: missing properties: ["X"]` — the agent omitted a required field. Per DJ-135 ckpt 4 we loosened the schema for `axes` and `surfaced_by` on decisions (server auto-backfills); other required fields are genuinely needed.
-- `id "<bad-id>" is malformed: expected kebab-case with prefix feat-, strat-, dec-, bug-, or app-` — the agent invented an id that doesn't match the regex. Usually means the agent didn't read the canonical id convention; tighten the elaborator subagent's prompt to name the convention explicitly.
+- `id "<bad-id>" is malformed: expected kebab-case with prefix goal-, agoal-, feat-, strat-, dec-, bug-, or app-` — the agent invented an id that doesn't match the regex. Usually means the agent didn't read the canonical id convention; tighten the elaborator subagent's prompt to name the convention explicitly. The `goal-` / `agoal-` prefixes are DJ-139's addition.
 - `id "<wrong-prefix>" lacks <expected>- prefix for Kind<X>` — agent used the wrong prefix. Same fix.
 
 Extract failed-tool errors quickly:
@@ -89,6 +89,24 @@ Symptom: `tools.jsonl` shows the scout subagent dispatched once, candidate-surve
 Likely causes:
 - The candidate-survey subagents are doing heavy grounding (web search) and the timeout fires before they return. The pre-DJ-135 council had a hard 5-minute budget per workflow phase; the new model has whatever timeout the CLI is bound to. Try a simpler GOALS.md (fewer axes), or live with a longer wall-clock.
 - The decision-elaborator subagent returned a body the playbook didn't notice. Check the Task tool result event for the elaborator dispatch — if the returned body is well-formed but the orchestrator's next action isn't a `spec_propose_decision`, the playbook's prose isn't clear enough about the propose-after-elaborate step.
+
+### Goal-layer sync didn't apply expected changes
+
+Symptom (DJ-139): `tools.jsonl` from a `locutus refine goals` run shows `spec-goal-diff-matcher` dispatched, returned a diff, but the corresponding `spec_propose_goal` / `spec_revise_goal` / `spec_delete_goal` (or AntiGoal variants) calls are missing or partial.
+
+Useful tool-call shapes to grep for:
+
+- `mcp__locutus__spec_propose_goal` / `mcp__locutus__spec_propose_antigoal` — Step 0 commits for new goal-layer nodes.
+- `mcp__locutus__spec_revise_goal` / `mcp__locutus__spec_revise_antigoal` — Step 0 commits when an existing node's `source_clause` or `body` shifts.
+- `mcp__locutus__spec_delete_goal` / `mcp__locutus__spec_delete_antigoal` — Step 0 commits when a goal-layer node has no corresponding claim in current `GOALS.md`.
+- `mcp__locutus__spec_update_goals_md_hash` — Step 0's closing call. Missing this call means the next `refine goals` run won't short-circuit even when `GOALS.md` is unchanged.
+
+Likely causes when the diff was returned but not applied:
+
+- The matcher's response shape didn't match what the playbook expects. Look at the `Task` tool result event for the matcher dispatch; the response is structured JSON with `unchanged` / `modified` / `deleted` / `added` arrays. If those keys are missing or named differently, the orchestrator can't walk the diff.
+- The hash-update tool call was skipped. Without `spec_update_goals_md_hash`, the goal layer mutates but the manifest's `goals_md_hash` stays stale; the next run re-dispatches the matcher unnecessarily and may re-apply equivalent changes.
+
+Citation-walk tool calls (Step N+1) appear as `spec_revise_decision` / `spec_revise_feature` / `spec_revise_strategy` invocations where the body fields stay identical to the prior settled state and only `advances` / `respects` arrays change. Grep `tools.jsonl` for those tools with input payloads containing `"advances":` or `"respects":` to isolate the citation-walk subset.
 
 ### Loop never converges (20-iteration cap fires)
 
