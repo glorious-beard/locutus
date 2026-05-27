@@ -2,7 +2,17 @@
 
 > **Governing DJ:** [DJ-136](../../docs/DECISION_JOURNAL.md#dj-136). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
 >
-> **Status:** designed; implementation not started.
+> **Status:** DONE — Phases 1-7 landed 2026-05-26 on branch `dj-136-per-runtime-idiomatic`. Per-phase summary:
+>
+> - **Phase 1** ✓ — `scaffold.ResolvePlaybook` overlay loader + orphan / drift-invariant tests against the embedded plans tree (commit d442edf).
+> - **Phase 2** ✓ — `dispatch.EventPlan` + `runner.renderPlanBlock` surface ACP plan notifications as inline multi-line blocks under the same heartbeat mutex that protects tool-call lines (commit covered with phase 3 since they ship together cleanly).
+> - **Phase 3** ✓ — `spec_refinement.md` refactored to one-iteration shape with `TodoWrite` opening directive and `converged: …` verdict closing directive; agent-conventions.md picks up the one-iteration convention.
+> - **Phase 4** ✓ — `spec_refinement.claude-code.md` overlay carries the `/goal` directive invoking `/locutus-refine`; publisher emits the slash command under CLI-verb name (`CanonicalActivity.CLIVerb` maps `spec_refinement` → `refine`).
+> - **Phase 5** ✓ — `runner.OuterLoopRunner` + `IsConverged` drive multi-iteration dispatch on codex / gemini; `locutus hook-validate-decision` subcommand enforces DJ-133 id-shape; Codex `[[hooks]]` table appended to `.codex/config.toml` under a delimited marker for idempotent re-emit.
+> - **Phase 6** ✓ — landed in the same commit as Phase 5; Gemini `BeforeTool` hook merged into `.gemini/settings.json`, preserving user-authored entries.
+> - **Phase 7** ✓ — `docs/runtime-affordances.md` (new), `docs/council.md` (harness-split diagram), `CLAUDE.md` (DJ-136 sources of truth), `docs/agent-conventions.md` (one-iteration + overlay conventions), `docs/debugging-traces.md` (per-runtime cap-fire diagnosis + hook denial).
+>
+> Empirical validation against real runtimes is the follow-up — in-tree tests cover the loop logic, overlay resolution, hook substitution, publisher emit shape, and dispatch branching, but end-to-end behavior against a real Claude Code `/goal` evaluator and a real Codex / Gemini ACP server is deferred.
 > **Predecessors:** [DJ-135](../../docs/DECISION_JOURNAL.md#dj-135) (multi-runtime pivot; this DJ reverses its resolved-question 14 and extends the publisher + runner layers); [DJ-119](../../docs/DECISION_JOURNAL.md#dj-119) (ACP wire layer); [DJ-134](../../docs/DECISION_JOURNAL.md#dj-134) (SpecStore, which Locutus's outer loop reads between iterations on Codex / Gemini).
 > **Surface area:** new playbook-overlay loader + tests; new hook publisher subpackages per runtime; per-runtime dispatch strategy in `internal/runner/`; `spec_refinement.md` one-iteration refactor; new `spec_refinement.claude-code.md` overlay; new hook configs; docs updates.
 > **Discipline (per memory):**
