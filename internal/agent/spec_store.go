@@ -22,6 +22,13 @@ const (
 	KindDecision SpecKind = "decision"
 	KindBug      SpecKind = "bug"
 	KindApproach SpecKind = "approach"
+	// KindGoal and KindAntiGoal route the goal-* and agoal-* id
+	// prefixes to their typed maps (DJ-139). Goals and AntiGoals are
+	// the persisted LLM interpretation of GOALS.md — leaves in the
+	// cascade sense; nothing structurally depends on them, citations
+	// from other kinds are informational dotted lines.
+	KindGoal     SpecKind = "goal"
+	KindAntiGoal SpecKind = "antigoal"
 )
 
 // SpecGetStatus discriminates the disposition of a SpecGetEntry.
@@ -83,6 +90,8 @@ type SpecStore struct {
 	mu   sync.RWMutex
 	fsys specio.FS
 
+	goals      map[string]*goalEntry
+	antiGoals  map[string]*antiGoalEntry
 	features   map[string]*featureEntry
 	strategies map[string]*strategyEntry
 	decisions  map[string]*decisionEntry
@@ -97,6 +106,16 @@ type SpecStore struct {
 	tx *txSnapshot
 }
 
+type goalEntry struct {
+	body    spec.Goal
+	origin  SpecManifestOrigin
+	working bool
+}
+type antiGoalEntry struct {
+	body    spec.AntiGoal
+	origin  SpecManifestOrigin
+	working bool
+}
 type featureEntry struct {
 	body    spec.Feature
 	origin  SpecManifestOrigin
@@ -127,6 +146,8 @@ type approachEntry struct {
 // to its pre-Begin condition. Shallow copies of the maps suffice since
 // entry pointers are replaced (not mutated) by Put.
 type txSnapshot struct {
+	goals      map[string]*goalEntry
+	antiGoals  map[string]*antiGoalEntry
 	features   map[string]*featureEntry
 	strategies map[string]*strategyEntry
 	decisions  map[string]*decisionEntry
@@ -147,6 +168,8 @@ func NewSpecStore(fsys specio.FS) (*SpecStore, error) {
 	}
 	s := &SpecStore{
 		fsys:       fsys,
+		goals:      make(map[string]*goalEntry),
+		antiGoals:  make(map[string]*antiGoalEntry),
 		features:   make(map[string]*featureEntry),
 		strategies: make(map[string]*strategyEntry),
 		decisions:  make(map[string]*decisionEntry),
@@ -168,6 +191,20 @@ func NewSpecStore(fsys specio.FS) (*SpecStore, error) {
 // loaded node lands in the corresponding map with OriginSettled. Missing
 // directories are not an error.
 func (s *SpecStore) loadFromFS() error {
+	if pairs, err := specio.WalkPairs[spec.Goal](s.fsys, ".borg/spec/goals"); err == nil {
+		for _, p := range pairs {
+			if p.Err == nil && p.Object.ID != "" {
+				s.goals[p.Object.ID] = &goalEntry{body: p.Object, origin: OriginSettled}
+			}
+		}
+	}
+	if pairs, err := specio.WalkPairs[spec.AntiGoal](s.fsys, ".borg/spec/antigoals"); err == nil {
+		for _, p := range pairs {
+			if p.Err == nil && p.Object.ID != "" {
+				s.antiGoals[p.Object.ID] = &antiGoalEntry{body: p.Object, origin: OriginSettled}
+			}
+		}
+	}
 	if pairs, err := specio.WalkPairs[spec.Feature](s.fsys, ".borg/spec/features"); err == nil {
 		for _, p := range pairs {
 			if p.Err == nil && p.Object.ID != "" {
@@ -218,6 +255,24 @@ func (s *SpecStore) ListManifest() SpecManifest {
 	defer s.mu.RUnlock()
 
 	m := SpecManifest{}
+	for _, e := range s.goals {
+		m.Goals = append(m.Goals, SpecManifestEntry{
+			ID:      e.body.ID,
+			Title:   e.body.Title,
+			Summary: summaryOrFallback("", e.body.Body),
+			Origin:  e.origin,
+			Working: e.working,
+		})
+	}
+	for _, e := range s.antiGoals {
+		m.AntiGoals = append(m.AntiGoals, SpecManifestEntry{
+			ID:      e.body.ID,
+			Title:   e.body.Title,
+			Summary: summaryOrFallback("", e.body.Body),
+			Origin:  e.origin,
+			Working: e.working,
+		})
+	}
 	for _, e := range s.features {
 		m.Features = append(m.Features, SpecManifestEntry{
 			ID:      e.body.ID,
@@ -293,7 +348,7 @@ func (s *SpecStore) GetSpec(ids []string) SpecGetResult {
 		if !validSpecID.MatchString(id) {
 			result.Results[id] = SpecGetEntry{
 				Status: SpecGetMissing,
-				Reason: fmt.Sprintf("malformed id %q: expected kebab-case with prefix feat-, strat-, dec-, bug-, or app-", id),
+				Reason: fmt.Sprintf("malformed id %q: expected kebab-case with prefix goal-, agoal-, feat-, strat-, dec-, bug-, or app-", id),
 			}
 			continue
 		}
@@ -329,6 +384,16 @@ func (s *SpecStore) GetSpec(ids []string) SpecGetResult {
 // (council-proposed).
 func (s *SpecStore) lookupLocked(id string) (entry SpecGetEntry, kind SpecKind, found bool, working bool) {
 	switch {
+	case strings.HasPrefix(id, "goal-"):
+		kind = KindGoal
+		if e, ok := s.goals[id]; ok {
+			return SpecGetEntry{Status: statusFor(e.origin), Body: e.body, Working: e.working}, kind, true, e.working
+		}
+	case strings.HasPrefix(id, "agoal-"):
+		kind = KindAntiGoal
+		if e, ok := s.antiGoals[id]; ok {
+			return SpecGetEntry{Status: statusFor(e.origin), Body: e.body, Working: e.working}, kind, true, e.working
+		}
 	case strings.HasPrefix(id, "feat-"):
 		kind = KindFeature
 		if e, ok := s.features[id]; ok {
@@ -372,6 +437,14 @@ func statusFor(o SpecManifestOrigin) SpecGetStatus {
 func (s *SpecStore) idsForKindLocked(kind SpecKind) []string {
 	var ids []string
 	switch kind {
+	case KindGoal:
+		for id := range s.goals {
+			ids = append(ids, id)
+		}
+	case KindAntiGoal:
+		for id := range s.antiGoals {
+			ids = append(ids, id)
+		}
 	case KindFeature:
 		for id := range s.features {
 			ids = append(ids, id)
@@ -433,6 +506,24 @@ func (s *SpecStore) Put(kind SpecKind, id string, body any, origin SpecManifestO
 	defer s.mu.Unlock()
 
 	switch kind {
+	case KindGoal:
+		g, ok := body.(spec.Goal)
+		if !ok {
+			return fmt.Errorf("SpecStore.Put: body is %T, expected spec.Goal", body)
+		}
+		if !strings.HasPrefix(id, "goal-") {
+			return fmt.Errorf("SpecStore.Put: id %q lacks goal- prefix for KindGoal", id)
+		}
+		s.goals[id] = &goalEntry{body: g, origin: origin, working: s.workingPriorLocked(KindGoal, id)}
+	case KindAntiGoal:
+		ag, ok := body.(spec.AntiGoal)
+		if !ok {
+			return fmt.Errorf("SpecStore.Put: body is %T, expected spec.AntiGoal", body)
+		}
+		if !strings.HasPrefix(id, "agoal-") {
+			return fmt.Errorf("SpecStore.Put: id %q lacks agoal- prefix for KindAntiGoal", id)
+		}
+		s.antiGoals[id] = &antiGoalEntry{body: ag, origin: origin, working: s.workingPriorLocked(KindAntiGoal, id)}
 	case KindFeature:
 		f, ok := body.(spec.Feature)
 		if !ok {
@@ -490,6 +581,14 @@ func (s *SpecStore) Put(kind SpecKind, id string, body any, origin SpecManifestO
 // the Put would silently clear the flag. Caller holds Lock.
 func (s *SpecStore) workingPriorLocked(kind SpecKind, id string) bool {
 	switch kind {
+	case KindGoal:
+		if e, ok := s.goals[id]; ok {
+			return e.working
+		}
+	case KindAntiGoal:
+		if e, ok := s.antiGoals[id]; ok {
+			return e.working
+		}
 	case KindFeature:
 		if e, ok := s.features[id]; ok {
 			return e.working
@@ -522,6 +621,14 @@ func (s *SpecStore) MarkWorking(ids []string) {
 	defer s.mu.Unlock()
 	for _, id := range ids {
 		switch {
+		case strings.HasPrefix(id, "goal-"):
+			if e, ok := s.goals[id]; ok {
+				e.working = true
+			}
+		case strings.HasPrefix(id, "agoal-"):
+			if e, ok := s.antiGoals[id]; ok {
+				e.working = true
+			}
 		case strings.HasPrefix(id, "feat-"):
 			if e, ok := s.features[id]; ok {
 				e.working = true
@@ -552,6 +659,12 @@ func (s *SpecStore) MarkWorking(ids []string) {
 func (s *SpecStore) ClearWorking() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, e := range s.goals {
+		e.working = false
+	}
+	for _, e := range s.antiGoals {
+		e.working = false
+	}
 	for _, e := range s.features {
 		e.working = false
 	}
@@ -597,6 +710,8 @@ func (s *SpecStore) Begin() error {
 		return fmt.Errorf("SpecStore.Begin: transaction already open")
 	}
 	s.tx = &txSnapshot{
+		goals:      cloneGoalMap(s.goals),
+		antiGoals:  cloneAntiGoalMap(s.antiGoals),
 		features:   cloneFeatureMap(s.features),
 		strategies: cloneStrategyMap(s.strategies),
 		decisions:  cloneDecisionMap(s.decisions),
@@ -633,6 +748,8 @@ func (s *SpecStore) Rollback() error {
 	if s.tx == nil {
 		return fmt.Errorf("SpecStore.Rollback: no transaction open")
 	}
+	s.goals = s.tx.goals
+	s.antiGoals = s.tx.antiGoals
 	s.features = s.tx.features
 	s.strategies = s.tx.strategies
 	s.decisions = s.tx.decisions
@@ -646,6 +763,22 @@ func (s *SpecStore) Rollback() error {
 // Caller holds Lock. Failures abort the persist; the store's
 // in-memory state is left unchanged so a retry is meaningful.
 func (s *SpecStore) persistLocked() error {
+	for id, e := range s.goals {
+		if e.origin != OriginProposed {
+			continue
+		}
+		if err := writeJSONNode(s.fsys, ".borg/spec/goals/"+id+".json", e.body); err != nil {
+			return err
+		}
+	}
+	for id, e := range s.antiGoals {
+		if e.origin != OriginProposed {
+			continue
+		}
+		if err := writeJSONNode(s.fsys, ".borg/spec/antigoals/"+id+".json", e.body); err != nil {
+			return err
+		}
+	}
 	for id, e := range s.features {
 		if e.origin != OriginProposed {
 			continue
@@ -701,6 +834,18 @@ func (s *SpecStore) persistLocked() error {
 // successful persist; the in-memory state then matches what was just
 // written to disk.
 func (s *SpecStore) promoteAndClearWorkingLocked() {
+	for _, e := range s.goals {
+		if e.origin == OriginProposed {
+			e.origin = OriginSettled
+		}
+		e.working = false
+	}
+	for _, e := range s.antiGoals {
+		if e.origin == OriginProposed {
+			e.origin = OriginSettled
+		}
+		e.working = false
+	}
 	for _, e := range s.features {
 		if e.origin == OriginProposed {
 			e.origin = OriginSettled
@@ -817,9 +962,25 @@ func writeJSONNode(fsys specio.FS, path string, body any) error {
 	return fsys.WriteFile(path, data, 0o644)
 }
 
-// cloneFeatureMap and friends produce shallow copies of the typed
+// cloneGoalMap and friends produce shallow copies of the typed
 // maps — sufficient for Rollback because Put replaces entries by
 // pointer rather than mutating them in place.
+func cloneGoalMap(in map[string]*goalEntry) map[string]*goalEntry {
+	out := make(map[string]*goalEntry, len(in))
+	for k, v := range in {
+		c := *v
+		out[k] = &c
+	}
+	return out
+}
+func cloneAntiGoalMap(in map[string]*antiGoalEntry) map[string]*antiGoalEntry {
+	out := make(map[string]*antiGoalEntry, len(in))
+	for k, v := range in {
+		c := *v
+		out[k] = &c
+	}
+	return out
+}
 func cloneFeatureMap(in map[string]*featureEntry) map[string]*featureEntry {
 	out := make(map[string]*featureEntry, len(in))
 	for k, v := range in {

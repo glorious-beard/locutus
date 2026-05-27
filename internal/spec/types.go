@@ -208,3 +208,47 @@ type Manifest struct {
 	Model       string    `json:"model,omitempty" yaml:"model,omitempty"`
 	CreatedAt   time.Time `json:"created_at" yaml:"created_at"`
 }
+
+// Goal is the persisted LLM interpretation of one atomic in-scope
+// claim from GOALS.md (DJ-139). Goals are leaves in the spec-graph
+// cascade — decisions, features, strategies, and approaches may
+// cite a goal via the optional `.advances` informational link, but
+// nothing structurally depends on the goal layer.
+//
+// Authorship: humans only edit GOALS.md. The `refine goals` pass
+// writes goal-* nodes as its persisted interpretation; users read
+// them but don't author them directly. SourceClause is the anchor
+// the diff-and-apply sync algorithm uses to preserve IDs across
+// GOALS.md rephrasings.
+type Goal struct {
+	ID           string    `json:"id" yaml:"id"`
+	Title        string    `json:"title" yaml:"title"`
+	Body         string    `json:"body" yaml:"body"`
+	SourceClause string    `json:"source_clause" yaml:"source_clause"`
+	CreatedAt    time.Time `json:"created_at" yaml:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at" yaml:"updated_at"`
+}
+
+// AntiGoal is the persisted LLM interpretation of one atomic out-of-
+// scope claim from GOALS.md (DJ-139). Polarity is encoded in the
+// type (the agoal- prefix), not a field — citations from other
+// kinds land in `.respects` rather than `.advances`.
+//
+// CededTo names the incumbents owning the ceded space (e.g.
+// "Carta", "AngelList" for a fundraising-tracking exclusion);
+// consumed by the import-conflict-detection playbook to phrase
+// "this feature would put us into <incumbent>'s space" reports.
+// KeptIn carries the carve-out clauses that stay in scope despite
+// the broader exclusion (e.g. "runway forecasting for product
+// timeline planning"); the LLM consumes them alongside Body when
+// judging boundary navigation during import conflict resolution.
+type AntiGoal struct {
+	ID           string    `json:"id" yaml:"id"`
+	Title        string    `json:"title" yaml:"title"`
+	Body         string    `json:"body" yaml:"body"`
+	SourceClause string    `json:"source_clause" yaml:"source_clause"`
+	CededTo      []string  `json:"ceded_to,omitempty" yaml:"ceded_to,omitempty"`
+	KeptIn       []string  `json:"kept_in,omitempty" yaml:"kept_in,omitempty"`
+	CreatedAt    time.Time `json:"created_at" yaml:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at" yaml:"updated_at"`
+}

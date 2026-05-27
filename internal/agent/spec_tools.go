@@ -48,13 +48,15 @@ import (
 //     prompt-injected document coerce the agent into reading any
 //     .json or .md file the process can reach. Rejecting non-
 //     alphanumeric-or-hyphen characters closes that door.
-var validSpecID = regexp.MustCompile(`^(feat|strat|dec|bug|app)-[a-z0-9]+(-[a-z0-9]+)*$`)
+var validSpecID = regexp.MustCompile(`^(goal|agoal|feat|strat|dec|bug|app)-[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // SpecManifest is the index returned by spec_list_manifest. Entries
 // are grouped by kind so the model can scan the whole index at a
 // glance and drill into a specific category without cross-array
 // filtering.
 type SpecManifest struct {
+	Goals      []SpecManifestEntry `json:"goals,omitempty"`
+	AntiGoals  []SpecManifestEntry `json:"antigoals,omitempty"`
 	Features   []SpecManifestEntry `json:"features,omitempty"`
 	Strategies []SpecManifestEntry `json:"strategies,omitempty"`
 	Decisions  []SpecManifestEntry `json:"decisions,omitempty"`
@@ -142,6 +144,34 @@ const summaryMaxRunes = 200
 func BuildSpecManifest(fsys specio.FS) SpecManifest {
 	var m SpecManifest
 
+	if pairs, err := specio.WalkPairs[spec.Goal](fsys, ".borg/spec/goals"); err == nil {
+		for _, p := range pairs {
+			if p.Err != nil {
+				slog.Warn("spec manifest: skipping malformed goal", "path", p.Path, "error", p.Err)
+				continue
+			}
+			m.Goals = append(m.Goals, SpecManifestEntry{
+				ID:      p.Object.ID,
+				Title:   p.Object.Title,
+				Summary: summaryOrFallback("", p.Object.Body),
+				Origin:  OriginSettled,
+			})
+		}
+	}
+	if pairs, err := specio.WalkPairs[spec.AntiGoal](fsys, ".borg/spec/antigoals"); err == nil {
+		for _, p := range pairs {
+			if p.Err != nil {
+				slog.Warn("spec manifest: skipping malformed antigoal", "path", p.Path, "error", p.Err)
+				continue
+			}
+			m.AntiGoals = append(m.AntiGoals, SpecManifestEntry{
+				ID:      p.Object.ID,
+				Title:   p.Object.Title,
+				Summary: summaryOrFallback("", p.Object.Body),
+				Origin:  OriginSettled,
+			})
+		}
+	}
 	if pairs, err := specio.WalkPairs[spec.Feature](fsys, ".borg/spec/features"); err == nil {
 		for _, p := range pairs {
 			if p.Err != nil {
@@ -258,10 +288,14 @@ func LookupSpecNode(fsys specio.FS, id string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("spec_get: empty id")
 	}
 	if !validSpecID.MatchString(id) {
-		return nil, fmt.Errorf("spec_get: id %q is malformed (expected kebab-case with prefix feat-, strat-, dec-, bug-, or app-)", id)
+		return nil, fmt.Errorf("spec_get: id %q is malformed (expected kebab-case with prefix goal-, agoal-, feat-, strat-, dec-, bug-, or app-)", id)
 	}
 	var p string
 	switch {
+	case strings.HasPrefix(id, "goal-"):
+		p = ".borg/spec/goals/" + id + ".json"
+	case strings.HasPrefix(id, "agoal-"):
+		p = ".borg/spec/antigoals/" + id + ".json"
 	case strings.HasPrefix(id, "feat-"):
 		p = ".borg/spec/features/" + id + ".json"
 	case strings.HasPrefix(id, "strat-"):
@@ -382,7 +416,7 @@ type specIDSuggestion struct {
 // strat-, dec-, bug-, app-), or "" when the id doesn't carry one.
 // Used to scope the candidate pool to the requested kind.
 func specIDPrefix(id string) string {
-	for _, p := range []string{"feat-", "strat-", "dec-", "bug-", "app-"} {
+	for _, p := range []string{"goal-", "agoal-", "feat-", "strat-", "dec-", "bug-", "app-"} {
 		if strings.HasPrefix(id, p) {
 			return p
 		}
@@ -395,6 +429,10 @@ func specIDPrefix(id string) string {
 // caller can rank uniformly.
 func manifestEntriesForPrefix(m SpecManifest, prefix string) []SpecManifestEntry {
 	switch prefix {
+	case "goal-":
+		return m.Goals
+	case "agoal-":
+		return m.AntiGoals
 	case "feat-":
 		return m.Features
 	case "strat-":
@@ -711,7 +749,13 @@ func SearchSpecNodes(fsys specio.FS, backend search.Backend, in SpecSearchInput)
 // attach authored summaries to spec_search hits without re-reading
 // each node's JSON.
 func summaryByID(m SpecManifest) map[string]string {
-	out := make(map[string]string, len(m.Features)+len(m.Strategies)+len(m.Decisions)+len(m.Bugs)+len(m.Approaches))
+	out := make(map[string]string, len(m.Goals)+len(m.AntiGoals)+len(m.Features)+len(m.Strategies)+len(m.Decisions)+len(m.Bugs)+len(m.Approaches))
+	for _, e := range m.Goals {
+		out[e.ID] = e.Summary
+	}
+	for _, e := range m.AntiGoals {
+		out[e.ID] = e.Summary
+	}
 	for _, e := range m.Features {
 		out[e.ID] = e.Summary
 	}

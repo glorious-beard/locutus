@@ -94,4 +94,11 @@ const (
 	KindStrategy NodeKind = "strategy"
 	KindEntity   NodeKind = "entity" // DJ-076: Entity is in-memory context, never persisted; kind value kept for agent output typing.
 	KindApproach NodeKind = "approach"
+	// KindGoal and KindAntiGoal name the persisted LLM-interpretation
+	// layer over GOALS.md (DJ-139). KindGoals (above) is a singular
+	// agent-output discriminator for legacy multi-claim emissions and
+	// is distinct from KindGoal, which refers to one atomic claim
+	// persisted at .borg/spec/goals/<id>.json.
+	KindGoal     NodeKind = "goal"
+	KindAntiGoal NodeKind = "antigoal"
 )

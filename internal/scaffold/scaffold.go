@@ -40,6 +40,8 @@ var plansFS embed.FS
 // directories is the set of directories created by Scaffold.
 var directories = []string{
 	".borg",
+	".borg/spec/goals",
+	".borg/spec/antigoals",
 	".borg/spec/features",
 	".borg/spec/bugs",
 	".borg/spec/decisions",
