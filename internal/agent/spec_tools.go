@@ -265,8 +265,8 @@ func summaryOrFallback(authored, fallback string) string {
 }
 
 // LookupSpecNode returns the raw JSON of one spec node by id. The
-// kind is inferred from the id prefix (`feat-`, `strat-`, `dec-`,
-// `bug-`, `app-`).
+// kind is inferred from the id prefix (`goal-`, `agoal-`, `feat-`,
+// `strat-`, `dec-`, `bug-`, `app-`).
 //
 // Validation is strict (validSpecID): malformed ids — empty, wrong
 // prefix, non-alphanumeric characters, embedded `..` segments —
@@ -412,9 +412,9 @@ type specIDSuggestion struct {
 	Score   float64
 }
 
-// specIDPrefix returns the prefix segment of a spec id (one of feat-,
-// strat-, dec-, bug-, app-), or "" when the id doesn't carry one.
-// Used to scope the candidate pool to the requested kind.
+// specIDPrefix returns the prefix segment of a spec id (one of goal-,
+// agoal-, feat-, strat-, dec-, bug-, app-), or "" when the id doesn't
+// carry one. Used to scope the candidate pool to the requested kind.
 func specIDPrefix(id string) string {
 	for _, p := range []string{"goal-", "agoal-", "feat-", "strat-", "dec-", "bug-", "app-"} {
 		if strings.HasPrefix(id, p) {

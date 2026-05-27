@@ -186,8 +186,8 @@ func NewSpecStore(fsys specio.FS) (*SpecStore, error) {
 	return s, nil
 }
 
-// loadFromFS walks `.borg/spec/{features,strategies,decisions,bugs}` for
-// JSON nodes and `.borg/spec/approaches` for markdown approaches. Each
+// loadFromFS walks `.borg/spec/{goals,antigoals,features,strategies,decisions,bugs}`
+// for JSON nodes and `.borg/spec/approaches` for markdown approaches. Each
 // loaded node lands in the corresponding map with OriginSettled. Missing
 // directories are not an error.
 func (s *SpecStore) loadFromFS() error {

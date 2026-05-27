@@ -70,9 +70,8 @@ func TestSpecStorePutGoalRoundTrip(t *testing.T) {
 }
 
 // TestSpecStorePutAntiGoalRoundTrip exercises the same round-trip for
-// AntiGoal including the CededTo and KeptIn slice fields. The slice
-// semantics matter: omitempty must not drop populated slices, and an
-// empty slice must not introduce JSON noise.
+// AntiGoal including the CededTo and KeptIn slice fields. omitempty
+// must not drop populated slices.
 func TestSpecStorePutAntiGoalRoundTrip(t *testing.T) {
 	fsys := specio.NewMemFS()
 	store, err := NewSpecStore(fsys)
