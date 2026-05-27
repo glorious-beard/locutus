@@ -230,6 +230,56 @@ func TestRuntimeDetection_RejectsUnknownActivity(t *testing.T) {
 	assert.Contains(t, err.Error(), `not registered`)
 }
 
+// TestActivityRegistry_LoadsMaxIterations — DJ-138 phase 1:
+// when the YAML carries an explicit max_iterations, the registry
+// surfaces it on the Activity struct.
+func TestActivityRegistry_LoadsMaxIterations(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, fsys.MkdirAll(".borg", 0o755))
+	require.NoError(t, fsys.WriteFile(".borg/agents.yaml", []byte(`activities:
+  capped_activity:
+    runtimes: [claude-code]
+    max_iterations: 7
+`), 0o600))
+
+	reg, err := NewRegistry(fsys)
+	require.NoError(t, err)
+
+	act, ok := reg.Lookup("capped_activity")
+	require.True(t, ok)
+	assert.Equal(t, 7, act.MaxIterations)
+}
+
+// TestActivityRegistry_DefaultsMaxIterationsTo20 — DJ-138 phase 1:
+// when the YAML omits max_iterations, the registry defaults the
+// field to 20. Matches the prior hardcoded const in
+// internal/runner/run.go so the refactor is zero-behavior-change
+// for activities that don't declare a cap explicitly.
+func TestActivityRegistry_DefaultsMaxIterationsTo20(t *testing.T) {
+	reg, err := NewRegistry(nil)
+	require.NoError(t, err)
+
+	act, ok := reg.Lookup("spec_refinement")
+	require.True(t, ok)
+	assert.Equal(t, 20, act.MaxIterations,
+		"unspecified max_iterations defaults to 20")
+}
+
+// TestActivityRegistry_HasSpecBias — DJ-138 phase 5:
+// spec_bias activity is registered in the embedded default with
+// the standard three-runtime preference list and the default
+// iteration cap of 20.
+func TestActivityRegistry_HasSpecBias(t *testing.T) {
+	reg, err := NewRegistry(nil)
+	require.NoError(t, err)
+
+	act, ok := reg.Lookup("spec_bias")
+	require.True(t, ok, "spec_bias must be in the embedded default registry")
+	assert.Equal(t, "spec_bias", act.Name)
+	assert.Equal(t, []string{"claude-code", "codex", "gemini"}, act.Runtimes)
+	assert.Equal(t, 20, act.MaxIterations)
+}
+
 // Compile-time check that errors.Is is referenced (used in detect.go
 // indirectly via exec.ErrNotFound semantics).
 var _ = errors.Is

@@ -61,7 +61,23 @@ type Activity struct {
 	// helper walks this list in order and returns the first runtime
 	// whose ACP-server binary is detectable on $PATH.
 	Runtimes []string
+
+	// MaxIterations is the per-activity ceiling for the outer-loop
+	// runner (internal/runner/loop.go OuterLoopRunner). Per
+	// [DJ-138](../../docs/decisions/dj-138-refine-with-bias-cascade.md),
+	// the cap moved from a hardcoded const in internal/runner/run.go
+	// into the registry so projects can tune iteration budgets per
+	// activity in .borg/agents.yaml. Unset / zero means "use the
+	// DefaultMaxIterations fallback" — see parseAgentsYAML for the
+	// fill-in step.
+	MaxIterations int
 }
+
+// DefaultMaxIterations is the fallback iteration ceiling applied to
+// any activity whose YAML omits max_iterations. Matches the prior
+// hardcoded const in internal/runner/run.go so unspecified
+// activities preserve their previous behavior.
+const DefaultMaxIterations = 20
 
 // Registry is the merged activity → preference table. Constructed
 // via NewRegistry; treat the returned value as read-only.

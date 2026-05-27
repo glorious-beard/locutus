@@ -26,23 +26,34 @@ activities:
       - claude-code
       - codex
       - gemini
+    max_iterations: 20
   feature_ingestion:
     runtimes:
       - claude-code
       - codex
       - gemini
+    max_iterations: 20
   code_adoption:
     runtimes:
       - claude-code
       - codex
       - gemini
+    max_iterations: 20
   code_assimilation:
     runtimes:
       - claude-code
       - codex
       - gemini
+    max_iterations: 20
   justification:
     runtimes:
       - claude-code
       - codex
       - gemini
+    max_iterations: 20
+  spec_bias:
+    runtimes:
+      - claude-code
+      - codex
+      - gemini
+    max_iterations: 20

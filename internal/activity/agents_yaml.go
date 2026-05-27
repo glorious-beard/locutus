@@ -20,7 +20,8 @@ type agentsYAMLFile struct {
 }
 
 type agentsYAMLActivity struct {
-	Runtimes []string `yaml:"runtimes"`
+	Runtimes      []string `yaml:"runtimes"`
+	MaxIterations int      `yaml:"max_iterations"`
 }
 
 // parseAgentsYAML decodes the wire shape into the in-process Activity
@@ -44,7 +45,11 @@ func parseAgentsYAML(data []byte) (map[string]Activity, error) {
 		if name == "" {
 			return nil, fmt.Errorf("agents.yaml: empty activity name")
 		}
-		out[name] = Activity{Name: name, Runtimes: raw.Runtimes}
+		cap := raw.MaxIterations
+		if cap == 0 {
+			cap = DefaultMaxIterations
+		}
+		out[name] = Activity{Name: name, Runtimes: raw.Runtimes, MaxIterations: cap}
 	}
 	return out, nil
 }

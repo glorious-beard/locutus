@@ -90,11 +90,15 @@ func DispatchActivity(
 	activityName string,
 	runtime string,
 	playbookBody string,
+	maxIterations int,
 	out io.Writer,
 	progress io.Writer,
 ) (*ActivityRun, error) {
 	if runtime == "" {
 		return nil, fmt.Errorf("dispatch: runtime is required")
+	}
+	if maxIterations <= 0 {
+		return nil, fmt.Errorf("dispatch: maxIterations must be > 0 (got %d)", maxIterations)
 	}
 	if out == nil {
 		out = io.Discard
@@ -112,11 +116,13 @@ func DispatchActivity(
 	// directive in the published overlay; the runner does one
 	// dispatch and lets the goal evaluator handle the rest. Codex
 	// and Gemini have no equivalent affordance, so the runner wraps
-	// the one-iteration dispatch in an outer loop.
+	// the one-iteration dispatch in an outer loop bounded by
+	// maxIterations (resolved by the caller from the activity
+	// registry per DJ-138 phase 1).
 	if runtime == "claude-code" {
 		return runOneIteration(ctx, projectRoot, runtime, spawn, playbookBody, out, progress)
 	}
-	return runOuterLoopDispatch(ctx, projectRoot, runtime, spawn, playbookBody, out, progress)
+	return runOuterLoopDispatch(ctx, projectRoot, runtime, spawn, playbookBody, maxIterations, out, progress)
 }
 
 // runOuterLoopDispatch wraps repeated runOneIteration calls in the
@@ -131,10 +137,10 @@ func runOuterLoopDispatch(
 	runtime string,
 	spawn acp.Spawn,
 	playbookBody string,
+	maxIterations int,
 	out io.Writer,
 	progress io.Writer,
 ) (*ActivityRun, error) {
-	const maxIterations = 20
 	var lastRun *ActivityRun
 	loop := &OuterLoopRunner{
 		MaxIterations: maxIterations,

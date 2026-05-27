@@ -37,6 +37,12 @@ func runActivityVerb(ctx context.Context, _ *CLI, activityName, contextNote stri
 	if err != nil {
 		return fmt.Errorf("%s: %w", activityName, err)
 	}
+	act, ok := reg.Lookup(activityName)
+	if !ok {
+		// Defensive: Resolve succeeded so Lookup must too — guarded
+		// against future refactors that might separate the two.
+		return fmt.Errorf("%s: activity resolved but missing from registry", activityName)
+	}
 	playbook, source, err := loadActivityPlaybook(fsys, activityName, runtime)
 	if err != nil {
 		return fmt.Errorf("%s: %w", activityName, err)
@@ -51,7 +57,7 @@ func runActivityVerb(ctx context.Context, _ *CLI, activityName, contextNote stri
 	// the operator which playbook variant (default vs overlay) is
 	// driving this run.
 	fmt.Fprintf(os.Stderr, "→ dispatching %s activity (runtime=%s, playbook=%s)\n", activityName, runtime, source)
-	run, err := runner.DispatchActivity(ctx, root, activityName, runtime, prompt, os.Stdout, os.Stderr)
+	run, err := runner.DispatchActivity(ctx, root, activityName, runtime, prompt, act.MaxIterations, os.Stdout, os.Stderr)
 	if err != nil {
 		return fmt.Errorf("%s: dispatch: %w", activityName, err)
 	}
