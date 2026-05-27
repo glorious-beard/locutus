@@ -2,7 +2,7 @@
 
 Locutus's "council" is the set of specialized agents (`spec-scout`, `spec-decision-elaborator`, etc.) that, taken together, drive a project's spec graph to convergence against `GOALS.md`. Before DJ-135 the council was a Go-coded workflow that Locutus orchestrated in-process. After DJ-135 the same agent set is preserved but the orchestration moves out: the published playbook at `.borg/plans/spec_refinement.md` instructs a coding-agent runtime (Claude Code, Codex, Gemini) to dispatch the agents itself via its own subagent mechanism (Claude Code's Task tool, etc.), calling back into Locutus's MCP server to read and mutate the spec graph.
 
-The agents themselves are unchanged. What changed is who orchestrates them and through what surface.
+The agents themselves are unchanged. What changed is who orchestrates them and through what surface. **DJ-136 added a further split:** the playbook is one-iteration-shaped, and the *outer loop* — the "keep running until converged" cadence — is owned by a runtime-specific harness. Claude Code uses its `/goal` evaluator (the published overlay invokes `/goal ... /locutus-refine`); Codex and Gemini have no equivalent affordance, so Locutus's runner drives the outer loop itself.
 
 This document covers:
 - The playbook iteration loop, diagrammed
@@ -14,13 +14,37 @@ Authoritative design lives in the [Decision Journal](DECISION_JOURNAL.md). When 
 
 ## The playbook loop
 
-The shape below mirrors the loop the spec_refinement playbook (`.borg/plans/spec_refinement.md`) prescribes. The coding agent reads the playbook on session start, then drives this loop itself by dispatching the named subagents and calling the named MCP tools.
+The shape below mirrors the one-iteration playbook the orchestrating agent runs. Each "Iteration" subgraph is one run of `.borg/plans/spec_refinement.md` (the cross-runtime default) — the agent reads the playbook on session start, then drives the steps inside the subgraph itself by dispatching the named subagents and calling the named MCP tools.
+
+The **outer loop** — deciding whether to dispatch another iteration — lives in a runtime-specific harness, drawn explicitly below. The harness reads the iteration's last line (the playbook instructs the orchestrator to surface a `converged: true` or `converged: false; <reason>` verdict) and decides convergence vs re-dispatch.
 
 ```mermaid
 graph TD
-    Start(["locutus refine → ACP session → playbook delivered"]) --> Survey
+    Start(["locutus refine [target] → ACP session"]) --> Harness
 
-    subgraph loop ["Iteration loop"]
+    Harness{"Runtime harness"}
+    Harness -- "claude-code: /goal evaluator wraps the slash command" --> GoalLoop
+    Harness -- "codex / gemini: Locutus runner's OuterLoopRunner" --> RunnerLoop
+
+    subgraph GoalLoop ["/goal-driven outer loop (claude-code)"]
+        GoalIter["Invoke /locutus-refine (one iteration)"]
+        GoalRead["Read final line: converged: true | false"]
+        GoalEval{"Evaluator decision"}
+        GoalIter --> GoalRead --> GoalEval
+        GoalEval -- "converged: true OR 20 iters" --> Done
+        GoalEval -- "converged: false" --> GoalIter
+    end
+
+    subgraph RunnerLoop ["Locutus outer loop (codex / gemini)"]
+        RunIter["Dispatch one ACP session running spec_refinement.md"]
+        RunRead["Read agent's final text"]
+        RunEval{"IsConverged()"}
+        RunIter --> RunRead --> RunEval
+        RunEval -- "converged: true OR 20 iters" --> Done
+        RunEval -- "converged: false" --> RunIter
+    end
+
+    subgraph iter ["Iteration body (one run of spec_refinement.md)"]
         Survey["spec-scout: survey + convergence judgement"]
         Surveyed["axes_open · new_nodes · critique_dimensions · concern_dispositions · converged?"]
         CandidateSurveys["spec-candidate-survey × N axes (parallel)"]
@@ -28,35 +52,39 @@ graph TD
         Narratives["spec-feature-elaborator / spec-strategy-elaborator × M new nodes (parallel) → spec_propose_feature / spec_propose_strategy"]
         Critics["spec-critic-elaborator × K dimensions (parallel) → concerns feed next scout"]
         Reconcile["spec-reconciler: cross-decision integrity → mcp__locutus__spec_revise_decision"]
+        Verdict["Report verdict line: converged: true | converged: false; <reason>"]
 
         Survey --> Surveyed
-        Surveyed -- "converged? = true" --> Done
+        Surveyed -- "converged? = true" --> Verdict
         Surveyed -- "converged? = false" --> CandidateSurveys
         CandidateSurveys --> Decisions
         Decisions --> Narratives
         Narratives --> Critics
         Critics --> Reconcile
-        Reconcile --> Survey
+        Reconcile --> Verdict
     end
 
-    Done(["Run complete: summary in agent's final output; spec graph at .borg/spec/"])
-    Cap(["20-iteration cap → commit best-known + report"])
-    Surveyed -- "20 iterations reached" --> Cap
+    GoalIter -. "spawns one iteration of" .-> iter
+    RunIter -. "spawns one iteration of" .-> iter
+
+    Done(["Run complete: graph at .borg/spec/; final report on stdout"])
 
     classDef agent fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef fanout fill:#fef3c7,stroke:#d97706,color:#78350f
     classDef merge fill:#f3f4f6,stroke:#6b7280,color:#374151
     classDef terminal fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef harness fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
 
     class Survey,Reconcile agent
     class CandidateSurveys,Decisions,Narratives,Critics fanout
-    class Surveyed merge
-    class Done,Cap terminal
-
-    style loop fill:#fefce8,stroke:#a8a29e,stroke-width:1.5px,color:#713f12
+    class Surveyed,Verdict merge
+    class Done terminal
+    class Harness,GoalEval,RunEval harness
 ```
 
 Each fanout step's parallelism is enabled by the runtime — Claude Code can dispatch multiple subagents concurrently via repeated Task invocations; Codex / Gemini have their own equivalents. The playbook describes the steps as "dispatch in parallel where your runtime allows" rather than mandating concurrency.
+
+The **per-runtime harness asymmetry** is deliberate (DJ-136 resolved-question 5: "Asymmetric convergence is the deliberate design"). On Claude Code the published overlay at `internal/scaffold/plans/spec_refinement.claude-code.md` opens with a `/goal` directive whose body invokes `/locutus-refine` and names the termination predicate; the evaluator runs after every turn and decides whether to continue. On Codex / Gemini the runner's `OuterLoopRunner` calls `runOneIteration` in a Go loop bounded by 20 iterations, checking the agent's final text for `converged: true` via `IsConverged`. Same logical loop, different driver, different operational surface.
 
 Spec mutation goes exclusively through MCP write tools (`mcp__locutus__spec_propose_*`, `mcp__locutus__spec_revise_decision`). Auto-commit per call: the orchestrating coding agent calls the tool, Locutus commits, and every other attached client receives `notifications/resources/updated` on `spec://manifest`. Multi-client coordination falls out of the singleton daemon model — see `docs/mcp.md` for the lifecycle.
 
