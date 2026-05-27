@@ -4,7 +4,7 @@
 >
 > **Governing DJ:** [DJ-140](../../docs/DECISION_JOURNAL.md#dj-140). The DJ is the authoritative design record; this plan tracks **progress against** it.
 >
-> **Status:** READY — design locked in DJ-140 on 2026-05-27. Amends [DJ-136](../../docs/DECISION_JOURNAL.md#dj-136) (its asymmetric-convergence resolved-questions are superseded). Unblocks DJ-139's `refine goals` bootstrap, which currently fails with "/goal isn't available in this environment" on the headless ACP path.
+> **Status:** DONE — design locked in DJ-140 on 2026-05-27. Amends [DJ-136](../../docs/DECISION_JOURNAL.md#dj-136) (its asymmetric-convergence resolved-questions are superseded). Unblocks DJ-139's `refine goals` bootstrap, which currently fails with "/goal isn't available in this environment" on the headless ACP path.
 >
 > **Surface area:** small-medium. `run.go` branch removal (~10 lines), `ResolvePlaybook` mode axis (~25 lines + signature change), one caller update (`cmd/activity_verb.go`), publisher mode-aware resolution (~30 lines), one playbook file rename, one one-shot-playbook verdict-line verification, docs. No new node types, no new MCP tools.
 >
