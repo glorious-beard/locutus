@@ -4,7 +4,7 @@
 >
 > **Status:** SUPERSEDED by DJ-135 on 2026-05-26. The dimension-driven critic *discipline* (scout surfaces critique_dimensions; cohesion-critic dispatches per-dimension rather than running 4 fixed lenses) carries forward verbatim into the activity playbook. The Go-side dispatch loop that wired this together retires with the WorkflowExecutor. Historical: DONE — Phases 1-6 + 8 landed 2026-05-20.
 >
-> **Prerequisite:** [DJ-128](../../docs/DECISION_JOURNAL.md#dj-128-decisions-as-deliberation-logs-structured-critic-counterproposals-revision-cap-as-commit-refines-dj-126-revise-loop-after-third-winplan-re-run) Phases 1-7 in main as of 2026-05-20. DJ-129 retires DJ-128's Phase 3 work (the four critic prompt files) and replaces it with a parametric critic-elaborator + scout-driven dimension identification.
+> **Prerequisite:** [DJ-128](../../docs/DECISION_JOURNAL.md#dj-128) Phases 1-7 in main as of 2026-05-20. DJ-129 retires DJ-128's Phase 3 work (the four critic prompt files) and replaces it with a parametric critic-elaborator + scout-driven dimension identification.
 >
 > **Surface area:** ScoutBrief schema extension; spec_scout prompt extension (dimension identification); new `spec_critic_elaborator` agent (one file, parametric); critique dispatcher (code-side); workflow `critique` step becomes a fanout; the four existing critic agent files are retired; minor `mergeCriticIssues` change to pull lens-tag from fanout item.
 >

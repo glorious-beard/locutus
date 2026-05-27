@@ -1,6 +1,6 @@
 # DJ-122 Migration — Spawner-Node Executor Implementation Plan
 
-> **Governing DJ:** [DJ-122: Graph-Mutation Workflow Executor with Spawner Nodes (Supersedes DJ-112 on Control-Flow Topology)](../../docs/DECISION_JOURNAL.md#dj-122-graph-mutation-workflow-executor-with-spawner-nodes-supersedes-dj-112-on-control-flow-topology). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes that don't belong in the DJ.
+> **Governing DJ:** [DJ-122: Graph-Mutation Workflow Executor with Spawner Nodes (Supersedes DJ-112 on Control-Flow Topology)](../../docs/DECISION_JOURNAL.md#dj-122). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes that don't belong in the DJ.
 >
 > **Status:** SUPERSEDED by DJ-135 on 2026-05-26. The WorkflowExecutor + spawner-node design retires entirely; the `internal/executor/` package + `internal/agent/workflow.go` were deleted in DJ-135 Phase 5. Historical: DONE — Phases 1–7 landed 2026-05-14.
 > **Surface area:** `internal/executor/` (~440 LOC) + `internal/agent/workflow.go` wrapper + 3 council workflow definitions + ~25 references across agent / dispatch / cmd consumers.
@@ -158,8 +158,8 @@ Three open questions were surfaced before drafting; resolved in chat 2026-05-14.
 
 ## Pointers a fresh session should follow before resuming
 
-1. Read [DJ-122](../../docs/DECISION_JOURNAL.md#dj-122-graph-mutation-workflow-executor-with-spawner-nodes-supersedes-dj-112-on-control-flow-topology) in full. It's the authoritative design; this plan is progress tracking.
-2. Read the predecessor chain: [DJ-112](../../docs/DECISION_JOURNAL.md#dj-112-workflows-move-from-external-yaml-to-go-values-supersedes-dj-036-on-workflows) (the topology decision DJ-122 supersedes) and [DJ-084](../../docs/DECISION_JOURNAL.md#dj-084-dominikbraungraph-is-the-canonical-graph-library-spec-and-executor-share-it) (the graph library both layers share).
+1. Read [DJ-122](../../docs/DECISION_JOURNAL.md#dj-122) in full. It's the authoritative design; this plan is progress tracking.
+2. Read the predecessor chain: [DJ-112](../../docs/DECISION_JOURNAL.md#dj-112) (the topology decision DJ-122 supersedes) and [DJ-084](../../docs/DECISION_JOURNAL.md#dj-084) (the graph library both layers share).
 3. Read [internal/executor/dag.go](../../internal/executor/dag.go) end-to-end before touching it. The up-front DAG validation in `buildStepGraph` is load-bearing and stays — the change is that `executeOnce` re-runs `g.PredecessorMap()` after each step that emits spawns, and `dgraph.AddVertex` / `AddEdge` enforce uniqueness and cycle-prevention incrementally.
 4. Read [internal/agent/workflow.go](../../internal/agent/workflow.go) and [internal/agent/workflow_spec_generation.go](../../internal/agent/workflow_spec_generation.go) — Phase 4 touches the wrapper and Phase 5 is the first real consumer.
 5. Don't relitigate DJ-122's design decisions unless surfacing a reason in chat first. The spawner-node model (no native back-edges), the bounded graph-size cap, the iteration-metadata-in-node-IDs convention, and the deferred CLI visibility work are committed. The three open questions named at the top of this plan (Go-only vs LLM gate, budget default, force-converged behavior) are flagged for chat-level resolution before Phase 5, not for ad-hoc decision during implementation.

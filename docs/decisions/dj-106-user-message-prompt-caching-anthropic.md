@@ -1,0 +1,39 @@
+## DJ-106: User-Message Prompt Caching for Anthropic via `Cacheable` Flag
+
+**Status:** shipped
+
+**Decision:** The neutral `Message` type carried by `AgentInput` and `adapters.Request` gains a `Cacheable bool` field. Projection layers that build the user-side conversation emit the static prefix shared across council fanout (GOALS body, scout brief, outline) as a `Cacheable=true` message, followed by a `Cacheable=false` message carrying the per-call variation. The Anthropic adapter merges adjacent same-role messages into a single `MessageParam` with one `TextBlockParam` per source `Message`, attaching `CacheControl: NewCacheControlEphemeralParam()` to the block whose source was flagged `Cacheable`. Other adapters ignore the flag — Gemini caching uses a separate `cachedContent` resource API; OpenAI's Responses API caches identical prefixes server-side automatically without explicit markers.
+
+The cache_control marker on the system prompt was already in place ([`anthropic.go`](../internal/agent/adapters/anthropic.go#L82-L87) since DJ-099); DJ-106 extends caching to the much larger user-message prefix.
+
+**Why:** the spec-generation council's elaborator fanout (DJ-090) dispatches 15-25 calls per `refine goals` invocation, every one carrying the same ~3-5k tokens of GOALS + scout brief + outline as the prefix of its user message. With no user-message caching, the fanout pays input-token cost for that prefix on every call AND consumes TPM budget proportional to (prefix tokens × N calls). Anthropic's ephemeral prompt cache (5-minute TTL, ~10% input-token cost on cache reads) is a near-perfect match for fanout-shaped workloads where N parallel calls fire within seconds of each other:
+
+- **Cost:** the second-through-Nth call's static prefix bills at cache-read rates instead of full-input rates. For a 25-call fanout with a 4k-token static prefix, that's roughly 96k tokens shifted from full-cost to ~10% cost per refine.
+- **TPM pressure:** cached input tokens count differently against rate limits (per Anthropic docs as of May 2026), so the same fanout consumes less TPM budget — meaningful on lower-tier accounts where the council can otherwise saturate the bucket.
+- **Latency:** cache reads are faster than full prefix reprocessing, especially noticeable when the parallel batch hits the same node simultaneously.
+
+**Why a `Cacheable bool` per-Message field, not a richer cache-region API:** the projection layer already emits `[]Message` and the boundary between "static across fanout" and "varies per call" is a single break — for the elaborator, between the outline section and the per-target header. A boolean per message is the smallest API surface that captures the boundary. Richer designs (multiple cache regions, TTL hints, tool/system markers as separate fields) would lock in design choices that haven't been measured yet. The flag is additive and cheap to extend later if a future projection needs more than two regions.
+
+**Why grouping adjacent same-role messages, not preserving 1:1 Message→MessageParam:** Anthropic's API rejects consecutive same-role messages — alternation is required. More importantly, the cache marker's positional semantics ("everything in the request up to and including this block is the cacheable prefix") only work within a single message that holds multiple TextBlocks. A 1:1 mapping would split the prefix and the variation across two separate API messages, which makes the cache marker apply to a fragment that doesn't include the system prompt or any earlier content — defeating the purpose. Grouping is mandatory, not optional.
+
+The grouping path activates only when at least one input Message carries `Cacheable=true`; otherwise the per-Message MessageParam shape is preserved so callers that don't care about caching see no behavioral change.
+
+**Why now, not earlier:** the council fanout, the direct-SDK migration (DJ-099), and explicit cache markers on the system prompt all landed before today, but the user-message prefix wasn't getting cached because the projection layer concatenated GOALS + scout + outline + per-call target into a single `Message` content string. The boundary information was lost at the projection layer; the adapter had nothing to mark. DJ-106 plumbs the boundary through as a `Cacheable bool` on `Message` and lets the adapter act on it.
+
+**What lands:**
+
+- `agent.Message` and `adapters.Message`: new `Cacheable bool` field with comments explaining the cross-adapter behavior.
+- `executor.go` `buildAdapterRequest`: passes the flag from `AgentInput.Messages` through to `adapters.Request.Messages`.
+- `adapters/anthropic.go` `buildAnthropicMessages`: new grouping path triggered by `anyCacheable`; same-role runs merge into one `MessageParam` with multiple `TextBlockParam` blocks; cache_control set on Cacheable blocks via `NewCacheControlEphemeralParam`. Helpers `textBlockFromMessage`, `oneBlockMessageParam`, `anthropicMessageRole` factor the construction.
+- `projection.go` `projectElaborateOne`: now emits two `Message`s — `Cacheable=true` prefix (GOALS + scout brief + outline) and `Cacheable=false` suffix (per-call fanout target). The semantic content of the user message is unchanged; only its segmentation differs.
+- `TestBuildAnthropicMessages_CacheableMarksBlock` and `TestBuildAnthropicMessages_NoCacheableUnchanged` lock in the adapter behavior. `TestProjectElaborateOne_SplitsCacheableFromVariable` locks in the projection split.
+
+**What stays the same:**
+
+- The Gemini and OpenAI adapters. Gemini's `cachedContent` API is a separate workstream — it requires explicit cache resource creation/destruction with TTL management, which doesn't fit the interactive `refine goals` UX as cleanly. Defer until measurement justifies it. OpenAI's Responses API already does automatic prefix caching server-side; explicit markers would add complexity without clear benefit.
+- All other projections. Only `projectElaborateOne` (the per-feature/per-strategy elaborator) splits today. The cluster-finding projection ([`projection.go:226`](../internal/agent/projection.go#L226)) is a candidate for the same treatment when fanout-shape behavior shows up there in real runs; it's not free and shouldn't ship pre-emptively.
+- The system-prompt cache_control already in place since DJ-099. DJ-106 adds a second cache marker; Anthropic's API allows up to 4 per request, so we're well within budget.
+
+**Reversal criteria:** revert if (a) cached prefix invalidation patterns produce *worse* aggregate latency than the uncached path (would suggest the 5-minute TTL is mismatched to actual fanout cadence — possible if a single `refine goals` run takes >5 minutes between scout and elaborator fanout, in which case the cache expires before the fanout dispatches, but the second-through-Nth elaborator call within the fanout would still hit the cache, so net positive); or (b) a future projection needs to mark non-contiguous cacheable regions and the simple boolean shape becomes a structural blocker (in which case the field evolves to a richer cache-region API rather than disappearing). Neither is structural; both can be addressed in the same files.
+
+**Reference:** governed by the 2026-05 best-practice guidance (Anthropic ephemeral prompt cache: 5-min TTL, 1024-token minimum prefix, up to 4 markers per request, ~10% input cost on cache reads, billing/TPM accounting per the Anthropic Build documentation). Builds on DJ-099 (direct-SDK migration that exposed cache_control as a first-class API surface), DJ-090 (the per-node fanout that creates the caching opportunity), and DJ-099-era system-prompt caching (which added the first cache marker; DJ-106 adds the second). Distinct from the planned Anthropic Sonnet/Opus tier pricing review and from any future Gemini `cachedContent` integration — those are separate workstreams.

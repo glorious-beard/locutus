@@ -1,6 +1,6 @@
 # DJ-126 — Decision Re-Elaboration for Cross-Decision Contradictions
 
-> **Governing DJ:** [DJ-126](../../docs/DECISION_JOURNAL.md#dj-126-decision-re-elaboration-for-cross-decision-contradictions-extends-dj-124-with-existing-decision-revision-depends-on-dj-125-concern-model). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
+> **Governing DJ:** [DJ-126](../../docs/DECISION_JOURNAL.md#dj-126). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
 >
 > **Status:** SUPERSEDED by DJ-135 on 2026-05-26. The Go-side revise-dispatch machinery retires with the WorkflowExecutor; the cross-decision-contradiction revise discipline carries forward into the playbook via the MCP `spec_revise_decision` tool + the cascade-revisions playbook step. Historical: Phases 1-6 landed 2026-05-19.
 > **Prerequisite:** [DJ-125](../../docs/DECISION_JOURNAL.md#dj-125) must land first — DJ-126's dispatch is keyed on `Concern.RelatedDecisionIDs`, which DJ-125 introduces.
@@ -281,7 +281,7 @@ Pick (a) at implementation time.
 ## Pointers a fresh session should follow before resuming
 
 1. Confirm DJ-125 is landed and the new `Concern` shape carries `RelatedDecisionIDs`. DJ-126 depends on this substrate.
-2. Read DJ-126 in full ([docs/DECISION_JOURNAL.md#dj-126](../../docs/DECISION_JOURNAL.md#dj-126-decision-re-elaboration-for-cross-decision-contradictions-extends-dj-124-with-existing-decision-revision-depends-on-dj-125-concern-model)). It's the authoritative design.
+2. Read DJ-126 in full ([docs/DECISION_JOURNAL.md#dj-126](../../docs/DECISION_JOURNAL.md#dj-126)). It's the authoritative design.
 3. Read DJ-124 ([docs/DECISION_JOURNAL.md#dj-124](../../docs/DECISION_JOURNAL.md#dj-124)) for the workflow this extends and the spawner-node pattern used.
 4. Read the second winplan trace at [`/Users/chetan/projects/winplan/.locutus/sessions/20260518/1258/30-ae0157/`](file:///Users/chetan/projects/winplan/.locutus/sessions/20260518/1258/30-ae0157/) for the empirical failure modes the revise dispatch addresses.
 5. Before the prompt edit in Phase 1, **re-read [docs/agent-conventions.md](../../docs/agent-conventions.md) end-to-end**. The revise-mode section is the highest-stakes prompt edit in this plan; cycling-revision failure modes trace back to weak revise-mode prompts.

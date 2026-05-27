@@ -240,7 +240,7 @@ Cross-adapter:
 ## Pointers a fresh session should follow before resuming
 
 1. Read DJ-130 in full ([docs/DECISION_JOURNAL.md#dj-130](../../docs/DECISION_JOURNAL.md#dj-130)). It's the authoritative design; this plan is progress tracking.
-2. Read DJ-108 ([docs/DECISION_JOURNAL.md#dj-108](../../docs/DECISION_JOURNAL.md#dj-108-anthropic-native-structured-output--adaptive-thinking)) for the direction DJ-130 extends.
+2. Read DJ-108 ([docs/DECISION_JOURNAL.md#dj-108](../../docs/DECISION_JOURNAL.md#dj-108)) for the direction DJ-130 extends.
 3. Read commit `5d15e7b` (the original split-in-Dispatcher pattern). The Phase 2 deletion sweep needs to remove every reference; this commit is the inventory.
 4. Read the fifth winplan trace at [`/Users/chetan/projects/winplan/.locutus/sessions/20260521/0055/07-b8e485/`](file:///Users/chetan/projects/winplan/.locutus/sessions/20260521/0055/07-b8e485/) end-to-end before Phase 5. The iter-0 spec_scout YAML shows the thinking-content vs structured-response divergence; the rest of the trace shows the 0-strategy outcome.
 5. Each phase has an empirical check. **Run them.** Static unit tests on adapter logic aren't sufficient evidence that the split actually fires correctly against the real provider API — the smoke runs are load-bearing.

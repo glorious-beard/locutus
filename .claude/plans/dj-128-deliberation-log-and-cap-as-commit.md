@@ -1,6 +1,6 @@
 # DJ-128 — Decisions as Deliberation Logs, Structured Critic Counterproposals, Revision Cap as Commit
 
-> **Governing DJ:** [DJ-128](../../docs/DECISION_JOURNAL.md#dj-128-decisions-as-deliberation-logs-structured-critic-counterproposals-revision-cap-as-commit-refines-dj-126-revise-loop-after-third-winplan-re-run). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
+> **Governing DJ:** [DJ-128](../../docs/DECISION_JOURNAL.md#dj-128). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
 >
 > **Status:** SUPERSEDED by DJ-135 on 2026-05-26. The decisions-as-deliberation-logs *discipline* carries forward (the alternatives-merge fix from `ef2d209` is still active; decision JSON files still carry rationale + alternatives + concerns + revisions verbatim). The Go-encoded cap-as-commit machinery retires per DJ-135 resolved-question 13 (subscription economics remove the cost pressure that motivated capping). Historical: DONE — Phases 1-7 landed 2026-05-20.
 > **Prerequisite:** [DJ-126](../../docs/DECISION_JOURNAL.md#dj-126) must be landed (it is — Phases 1-6 in main as of 2026-05-20). DJ-128 reshapes how DJ-126's revise loop behaves; it does not replace the structural pieces (revise dispatch, replace-by-axis merge, per-axis cap counter).
@@ -276,7 +276,7 @@ Recorded in chat 2026-05-20 between the winplan re-run failure and this plan; se
 ## Pointers a fresh session should follow before resuming
 
 1. Confirm DJ-126 is landed AND the dedup-by-decision-ID fix from the post-validation winplan re-run is in main. DJ-128 builds on both.
-2. Read DJ-128 in full ([docs/DECISION_JOURNAL.md#dj-128](../../docs/DECISION_JOURNAL.md#dj-128-decisions-as-deliberation-logs-structured-critic-counterproposals-revision-cap-as-commit-refines-dj-126-revise-loop-after-third-winplan-re-run)). It's the authoritative design.
+2. Read DJ-128 in full ([docs/DECISION_JOURNAL.md#dj-128](../../docs/DECISION_JOURNAL.md#dj-128)). It's the authoritative design.
 3. Read the third winplan trace at [`/Users/chetan/projects/winplan/.locutus/sessions/20260520/1224/39-81eadc/`](file:///Users/chetan/projects/winplan/.locutus/sessions/20260520/1224/39-81eadc/) for the empirical failure mode. The `hosting-platform (revised 3×)` cap-trip and the iter-4 critic concerns (c-46, c-48, c-49 about naming drift after revisions) are the concrete shape of the bullying dynamic.
 4. Before the prompt edits in Phase 3 and Phase 5, **re-read [docs/agent-conventions.md](../../docs/agent-conventions.md) end-to-end**. Four critic prompts + the decision-elaborator revise prompt = five high-stakes prompt edits; the agent-conventions checklist exists for exactly this kind of session.
 5. Phase 8 is the validation step. Don't flip DJ-128 status to `shipping` until winplan re-runs cleanly. The reversal criteria in the DJ name the specific empirical signals to watch for.

@@ -1,6 +1,6 @@
 # DJ-125 — In-Flight Manifest + Enriched Concern Model
 
-> **Governing DJ:** [DJ-125](../../docs/DECISION_JOURNAL.md#dj-125-in-flight-manifest--enriched-concern-model-refines-dj-094--dj-123-in-flight-surface-closes-dj-124s-concern-disposition-gap). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
+> **Governing DJ:** [DJ-125](../../docs/DECISION_JOURNAL.md#dj-125). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
 >
 > **Status:** SUPERSEDED by DJ-134 (2026-05-23) + DJ-135 (2026-05-26). InFlightSpecStore overlay retired in DJ-134 (concern + working-flag carry as per-entry fields in the unified store); cap-as-commit retires per DJ-135 resolved-question 13 (subscription economics). The concern model lives in agent-prompt prose now rather than Go-side bookkeeping. Historical: Phases 1-8 landed 2026-05-20.
 > **Predecessor:** [DJ-124](../../docs/DECISION_JOURNAL.md#dj-124) (landed Phases 1-8; Phase 9 validation revealed the gaps this plan closes).
@@ -290,7 +290,7 @@ Each projection still carries the agent's specific working item verbatim — onl
 
 ## Pointers a fresh session should follow before resuming
 
-1. Read DJ-125 in full ([docs/DECISION_JOURNAL.md#dj-125](../../docs/DECISION_JOURNAL.md#dj-125-in-flight-manifest--enriched-concern-model-refines-dj-094--dj-123-in-flight-surface-closes-dj-124s-concern-disposition-gap)). It's the authoritative design; this plan is progress tracking.
+1. Read DJ-125 in full ([docs/DECISION_JOURNAL.md#dj-125](../../docs/DECISION_JOURNAL.md#dj-125)). It's the authoritative design; this plan is progress tracking.
 2. Read DJ-124 ([docs/DECISION_JOURNAL.md#dj-124](../../docs/DECISION_JOURNAL.md#dj-124)) and DJ-123 ([docs/DECISION_JOURNAL.md#dj-123](../../docs/DECISION_JOURNAL.md#dj-123)) for the predecessor architecture and the `SwappableSpecSearch` pattern this generalizes.
 3. Read the second winplan trace at [`/Users/chetan/projects/winplan/.locutus/sessions/20260518/1258/30-ae0157/`](file:///Users/chetan/projects/winplan/.locutus/sessions/20260518/1258/30-ae0157/) end-to-end before Phase 6. The stale-concerns failure mode is visible in the `convergence_failed` event's accumulated concerns list.
 4. Before any prompt edit (Phase 7), **re-read [docs/agent-conventions.md](../../docs/agent-conventions.md) end-to-end**. Per [[feedback-agent-conventions-checklist-first]], do not rely on remembered conventions. After drafting the new scout grading section, audit section-by-section against the numbered anti-patterns.
@@ -298,7 +298,7 @@ Each projection still carries the agent's specific working item verbatim — onl
 
 ## What is explicitly out of scope
 
-- **Decision re-elaboration for cross-decision contradictions.** Tracked separately as [DJ-126](../../docs/DECISION_JOURNAL.md#dj-126-decision-re-elaboration-for-cross-decision-contradictions-extends-dj-124-with-existing-decision-revision-depends-on-dj-125-concern-model). DJ-125 provides the substrate (`Concern.RelatedDecisionIDs`); DJ-126 builds the dispatch on top.
+- **Decision re-elaboration for cross-decision contradictions.** Tracked separately as [DJ-126](../../docs/DECISION_JOURNAL.md#dj-126). DJ-125 provides the substrate (`Concern.RelatedDecisionIDs`); DJ-126 builds the dispatch on top.
 - **Removal of legacy gate helpers** (`gateSpawnFor`, `mergeGateVerdict`, etc.). They were preserved in DJ-124's Stage C because test surfaces still drive them. Cleanup is a follow-up.
 - **Cycle-detection refactor to use manifest axis state directly.** The existing `DecidedAxesByIter` map works; cleanup is a follow-up once DJ-125 lands and the manifest is the canonical axis-state source.
 - **Operator-facing surfaces for the manifest.** A future `locutus manifest` verb or `locutus history --concerns` could surface this richer state; out of scope for the council-internal work here.

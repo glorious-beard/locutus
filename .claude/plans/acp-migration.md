@@ -1,6 +1,6 @@
 # ACP Migration — Implementation Plan
 
-> **Governing DJ:** [DJ-119: Agent Client Protocol Replaces the Coding-Agent Driver Layer](../../docs/DECISION_JOURNAL.md#dj-119-agent-client-protocol-replaces-the-coding-agent-driver-layer)
+> **Governing DJ:** [DJ-119: Agent Client Protocol Replaces the Coding-Agent Driver Layer](../../docs/DECISION_JOURNAL.md#dj-119)
 > in `docs/DECISION_JOURNAL.md`. The DJ is the authoritative design record;
 > this plan tracks **progress against** the DJ and captures session-level
 > implementation notes that don't belong in the DJ.

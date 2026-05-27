@@ -1,6 +1,6 @@
 # DJ-133 — Decisions Identified by Axis, Not Chosen Option
 
-> **Governing DJ:** [DJ-133](../../docs/DECISION_JOURNAL.md#dj-133-decisions-identified-by-axis-not-chosen-option-eliminates-idcontent-drift-after-flips-collapses-replace-by-axis-id-logic-bounds-the-councils-id-namespace-for-hallucination-defense). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
+> **Governing DJ:** [DJ-133](../../docs/DECISION_JOURNAL.md#dj-133). The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes.
 >
 > **Status:** DONE — axis-shaped decision IDs (`dec-<axis-id>`) shipped 2026-05-23 as `internal/migrate/MigrateDecisionIDs` (idempotent across runs); the convention is foundational and carries through DJ-134 and DJ-135. CLAUDE.md's "Sources of Truth" section names it authoritatively. Empirically verified on winplan refine 2026-05-26 — every decision in the spec graph uses `dec-<axis>` form.
 > **Predecessors:** [DJ-124](../../docs/DECISION_JOURNAL.md#dj-124) (axis-driven workflow; the scout surfaces axes; the elaborator commits decisions — under DJ-133 the two share a key namespace); [DJ-126](../../docs/DECISION_JOURNAL.md#dj-126) (replace-by-axis-ID match — DJ-133 collapses it to ID-based lookup); [DJ-128](../../docs/DECISION_JOURNAL.md#dj-128) (cap-as-commit lock-by-axis-id — simplified under DJ-133); [DJ-088](../../docs/DECISION_JOURNAL.md#dj-088) (cascade-rewrite machinery — the migration leans on it); commit [`eb51a14`](https://github.com/chetan/locutus/commit/eb51a14) (the three immediate fixes that mitigate the failure mode at the prompt and tool-error-message surface — DJ-133 closes the deeper structural cause).
@@ -198,9 +198,9 @@ In practice: Phase 1 ships first, runs on the user's machine via `locutus update
 
 ## Pointers a fresh session should follow before resuming
 
-1. Read DJ-133 in full ([docs/DECISION_JOURNAL.md#dj-133](../../docs/DECISION_JOURNAL.md#dj-133-decisions-identified-by-axis-not-chosen-option-eliminates-idcontent-drift-after-flips-collapses-replace-by-axis-id-logic-bounds-the-councils-id-namespace-for-hallucination-defense)). It's the authoritative design; this plan is progress tracking.
+1. Read DJ-133 in full ([docs/DECISION_JOURNAL.md#dj-133](../../docs/DECISION_JOURNAL.md#dj-133)). It's the authoritative design; this plan is progress tracking.
 2. Read commit [`eb51a14`](https://github.com/chetan/locutus/commit/eb51a14) (the three immediate fixes DJ-133 builds on). Without those fixes, DJ-133's prompt-side gains would be partially offset by the model still mis-believing spec_get can't see in-flight decisions; with them, DJ-133 closes the structural cause cleanly.
-3. Read DJ-126 ([docs/DECISION_JOURNAL.md#dj-126](../../docs/DECISION_JOURNAL.md#dj-126-decision-re-elaboration-for-cross-decision-contradictions-extends-dj-124-with-existing-decision-revision-depends-on-dj-125-concern-model)) for the replace-by-axis-ID workflow DJ-133 collapses.
+3. Read DJ-126 ([docs/DECISION_JOURNAL.md#dj-126](../../docs/DECISION_JOURNAL.md#dj-126)) for the replace-by-axis-ID workflow DJ-133 collapses.
 4. Read DJ-088 ([docs/DECISION_JOURNAL.md#dj-088](../../docs/DECISION_JOURNAL.md#dj-088)) for the cascade-rewrite machinery the migration leans on.
 5. Walk `docs/agent-conventions.md` checklist before editing `spec_decision_elaborator.md`. The user memory mandates this walk for any edit under `internal/scaffold/agents/`.
 6. Read the seventh winplan re-run trace at `~/projects/winplan/.locutus/sessions/20260522/1250/10-877ef1/` end-to-end before Phase 5. The id-confabulation failure mode at step 0027 (the revise dispatch hitting the tool-loop cap) is the load-bearing motivation; the trace makes it concrete.

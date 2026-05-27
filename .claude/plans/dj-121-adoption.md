@@ -1,6 +1,6 @@
 # DJ-121 Adoption — Implementation Plan
 
-> **Governing DJ:** [DJ-121: Coarsen Pre-Planning to Workstream Grain; Agent Owns Step Decomposition via Worktree Checklist](../../docs/DECISION_JOURNAL.md#dj-121-coarsen-pre-planning-to-workstream-grain-agent-owns-step-decomposition-via-worktree-checklist-refines-dj-010-dj-074-dj-120) in `docs/DECISION_JOURNAL.md`. The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes that don't belong in the DJ.
+> **Governing DJ:** [DJ-121: Coarsen Pre-Planning to Workstream Grain; Agent Owns Step Decomposition via Worktree Checklist](../../docs/DECISION_JOURNAL.md#dj-121) in `docs/DECISION_JOURNAL.md`. The DJ is the authoritative design record; this plan tracks **progress against** the DJ and captures session-level implementation notes that don't belong in the DJ.
 >
 > **Status:** SUPERSEDED by DJ-135 on 2026-05-26. Workstream-grain pre-planning + worktree-checklist model retires under the activity-playbook + ACP-dispatch design; the principle that "the agent owns step decomposition" carries forward and is strengthened by DJ-135. Historical: Phases 1-8 complete 2026-05-14; Phase 9 retired with the WorkflowExecutor.
 > **Surface area:** ~110 references to `PlanStep` / `StepProgress` / `.Steps` across 25 files at the start; soft-deprecate path leaves most parseable while routing new behaviour through workstream-grain APIs.
@@ -147,7 +147,7 @@ Today's pipeline (post-DJ-119, post-DJ-120):
 
 ## Pointers a fresh session should follow before resuming
 
-1. Read [DJ-121](../../docs/DECISION_JOURNAL.md#dj-121-coarsen-pre-planning-to-workstream-grain-agent-owns-step-decomposition-via-worktree-checklist-refines-dj-010-dj-074-dj-120) in full. It's the authoritative design; this plan is progress tracking.
+1. Read [DJ-121](../../docs/DECISION_JOURNAL.md#dj-121) in full. It's the authoritative design; this plan is progress tracking.
 2. Read the chain: DJ-010 (the original supervision design, partially superseded), DJ-074 (resume contract, refined twice), DJ-120 (first resume narrowing), DJ-119 (ACP transport, prerequisite for DJ-121's lifecycle premise).
 3. Read `internal/dispatch/supervisor.go` and `internal/dispatch/dispatcher.go` — these are the bulk of Phase 3 surgery.
 4. Read `internal/spec/plan.go` — Phase 4's main target.
