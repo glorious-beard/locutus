@@ -32,6 +32,19 @@ const (
 	descSpecReviseFeature = "Revise an existing product feature. Same input shape as spec_propose_feature, but the id MUST already exist — the server preserves the original created_at and bumps updated_at to now. Use this to update a feature's description, acceptance criteria, or decisions[] when downstream decision revisions change the user-visible behavior or constraint set the feature commits to. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
 
 	descSpecReviseStrategy = "Revise an existing engineering strategy. Same input shape as spec_propose_strategy, but the id MUST already exist. Use this to update a strategy's body, decisions[], or commands when downstream decision revisions change the technology stack or operational pattern the strategy commits to. spec.Strategy has no created_at/updated_at fields today; this tool exists primarily for symmetry with spec_revise_decision and spec_revise_feature plus to gate the upsert behind an exists-check. On success the manifest is persisted and every subscriber to spec://manifest receives notifications/resources/updated."
+
+	// descSpecMarkApproachDrifted — DJ-138 cascade drift surface.
+	// The cascade playbook calls this tool once per approach in the
+	// reference-graph closure of a `--with` run. Setting
+	// Approach.InvalidatedByEventID flags the approach as stale
+	// without re-synthesizing it (that's adopt's role per the
+	// layered design). The conservative-closure-mark posture
+	// over-marks on rationale-only refreshes; that's accepted
+	// because (a) false positives are cheap (a Phase-2 adopt run
+	// re-validates), (b) the marks are auditable via the linked
+	// approach_drifted history event, and (c) precision improvements
+	// (witness-state hashing) are deferred to a follow-up DJ.
+	descSpecMarkApproachDrifted = "Mark an Approach as drifted by setting its invalidated_by_event_id field. Use this tool during a `--with` strong-bias cascade to flag every approach in the reference-graph closure (children of rewritten features/strategies plus approaches whose decisions[] cites a flipped decision). The drift mark signals that synthesis is stale; the approach's body is NOT modified by this call — re-synthesis is adopt's responsibility, not the cascade's. Input is {approach_id, event_id} where approach_id must start with app- and resolve to a known approach, and event_id is the id of the originating spec_biased or approach_drifted history event (callers use the spec_biased root event's id). Idempotent on the same (approach_id, event_id) pair. Rejects unknown approach ids, non-Approach kinds, and empty event_id."
 )
 
 // Input schemas mirror spec.Decision / spec.Feature / spec.Strategy
@@ -155,6 +168,15 @@ type reviseFeatureInput = proposeFeatureInput
 // reviseStrategyInput mirrors proposeStrategyInput.
 type reviseStrategyInput = proposeStrategyInput
 
+// markApproachDriftedInput shapes the spec_mark_approach_drifted
+// tool's payload. Narrow by design — every drift mark is one tool
+// call, surfaced in tools.jsonl so post-mortem session walks see
+// the full cascade as a sequence of explicit writes.
+type markApproachDriftedInput struct {
+	ApproachID string `json:"approach_id" jsonschema:"Approach id with app- prefix. Must resolve to an existing approach in the spec graph."`
+	EventID    string `json:"event_id" jsonschema:"Id of the history event that drifted this approach — typically the spec_biased root event id of the current --with run. Stored verbatim on Approach.invalidated_by_event_id."`
+}
+
 // registerWriteTools wires the four write tools onto the server. Each
 // handler opens a SpecStore transaction, validates input via the Put
 // type-assert / id-prefix checks, commits, and emits a
@@ -267,6 +289,39 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore) {
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Revised strategy %s.", in.ID)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "spec_mark_approach_drifted",
+		Description: descSpecMarkApproachDrifted,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in markApproachDriftedInput) (*mcp.CallToolResult, any, error) {
+		approachID := strings.TrimSpace(in.ApproachID)
+		eventID := strings.TrimSpace(in.EventID)
+		if approachID == "" {
+			return errorResult("spec_mark_approach_drifted: approach_id is required"), nil, nil
+		}
+		if eventID == "" {
+			return errorResult("spec_mark_approach_drifted: event_id is required (drift marks without an originating event id defeat the audit purpose of invalidated_by_event_id)"), nil, nil
+		}
+		if !strings.HasPrefix(approachID, "app-") {
+			return errorResult(fmt.Sprintf("spec_mark_approach_drifted: %q is not an approach id — only app- prefixed ids are valid (decisions / features / strategies are not drift-mark targets)", approachID)), nil, nil
+		}
+		res := store.GetSpec([]string{approachID})
+		entry, ok := res.Results[approachID]
+		if !ok || entry.Status == agent.SpecGetMissing {
+			return errorResult(fmt.Sprintf("spec_mark_approach_drifted: approach %q does not exist", approachID)), nil, nil
+		}
+		approach, ok := entry.Body.(spec.Approach)
+		if !ok {
+			return errorResult(fmt.Sprintf("spec_mark_approach_drifted: %q resolved to %T, not spec.Approach", approachID, entry.Body)), nil, nil
+		}
+		approach.InvalidatedByEventID = eventID
+		approach.UpdatedAt = time.Now().UTC()
+		if err := commitOne(store, agent.KindApproach, approachID, approach); err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		publishManifestUpdate(ctx, server)
+		return textResult(fmt.Sprintf("Marked approach %s drifted by event %s.", approachID, eventID)), nil, nil
 	})
 }
 

@@ -30,10 +30,12 @@ type Approach struct {
 	Prerequisites []string    `yaml:"prerequisites,omitempty"` // CLI tools required before dispatch (e.g. ["buf", "jq"])
 	Assertions    []Assertion `yaml:"assertions,omitempty"`    // machine-executable checks; reconciler runs these
 
-	// InvalidatedByEventID points at the supersede history event that
+	// InvalidatedByEventID points at the history event that
 	// invalidated this approach. Empty when the approach is valid.
-	// Set by `refine --supersede` when the approach's parent or any
-	// referenced decision is replaced. Adopt reads the referenced
+	// Per [DJ-138](../../docs/decisions/dj-138-refine-with-bias-cascade.md),
+	// the canonical write path is the spec_mark_approach_drifted MCP
+	// tool, called by the spec_bias cascade playbook with the
+	// originating spec_biased event id. Adopt reads the referenced
 	// event to understand why the approach is stale and what the
 	// replacement target should be; the approach's other fields
 	// (ArtifactPaths, Body, Assertions, Decisions) remain on disk
