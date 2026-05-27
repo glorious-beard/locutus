@@ -1,0 +1,99 @@
+## DJ-140: Unify Headless Convergence on the Locutus Harness Outer-Loop for All Runtimes — Amends [DJ-136](dj-136-per-runtime-idiomatic.md)'s Asymmetric-Convergence Design After the Empirical Finding That Claude Code's `/goal` Slash Command Is Unavailable in the `claude-agent-acp` Headless Dispatch Path; Relocates the `/goal` Wrapper From an ACP-Prompt Overlay to a Published Interactive Slash Command; Adds a `mode` (interactive | headless) Axis to `ResolvePlaybook` So Playbook Content Selection Is `<activity>[.<provider>][.<mode>].md`; Removes the `runtime == "claude-code"` Single-Dispatch Branch in `internal/runner/run.go` So Every Headless Dispatch Runs Through `runOuterLoopDispatch` (One-Shot Activities Self-Terminate via `converged: true` on Iteration 1); Keeps the Loop Driver in Harness Code Per Established Agent-Loop Best Practice (Harness Owns Control Flow, Model Owns One Step)
+
+**Status:** design (designed 2026-05-27 in chat; supersedes the `/goal`-driven-convergence resolved-questions of [DJ-136](dj-136-per-runtime-idiomatic.md); implementation plan at [.claude/plans/dj-140-headless-convergence-unification.md](../.claude/plans/dj-140-headless-convergence-unification.md)).
+
+**Context.** [DJ-136](dj-136-per-runtime-idiomatic.md) introduced **asymmetric convergence**: on Claude Code the dispatch sent a `/goal <condition>` directive (the `spec_refinement.claude-code.md` overlay) and relied on Claude Code's native goal-evaluator to drive the iteration loop inside the runtime; on Codex/Gemini, Locutus's `OuterLoopRunner` drove the loop. DJ-136's own Status note flagged that "end-to-end behavior against a real Claude Code `/goal` evaluator… is not yet exercised in this branch," and its risk (b) pre-registered the reversal: "If… the Claude Code path's reliance on `/goal` fails the core hypothesis… Full revert sends Claude Code back onto the Locutus-driven outer-loop path."
+
+That reversal trigger fired. On 2026-05-27 the operator ran `locutus refine goals` on winplan to bootstrap the DJ-139 goal layer. It exited immediately. The session traces (`~/projects/winplan/.locutus/sessions/20260527/1804/240000` and `…/430000`) show the dispatched prompt was the `/goal …` overlay, and the agent's entire response was:
+
+> `/goal isn't available in this environment.`
+
+— `end_turn`, zero tool calls, no work done. Diagnosis:
+
+1. **`/goal` is a Claude Code built-in, not a custom command.** Locutus publishes `/locutus-refine` to `.claude/commands/` but never a `goal.md`; `/goal` is the runtime's native goal-evaluator (a session-scoped prompt-based Stop hook per the [`/goal` docs](https://code.claude.com/docs/en/goal), requires v2.1.139+). It can't be surfaced via settings or a published command.
+2. **The installed Claude Code is v2.1.150** — above the v2.1.139 floor — so the command exists in the binary. The failure is **run-mode gating**: `/goal` is an interactive-session-scoped command, and `claude-agent-acp` runs Claude Code in a non-interactive headless mode that doesn't expose it. The "isn't available in **this environment**" wording is the run-mode-gated message, distinct from "Unknown slash command" (which is the missing/old-version error). Same binary, same settings — different run mode.
+3. **ACP is the only path Locutus uses to drive agents** ([DJ-135](dj-135-multi-runtime-pivot.md)). So `/goal` is unreachable for every Locutus-driven dispatch, not just `refine goals` — all Claude Code `spec_refinement` (and any converging activity) was broken via ACP.
+
+A design conversation (2026-05-27) worked through the alternatives and converged on the harness-owned outer loop for all headless dispatch. Key reasoning recorded for the implementation:
+
+- **The `/locutus-refine` slash command works fine interactively** — the operator confirmed it runs when invoked from inside a Claude Code TUI session. So the published *command* is healthy; only the `/goal`-over-ACP *overlay* is broken. The interactive path and the headless path are independent: Locutus drives the headless path; the interactive path is operator-driven and Locutus merely publishes the command + serves MCP.
+- **The turn-end kernel.** Neither an MCP tool result nor a PostToolUse hook can force an agent to continue past the point it decides to end its turn — both are consumed *inside* a turn the agent is free to end (this is the general form of DJ-136's "stops at iter-2" bug). Only something that intercepts turn-end can force continuation: a **Stop hook** (what `/goal` rides on) or an **external re-prompt** (the `OuterLoopRunner` spawning a fresh session). The MCP surface structurally cannot install a Stop hook (it offers tools/resources/prompts, not hooks), so it can't be the continuation driver.
+- **Established best practice.** Agentic loop control is settled at the high level: the *harness* owns the loop and termination; the model owns one step; never trust the model to self-terminate; OR together {explicit done-signal, hard iteration cap, external verifier, no-progress}. Every serious framework encodes this (LangGraph `recursion_limit` + conditional edges, AutoGen termination conditions, OpenAI Agents SDK `max_turns`). The *runtime mechanism* for forcing continuation (Stop hooks vs `/goal` vs respawn) is brand-new, runtime-specific, and has no cross-runtime consensus. The principled split: load-bearing convergence lives in harness code we own; runtime affordances are optional accelerators on a volatile layer, never the thing correctness depends on. Locutus's `OuterLoopRunner` is already the best-practice-aligned foundation; DJ-140 extends it to Claude Code rather than betting correctness on a just-shipped, headless-unavailable runtime feature.
+
+**Decision.** Drop the `/goal`-over-ACP overlay as a dispatch prompt; unify all headless dispatch on the harness `OuterLoopRunner`; relocate the `/goal` wrapper to a published interactive slash command; add a `mode` axis to playbook resolution so content selection cleanly separates the headless one-iteration body from the interactive `/goal` wrapper. The loop *driver* stays in harness code; playbook resolution selects *content*.
+
+1. **Remove the runtime branch in `internal/runner/run.go`.** `DispatchActivity` currently short-circuits `runtime == "claude-code"` to a single `runOneIteration` (relying on `/goal` to loop). Delete that branch so every headless dispatch — all three runtimes — runs through `runOuterLoopDispatch`. `runOneIteration` stays (the outer loop calls it per iteration); only the top-level short-circuit goes. One path, no per-runtime loop-strategy branch.
+
+2. **One-shot activities self-terminate via the verdict line.** With the universal outer loop, a non-converging activity (e.g. `justify`, read-only) simply emits `converged: true` on iteration 1; the loop exits after a single ACP session — identical cost to single-dispatch (one session, no extra spawn). "Always outer loop" subsumes single-dispatch with zero downside. **Correctness requirement:** every activity playbook dispatched headlessly MUST end with a `converged:` verdict line, else the loop runs to the cap. One-shot playbooks (`justify`) must be verified/amended to emit `converged: true`.
+
+3. **Add a `mode` axis to `ResolvePlaybook`.** Signature becomes `ResolvePlaybook(base, dir, activityName, runtime, mode)`. Resolution walks specificity-descending, provider outranking mode at equal specificity:
+    1. `<activity>.<runtime>.<mode>.md`
+    2. `<activity>.<runtime>.md`
+    3. `<activity>.<mode>.md`
+    4. `<activity>.md`
+    `mode` is `interactive` or `headless`; `headless` is the default/fallback. The *caller* passes the constant matching what it is doing — no runtime mode-detection anywhere. With the current file set only tiers 1 and 4 are populated, so the intermediate-tier precedence is latent, but the resolver defines it for future use.
+
+4. **Mode is determined by the consuming operation, not detected.** Locutus never dispatches interactively — its ACP dispatch is always headless. So:
+    - **Dispatch** (`runActivityVerb` → ACP) resolves with `mode=headless`.
+    - **Publish** (the publisher emitting `.claude/commands/`, `.codex/commands/`, `.gemini/…`) resolves with `mode=interactive`, because published commands are invoked interactively by the operator.
+    No "am I interactive?" logic exists; the code path picks the constant.
+
+5. **Relocate the `/goal` wrapper from ACP-prompt overlay to interactive variant.** Rename `internal/scaffold/plans/spec_refinement.claude-code.md` → `spec_refinement.claude-code.interactive.md`. It is now resolved only for `mode=interactive` (i.e., publishing), never for headless dispatch. Headless dispatch for Claude Code falls through to the one-iteration default `spec_refinement.md` (tier 4). The wrapper's body is unchanged — it still drives convergence via `/goal` referencing `/locutus-refine`, which works because the published command is invoked interactively where `/goal` is available.
+
+6. **The publisher publishes the interactive variant per runtime.** When emitting a runtime's slash command, the publisher resolves the playbook with `mode=interactive` for that runtime. Claude Code resolves to the `/goal` wrapper (`spec_refinement.claude-code.interactive.md`) → published as `.claude/commands/locutus-refine.md`, giving interactive operators the full `/goal` convergence loop. Codex/Gemini have no `.interactive.md` variant → they fall through to `spec_refinement.md` (one-iteration), published as their respective commands — an honest reflection that they have no interactive convergence primitive (their commands are one-shot; convergence is the headless CLI path's job). **File presence is the capability matrix**; no code knows about `/goal`.
+
+7. **The loop driver stays in harness code; no loop-mode config is introduced.** Per the YAGNI analysis: the runtime branch is deleted (not relocated to frontmatter or registry), one-shots self-terminate via the verdict line, and `max_iterations` already lives in the activity registry ([DJ-138](dj-138-refine-with-bias-cascade.md)). If a genuine one-shot-that-cannot-emit-a-verdict ever appears, an explicit loop-mode field belongs in the activity registry (next to `max_iterations`), NOT in playbook frontmatter — keeping all harness-control config cohesive and the dispatch path free of markdown parsing. Not added now.
+
+**Resolved design questions** (chat 2026-05-27):
+
+1. **Headless convergence is harness-owned for all runtimes.** Rejected: keep `/goal` for Claude Code headless (impossible — interactive-only, run-mode-gated); make a Stop hook the headless driver (the MCP surface can't install hooks; betting correctness on a volatile just-shipped runtime affordance violates the harness-owns-control-flow best practice). The harness outer loop is the established-best-practice foundation.
+
+2. **`/goal` survives as an interactive affordance, not a dispatch mechanism.** The interactive `/locutus-refine` + `/goal` experience is preserved for operators driving from inside a Claude Code session (it works there, confirmed empirically). It just stops being what Locutus's headless dispatch depends on. This honors [[feedback-runtime-idiomatic-no-lcd]] where the idiom is actually available (interactive) without betting the headless path on an unavailable feature.
+
+3. **Playbook resolution gains a `mode` axis; content selection and loop-driving are orthogonal.** `ResolvePlaybook(mode=…)` selects *which prompt body*; the harness *always* outer-loops what it dispatches. Rejected: encoding loop-driver choice in playbook frontmatter (trades a branch for a parse-then-branch, scatters config from the registry, adds markdown parsing to the dispatch path); a per-activity registry loop-mode field (YAGNI — one-shots self-terminate via verdict line; add only if a non-verdict one-shot appears).
+
+4. **Mode is publish-vs-dispatch, not runtime-sniffed.** No interactive-detection logic; the consuming code path passes the constant. Dispatch → headless; publish → interactive.
+
+5. **Precedence: provider outranks mode at equal specificity.** `<activity>.<runtime>.md` beats `<activity>.<mode>.md`. Documented even though only tiers 1 and 4 are currently populated.
+
+**Alternatives considered:**
+
+- **Make a published Stop hook the headless convergence driver** (emulate `/goal` via the hook surface Locutus already publishes for Codex/Gemini). Explored at length. Rejected for the load-bearing loop: (a) the MCP surface can't install hooks, and even a settings.json Stop hook's firing under `claude-agent-acp` headless is unverified and runtime-churning; (b) it pushes the durable correctness concern into the most volatile layer, against the established harness-owns-control-flow principle; (c) Codex/Gemini stop-veto-hook support is uncertain per DJ-136's now-stale capability matrix. The harness loop is reliable today across all runtimes with no external dependency. (A Stop hook could later be an *optional accelerator* — e.g., tighter interactive UX — but never the foundation.)
+
+- **Encode the convergence loop in playbook prose** ("loop until the scout reports converged or N iterations"). Rejected — this was the DJ-135-era design and produced the documented "stops at iter-2" bug. Models are unreliable at sustained self-counting and prone to declaring done early; an in-session loop cannot force continuation past turn-end. The whole point of DJ-136 (and the established best practice) was to move the loop onto a mechanical external driver.
+
+- **Track loop state (iteration counter, verdict) in MCP get/advance tools.** A genuinely good idea for *bookkeeping* determinism — better than the current verdict-line regex, more inspectable. Rejected *as a continuation mechanism* (MCP tool results are consumed inside a turn the agent can still end; they can't force continuation). Tee'd up as Future Work: loop *state* may move into MCP while the loop *driver* stays the harness re-prompt.
+
+- **Encode loop-driver choice as playbook frontmatter.** Rejected — see resolved-question 3. The runtime branch is deleted outright, so there's nothing to relocate; frontmatter would add complexity, not remove it.
+
+**Consequences:**
+
+- **Code (modify):**
+    - `internal/runner/run.go` — delete the `runtime == "claude-code"` single-dispatch branch in `DispatchActivity`; always call `runOuterLoopDispatch`. `runOneIteration` retained (called per-iteration by the outer loop). Update the doc comment describing the per-runtime dispatch strategy.
+    - `internal/scaffold/plans_overlay.go` — add the `mode string` parameter to `ResolvePlaybook`; implement the 4-tier specificity-descending resolution. Update the doc comment.
+    - `cmd/activity_verb.go` — the sole dispatch caller passes `mode="headless"` (a `scaffold.ModeHeadless` constant).
+    - `internal/publisher/` — the publisher resolves each runtime's slash-command body with `mode="interactive"` instead of using a single canonical `PlanBody`. Claude Code gets the `/goal` wrapper; Codex/Gemini fall through to the one-iteration default.
+    - `internal/scaffold/plans/spec_refinement.claude-code.md` → renamed `spec_refinement.claude-code.interactive.md` (content unchanged).
+    - One-shot playbooks (`internal/scaffold/plans/justification.md`) — verify/ensure they emit a `converged: true` verdict line so the now-universal outer loop exits after iteration 1 rather than running to the cap.
+
+- **Code (add):**
+    - `internal/scaffold` — `ModeHeadless` / `ModeInteractive` string constants so callers don't pass bare strings.
+    - Tests: `ResolvePlaybook` 4-tier resolution (overlay + mode matrix, fallback order, provider-beats-mode precedence); `run.go` dispatch always uses the outer loop regardless of runtime; publisher emits the `/goal` wrapper for Claude Code and the plain body for Codex/Gemini; a one-shot playbook converges at iteration 1 under the universal loop.
+
+- **User-visible:**
+    - `locutus refine goals` (and all converging verbs) work on Claude Code via the harness outer loop — the `/goal isn't available` failure is gone.
+    - Interactive `/locutus-refine` in a Claude Code session keeps working and now drives convergence via the published `/goal` wrapper.
+    - No CLI surface change; behavior fix only.
+
+- **Documentation:**
+    - [CLAUDE.md](../../CLAUDE.md) — update the DJ-136 references describing "Asymmetric convergence" to note DJ-140's unification (headless = harness loop for all runtimes; `/goal` is an interactive-only affordance).
+    - [docs/runtime-affordances.md](../runtime-affordances.md) — revise the asymmetric-convergence section; document the `<activity>[.<provider>][.<mode>].md` resolution and the publish-vs-dispatch mode determination.
+    - [docs/debugging-traces.md](../debugging-traces.md) — note that Claude Code headless dispatch now shows outer-loop iterations (like Codex/Gemini), not a `/goal` evaluator.
+    - **[docs/council.md](../council.md) update:** the DJ-136 council.md change added a `/goal`-driven-convergence visualization for Claude Code; DJ-140 must revise it to show the harness outer loop driving all three runtimes. Per [[feedback-council-doc-maintenance]] this lands in the plan's final phase.
+    - Amend [DJ-136](dj-136-per-runtime-idiomatic.md) Status with a forward-pointer to DJ-140 noting risk (b) fired and the asymmetric-convergence resolved-questions are superseded.
+
+**Future Work (tee'd up for follow-up DJs):**
+
+- **MCP-tracked loop state.** Move the iteration counter + last convergence verdict into MCP get/advance tools (more inspectable than the verdict-line regex). The loop *driver* stays the harness re-prompt; only the *state* relocates. Lands when the verdict-line parsing proves fragile or when operators want to query loop progress mid-run.
+- **Stop hook as an optional interactive accelerator.** If a future UX win surfaces (e.g., a tighter interactive convergence indicator), a published Stop hook could ride alongside — but never as the headless correctness foundation.
+- **Re-fetch the Codex/Gemini hook-capability matrix.** DJ-136's 2026-05-26 capability fetch is stale; if hooks become relevant again, re-verify current docs rather than trusting the snapshot.
