@@ -22,6 +22,7 @@ Full text for each decision lives under [`decisions/`](decisions/). Cross-refere
 
 | # | Title | Status | Full text |
 |---|---|---|---|
+| <a id="dj-142"></a>DJ-142 | Consistent Convergence Outcome, Idiomatic Driver Per Context — Fills DJ-140's Empty Tier-3 So Interactive Codex/Gemini Self-Loop via Loop-State MCP Tools (`run_id`-scoped)... | design | [open](decisions/dj-142-idiomatic-convergence-drivers.md) |
 | <a id="dj-141"></a>DJ-141 | Goal-Layer Provenance — `anchored` / `unanchored` Split Gates Non-Destructive Re-Sync; Honest Bootstrap Tagging Replaces Fabricated `source_clause`; Matcher Gains `promoted` + `contradicted` Moves — Follow-Up to DJ-139... | settled | [open](decisions/dj-141-unanchored-goal-provenance.md) |
 | <a id="dj-140"></a>DJ-140 | Unify Headless Convergence on the Locutus Harness Outer-Loop for All Runtimes — Amends DJ-136 After `/goal` Proved Unavailable in `claude-agent-acp` Headless Dispatch... | shipping | [open](decisions/dj-140-headless-convergence-unification.md) |
 | <a id="dj-139"></a>DJ-139 | Persist the LLM's Interpretation of `GOALS.md` as First-Class `goal-*` and `agoal-*` Graph Nodes... | shipping | [open](decisions/dj-139-goal-layer-node-kinds.md) |
