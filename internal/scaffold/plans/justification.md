@@ -151,6 +151,12 @@ If `Output format: json`, print:
 
 The activity completes after the output lands on stdout. There is no follow-up turn — the operator reads the output and decides what to do with it. Do not loop, do not re-dispatch the advocate, do not chain into another verb.
 
+## Convergence verdict
+
+This activity is single-pass — it never loops on its own. The harness still runs the outer loop over it, so it reads the final line of your output to decide whether to re-dispatch. So the harness terminates cleanly after this one iteration, the final line of your output MUST be exactly:
+
+converged: true
+
 ## Recording
 
 Every tool call you make is logged by the Locutus MCP server under `.locutus/sessions/<date>/<time>/<sid>/`. The trace is on the server side; you don't need to write transcripts yourself.

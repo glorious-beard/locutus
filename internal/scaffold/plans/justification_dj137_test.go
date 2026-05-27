@@ -120,8 +120,12 @@ func TestPlaybookJustification_DocumentsErrorEnvelope(t *testing.T) {
 }
 
 // TestPlaybookJustification_OneShotShape — the playbook is one-shot
-// and read-only. No outer-loop framing (DJ-136 retired those
-// phrases from spec_refinement; same applies here from inception).
+// and read-only. No loop-framing prose (DJ-136 retired those phrases
+// from spec_refinement; same applies here from inception). Under
+// DJ-140 the harness runs its outer loop universally, so the one-shot
+// playbook now MUST emit `converged: true` once to terminate the loop
+// cleanly after a single iteration — that terminal verdict is asserted
+// separately in TestDispatchedPlaybooksEmitConvergedVerdict.
 func TestPlaybookJustification_OneShotShape(t *testing.T) {
 	body := loadJustification(t)
 	lower := strings.ToLower(body)
@@ -129,7 +133,6 @@ func TestPlaybookJustification_OneShotShape(t *testing.T) {
 		"loop until",
 		"run iterations until",
 		"iteration cap",
-		"converged: true",
 	}
 	for _, phrase := range retired {
 		assert.NotContains(t, lower, phrase,
@@ -137,4 +140,8 @@ func TestPlaybookJustification_OneShotShape(t *testing.T) {
 	}
 	assert.Contains(t, body, "Stop",
 		"playbook must include a Stop directive — the activity does not loop")
+	// DJ-140: the single-pass playbook emits the terminal verdict so
+	// the universal outer loop exits after one iteration.
+	assert.Contains(t, lower, "converged: true",
+		"under DJ-140 the one-shot playbook must emit `converged: true` to terminate the universal outer loop after one iteration")
 }
