@@ -51,6 +51,30 @@ type ActivityRun struct {
 	FinalText  string
 }
 
+// headlessSpawnEnv returns a copy of base with Env composed from
+// parentEnv plus LOCUTUS_MODE=headless. Any pre-existing
+// LOCUTUS_MODE entry in parentEnv is removed so the headless
+// designation is unambiguous (an interactive shell that happened to
+// export LOCUTUS_MODE=interactive must not override the ACP
+// harness's intent).
+//
+// Per DJ-143 §2: the env var on the coding-agent process is
+// inherited by its child `locutus mcp` bridge, which forwards it to
+// the daemon via _meta["locutus.mode"].
+func headlessSpawnEnv(base acp.Spawn, parentEnv []string) acp.Spawn {
+	out := base
+	env := make([]string, 0, len(parentEnv)+1)
+	for _, e := range parentEnv {
+		if strings.HasPrefix(e, "LOCUTUS_MODE=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	env = append(env, "LOCUTUS_MODE=headless")
+	out.Env = env
+	return out
+}
+
 // DispatchActivity composes ACP spawn + prompt + event streaming +
 // session recording into one call. Returns when the ACP stream
 // closes (clean session end), the context cancels, or a permanent
@@ -114,6 +138,7 @@ func DispatchActivity(
 	if !ok {
 		return nil, fmt.Errorf("dispatch: runtime %q resolved but has no spawn descriptor", runtime)
 	}
+	spawn = headlessSpawnEnv(spawn, os.Environ())
 
 	// Every runtime is driven by the Locutus outer loop (DJ-140). The
 	// loop wraps the one-iteration dispatch and is bounded by
