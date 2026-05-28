@@ -3,6 +3,7 @@ package mcp
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,6 +20,13 @@ func TestWriteReadPidFile_RoundTrip(t *testing.T) {
 	// File lives under .locutus/, mode 0o600.
 	info, err := os.Stat(PidPath(projectRoot))
 	assert.NoError(t, err)
+	if runtime.GOOS == "windows" {
+		// Windows doesn't honor Unix permission bits; os.Stat returns
+		// 0o666 or 0o444 based only on the read-only bit. Asserting
+		// 0o600 here doesn't make sense — the round-trip of the file
+		// content (the actual contract) is already verified above.
+		t.Skip("file-mode bits are not a meaningful contract on Windows")
+	}
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
 

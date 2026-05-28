@@ -32,13 +32,26 @@ func ReadEmbeddedHook(runtime, activityName, locutusBin string) ([]byte, bool, e
 	for _, p := range candidates {
 		data, err := hooksFS.ReadFile(p)
 		if err == nil {
-			return []byte(strings.ReplaceAll(string(data), "{{LOCUTUS_BIN}}", locutusBin)), true, nil
+			return []byte(strings.ReplaceAll(string(data), "{{LOCUTUS_BIN}}", escapeEmbeddedHookString(locutusBin))), true, nil
 		}
 		if !errors.Is(err, fs.ErrNotExist) {
 			return nil, false, err
 		}
 	}
 	return nil, false, nil
+}
+
+// escapeEmbeddedHookString escapes the substituted value for safe
+// inlining inside a JSON string or a TOML basic-string. Both formats
+// treat backslash as an escape introducer, so a Windows path like
+// `C:\Users\runneradmin\…` would otherwise produce invalid escape
+// sequences on parse (`\U`, `\A`, `\T`, …). Backslashes and double
+// quotes are the only characters the embedded templates need escaped;
+// the templates supply the wrapping quotes themselves.
+func escapeEmbeddedHookString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
 }
 
 // HookActivities returns the list of activities that have a hook

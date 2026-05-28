@@ -69,13 +69,23 @@ func OpenWriterWithRetry(indexPath string) (*bluge.Writer, error) {
 // flock. The standard fs and errors packages forward syscall errnos
 // through Unwrap, so errors.Is on the EWOULDBLOCK / EAGAIN sentinels
 // reliably matches both Bluge's wrapped form and the bare Flock
-// return.
+// return on Unix.
 //
 // EWOULDBLOCK and EAGAIN are the same numeric value on every Unix
 // Locutus targets; we still test both so the intent reads cleanly to
 // future maintainers.
+//
+// On Windows, Bluge's exclusive-access attempt wraps a Windows-specific
+// syscall error (ERROR_LOCK_VIOLATION, 0x21) whose chain does not
+// unwrap to a portable Go sentinel. The error message reliably
+// contains "locked a portion of the file" — that text is part of the
+// system error string and is stable across Windows versions. Fall back
+// to a substring match for the Windows path.
 func isLockBusy(err error) bool {
-	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
+	if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		return true
+	}
+	return err != nil && strings.Contains(err.Error(), "locked a portion of the file")
 }
 
 // formatLockBusyError shapes the final retry-exhausted error into a

@@ -1,0 +1,32 @@
+# Force LF line endings for text files on all platforms.
+#
+# Without this, Windows git's default autocrlf=true converts text-file
+# line endings to CRLF on checkout. Several test suites read embedded
+# .md / .yaml prompts and assert on substrings anchored on "\n" (e.g.
+# the agent-prompt frontmatter tests in internal/scaffold/agents/ and
+# the playbook tests in internal/scaffold/plans/). CRLF breaks every
+# such anchor on Windows. Forcing LF universally keeps the source tree
+# byte-identical across platforms, so the same string assertions work.
+
+# Markdown — canonical agent prompts, playbooks, decision journal, etc.
+*.md          text eol=lf
+
+# YAML — agents.yaml, models.yaml, agents-default.yaml, GitHub workflows.
+*.yaml        text eol=lf
+*.yml         text eol=lf
+
+# TOML — Codex hook fragments, agent definitions.
+*.toml        text eol=lf
+
+# JSON — Gemini hook fragments, manifest, spec graph nodes.
+*.json        text eol=lf
+
+# Go source — defensive; Go tooling tolerates CRLF but tests that read
+# Go source as bytes (rare but possible) would break the same way.
+*.go          text eol=lf
+
+# Shell scripts — CRLF would prevent them from running.
+*.sh          text eol=lf
+
+# Default: let git detect text vs binary, normalize text to LF.
+* text=auto eol=lf

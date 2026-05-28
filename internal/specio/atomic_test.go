@@ -3,6 +3,7 @@ package specio_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -57,6 +58,15 @@ func TestAtomicWriteFileLeavesNoTempOnSuccess(t *testing.T) {
 // temp-file write succeeds but rename fails. The prior content must survive
 // intact (the durability guarantee that motivates atomic writes).
 func TestAtomicWriteFilePreservesPriorOnRenameFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The test induces rename failure via os.Chmod(0o555) on the
+		// parent directory. On Windows, that mode mapping doesn't
+		// translate to a write-denied ACL — the chmod is largely a
+		// no-op and the rename succeeds, so the "must error" assertion
+		// fails. The durability guarantee under crash-during-rename
+		// would need a Windows-specific fault-injection setup.
+		t.Skip("rename-failure induction via chmod is Unix-specific")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root; chmod-based read-only check would be bypassed")
 	}
