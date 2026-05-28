@@ -21,11 +21,11 @@ import (
 // supplies workflow guidance (when to reach for the tool), the
 // description supplies behavior.
 const (
-	descSpecLoopBegin = "Begin (or recover) an interactive self-loop run. Pass activity (the activity you are executing, e.g. spec_refinement) and target (the target node id from your run context, e.g. goals); the pair plus your connection identifies this run's loop state, tracked server-side. Returns iteration (completed iterations so far — 0 for a fresh run) and max_iterations (the iteration ceiling for this activity, sourced from the registry, defaulting to 20). The count and cap are deterministic and owned by the server, so you never track them yourself. Call this once at the start of a run. After a context compression you can call it again with the same activity and target to recover the current iteration — it returns the in-flight count rather than resetting it."
+	descSpecLoopBegin = "For Codex or Gemini interactive self-loop only. Claude Code uses /goal to drive the loop and must not call this tool — calling from Claude Code returns a runtime-restriction error. Begin (or recover) an interactive self-loop run. Pass activity (the activity you are executing, e.g. spec_refinement) and target (the target node id from your run context, e.g. goals); the pair plus your connection identifies this run's loop state, tracked server-side. Returns iteration (completed iterations so far — 0 for a fresh run) and max_iterations (the iteration ceiling for this activity, sourced from the registry, defaulting to 20). The count and cap are deterministic and owned by the server, so you never track them yourself. Call this once at the start of a run. After a context compression you can call it again with the same activity and target to recover the current iteration — it returns the in-flight count rather than resetting it."
 
-	descSpecLoopStatus = "Read the current loop state for a run without advancing it. Pass the same activity and target you began with. Returns iteration (completed iterations), max_iterations (the ceiling), converged (the last reported verdict), and last_verdict (the one-line reason recorded with the last advance). Before any begin or advance, a run reports iteration 0 and converged false. Use this to inspect progress; use spec_advance_iteration to record an iteration result."
+	descSpecLoopStatus = "For Codex or Gemini interactive self-loop only. Claude Code uses /goal to drive the loop and must not call this tool — calling from Claude Code returns a runtime-restriction error. Read the current loop state for a run without advancing it. Pass the same activity and target you began with. Returns iteration (completed iterations), max_iterations (the ceiling), converged (the last reported verdict), and last_verdict (the one-line reason recorded with the last advance). Before any begin or advance, a run reports iteration 0 and converged false. Use this to inspect progress; use spec_advance_iteration to record an iteration result."
 
-	descSpecAdvanceIteration = "Record the result of the iteration you just completed and learn whether to keep looping. Pass activity and target (the same pair you began with), converged (the scout's verdict: true when the spec graph has reached a fixed point, false when axes or concerns remain), and an optional one-line reason summarizing the verdict. Returns continue: keep running another iteration while it is true, and stop when it is false. The server stops the loop when the verdict is converged or when the iteration count reaches max_iterations, whichever comes first. Returns the incremented iteration count and the reason you supplied."
+	descSpecAdvanceIteration = "For Codex or Gemini interactive self-loop only. Claude Code uses /goal to drive the loop and must not call this tool — calling from Claude Code returns a runtime-restriction error. Record the result of the iteration you just completed and learn whether to keep looping. Pass activity and target (the same pair you began with), converged (the scout's verdict: true when the spec graph has reached a fixed point, false when axes or concerns remain), and an optional one-line reason summarizing the verdict. Returns continue: keep running another iteration while it is true, and stop when it is false. The server stops the loop when the verdict is converged or when the iteration count reaches max_iterations, whichever comes first. Returns the incremented iteration count and the reason you supplied."
 )
 
 // loopBeginInput / loopStatusInput / advanceIterationInput carry the
@@ -127,17 +127,17 @@ func registerLoopTools(server *mcp.Server, ls *loopStore, reg *activity.Registry
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_loop_begin",
 		Description: descSpecLoopBegin,
-	}, func(_ context.Context, req *mcp.CallToolRequest, in loopBeginInput) (*mcp.CallToolResult, loopBeginOutput, error) {
+	}, requireRuntimeAny(func(_ context.Context, req *mcp.CallToolRequest, in loopBeginInput) (*mcp.CallToolResult, loopBeginOutput, error) {
 		tok := st.token(req.Session)
 		maxIter := capFor(reg, in.Activity)
 		rec := ls.Begin(loopKey{tok, in.Activity, in.Target}, maxIter)
 		return nil, loopBeginOutput{Iteration: rec.iteration, MaxIterations: rec.maxIter}, nil
-	})
+	}, "codex", "gemini"))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_loop_status",
 		Description: descSpecLoopStatus,
-	}, func(_ context.Context, req *mcp.CallToolRequest, in loopStatusInput) (*mcp.CallToolResult, loopStatusOutput, error) {
+	}, requireRuntimeAny(func(_ context.Context, req *mcp.CallToolRequest, in loopStatusInput) (*mcp.CallToolResult, loopStatusOutput, error) {
 		tok := st.token(req.Session)
 		rec, ok := ls.Status(loopKey{tok, in.Activity, in.Target})
 		if !ok {
@@ -151,14 +151,14 @@ func registerLoopTools(server *mcp.Server, ls *loopStore, reg *activity.Registry
 			Converged:     rec.converged,
 			LastVerdict:   rec.lastVerdict,
 		}, nil
-	})
+	}, "codex", "gemini"))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_advance_iteration",
 		Description: descSpecAdvanceIteration,
-	}, func(_ context.Context, req *mcp.CallToolRequest, in advanceIterationInput) (*mcp.CallToolResult, advanceIterationOutput, error) {
+	}, requireRuntimeAny(func(_ context.Context, req *mcp.CallToolRequest, in advanceIterationInput) (*mcp.CallToolResult, advanceIterationOutput, error) {
 		tok := st.token(req.Session)
 		rec, cont := ls.Advance(loopKey{tok, in.Activity, in.Target}, in.Converged, in.Reason)
 		return nil, advanceIterationOutput{Continue: cont, Iteration: rec.iteration, Reason: in.Reason}, nil
-	})
+	}, "codex", "gemini"))
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/glorious-beard/locutus/internal/activity"
 	"github.com/glorious-beard/locutus/internal/agent"
@@ -27,6 +28,33 @@ func connectClient(t *testing.T, ctx context.Context, server *mcp.Server) *mcp.C
 	assert.NoError(t, err)
 	t.Cleanup(func() { session.Close() })
 	return session
+}
+
+// connectClientAsCodex connects a "codex" client to server and registers
+// the resulting ServerSession as runtime="codex" so that the
+// requireRuntimeAny guard on the spec_loop_* tools passes. This is
+// required for any test that exercises the loop tools through the
+// MCP surface after DJ-143 restricted them to Codex/Gemini.
+func connectClientAsCodex(t *testing.T, ctx context.Context, server *mcp.Server) *mcp.ClientSession {
+	t.Helper()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	ss, err := server.Connect(ctx, serverTransport, nil)
+	assert.NoError(t, err)
+	client := mcp.NewClient(&mcp.Implementation{Name: "codex", Version: "test"}, nil)
+	cs, err := client.Connect(ctx, clientTransport, nil)
+	assert.NoError(t, err)
+	t.Cleanup(func() { cs.Close() })
+
+	// Wait for the InitializedHandler to fire and populate the session map.
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		if rt, _ := sessionRuntimeFor(ss); rt == "codex" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Ensure mode is set (the SDK cannot inject _meta in tests).
+	storeSessionRuntime(ss, "codex", "interactive")
+	return cs
 }
 
 // newLoopServer builds a server with a real registry sourced from an
@@ -86,7 +114,9 @@ func TestSpecServer_RegistersLoopTools(t *testing.T) {
 
 func TestSpecLoopBegin_ReturnsDefaultCap(t *testing.T) {
 	// nil reg → fall back to activity.DefaultMaxIterations.
-	session, _ := newTestServer(t, nil)
+	// DJ-143: loop tools require a Codex/Gemini session; use startServerWithClient.
+	clearSessionRuntimes()
+	_, session := startServerWithClient(t, "codex", "interactive")
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name:      "spec_loop_begin",
 		Arguments: map[string]any{"activity": "spec_refinement", "target": "goals"},
@@ -101,7 +131,9 @@ func TestSpecLoopBegin_ReturnsDefaultCap(t *testing.T) {
 
 func TestSpecLoopLifecycle_BeginAdvanceConverge(t *testing.T) {
 	ctx := context.Background()
-	session, _ := newTestServer(t, nil)
+	// DJ-143: loop tools require a Codex/Gemini session; use startServerWithClient.
+	clearSessionRuntimes()
+	_, session := startServerWithClient(t, "codex", "interactive")
 	args := map[string]any{"activity": "spec_refinement", "target": "goals"}
 
 	begin, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "spec_loop_begin", Arguments: args})
@@ -142,8 +174,10 @@ func TestSpecLoopAdvance_StopsAtCap(t *testing.T) {
 	ctx := context.Background()
 	// Real registry with a low cap for spec_refinement so the cap stop
 	// is reachable without 20 iterations.
+	// DJ-143: loop tools require a Codex/Gemini session; use connectClientAsCodex.
+	clearSessionRuntimes()
 	server, _ := newLoopServer(t, "activities:\n  spec_refinement:\n    runtimes: [claude-code]\n    max_iterations: 2\n")
-	session := connectClient(t, ctx, server)
+	session := connectClientAsCodex(t, ctx, server)
 	args := map[string]any{"activity": "spec_refinement", "target": "goals"}
 
 	begin, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "spec_loop_begin", Arguments: args})
@@ -175,9 +209,11 @@ func TestSpecLoop_SessionIsolation(t *testing.T) {
 	// *ServerSession on the server side. Running the same
 	// (activity, target) on each must keep iteration counters
 	// independent.
+	// DJ-143: loop tools require a Codex/Gemini session; use connectClientAsCodex.
+	clearSessionRuntimes()
 	server, _ := newLoopServer(t, "")
-	sessionA := connectClient(t, ctx, server)
-	sessionB := connectClient(t, ctx, server)
+	sessionA := connectClientAsCodex(t, ctx, server)
+	sessionB := connectClientAsCodex(t, ctx, server)
 
 	args := map[string]any{"activity": "spec_refinement", "target": "goals"}
 
@@ -228,7 +264,9 @@ func TestSessionTokens_DistinctPointersDistinctTokens(t *testing.T) {
 }
 
 func TestSpecLoopStatus_NotStartedIsZero(t *testing.T) {
-	session, _ := newTestServer(t, nil)
+	// DJ-143: loop tools require a Codex/Gemini session; use startServerWithClient.
+	clearSessionRuntimes()
+	_, session := startServerWithClient(t, "codex", "interactive")
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name:      "spec_loop_status",
 		Arguments: map[string]any{"activity": "spec_refinement", "target": "goals"},
