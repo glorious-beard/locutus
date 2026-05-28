@@ -45,7 +45,7 @@ func (c *McpCmd) Run(ctx context.Context, cli *CLI) error {
 	if err != nil {
 		return fmt.Errorf("mcp: %w", err)
 	}
-	if err := mcp.BridgeStdioToSocket(ctx, sockPath); err != nil {
+	if err := mcp.BridgeStdioToSocket(ctx, sockPath, ""); err != nil { // TODO(DJ-143 Task 5): replace "" with resolveLocutusMode()
 		return fmt.Errorf("mcp: %w", err)
 	}
 	return nil

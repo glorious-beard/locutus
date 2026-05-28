@@ -1,12 +1,15 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -18,9 +21,11 @@ import (
 // every client process its own apparent server while all of them
 // actually share one daemon-side MCP session.
 //
-// The bridge does no JSON-RPC framing or interpretation — the SDK on
-// both sides already handles newline-delimited JSON-RPC over the
-// byte stream. The bridge only moves bytes.
+// mode is injected into the client's initialize request as
+// _meta["locutus.mode"] so the daemon's session-context module can
+// gate tool access per DJ-143. Callers should pass the resolved mode
+// ("interactive" or "headless"); "" is accepted and results in no
+// injection (the field is set to the empty string).
 //
 // Returns when:
 //   - ctx is cancelled (caller's signal handler fires) — caller's
@@ -31,8 +36,8 @@ import (
 //   - The caller's stdin closes (parent MCP client exited) — the
 //     stdin-side Copy completes; the bridge closes the conn and
 //     returns.
-func BridgeStdioToSocket(ctx context.Context, sockPath string) error {
-	return BridgeIOToSocket(ctx, sockPath, os.Stdin, os.Stdout)
+func BridgeStdioToSocket(ctx context.Context, sockPath, mode string) error {
+	return BridgeIOToSocket(ctx, sockPath, os.Stdin, os.Stdout, mode)
 }
 
 // BridgeIOToSocket is BridgeStdioToSocket with explicit reader/writer
@@ -42,6 +47,9 @@ func BridgeStdioToSocket(ctx context.Context, sockPath string) error {
 // Flow:
 //  1. Dial the socket.
 //  2. Start two copies in parallel: stdin → socket and socket → stdout.
+//     The stdin side parses incoming JSON-RPC lines until the first
+//     initialize request is seen, rewrites it to inject
+//     _meta["locutus.mode"]=mode, then drops to raw byte pumping.
 //  3. When stdin closes (client done sending), half-close the socket's
 //     write side. The server's read returns EOF, finishes any in-flight
 //     responses, and closes its end.
@@ -51,7 +59,7 @@ func BridgeStdioToSocket(ctx context.Context, sockPath string) error {
 // Critically, we do NOT close the full conn just because stdin EOF'd.
 // The server may still be writing its response. Only the socket-side
 // completion or ctx cancel triggers full conn close.
-func BridgeIOToSocket(ctx context.Context, sockPath string, in io.Reader, out io.Writer) error {
+func BridgeIOToSocket(ctx context.Context, sockPath string, in io.Reader, out io.Writer, mode string) error {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", sockPath)
 	if err != nil {
@@ -73,7 +81,7 @@ func BridgeIOToSocket(ctx context.Context, sockPath string, in io.Reader, out io
 
 	stdinDone := make(chan error, 1)
 	go func() {
-		_, err := io.Copy(conn, in)
+		err := pumpInWithInitInject(in, conn, mode)
 		// Stdin closed: half-close the write side so the daemon sees
 		// EOF on its read but can still write outstanding responses
 		// back through the still-open read side of this conn.
@@ -109,4 +117,79 @@ func BridgeIOToSocket(ctx context.Context, sockPath string, in io.Reader, out io
 		return fmt.Errorf("mcp: bridge: %w", copyErr)
 	}
 	return nil
+}
+
+// pumpInWithInitInject scans incoming JSON-RPC lines on in, rewrites
+// the first initialize request to include _meta["locutus.mode"]=mode,
+// and then drops to raw io.Copy for the rest of the stream.
+//
+// Non-initialize lines that appear before the initialize are passed
+// through verbatim (e.g. pre-init notifications). After the first
+// initialize is forwarded, no further parsing occurs — only one
+// initialize per MCP session.
+func pumpInWithInitInject(in io.Reader, conn io.Writer, mode string) error {
+	br := bufio.NewReader(in)
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			rewritten, isInit := maybeInjectInitMode(line, mode)
+			if _, werr := conn.Write(rewritten); werr != nil {
+				return werr
+			}
+			if isInit {
+				_, copyErr := io.Copy(conn, br)
+				return copyErr
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// maybeInjectInitMode tries to parse line as a JSON-RPC initialize
+// request and inject params._meta["locutus.mode"]=mode. Returns the
+// (possibly rewritten) line bytes and a boolean indicating whether an
+// initialize was detected and rewritten. Non-JSON or non-initialize
+// lines are returned unchanged with isInit=false.
+func maybeInjectInitMode(line []byte, mode string) ([]byte, bool) {
+	trimmed := strings.TrimSpace(string(line))
+	if trimmed == "" {
+		return line, false
+	}
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &msg); err != nil {
+		return line, false
+	}
+	methodRaw, ok := msg["method"]
+	if !ok {
+		return line, false
+	}
+	var method string
+	if err := json.Unmarshal(methodRaw, &method); err != nil || method != "initialize" {
+		return line, false
+	}
+	var params map[string]any
+	if rm, ok := msg["params"]; ok && len(rm) > 0 {
+		_ = json.Unmarshal(rm, &params)
+	}
+	if params == nil {
+		params = map[string]any{}
+	}
+	meta, _ := params["_meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	meta["locutus.mode"] = mode
+	params["_meta"] = meta
+	paramsBytes, err := json.Marshal(params)
+	if err != nil {
+		return line, false
+	}
+	msg["params"] = paramsBytes
+	out, err := json.Marshal(msg)
+	if err != nil {
+		return line, false
+	}
+	return append(out, '\n'), true
 }
