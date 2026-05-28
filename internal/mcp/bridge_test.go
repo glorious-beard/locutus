@@ -210,5 +210,54 @@ func TestBridgePassesThroughNonInitializeLinesUnchanged(t *testing.T) {
 	}
 }
 
+// TestBridgeInjectsPreservesExistingMetaFields — when the client already
+// populated _meta with other fields (e.g. progressToken), the bridge's
+// injection of locutus.mode must merge rather than replace. Locks in
+// the merge semantics against a future refactor.
+func TestBridgeInjectsPreservesExistingMetaFields(t *testing.T) {
+	sock := filepath.Join(shortTempSocketDir(t), "mcp.sock")
+	listener, err := net.Listen("unix", sock)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+
+	captured := make(chan map[string]any, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		line, _ := bufio.NewReader(conn).ReadBytes('\n')
+		var msg map[string]any
+		_ = json.Unmarshal(line, &msg)
+		params, _ := msg["params"].(map[string]any)
+		meta, _ := params["_meta"].(map[string]any)
+		captured <- meta
+	}()
+
+	in, inW := io.Pipe()
+	out, outW := io.Pipe()
+	go func() {
+		initLine := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","clientInfo":{"name":"codex","version":"test"},"_meta":{"progressToken":42,"customField":"keep-me"}}}` + "\n"
+		_, _ = inW.Write([]byte(initLine))
+		_ = inW.Close()
+	}()
+	go func() { _, _ = io.Copy(io.Discard, out) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = BridgeIOToSocket(ctx, sock, in, outW, "headless")
+
+	select {
+	case meta := <-captured:
+		require.NotNil(t, meta)
+		assert.Equal(t, "headless", meta["locutus.mode"], "locutus.mode must be injected")
+		assert.EqualValues(t, 42, meta["progressToken"], "existing progressToken must survive")
+		assert.Equal(t, "keep-me", meta["customField"], "existing customField must survive")
+	case <-time.After(2 * time.Second):
+		t.Fatal("server never received an initialize")
+	}
+}
+
 // Compile-time confirmation we used io for the EOF filter check.
 var _ = io.EOF

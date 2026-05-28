@@ -17,6 +17,17 @@ import (
 //
 // Per DJ-143 §1: runtime comes from ClientInfo.name, mode from
 // _meta["locutus.mode"] forwarded by the bridge.
+//
+// Known limitation: entries are never deleted. The go-sdk v1.6.1 does
+// not expose a session-close hook, so there is no callback site for
+// cleanup. The map grows by one entry per MCP session attach over the
+// daemon's lifetime. For typical operator behavior (a handful of
+// coding-agent sessions per day) the leak is negligible — each entry
+// is two short strings. If the daemon starts being run as a long-
+// lived service across many short sessions, add a periodic best-
+// effort sweep or migrate to a custom transport that fires close
+// callbacks. The sessionTokens map in tools_loop.go has the same
+// shape and shares this constraint.
 var (
 	sessionRuntimesMu sync.RWMutex
 	sessionRuntimes   = map[any]sessionContext{}
