@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/glorious-beard/locutus/internal/mcp"
 	"github.com/glorious-beard/locutus/internal/specio"
@@ -45,8 +46,22 @@ func (c *McpCmd) Run(ctx context.Context, cli *CLI) error {
 	if err != nil {
 		return fmt.Errorf("mcp: %w", err)
 	}
-	if err := mcp.BridgeStdioToSocket(ctx, sockPath, ""); err != nil { // TODO(DJ-143 Task 5): replace "" with resolveLocutusMode()
+	mode := resolveLocutusMode()
+	if err := mcp.BridgeStdioToSocket(ctx, sockPath, mode); err != nil {
 		return fmt.Errorf("mcp: %w", err)
 	}
 	return nil
+}
+
+// resolveLocutusMode reads LOCUTUS_MODE, normalizes it, defaults to
+// "interactive" when absent. Per DJ-143 §2: headless ACP dispatch
+// sets the env var on the spawned coding-agent process so its child
+// `locutus mcp` bridge sees it; operator-typed sessions (interactive)
+// leave it unset and inherit the default.
+func resolveLocutusMode() string {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LOCUTUS_MODE")))
+	if v == "" {
+		return "interactive"
+	}
+	return v
 }
