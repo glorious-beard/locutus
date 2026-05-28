@@ -2,7 +2,13 @@
 
 Locutus's "council" is the set of specialized agents (`spec-scout`, `spec-decision-elaborator`, etc.) that, taken together, drive a project's spec graph to convergence against `GOALS.md`. Before DJ-135 the council was a Go-coded workflow that Locutus orchestrated in-process. After DJ-135 the same agent set is preserved but the orchestration moves out: the published playbook at `.borg/plans/spec_refinement.md` instructs a coding-agent runtime (Claude Code, Codex, Gemini) to dispatch the agents itself via its own subagent mechanism (Claude Code's Task tool, etc.), calling back into Locutus's MCP server to read and mutate the spec graph.
 
-The agents themselves are unchanged. What changed is who orchestrates them and through what surface. **DJ-136 added a further split:** the playbook is one-iteration-shaped, and the *outer loop* — the "keep running until converged" cadence — is owned by a harness. DJ-136 originally split that harness per runtime (Claude Code's `/goal` evaluator vs Locutus's runner), but **DJ-140 unified it:** for headless ACP dispatch all three runtimes run under Locutus's `OuterLoopRunner`, because `/goal` is a Claude Code interactive-only built-in unavailable in the headless dispatch path. `/goal` survives only as the published interactive `/locutus-refine` slash command an operator invokes from inside a Claude Code session.
+The agents themselves are unchanged. What changed is who orchestrates them and through what surface. **DJ-136 added a further split:** the playbook is one-iteration-shaped, and the *outer loop* — the "keep running until converged" cadence — is owned by a harness. DJ-136 originally split that harness per runtime (Claude Code's `/goal` evaluator vs Locutus's runner), but **DJ-140 unified the headless path:** for headless ACP dispatch all three runtimes run under Locutus's `OuterLoopRunner`, because `/goal` is a Claude Code interactive-only built-in unavailable in the headless dispatch path. **DJ-142 then completed the matrix** by filling DJ-140's empty interactive tier for non-Claude runtimes: there are now **three idiomatic convergence drivers reaching one outcome** (converge or stop at `max_iterations`):
+
+- **Headless (all runtimes)** → Locutus's `OuterLoopRunner` re-dispatches each iteration and reads the verdict line.
+- **Interactive · Claude Code** → the `/goal` evaluator drives the loop after every turn (the published `/locutus-refine` slash command is the `/goal` wrapper an operator invokes inside a Claude Code session).
+- **Interactive · Codex / Gemini** → the coding agent self-loops in one session, calling the daemon-side loop-state tools `spec_loop_begin` / `spec_loop_status` / `spec_advance_iteration` (the tier-3 `spec_refinement.interactive.md` playbook).
+
+Across all three, the scout still owns the convergence *judgment*; the drivers differ only in *who re-triggers the next pass* and *who counts iterations against the cap*.
 
 This document covers:
 - The playbook iteration loop, diagrammed
@@ -16,22 +22,43 @@ Authoritative design lives in the [Decision Journal](DECISION_JOURNAL.md). When 
 
 The shape below mirrors the one-iteration playbook the orchestrating agent runs. Each "Iteration" subgraph is one run of `.borg/plans/spec_refinement.md` (the cross-runtime default) — the agent reads the playbook on session start, then drives the steps inside the subgraph itself by dispatching the named subagents and calling the named MCP tools.
 
-The **outer loop** — deciding whether to dispatch another iteration — lives in the Locutus harness for every headless runtime (DJ-140), drawn explicitly below. The harness reads the iteration's last line (the playbook instructs the orchestrator to surface a `converged: true` or `converged: false; <reason>` verdict) and decides convergence vs re-dispatch.
+The **outer loop** — deciding whether to dispatch another iteration — is owned by a different driver per context (DJ-140 + DJ-142), drawn explicitly below. All three drivers wrap the *same* one-iteration body and reach the *same* outcome (converge or hit `max_iterations`); they differ only in who re-triggers the next pass. The headless harness reads the iteration's last line (the playbook surfaces a `converged: true` or `converged: false; <reason>` verdict); the Claude Code `/goal` evaluator reads the verdict from the transcript after every turn; the interactive Codex/Gemini self-loop reports the verdict to `spec_advance_iteration` and honors its `continue` result.
 
 ```mermaid
 graph TD
-    Start(["locutus refine [target] → ACP session (claude-code · codex · gemini)"]) --> RunnerLoop
+    Start(["locutus refine [target] — convergence driver selected by context (DJ-142)"]) --> DriverPick{"context?"}
 
-    subgraph RunnerLoop ["Locutus outer loop (all runtimes, headless — DJ-140)"]
+    DriverPick -- "headless (all runtimes)" --> RunnerLoop
+    DriverPick -- "interactive · Claude Code" --> GoalLoop
+    DriverPick -- "interactive · Codex / Gemini" --> SelfLoop
+
+    subgraph RunnerLoop ["Driver 1: Locutus outer loop (all runtimes, headless — DJ-140)"]
         RunIter["Dispatch one ACP session running spec_refinement.md"]
         RunRead["Read agent's final text"]
         RunEval{"IsConverged()"}
         RunIter --> RunRead --> RunEval
-        RunEval -- "converged: true OR 20 iters" --> Done
+        RunEval -- "converged: true OR cap" --> Done
         RunEval -- "converged: false" --> RunIter
     end
 
-    subgraph iter ["Iteration body (one run of spec_refinement.md)"]
+    subgraph GoalLoop ["Driver 2: Claude Code /goal evaluator (interactive — DJ-140)"]
+        GoalIter["Run /locutus-refine (one iteration body)"]
+        GoalEval{"/goal: converged?"}
+        GoalIter --> GoalEval
+        GoalEval -- "converged: true OR cap" --> Done
+        GoalEval -- "converged: false" --> GoalIter
+    end
+
+    subgraph SelfLoop ["Driver 3: agent self-loop via loop-state tools (interactive Codex/Gemini — DJ-142)"]
+        Begin["spec_loop_begin {activity, target} → iteration, max_iterations"]
+        SelfIter["Run one iteration body"]
+        Advance["spec_advance_iteration {converged} → continue?"]
+        Begin --> SelfIter --> Advance
+        Advance -- "continue: false (converged OR cap)" --> Done
+        Advance -- "continue: true" --> SelfIter
+    end
+
+    subgraph iter ["Shared iteration body (one run of spec_refinement.md)"]
         Survey["spec-scout: survey + convergence judgement"]
         Surveyed["axes_open · new_nodes · critique_dimensions · concern_dispositions · converged?"]
         CandidateSurveys["spec-candidate-survey × N axes (parallel)"]
@@ -39,7 +66,7 @@ graph TD
         Narratives["spec-feature-elaborator / spec-strategy-elaborator × M new nodes (parallel) → spec_propose_feature / spec_propose_strategy"]
         Critics["spec-critic-elaborator × K dimensions (parallel) → concerns feed next scout"]
         Reconcile["spec-reconciler: cross-decision integrity → mcp__locutus__spec_revise_decision"]
-        Verdict["Report verdict line: converged: true | converged: false; <reason>"]
+        Verdict["Report verdict: converged: true | converged: false; <reason>"]
 
         Survey --> Surveyed
         Surveyed -- "converged? = true" --> Verdict
@@ -51,7 +78,9 @@ graph TD
         Reconcile --> Verdict
     end
 
-    RunIter -. "spawns one iteration of" .-> iter
+    RunIter -. "spawns" .-> iter
+    GoalIter -. "spawns" .-> iter
+    SelfIter -. "spawns" .-> iter
 
     Done(["Run complete: graph at .borg/spec/; final report on stdout"])
 
@@ -65,12 +94,14 @@ graph TD
     class CandidateSurveys,Decisions,Narratives,Critics fanout
     class Surveyed,Verdict merge
     class Done terminal
-    class RunEval harness
+    class RunEval,GoalEval,Advance,DriverPick harness
 ```
 
 Each fanout step's parallelism is enabled by the runtime — Claude Code can dispatch multiple subagents concurrently via repeated Task invocations; Codex / Gemini have their own equivalents. The playbook describes the steps as "dispatch in parallel where your runtime allows" rather than mandating concurrency.
 
 The **headless harness is uniform** across runtimes (DJ-140). The runner's `OuterLoopRunner` calls `runOneIteration` in a Go loop bounded by `max_iterations` (default 20), checking the agent's final text for `converged: true` via `IsConverged`, and re-dispatches a fresh ACP session per iteration. DJ-136 had made this asymmetric — Claude Code rode its native `/goal` evaluator — but `/goal` proved unavailable in the headless `claude-agent-acp` dispatch path (it's an interactive-session-scoped built-in), so DJ-140 routed all three runtimes through the same outer loop. The `/goal` wrapper now lives only in the interactive overlay `internal/scaffold/plans/spec_refinement.claude-code.interactive.md`, published as the `/locutus-refine` slash command an operator invokes inside a Claude Code TUI session — never dispatched headlessly.
+
+The **interactive non-Claude driver** (DJ-142) is the tier-3 self-loop. When an operator invokes `/locutus-refine` on Codex or Gemini, the published `spec_refinement.interactive.md` playbook has the coding agent run the loop itself in one session: it calls `spec_loop_begin {activity, target}` once to get the iteration counter + cap, runs the shared iteration body, reports the scout's verdict to `spec_advance_iteration`, and continues while that tool returns `continue: true`. The iteration count + cap are daemon-tracked (deterministic, mirroring the harness), keyed `(ServerSession, activity, target)` — the agent passes only `(activity, target)`, which is re-derivable from run context and so survives a context compression (recovery is re-calling `spec_loop_begin`); the `ServerSession` half disambiguates concurrent coding-agent sessions on the shared per-project daemon. The cap is sourced from the activity registry (DJ-138), uniform across all three drivers. See [docs/runtime-affordances.md](runtime-affordances.md) and [docs/mcp.md](mcp.md) for the loop-state tool reference.
 
 Spec mutation goes exclusively through MCP write tools (`mcp__locutus__spec_propose_*`, `mcp__locutus__spec_revise_decision`). Auto-commit per call: the orchestrating coding agent calls the tool, Locutus commits, and every other attached client receives `notifications/resources/updated` on `spec://manifest`. Multi-client coordination falls out of the singleton daemon model — see `docs/mcp.md` for the lifecycle.
 

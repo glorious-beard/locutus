@@ -4,7 +4,7 @@
 >
 > **Governing DJ:** [DJ-142](../../docs/DECISION_JOURNAL.md#dj-142). The DJ is the authoritative design record; this plan tracks **progress against** it.
 >
-> **Status:** READY — design locked in DJ-142 on 2026-05-27, loop-identity spike resolved (`(ServerSession, activity, target)` keying). Builds on [DJ-140](../../docs/DECISION_JOURNAL.md#dj-140) (does not supersede it); depends on [DJ-138](../../docs/DECISION_JOURNAL.md#dj-138) `max_iterations` in the activity registry and [DJ-135](../../docs/DECISION_JOURNAL.md#dj-135) daemon singleton.
+> **Status:** DONE — design locked in DJ-142 on 2026-05-27, loop-identity spike resolved (`(ServerSession, activity, target)` keying); implemented across 5 phases in `main` (2026-05-27). Builds on [DJ-140](../../docs/DECISION_JOURNAL.md#dj-140) (does not supersede it); depends on [DJ-138](../../docs/DECISION_JOURNAL.md#dj-138) `max_iterations` in the activity registry and [DJ-135](../../docs/DECISION_JOURNAL.md#dj-135) daemon singleton.
 >
 > **Surface area:** medium. New: a daemon-side loop-state store (~120 lines + tests), three loop MCP tools (~120 lines + tests), the tier-3 `spec_refinement.interactive.md` playbook (~one-iteration body duplicated + loop scaffolding) with a drift-guard test, publisher/resolution verification, docs incl. council.md. No changes to headless dispatch or the interactive-Claude `/goal` path.
 >
