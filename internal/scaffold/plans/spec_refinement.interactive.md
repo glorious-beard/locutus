@@ -12,10 +12,10 @@ The iteration runs three steps in order:
 
 This runtime has no built-in evaluator to re-dispatch you between iterations, so you own the loop. The `(activity, target)` pair is `("spec_refinement", <the Target from your Run context, e.g. goals>)` — re-derivable from your run context on every call, which is what lets the loop survive a context compaction. Drive the loop with the three loop tools the MCP server exposes:
 
-1. **Begin.** Call `mcp__locutus__spec_loop_begin` with `{activity: "spec_refinement", target: <your target>}`. It returns the current `iteration` and the `max_iterations` ceiling — a fresh run starts at iteration 1; a recovered run returns wherever the live run already is.
+1. **Begin.** Call `mcp__locutus__spec_loop_begin` with `{activity: "spec_refinement", target: <your target>}`. It returns the current `iteration` and the `max_iterations` ceiling — a fresh run starts at iteration 0; a recovered run returns wherever the live run already is.
 2. **Run one iteration.** Execute the per-iteration core below (the bracketed section) once, top to bottom. The Survey step's `spec-scout` dispatch produces the `converged` verdict you report in the next step.
 3. **Advance.** Call `mcp__locutus__spec_advance_iteration` with `{activity, target, converged: <the scout's verdict from this iteration>, reason: <one-line summary of what landed>}`. Read its `continue` field: when it returns `continue: false`, this run is complete — produce your final report and stop. When it returns `continue: true`, run another iteration (return to step 2 with the core below).
-4. **Recovery.** If you lose track of where you are mid-run — for example after a context compaction drops the loop state from your working memory — re-call `mcp__locutus__spec_loop_begin` with the same `{activity, target}`. It returns the current iteration of the live run, so you resume from where the run already is rather than restarting from iteration 1.
+4. **Recovery.** If you lose track of where you are mid-run — for example after a context compaction drops the loop state from your working memory — re-call `mcp__locutus__spec_loop_begin` with the same `{activity, target}`. It returns the current iteration of the live run, so you resume from where the run already is rather than restarting from iteration 0.
 
 Each pass through step 2 is one full run of the bracketed core. The harness owns the ceiling; `spec_advance_iteration` returns `continue: false` once the scout converges or the `max_iterations` cap is reached.
 

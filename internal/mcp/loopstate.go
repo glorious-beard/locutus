@@ -106,7 +106,11 @@ func (s *loopStore) Advance(key loopKey, converged bool, reason string) (rec loo
 // collects nothing: with ttl == 0 a record is "older than now - 0" only if it
 // predates the GC instant, but a just-touched record shares that instant for
 // our purposes, so it survives (matching "updatedAt == now is not older than
-// now - 0"). Defensive cleanup for abandoned loops.
+// now - 0"). Defensive cleanup for abandoned loops (an agent that quits mid-run
+// without converging or hitting the cap); terminal records are already deleted
+// by Advance. NOT yet wired to a scheduler (DJ-142 Future Work) — abandoned
+// records currently clear on daemon restart, acceptable for a per-project
+// singleton daemon.
 func (s *loopStore) GC(ttl time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
