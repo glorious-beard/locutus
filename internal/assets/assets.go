@@ -12,6 +12,7 @@ package assets
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -62,7 +63,10 @@ func Import(fsys specio.FS, body, sourceDir, destDir, mdPath string) (string, *R
 	// Cache: absolute source path → FS-relative destination path. Lets a
 	// document referencing the same image multiple times copy it once.
 	seen := map[string]string{}
-	mdDir := filepath.Dir(mdPath)
+	// mdPath is an FS-relative (forward-slash) path per the docstring;
+	// use path.Dir, not filepath.Dir, so Windows doesn't introduce
+	// backslashes when constructing fsys-comparable paths downstream.
+	mdDir := path.Dir(mdPath)
 
 	rewrite := func(originalRef string) string {
 		if isRemoteRef(originalRef) {
@@ -90,7 +94,9 @@ func Import(fsys specio.FS, body, sourceDir, destDir, mdPath string) (string, *R
 		}
 
 		filename := uniqueFilename(fsys, destDir, filepath.Base(absSrc))
-		dest := filepath.Join(destDir, filename)
+		// destDir is FS-relative (forward-slash); path.Join keeps the
+		// resulting dest path portable for fsys + Result.Imported.
+		dest := path.Join(destDir, filename)
 
 		if err := fsys.MkdirAll(destDir, 0o755); err != nil {
 			res.Missing = append(res.Missing, originalRef)
@@ -146,14 +152,16 @@ func isRemoteRef(ref string) bool {
 // it does not collide with an existing entry in dir on fsys. Caps at 1000
 // attempts to avoid pathological loops.
 func uniqueFilename(fsys specio.FS, dir, filename string) string {
-	if _, err := fsys.Stat(filepath.Join(dir, filename)); err != nil {
+	// fsys.Stat expects forward-slash FS paths; use path.Join, not
+	// filepath.Join, so Windows doesn't introduce backslashes.
+	if _, err := fsys.Stat(path.Join(dir, filename)); err != nil {
 		return filename
 	}
 	ext := filepath.Ext(filename)
 	base := strings.TrimSuffix(filename, ext)
 	for i := 1; i < 1000; i++ {
 		candidate := fmt.Sprintf("%s-%d%s", base, i, ext)
-		if _, err := fsys.Stat(filepath.Join(dir, candidate)); err != nil {
+		if _, err := fsys.Stat(path.Join(dir, candidate)); err != nil {
 			return candidate
 		}
 	}
@@ -162,13 +170,16 @@ func uniqueFilename(fsys specio.FS, dir, filename string) string {
 
 // relRef returns the FS-relative path from mdDir to dest, suitable for
 // embedding back into the markdown body. On error, falls back to dest.
+//
+// Both inputs are forward-slash FS paths, but filepath.Rel operates in
+// the OS's native path syntax — on Windows that means backslash — so
+// we convert into OS form for the Rel call and back to forward slashes
+// for the markdown output.
 func relRef(mdDir, dest string) string {
-	rel, err := filepath.Rel(mdDir, dest)
+	rel, err := filepath.Rel(filepath.FromSlash(mdDir), filepath.FromSlash(dest))
 	if err != nil {
 		return dest
 	}
-	// Normalize to forward slashes so the rendered markdown is portable
-	// across renderers and platforms.
 	return filepath.ToSlash(rel)
 }
 

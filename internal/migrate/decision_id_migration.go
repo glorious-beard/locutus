@@ -7,7 +7,9 @@
 package migrate
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"path"
 	"sort"
 	"strings"
@@ -323,15 +325,14 @@ func removePair(fsys specio.FS, dir, id string) error {
 	return nil
 }
 
+// isNotExist matches the not-exist sentinel from both OSFS and MemFS,
+// both of which wrap their errors as *fs.PathError with fs.ErrNotExist
+// as the underlying cause. Required on Windows, where the OS error
+// message ("The system cannot find the file specified") does not
+// contain the Unix-style substrings the original string-match version
+// looked for.
 func isNotExist(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return msg != "" && (strings.Contains(msg, "no such file") ||
-		strings.Contains(msg, "does not exist") ||
-		strings.Contains(msg, "not found") ||
-		strings.Contains(msg, "file does not exist"))
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 // replaceAll returns a copy of ids with every occurrence of oldID

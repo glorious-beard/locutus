@@ -2,8 +2,9 @@ package specio
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
+	"io/fs"
 
 	"github.com/glorious-beard/locutus/internal/frontmatter"
 )
@@ -131,14 +132,13 @@ func extractHeader(obj any) (FrontmatterHeader, error) {
 	}, nil
 }
 
-// isNotExistErr matches both fs.ErrNotExist (OSFS) and the MemFS
-// "file does not exist" sentinel for the Remove path. Locally
-// scoped to this file rather than imported from migrate to keep the
-// dependency arrow pointing the right direction.
+// isNotExistErr matches the not-exist sentinel from both OSFS and
+// MemFS, both of which wrap their errors as *fs.PathError with
+// fs.ErrNotExist as the underlying cause. Required on Windows, where
+// the OS error message ("The system cannot find the file specified")
+// does not contain the Unix-style substrings the original string-
+// match version looked for.
 func isNotExistErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "file does not exist") || strings.Contains(err.Error(), "no such file")
+	return errors.Is(err, fs.ErrNotExist)
 }
 
