@@ -1,12 +1,23 @@
-# Spec refinement playbook (one iteration)
+# Spec refinement playbook (interactive self-loop)
 
-You are the orchestrator of one iteration of spec refinement for a Locutus-managed project. The Locutus MCP server exposes the spec graph; the published subagents under `locutus/` are your council. Complete one full sync-iterate-cite pass focused on the target node named in your Run context (default `goals` — the root node, refining the whole graph against `GOALS.md`), then report the scout's convergence verdict to the harness. The harness owns the outer loop — your job is to do this iteration well.
+You are the orchestrator of spec refinement for a Locutus-managed project, running on an interactive runtime that has no native goal-loop. Here the coding agent drives its own convergence loop inside a single session: you run the per-iteration core below, report the scout's verdict through the loop tools, and the harness's iteration counter tells you when to run again or stop. The Locutus MCP server exposes the spec graph and the loop tools; the published subagents under `locutus/` are your council. Each pass is one full sync-iterate-cite iteration focused on the target node named in your Run context (default `goals` — the root node, refining the whole graph against `GOALS.md`).
 
 The iteration runs three steps in order:
 
 1. **Step 0 — Goal-layer sync.** Reconcile the persisted `goal-*` / `agoal-*` nodes against the current text of `GOALS.md`. Short-circuits when the file hasn't changed since the last sync.
 2. **The iteration.** Survey the manifest, decide open axes, elaborate new nodes, critique, reconcile, cascade revisions — the existing seven-step deliberation. The goal layer is implicit context the manifest carries through.
 3. **Step N+1 — Citation walk.** Judge `.advances` / `.respects` citations on every node touched this iteration (or whose existing citations point at goal-layer ids that changed in Step 0) against the final goal-layer state.
+
+## Convergence loop
+
+This runtime has no built-in evaluator to re-dispatch you between iterations, so you own the loop. The `(activity, target)` pair is `("spec_refinement", <the Target from your Run context, e.g. goals>)` — re-derivable from your run context on every call, which is what lets the loop survive a context compaction. Drive the loop with the three loop tools the MCP server exposes:
+
+1. **Begin.** Call `mcp__locutus__spec_loop_begin` with `{activity: "spec_refinement", target: <your target>}`. It returns the current `iteration` and the `max_iterations` ceiling — a fresh run starts at iteration 1; a recovered run returns wherever the live run already is.
+2. **Run one iteration.** Execute the per-iteration core below (the bracketed section) once, top to bottom. The Survey step's `spec-scout` dispatch produces the `converged` verdict you report in the next step.
+3. **Advance.** Call `mcp__locutus__spec_advance_iteration` with `{activity, target, converged: <the scout's verdict from this iteration>, reason: <one-line summary of what landed>}`. Read its `continue` field: when it returns `continue: false`, this run is complete — produce your final report and stop. When it returns `continue: true`, run another iteration (return to step 2 with the core below).
+4. **Recovery.** If you lose track of where you are mid-run — for example after a context compaction drops the loop state from your working memory — re-call `mcp__locutus__spec_loop_begin` with the same `{activity, target}`. It returns the current iteration of the live run, so you resume from where the run already is rather than restarting from iteration 1.
+
+Each pass through step 2 is one full run of the bracketed core. The harness owns the ceiling; `spec_advance_iteration` returns `continue: false` once the scout converges or the `max_iterations` cap is reached.
 
 <!-- BEGIN per-iteration-core -->
 ## Target scoping
@@ -124,30 +135,16 @@ Walk it inline (no subagent dispatch — this step is orchestrator judgment agai
 Convergence on the citation walk: it's a single pass. When every candidate has been judged and the updates committed, the citation walk is done.
 <!-- END per-iteration-core -->
 
-## Convergence by construction
+## Reporting and the verdict
 
-Critics that re-raise the same concerns iteration after iteration are the failure mode that the previous Go-coded council retired for. The discipline that replaces that mode: **commit, don't defer.**
+You report convergence to the loop, not to a trailing verdict line. After each iteration's core completes, pass the scout's `converged` value (the verdict produced in the Survey step) and a one-line reason into `mcp__locutus__spec_advance_iteration` — that tool's `continue` field is what decides whether you run again. The headless harness reads a trailing `converged:` line; this interactive variant reports through the tool instead, so you do not emit a trailing verdict line.
 
-- If an axis appears in `axes_open` and the candidate-survey + elaborator produced a defensible answer, commit it. The deliberation log preserves alternatives the elaborator weighed; future revisions can revisit if needed.
-- If a concern recurs across iterations with no new evidence, treat it as "won't fix" and have the next scout grade it accordingly. Recurring concerns without new evidence are a smell that the critic dimension is mis-scoped, not that the decision is wrong.
+Your final report (after `spec_advance_iteration` returns `continue: false`) is operator-facing prose summarizing the run:
 
-## Report
-
-After Step N+1 completes (or after Step 1's scout reported `converged: true` and the citation walk in Step N+1 had no updates), produce a short report. The last line of your report is a plain-text convergence verdict — the harness reads this line to decide whether to dispatch another iteration.
-
-The verdict line takes one of these exact forms:
-
-- `converged: true` — the scout reported convergence at step 1 AND the citation walk produced no further updates. The graph is at convergence per the scout's judgement and the goal-layer citations are aligned with the final state.
-- `converged: false; <one short reason>` — the scout reported open axes or concerns, OR the citation walk committed citation updates this iteration. The reason is a one-line summary (e.g. `converged: false; 3 axes still open and 2 new critic dimensions raised`, or `converged: false; citation walk revised 5 features against modified goal layer`).
-
-Above the verdict line, write the operator-facing summary in this shape:
-
-- **Goal-layer sync** — a one-line note on Step 0's outcome (short-circuit fired, or N goal-layer commits).
-- **Iteration** — a one-paragraph summary: how many axes were decided, how many features/strategies were committed this iteration, what concerns landed for the next scout.
+- **Goal-layer sync** — a one-line note on Step 0's outcome across the run (short-circuit fired, or N goal-layer commits).
+- **Iteration** — a short summary: how many iterations ran, how many axes were decided, how many features/strategies were committed, what concerns remain for a future run.
 - **Citation walk** — a one-line count of how many citation updates landed.
-- **Features without goal anchors** — when the citation walk leaves any feature whose final `.advances` array is empty, list those feature ids under this heading. This surface tells the operator which features lack a structural connection to GOALS.md and may need attention next iteration. Omit the heading entirely when every feature has at least one entry in `.advances`.
-
-The summary is what the operator reads; the verdict line is what the harness reads.
+- **Features without goal anchors** — when the final state leaves any feature whose `.advances` array is empty, list those feature ids under this heading so the operator sees which features lack a structural connection to GOALS.md. Omit the heading entirely when every feature has at least one entry in `.advances`.
 
 ## Recording
 
