@@ -88,6 +88,35 @@ func requireRuntimeAny[In, Out any](
 	}
 }
 
+// newInitializedHandler returns an InitializedHandler that, for each
+// session whose initialize completes, reads ClientInfo.name (runtime)
+// and _meta["locutus.mode"] (mode) from InitializeParams and stores
+// them on the session map. Per DJ-143 §1+§2: runtime from the MCP
+// protocol's clientInfo, mode from the bridge-forwarded _meta field
+// (default "interactive" when absent).
+func newInitializedHandler() func(context.Context, *mcp.InitializedRequest) {
+	return func(_ context.Context, req *mcp.InitializedRequest) {
+		if req == nil || req.Session == nil {
+			return
+		}
+		params := req.Session.InitializeParams()
+		if params == nil {
+			return
+		}
+		runtime := ""
+		if params.ClientInfo != nil {
+			runtime = params.ClientInfo.Name
+		}
+		mode := "interactive"
+		if params.Meta != nil {
+			if v, ok := params.Meta["locutus.mode"].(string); ok && strings.TrimSpace(v) != "" {
+				mode = v
+			}
+		}
+		storeSessionRuntime(req.Session, runtime, mode)
+	}
+}
+
 // denyErrorMessageFor formats the runtime-restriction error message.
 // Per DJ-143 §3: name the runtime, the mode, the tool, and a docs
 // reference so an operator hitting it has a clear next step.

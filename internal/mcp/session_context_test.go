@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
@@ -92,4 +93,50 @@ func TestDenyErrorMessageContainsAllFields(t *testing.T) {
 	assert.Contains(t, got, "codex")
 	assert.Contains(t, got, "gemini")
 	assert.Contains(t, got, "docs/runtime-affordances.md")
+}
+
+// TestInitializedHandlerExtractsRuntimeAndMode drives a full MCP
+// initialize exchange against an in-memory transport pair and asserts
+// that the daemon captured the client's ClientInfo.name as runtime.
+// Mode defaults to "interactive" because the SDK's Client.Connect does
+// not populate InitializeParams.Meta — the bridge sets _meta in
+// production; the fallback covers the test path.
+func TestInitializedHandlerExtractsRuntimeAndMode(t *testing.T) {
+	clearSessionRuntimes()
+
+	server := mcp.NewServer(
+		&mcp.Implementation{Name: "locutus-test", Version: "0.0.0"},
+		&mcp.ServerOptions{
+			InitializedHandler: newInitializedHandler(),
+		},
+	)
+	serverT, clientT := mcp.NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), serverT, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ss.Close() })
+
+	client := mcp.NewClient(
+		&mcp.Implementation{Name: "claude-code", Version: "test"},
+		nil,
+	)
+	cs, err := client.Connect(context.Background(), clientT, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cs.Close() })
+
+	// Wait for InitializedHandler to fire (the SDK fires it after the
+	// client's notifications/initialized notification).
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if rt, _ := sessionRuntimeFor(ss); rt == "claude-code" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	rt, mode := sessionRuntimeFor(ss)
+	assert.Equal(t, "claude-code", rt)
+	// The SDK's Client.Connect does not populate InitializeParams.Meta;
+	// the bridge sets _meta["locutus.mode"] in production. The handler
+	// falls back to "interactive" when _meta is absent.
+	assert.Equal(t, "interactive", mode)
 }
