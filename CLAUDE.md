@@ -2,6 +2,58 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## General Guidelines
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+### 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+### 3. Solve the root problem
+
+**If a better design is needed to better solve the problem at hand, especially as that problem evolves over time, surface that new design so that we can decide whether to adopt it or not.**
+
+The test: Every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
 ## Project
 
 Locutus — a Go CLI and MCP server that acts as an autonomous project manager for spec-driven software. It maintains a persistent spec graph (`Decision → (Feature | Strategy) → Approach` — decisions inform features and strategies; approaches are the synthesis layer for coding agents over features and strategies. Axes are surfaced from goals, features, and strategies and resolved by decisions; see DJ-124. Goals and anti-goals form a parallel **leaf layer** under `GOALS.md` — `goal-*` and `agoal-*` are persisted LLM interpretations of `GOALS.md` per DJ-139 with polarity encoded in the node kind, and the existing cascade graph optionally carries informational `.advances goal-*` / `.respects agoal-*` dotted-line citations to them. The goal layer is not structurally upstream of decisions; nothing in the cascade depends on it, the citations are populated by the orchestrator when a clear link is worth recording, and `refine goals` writes through the goal layer without cascading content through the rest of the graph), exposes that graph to coding agents (Claude Code, Codex, Gemini CLI) via MCP tools and resources, and dispatches activity-shaped work via ACP. The spec is the source of truth; artifacts are derived outputs.
@@ -18,6 +70,7 @@ Locutus itself does not make LLM calls. The coding-agent runtime — Claude Code
 - **Per-runtime playbook overlays + hook publishing (DJ-136, mode axis DJ-140).** Playbook resolution is `<activity>[.<provider>][.<mode>].md` — `scaffold.ResolvePlaybook(base, dir, activity, runtime, mode)` walks four tiers specificity-descending: `<activity>.<runtime>.<mode>.md` → `<activity>.<runtime>.md` → `<activity>.<mode>.md` → `<activity>.md` (provider outranks mode at equal specificity). `mode` is `interactive` or `headless` and is passed by the consuming operation, never sniffed: dispatch passes `headless`, the publisher passes `interactive`. Today the only overlay is `spec_refinement.claude-code.interactive.md` — a thin `/goal`-directive wrapper that delegates to the published `/locutus-refine` slash command; it resolves ONLY for interactive publishing (per DJ-140), so headless dispatch falls through to the one-iteration default `spec_refinement.md`. Per-runtime hook fragments live at `internal/scaffold/hooks/<runtime>/<activity>.<ext>` and land at the runtime's conventional config file (Codex: `.codex/config.toml` `[[hooks]]`; Gemini: `.gemini/settings.json` hooks array). See [docs/runtime-affordances.md](docs/runtime-affordances.md).
 - **Unified headless convergence (DJ-140, amends DJ-136).** The activity playbook is **one-iteration-shaped**; the outer loop is harness-owned for all three runtimes. Every headless ACP dispatch — Claude Code, Codex, Gemini — runs through Locutus's `OuterLoopRunner` in `internal/runner/loop.go` (the `runtime == "claude-code"` single-dispatch branch in `internal/runner/run.go` was removed). The runner reads the playbook's plain-text verdict line (`converged: true` or `converged: false; <reason>`) after each ACP session closes to decide whether to re-dispatch, bounded by each activity's configured `max_iterations` cap (default 20, per-activity tunable in `agents-default.yaml` / `.borg/agents.yaml` per DJ-138 phase 1); one-shot activities (e.g. `justify`) self-terminate by emitting `converged: true` on iteration 1. DJ-136's asymmetric design relied on Claude Code's `/goal` evaluator to drive the loop, but `/goal` is an interactive-session-scoped Claude Code built-in unavailable in the headless `claude-agent-acp` dispatch path; under DJ-140 it survives only as an interactive affordance — the published Claude Code `/locutus-refine` slash command is the `/goal` wrapper, invoked by operators inside an interactive session where `/goal` IS available.
 - **Three idiomatic convergence drivers, one outcome (DJ-142, completes DJ-140).** Every context reaches the same outcome — converge (scout reports `converged: true`) or stop at `max_iterations` — but the driver is idiomatic per context: **headless** (all runtimes) → the harness `OuterLoopRunner` re-dispatches each iteration and reads the verdict line; **interactive · Claude Code** → the `/goal` evaluator; **interactive · Codex / Gemini** → the coding agent self-loops in one session via the daemon-side loop-state tools `spec_loop_begin` / `spec_loop_status` / `spec_advance_iteration` (the new tier-3 playbook `spec_refinement.interactive.md`, populating DJ-140's empty `<activity>.<mode>.md` slot). The server tracks iteration count + cap deterministically (cap from the activity registry per DJ-138) keyed by `(ServerSession, activity, target)` — the agent passes only `(activity, target)`, re-derivable from run context so it survives context compression (a re-`spec_loop_begin` recovers the live record); the `ServerSession` half (read from `req.Session`) keeps concurrent coding-agent sessions on the shared per-project daemon from colliding. The scout still owns the convergence *judgment*; the tools only record it and enforce the cap. See [DJ-142](docs/decisions/dj-142-idiomatic-convergence-drivers.md) and [docs/runtime-affordances.md](docs/runtime-affordances.md).
+- **Per-runtime tool restriction (DJ-143).** Some daemon tools are runtime-scoped — e.g. `spec_loop_*` is for Codex/Gemini interactive self-loop and not for Claude Code (which uses `/goal`). The MCP go-sdk's tool registry is server-global (no per-session `tools/list` filtering), so DJ-143 enforces the scoping at call time via a `requireRuntime` wrapper at each restricted tool's registration site, paired with a leading sentence in each tool's `Description` that names the runtime audience. Runtime comes from `ClientInfo.name` at MCP `initialize`; mode comes from `LOCUTUS_MODE` env var forwarded by the bridge as `_meta["locutus.mode"]` (default `interactive`; the ACP harness sets `LOCUTUS_MODE=headless` on the spawned coding-agent process). A denied call returns an MCP error naming the runtime, mode, tool, and the docs reference. See [DJ-143](docs/decisions/dj-143-per-runtime-tool-policy.md) and `docs/runtime-affordances.md § Tool-Restriction`.
 - **Strong-bias write cascades via `refine --with` (DJ-138).** `locutus refine <id> --with "<bias>"` dispatches the `spec_bias` activity — a write-cascade that walks the reference-graph closure of the target and applies the bias through `spec_revise_*` / `spec_propose_*` mutations + `spec_mark_approach_drifted` drift marks. Two directions: forward from a Decision target, backward-then-forward from a Feature/Strategy target. Conservative-closure-mark drift posture; git (`reset --hard` over `.borg/spec/`) is the architectural rollback layer — no transactional spec mutations. Cascade roots land as `spec_biased` history events; downstream events link back via `caused_by`. See [DJ-138](docs/decisions/dj-138-refine-with-bias-cascade.md) and `internal/scaffold/plans/spec_bias.md`.
 - **Goal layer persists the LLM's interpretation of `GOALS.md` (DJ-139).** `goal-*` and `agoal-*` are first-class graph nodes carrying `source_clause` (the verbatim excerpt from `GOALS.md` they anchor to) plus `body` (the LLM's interpretation) plus `ceded_to` / `kept_in` on AntiGoals. The `refine goals` playbook runs **sync → iterate → cite** in order: Step 0 dispatches `spec-goal-diff-matcher` to reconcile the persisted goal layer against current `GOALS.md` (short-circuits on a `goals_md_hash` manifest match), applies the diff via `spec_propose_goal` / `spec_revise_goal` / `spec_delete_goal` and the AntiGoal variants, then persists the new hash via `spec_update_goals_md_hash`; the deliberation iteration runs as before with the goal layer as implicit context; the citation walk lands last, judging `.advances` / `.respects` against the final state. Import (`feature_ingestion.md`) reads the goal layer too — conflict detection is now a structural graph test against `agoal-*` bodies + `kept_in` rather than LLM-judging `GOALS.md` prose. Per [DJ-141](docs/decisions/dj-141-unanchored-goal-provenance.md), each node is **anchored** (non-empty `source_clause`, a verbatim `GOALS.md` excerpt) or **unanchored** (empty `source_clause`, a free-text `origin` note for a claim inferred from the mission statement or crystallized into a decision — exactly one of the two is set). The matcher deletes anchored nodes when their clause leaves `GOALS.md` but **never** deletes unanchored nodes by absence; a `GOALS.md` edit that states an inferred claim **promotes** the unanchored node in place (sets `source_clause`, clears `origin`, preserves id), and an opposite-polarity edit **auto-resolves** toward `GOALS.md` (delete + re-propose, with the nodes that cited the retired node surfaced as at-risk). `goals_md_synced_at` is server-stamped, not agent-supplied. See [DJ-139](docs/decisions/dj-139-goal-layer-node-kinds.md) and `internal/scaffold/plans/spec_refinement.md`.
 - `docs/DECISION_JOURNAL.md` + `docs/decisions/` — architectural decisions with rationale, alternatives considered, and reversals. `DECISION_JOURNAL.md` is the manifest table (number, title, status, link); full text for each entry lives at `docs/decisions/dj-NNN-<slug>.md`. External cross-references use the short anchor `DECISION_JOURNAL.md#dj-NNN`, which lands on the manifest row and links forward to the full text. The bijection between manifest rows and on-disk files is enforced by `internal/docs/decisions_manifest_test.go`.

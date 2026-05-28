@@ -118,6 +118,22 @@ The self-loop is backed by three daemon-side MCP loop-state tools (full referenc
 
 File presence is the capability matrix. Two `.interactive` tiers are now populated: `spec_refinement.claude-code.interactive.md` (tier 1, the `/goal` wrapper) and `spec_refinement.interactive.md` (tier 3, the self-loop — DJ-142). So Claude Code interactive publishing resolves to the `/goal` wrapper (tier 1 outranks tier 3); Codex/Gemini interactive publishing resolves to the tier-3 self-loop; and all headless dispatch skips the mode tiers and falls through to the one-iteration default `spec_refinement.md`.
 
+## Tool-Restriction (DJ-143)
+
+The Locutus MCP daemon registers tools globally per `Server.AddTool`, but the MCP go-sdk does not expose per-session `tools/list` filtering. Some tools — notably the DJ-142 `spec_loop_*` family — only make sense for specific runtimes. DJ-143 enforces those scoping rules at **call time** via a `requireRuntime` wrapper at each restricted tool's registration site, paired with a **list-time** signal in each tool's `Description`.
+
+Mechanism:
+
+- Each session captures `(runtime, mode)` at MCP `initialize`: `clientInfo.name` → runtime; `_meta["locutus.mode"]` → mode.
+- The mode field is set by the `locutus mcp` bridge from `LOCUTUS_MODE` env (default `interactive`); the ACP harness sets `LOCUTUS_MODE=headless` when it spawns the coding-agent runtime for dispatch, so the bridge inherits it through the coding-agent process.
+- Restricted tools are wrapped with `requireRuntimeAny(handler, "codex", "gemini")` at registration. A call from a denied runtime returns an MCP tool error of the shape:
+
+  > `tool "spec_loop_begin" is not exposed to runtime "claude-code" (mode=interactive); allowed runtimes: codex, gemini; see docs/runtime-affordances.md § Tool-Restriction`
+
+- Each restricted tool's `Description` starts with a leading sentence naming the runtime audience and contrasting against the wrong audience, so the agent reading the tool list at initialize time has a textual signal — paired with the call-time enforcement, the description discourages calls before they're attempted.
+
+Operator note: there is **no hot-reload**. The runtime allowlist for a tool lives in code at the registration site; changes require a binary rebuild + daemon restart (`locutus mcp-stop` followed by the next connect re-forking the daemon).
+
 ## Cross-references
 
 - [DJ-135](DECISION_JOURNAL.md#dj-135) — multi-runtime pivot; introduces the ACP / MCP architecture.
