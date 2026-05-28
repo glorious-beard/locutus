@@ -68,6 +68,11 @@ func NewSpecServer(store *agent.SpecStore, fsys specio.FS, reg *activity.Registr
 	registerReadTools(server, store)
 	registerWriteTools(server, store, hist)
 	registerResources(server, store)
+	// Interactive self-loop driver (DJ-142 phase 2). The loop store is
+	// in-memory and per-daemon; the tools tolerate a nil reg (falling
+	// back to activity.DefaultMaxIterations) so the test surface and
+	// reg-less code paths still register them.
+	registerLoopTools(server, newLoopStore(), reg)
 	if fsys != nil && reg != nil {
 		// Surface activity-playbook prompts. Errors here log via the
 		// runtime; we don't fail server construction on a missing
