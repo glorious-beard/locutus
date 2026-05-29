@@ -253,6 +253,16 @@ Two further agents (`justify-splitter`, `justify-synthesizer`) ship as published
 
 ## Convergence by construction
 
+Convergence is driven differently per `(runtime, mode)` context, but every driver reaches the same outcome (scout reports `converged: true`, or `max_iterations` cap fires):
+
+| Context | Driver | Convergence judgment | Cap enforcement |
+|---|---|---|---|
+| Headless · Codex / Gemini | Locutus `OuterLoopRunner` (re-dispatch per iteration) | scout verdict line | harness counter (DJ-138 `max_iterations`) |
+| Interactive · Codex / Gemini | agent self-loop via `spec_loop_*` (DJ-142) | scout verdict to `spec_advance_iteration` | daemon counter |
+| **Claude Code (both modes)** | **in-runtime dynamic workflow script** (DJ-144) | **scout verdict, read by the script** | **script counter against the `{{max_iterations}}` token injected at dispatch** |
+
+The scout owns the convergence *judgment* in every cell — only the *driver* differs. DJ-144 took Claude Code off the harness outer loop entirely (`dispatchUsesOuterLoop("claude-code") == false`) so the script's loop and the harness's loop don't stack and double-count iterations. The named subagents in this council are unchanged — the workflow script invokes them as workers behind phase barriers (fan out only over disjoint units; barrier before any step that writes a node another branch might also write).
+
 The pre-DJ-135 council frequently failed to converge: critics re-raised the same concerns iteration after iteration, decisions stalled waiting for human review, and the loop timed out without committing anything. The pivot's discipline: **commit, don't defer.**
 
 The spec_refinement playbook's prose enforces this:

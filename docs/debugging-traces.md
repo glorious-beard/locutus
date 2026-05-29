@@ -132,6 +132,14 @@ Symptom: `events.jsonl` ends with an `EventError` event containing something lik
 
 Not architectural — upstream API hiccups happen. Re-run usually succeeds. If they recur consistently, check the runtime's own session log (Claude Code's `~/.claude/projects/...`) for additional error context.
 
+## Claude Code workflow runs (DJ-144): coarser ACP event stream, intact daemon-side audit
+
+Under DJ-144, Claude Code converges via an in-runtime dynamic workflow for the four convergent activities (`spec_refinement`, `feature_ingestion`, `code_adoption`, `code_assimilation`). The workflow's internal subagent calls and intermediate results stay in the background runner's own context and **do not surface as ACP `tool_call` events** — only the final answer returns to the conversation context Locutus observes. So `events.jsonl` becomes coarser for Claude Code workflow runs than for Codex/Gemini (where each iteration is a fresh ACP session whose tool calls all surface).
+
+The **spec-mutation audit trail stays intact daemon-side**: every `mcp__locutus__spec_*` write still routes through the per-project MCP daemon and is recorded in `tools.jsonl` and as history events. So *what changed in the graph* remains fully auditable even though *the agent's intermediate reasoning* is less visible. When debugging a Claude Code workflow run, prefer the daemon-side tools log over the ACP event stream for "what was committed and why" questions; reach for the runtime's own session log (below) for "what was the agent thinking" questions.
+
+Codex/Gemini are unchanged — their iterations are still ACP sessions and their tool calls still surface in `events.jsonl` per the existing patterns.
+
 ## Cross-referencing with the runtime's session log
 
 Locutus captures the ACP event stream — what the dispatcher *observed*. The full story (the agent's reasoning, its prompt-engineering choices, sub-prompts to subagents) lives in the runtime's own session log:

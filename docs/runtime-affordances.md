@@ -67,20 +67,37 @@ The `.codex/config.toml` carries the MCP server registration at the top and the 
 └── settings.json                     # hooks array; user-authored hooks preserved across re-publish
 ```
 
-## Headless convergence driver (DJ-140: unified)
+## Headless convergence driver (DJ-140, amended by DJ-144 for Claude Code)
 
-For headless ACP dispatch — every CLI verb on every runtime — the driver is uniform:
+For headless ACP dispatch the driver now splits along runtime lines:
 
-| Driver | claude-code · codex · gemini |
-|---|---|
-| Where the loop body lives | dispatched as the ACP prompt body (the one-iteration default `spec_refinement.md`) |
-| Who decides re-dispatch | Locutus's `OuterLoopRunner.Run` (Go loop, after every ACP session closes) |
-| Termination predicate | `IsConverged(finalText)` returns true, OR the activity's `max_iterations` cap (default 20) |
-| Iteration cadence | Per ACP-session — coarse-grained |
+| | claude-code | codex · gemini |
+|---|---|---|
+| Driver | in-runtime dynamic workflow (DJ-144) | Locutus `OuterLoopRunner.Run` (DJ-140 unchanged) |
+| Where the loop body lives | the workflow script Claude Code authors from the tier-2 keyword playbook (`<activity>.claude-code.md`, contains the word "workflow") | dispatched as the ACP prompt body (the one-iteration default `<activity>.md`) |
+| Who decides re-dispatch | the workflow script itself — `dispatchUsesOuterLoop("claude-code") == false`, a single ACP dispatch covers the entire convergence | Locutus's outer-loop Go code, after every ACP session closes |
+| Termination predicate | scout `converged: true` read by the script, OR `{{max_iterations}}` injected into the playbook body | `IsConverged(finalText)` over the verdict line, OR the activity's `max_iterations` cap |
+| Iteration cadence | in-session (fan-out + barrier, up to ~16 concurrent subagents) | per ACP-session — coarse-grained |
 
-DJ-140 removed the `runtime == "claude-code"` single-dispatch branch in `internal/runner/run.go`, so all three runtimes run through `runOuterLoopDispatch`. One-shot activities (e.g. `justify`) emit `converged: true` on iteration 1 and exit after a single session — identical cost to the old single-dispatch path.
+DJ-144 reinstated the `runtime == "claude-code"` single-dispatch path that DJ-140 had removed — but as "the workflow loops in-runtime", not the old "/goal evaluator loops." The cap travels as a `{{max_iterations}}` token in the playbook body, substituted from the activity registry (DJ-138) at dispatch by `cmd/activity_verb.go`'s `injectMaxIterations`.
 
-The interactive path is separate. When an operator invokes `/locutus-refine` inside a Claude Code TUI session, the published `/goal` wrapper drives convergence via Claude Code's native evaluator (model-evaluated, after every turn). That path is operator-driven; Locutus only publishes the command and serves MCP. `/goal` is unavailable headlessly, which is why headless dispatch never depends on it.
+The interactive path matches: Claude Code interactive runs the same dynamic-workflow shape (the saved-workflow script published to `.claude/workflows/<activity>.js`), so both modes converge in-runtime. Codex/Gemini interactive stay on the DJ-142 `spec_loop_*` self-loop tier-3 playbook. There is no `/goal` wrapper anywhere now; it was removed under DJ-144 §7. One-shot activities like `justify` are unaffected — they aren't in the four convergent activities and dispatch as before.
+
+## Per-runtime minimum-version registry (DJ-144 §9)
+
+Dynamic workflows require Claude Code v2.1.154+; older or workflow-disabled versions silently no-op the keyword trigger and run as a single non-looping pass. To catch this Locutus ships an embedded `internal/runtimepolicy/runtimes-default.yaml` with a per-runtime `min_version`, overridable at `.borg/runtimes.yaml`:
+
+```yaml
+runtimes:
+  claude-code:
+    min_version: "2.1.154"
+  codex:
+    min_version: ""
+  gemini:
+    min_version: ""
+```
+
+The runtime version is read from `ClientInfo.version` at MCP `initialize` (the same `Implementation` struct DJ-143 reads `ClientInfo.name` from for runtime identification, so detection covers both modes with no `--version` subprocess probe). When the detected version is below the floor Locutus logs a `slog.Warn` naming the runtime, detected version, and required floor — and dispatches anyway. The check **never blocks**: a sub-floor Claude Code still completes the activity as a single non-looping pass; an unparseable or absent version falls open silently (no false-positive warnings). Empty `min_version` strings declare "no floor for this runtime"; nothing warns. The registry has room to grow per-feature if a future runtime-gated affordance lands.
 
 ## Interactive convergence driver for Codex / Gemini (DJ-142: tier-3 self-loop)
 
