@@ -3,9 +3,12 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 
+	"github.com/glorious-beard/locutus/internal/runtimepolicy"
+	"github.com/glorious-beard/locutus/internal/specio"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -105,7 +108,11 @@ func requireRuntimeAny[In, Out any](
 // them on the session map. Per DJ-143 §1+§2: runtime from the MCP
 // protocol's clientInfo, mode from the bridge-forwarded _meta field
 // (default "interactive" when absent).
-func newInitializedHandler() func(context.Context, *mcp.InitializedRequest) {
+//
+// Per DJ-144 §9: also reads ClientInfo.version and logs a warning
+// when the runtime is below its declared version floor. logger and
+// fsys may be nil (nil logger = no-op; nil fsys = embedded defaults).
+func newInitializedHandler(logger *slog.Logger, fsys specio.FS) func(context.Context, *mcp.InitializedRequest) {
 	return func(_ context.Context, req *mcp.InitializedRequest) {
 		if req == nil || req.Session == nil {
 			return
@@ -114,9 +121,10 @@ func newInitializedHandler() func(context.Context, *mcp.InitializedRequest) {
 		if params == nil {
 			return
 		}
-		runtime := ""
+		runtime, version := "", ""
 		if params.ClientInfo != nil {
 			runtime = params.ClientInfo.Name
+			version = params.ClientInfo.Version
 		}
 		mode := "interactive"
 		if params.Meta != nil {
@@ -125,6 +133,25 @@ func newInitializedHandler() func(context.Context, *mcp.InitializedRequest) {
 			}
 		}
 		storeSessionRuntime(req.Session, runtime, mode)
+		checkRuntimeVersion(logger, fsys, runtime, version)
+	}
+}
+
+// checkRuntimeVersion warns (never blocks) when a runtime connects
+// below the minimum version Locutus relies on (DJ-144 §9). fsys is
+// the project FS for the .borg/runtimes.yaml override (nil → embedded
+// defaults). A nil logger is a no-op.
+func checkRuntimeVersion(logger *slog.Logger, fsys specio.FS, runtime, version string) {
+	if logger == nil {
+		return
+	}
+	reg, err := runtimepolicy.NewRegistry(fsys)
+	if err != nil {
+		logger.Warn("runtimepolicy: registry load failed; skipping version check", "err", err)
+		return
+	}
+	if msg, warn := reg.CheckVersion(runtime, version); warn {
+		logger.Warn(msg)
 	}
 }
 

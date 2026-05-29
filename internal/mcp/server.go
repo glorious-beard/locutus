@@ -13,6 +13,7 @@ package mcp
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/glorious-beard/locutus/internal/activity"
 	"github.com/glorious-beard/locutus/internal/agent"
@@ -63,7 +64,7 @@ func NewSpecServer(store *agent.SpecStore, fsys specio.FS, reg *activity.Registr
 		&mcp.ServerOptions{
 			SubscribeHandler:   func(_ context.Context, _ *mcp.SubscribeRequest) error { return nil },
 			UnsubscribeHandler: func(_ context.Context, _ *mcp.UnsubscribeRequest) error { return nil },
-			InitializedHandler: newInitializedHandler(),
+			InitializedHandler: newInitializedHandler(slog.Default(), fsys),
 		},
 	)
 	registerReadTools(server, store)
