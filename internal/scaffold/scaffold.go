@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/glorious-beard/locutus/internal/frontmatter"
+	"github.com/glorious-beard/locutus/internal/runtimepolicy"
 	"github.com/glorious-beard/locutus/internal/spec"
 	"github.com/glorious-beard/locutus/internal/specio"
 )
@@ -106,6 +107,15 @@ func Scaffold(fsys specio.FS, projectName string) error {
 	// refresh path.
 	if err := copyEmbedded(fsys, plansFS, "plans", ".borg/plans"); err != nil {
 		return fmt.Errorf("copy plan files: %w", err)
+	}
+
+	// 5c. Write .borg/runtimes.yaml so operators have a project-
+	// editable copy of the version-floor registry (DJ-144 phase 1.5).
+	// Idempotent: existing file is not overwritten on `init`.
+	if err := writeIfMissing(fsys, ".borg/runtimes.yaml", func() ([]byte, error) {
+		return runtimepolicy.DefaultYAML(), nil
+	}); err != nil {
+		return fmt.Errorf("write runtimes.yaml: %w", err)
 	}
 
 	// .borg/models.yaml retired in DJ-135 phase 5. Locutus no longer
@@ -243,6 +253,13 @@ func Reset(fsys specio.FS) (*ResetReport, error) {
 		return nil
 	}); err != nil {
 		return report, err
+	}
+
+	// Overwrite .borg/runtimes.yaml with the embedded default
+	// (DJ-144 phase 1.5). Unlike agent files there is only one
+	// file, so no walk needed — just a direct write.
+	if err := fsys.WriteFile(".borg/runtimes.yaml", runtimepolicy.DefaultYAML(), 0o644); err != nil {
+		return report, fmt.Errorf("write runtimes.yaml: %w", err)
 	}
 
 	// Remove orphan agent .md files — files in the project's

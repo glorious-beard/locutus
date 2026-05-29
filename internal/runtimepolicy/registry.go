@@ -91,6 +91,10 @@ func NewRegistry(fsys specio.FS) (*Registry, error) {
 	return &Registry{floors: floors}, nil
 }
 
+// DefaultYAML is the embedded shipping default, exported so the init
+// scaffold can write a project-editable copy to .borg/runtimes.yaml.
+func DefaultYAML() []byte { return defaultRuntimesYAML }
+
 // MinVersion returns the declared floor for a runtime and whether one
 // is declared (a non-empty min_version). Runtimes with empty/absent
 // floors return ("", false) — no warning should fire for them.

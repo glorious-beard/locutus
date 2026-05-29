@@ -659,3 +659,39 @@ func TestScaffoldIdempotent(t *testing.T) {
 	err = scaffold.Scaffold(fsys, "test-project")
 	assert.NoError(t, err, "second run of Scaffold should not error")
 }
+
+// TestScaffoldEmitsRuntimesYAML locks in DJ-144 phase 1.5: Scaffold
+// writes .borg/runtimes.yaml so operators have a project-editable copy
+// of the version-floor registry (parity with .borg/agents.yaml).
+func TestScaffoldEmitsRuntimesYAML(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	data, err := fsys.ReadFile(".borg/runtimes.yaml")
+	require.NoError(t, err, ".borg/runtimes.yaml must exist after Scaffold")
+	text := string(data)
+	assert.Contains(t, text, "claude-code", ".borg/runtimes.yaml must contain claude-code runtime entry")
+	assert.Contains(t, text, "min_version", ".borg/runtimes.yaml must contain min_version field")
+}
+
+// TestResetOverwritesRuntimesYAML locks in DJ-144 phase 1.5: Reset
+// overwrites .borg/runtimes.yaml with the embedded default (parity
+// with how Reset handles .borg/agents/ files).
+func TestResetOverwritesRuntimesYAML(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	// Locally modify .borg/runtimes.yaml so we can detect overwrite.
+	const localEdit = "runtimes:\n  claude-code:\n    min_version: \"0.0.1\"\n"
+	require.NoError(t, fsys.WriteFile(".borg/runtimes.yaml", []byte(localEdit), 0o644))
+
+	_, err := scaffold.Reset(fsys)
+	require.NoError(t, err)
+
+	data, err := fsys.ReadFile(".borg/runtimes.yaml")
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "0.0.1",
+		"Reset must overwrite .borg/runtimes.yaml with the embedded default")
+	assert.Contains(t, string(data), "claude-code",
+		"the reset .borg/runtimes.yaml must contain the embedded runtime entry")
+}
