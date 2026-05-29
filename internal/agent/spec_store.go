@@ -106,6 +106,15 @@ type SpecStore struct {
 	// restore. Begin captures it; Commit clears it; Rollback restores
 	// from it.
 	tx *txSnapshot
+
+	// overlays carry per-session would-be mutations for the DJ-147
+	// dry-run capture path. Keyed on the MCP session handle
+	// (*mcp.ServerSession in production, typed as `any` here so the
+	// agent package stays free of an mcp import per DJ-134). A session
+	// without an entry runs against the base store directly — no
+	// capture, no merge cost.
+	overlaysMu sync.RWMutex
+	overlays   map[any]*sessionOverlay
 }
 
 type goalEntry struct {
@@ -178,6 +187,7 @@ func NewSpecStore(fsys specio.FS) (*SpecStore, error) {
 		bugs:       make(map[string]*bugEntry),
 		approaches: make(map[string]*approachEntry),
 		index:      idx,
+		overlays:   make(map[any]*sessionOverlay),
 	}
 	if err := s.loadFromFS(); err != nil {
 		return nil, err
@@ -1122,4 +1132,124 @@ func cloneApproachMap(in map[string]*approachEntry) map[string]*approachEntry {
 		out[k] = &c
 	}
 	return out
+}
+
+// RegisterOverlay marks a session as dry-run. Subsequent OverlayPut /
+// OverlayDelete calls keyed on this session land in the overlay rather
+// than reaching the base store; OverlayView merges the overlay onto the
+// base store on read. UnregisterOverlay discards the overlay at session
+// close.
+//
+// sess is *mcp.ServerSession in production but typed as `any` here so
+// the agent package doesn't import the MCP SDK (DJ-134 keeps the
+// dependency arrow pointing the right direction). Re-registering the
+// same session is a no-op — the first overlay survives.
+func (s *SpecStore) RegisterOverlay(sess any) {
+	s.overlaysMu.Lock()
+	defer s.overlaysMu.Unlock()
+	if s.overlays == nil {
+		s.overlays = make(map[any]*sessionOverlay)
+	}
+	if _, exists := s.overlays[sess]; !exists {
+		s.overlays[sess] = newSessionOverlay()
+	}
+}
+
+// UnregisterOverlay discards a session's overlay. Idempotent — calling
+// it for a session that never registered is a no-op.
+func (s *SpecStore) UnregisterOverlay(sess any) {
+	s.overlaysMu.Lock()
+	defer s.overlaysMu.Unlock()
+	delete(s.overlays, sess)
+}
+
+// overlayFor returns the session's overlay or nil. Lock-free for
+// callers — the returned pointer's own mu guards its data.
+func (s *SpecStore) overlayFor(sess any) *sessionOverlay {
+	s.overlaysMu.RLock()
+	defer s.overlaysMu.RUnlock()
+	return s.overlays[sess]
+}
+
+// OverlayPut applies a would-be put to the session's overlay. Returns
+// an error if the session has no overlay registered (caller bug — the
+// captureOnly wrapper guards this in production).
+func (s *SpecStore) OverlayPut(sess any, tool string, kind SpecKind, id string, body any) error {
+	o := s.overlayFor(sess)
+	if o == nil {
+		return fmt.Errorf("OverlayPut: session has no registered overlay (call RegisterOverlay first)")
+	}
+	o.put(tool, kind, id, body)
+	return nil
+}
+
+// OverlayDelete marks a would-be deletion on the session's overlay.
+// Returns an error if the session has no overlay registered.
+func (s *SpecStore) OverlayDelete(sess any, tool string, kind SpecKind, id string) error {
+	o := s.overlayFor(sess)
+	if o == nil {
+		return fmt.Errorf("OverlayDelete: session has no registered overlay")
+	}
+	o.delete(tool, kind, id)
+	return nil
+}
+
+// OverlayCaptured returns the ordered list of captured mutations for
+// the session, or nil if no overlay is registered. The returned slice
+// is a defensive copy.
+func (s *SpecStore) OverlayCaptured(sess any) []CapturedMutation {
+	o := s.overlayFor(sess)
+	if o == nil {
+		return nil
+	}
+	return o.capturedList()
+}
+
+// lookupEntry adapts the per-kind base-store maps into the flat
+// *StoreEntry shape used by OverlayView. Returns (entry, true) if the
+// id exists in the base store under the named kind, (nil, false)
+// otherwise. The returned StoreEntry is freshly built; callers must
+// treat it as read-only.
+//
+// The base store has no single-id accessor — its public surface is the
+// batched GetSpec (which discriminates by id prefix and returns the
+// kind it routed to) and the per-kind ListManifest/idsForKindLocked
+// helpers. lookupEntry walks the per-kind map directly under RLock,
+// which is the lowest-cost lookup path and matches the per-kind
+// dispatch idiom established by Put / workingPriorLocked /
+// idsForKindLocked.
+func (s *SpecStore) lookupEntry(kind SpecKind, id string) (*StoreEntry, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	switch kind {
+	case KindGoal:
+		if e, ok := s.goals[id]; ok {
+			return &StoreEntry{Kind: kind, ID: id, Body: e.body, Origin: e.origin}, true
+		}
+	case KindAntiGoal:
+		if e, ok := s.antiGoals[id]; ok {
+			return &StoreEntry{Kind: kind, ID: id, Body: e.body, Origin: e.origin}, true
+		}
+	case KindFeature:
+		if e, ok := s.features[id]; ok {
+			return &StoreEntry{Kind: kind, ID: id, Body: e.body, Origin: e.origin}, true
+		}
+	case KindStrategy:
+		if e, ok := s.strategies[id]; ok {
+			return &StoreEntry{Kind: kind, ID: id, Body: e.body, Origin: e.origin}, true
+		}
+	case KindDecision:
+		if e, ok := s.decisions[id]; ok {
+			return &StoreEntry{Kind: kind, ID: id, Body: e.body, Origin: e.origin}, true
+		}
+	case KindBug:
+		if e, ok := s.bugs[id]; ok {
+			return &StoreEntry{Kind: kind, ID: id, Body: e.body, Origin: e.origin}, true
+		}
+	case KindApproach:
+		if e, ok := s.approaches[id]; ok {
+			return &StoreEntry{Kind: kind, ID: id, Body: e.body, Origin: e.origin}, true
+		}
+	}
+	return nil, false
 }

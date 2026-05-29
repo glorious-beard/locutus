@@ -132,3 +132,41 @@ func (o *sessionOverlay) capturedList() []CapturedMutation {
 	copy(out, o.captured)
 	return out
 }
+
+// OverlayView is the read merger consulted by spec_list_manifest /
+// spec_get / spec_search. It consults the session's overlay first
+// (deleted-key masks, overlay-held entries win), then falls back to the
+// base SpecStore.
+//
+// Sessions without an overlay (the non-dry-run common case) get a view
+// whose Lookup is a passthrough to the base store — safe to call
+// unconditionally on every read.
+type OverlayView struct {
+	store   *SpecStore
+	overlay *sessionOverlay // may be nil
+}
+
+// OverlayView returns the per-session read merger. sess may be a
+// session handle with a registered overlay or any other value (in
+// which case the view passes straight through to the base store).
+func (s *SpecStore) OverlayView(sess any) *OverlayView {
+	return &OverlayView{store: s, overlay: s.overlayFor(sess)}
+}
+
+// Lookup returns the entry for (kind, id), consulting the overlay
+// first. A deleted overlay entry masks the base store.
+//
+// The returned pointer references either the overlay's live entry or
+// a freshly-built adapter over the base-store's per-kind entry; in
+// both cases callers must treat it as read-only.
+func (v *OverlayView) Lookup(kind SpecKind, id string) (*StoreEntry, bool) {
+	if v.overlay != nil {
+		if v.overlay.isDeleted(kind, id) {
+			return nil, false
+		}
+		if entry, ok := v.overlay.lookup(kind, id); ok {
+			return entry, true
+		}
+	}
+	return v.store.lookupEntry(kind, id)
+}
