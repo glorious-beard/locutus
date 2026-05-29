@@ -27,6 +27,10 @@ Throughout this iteration, the MCP server's manifest is the authoritative record
 - **MCP write tools** — `mcp__locutus__spec_propose_decision`, `mcp__locutus__spec_propose_feature`, `mcp__locutus__spec_propose_strategy`, `mcp__locutus__spec_revise_decision`, `mcp__locutus__spec_revise_feature`, `mcp__locutus__spec_revise_strategy`, and the cascade-specific `mcp__locutus__spec_mark_approach_drifted`. Each auto-commits on success; subscribers see `notifications/resources/updated` on `spec://manifest`.
 - **Subagents** (via the `Task` tool when you need authoring help) — `spec-decision-elaborator`, `spec-feature-elaborator`, `spec-strategy-elaborator`, `spec-reconciler`. The cascade may run without subagents on simple bias text; reach for them when the bias implies structural rewriting that benefits from elaborator-quality prose.
 
+## Invariants
+
+- **Spec mutations route exclusively through the `mcp__locutus__spec_*` MCP tools.** Never call `Write` or `Edit` on any file under `.borg/spec/` — those files are the SpecStore's persistence backing, not its source of truth (DJ-134). The daemon owns coherence (in-process `SpecStore` + write-through search index + history events + per-runtime tool policy per DJ-143); direct file writes bypass all of it. When you need to mutate the graph, the right tool is one of `spec_propose_*` / `spec_revise_*` / `spec_delete_*` (or `spec_mark_approach_drifted` for DJ-138 drift marks).
+
 ## The iteration
 
 Run these steps in order. Each step maps to a `TodoWrite` entry; update it as you go.

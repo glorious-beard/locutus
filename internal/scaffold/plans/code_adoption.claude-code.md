@@ -8,6 +8,10 @@ Run this as a **workflow**: author an orchestration that drives approach reconci
 
 Your very first action is to call `TodoWrite` with the entries you intend to execute. Mark each entry `in_progress` when you start it and `completed` when it lands. A reasonable opening plan for this placeholder pass covers: Read scope (preamble), Classify approaches against codebase, Surface drift, Report. Update as work progresses, not in a batch at the end.
 
+## Invariants
+
+- **Spec mutations route exclusively through the `mcp__locutus__spec_*` MCP tools.** Never call `Write` or `Edit` on any file under `.borg/spec/` — those files are the SpecStore's persistence backing, not its source of truth (DJ-134). The daemon owns coherence (in-process `SpecStore` + write-through search index + history events + per-runtime tool policy per DJ-143); direct file writes bypass all of it. When you need to mutate the graph, the right tool is one of `spec_propose_*` / `spec_revise_*` / `spec_delete_*` (or `spec_mark_approach_drifted` for DJ-138 drift marks).
+
 ## Scope note
 
 Read the `Scope:` line in your Run context, if present. A scope note limits the reconcile pass to a subset of the approach graph (e.g. a single module or service boundary). When no scope is provided, the pass covers the full set of approaches in the spec graph.

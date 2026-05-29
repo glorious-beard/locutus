@@ -10,6 +10,11 @@ Your very first action is to call `TodoWrite` with the entries you intend to exe
 
 After laying out your plan, call `mcp__locutus__spec_list_manifest` (no arguments). The manifest returns every node in the graph; the `Goals` and `AntiGoals` arrays carry the `goal-*` and `agoal-*` ids you need for structural conflict detection. Read the manifest once here and keep it in context.
 
+## Invariants
+
+- **Spec mutations route exclusively through the `mcp__locutus__spec_*` MCP tools.** Never call `Write` or `Edit` on any file under `.borg/spec/` — those files are the SpecStore's persistence backing, not its source of truth (DJ-134). The daemon owns coherence (in-process `SpecStore` + write-through search index + history events + per-runtime tool policy per DJ-143); direct file writes bypass all of it. When you need to mutate the graph, the right tool is one of `spec_propose_*` / `spec_revise_*` / `spec_delete_*` (or `spec_mark_approach_drifted` for DJ-138 drift marks).
+- **`GOALS.md` is read-only for the duration of this run.** Read it once with the `Read` tool when the playbook says to. Never call `Write` or `Edit` on `GOALS.md` — the operator owns its content (DJ-139 RQ1: "humans only edit GOALS.md"). The matcher's `promoted` / `contradicted` moves apply to goal-layer *nodes* via the goal-layer MCP tools (`spec_propose_goal` / `spec_revise_goal` / `spec_delete_goal` and the AntiGoal variants), not to the `GOALS.md` file. If your iteration drafts a unified diff against `GOALS.md` (e.g. `feature_ingestion` Branch B), the diff is *output for operator review*, never a patch the workflow applies itself.
+
 ## One-time preamble — Goal-layer read (runs once, before the loop)
 
 Fetch the full goal layer once so it is available for every iteration's structural conflict test.

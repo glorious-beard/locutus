@@ -21,6 +21,11 @@ A reasonable opening plan covers these step labels: Goal-layer sync (preamble), 
 
 After laying out your plan, call `mcp__locutus__spec_list_manifest` (no arguments) to read the current spec graph state. The manifest carries every node — including `goal-*` and `agoal-*` ids — and the `goals_md_hash` field that drives the one-time goal-layer sync. Then read `GOALS.md` once with the `Read` tool. Both are inputs to the preamble.
 
+## Invariants
+
+- **Spec mutations route exclusively through the `mcp__locutus__spec_*` MCP tools.** Never call `Write` or `Edit` on any file under `.borg/spec/` — those files are the SpecStore's persistence backing, not its source of truth (DJ-134). The daemon owns coherence (in-process `SpecStore` + write-through search index + history events + per-runtime tool policy per DJ-143); direct file writes bypass all of it. When you need to mutate the graph, the right tool is one of `spec_propose_*` / `spec_revise_*` / `spec_delete_*` (or `spec_mark_approach_drifted` for DJ-138 drift marks).
+- **`GOALS.md` is read-only for the duration of this run.** Read it once with the `Read` tool when the playbook says to. Never call `Write` or `Edit` on `GOALS.md` — the operator owns its content (DJ-139 RQ1: "humans only edit GOALS.md"). The matcher's `promoted` / `contradicted` moves apply to goal-layer *nodes* via the goal-layer MCP tools (`spec_propose_goal` / `spec_revise_goal` / `spec_delete_goal` and the AntiGoal variants), not to the `GOALS.md` file. If your iteration drafts a unified diff against `GOALS.md` (e.g. `feature_ingestion` Branch B), the diff is *output for operator review*, never a patch the workflow applies itself.
+
 ## One-time preamble — Goal-layer sync (runs once, before the loop)
 
 Reconcile the persisted goal layer against the current text of `GOALS.md`. GOALS.md is the unchanging upstream input for this workflow run; sync it once here, not per iteration.
