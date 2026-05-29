@@ -7,15 +7,18 @@ import (
 
 // StoreEntry is the overlay's typed view of a would-be spec graph
 // entry. Body is the same typed value (spec.Decision / spec.Feature /
-// ...) that SpecStore.Put would have persisted under a normal write;
-// Origin tags it as proposed so the read-path merge can present it
-// alongside settled entries with the right disposition. Introduced by
-// DJ-147 for the dry-run capture path; SpecStore integration (Task 2)
-// reuses this shape on lookups that merge overlay-over-store.
+// ...) that SpecStore.Put would have persisted under a normal write.
+// Introduced by DJ-147 for the dry-run capture path; SpecStore
+// integration (Task 2) reuses this shape on lookups that merge
+// overlay-over-store.
 type StoreEntry struct {
-	Kind   SpecKind
-	ID     string
-	Body   any
+	Kind SpecKind
+	ID   string
+	Body any
+	// Origin is always OriginProposed for overlay-held entries; the
+	// field exists so the read-path merger in OverlayView.Lookup can
+	// return a unified *StoreEntry shape across overlay and base-store
+	// entries.
 	Origin SpecManifestOrigin
 }
 
@@ -96,6 +99,10 @@ func (o *sessionOverlay) delete(tool string, kind SpecKind, id string) {
 // lookup returns (entry, true) when the overlay holds a would-be entry
 // for (kind, id), (nil, false) when it doesn't. A deleted key reports
 // (nil, false) — masking the base store on the read path.
+//
+// The returned pointer references the overlay's live entry; callers
+// must treat it as read-only — mutation outside the overlay's lock
+// would race with concurrent put/delete.
 func (o *sessionOverlay) lookup(kind SpecKind, id string) (*StoreEntry, bool) {
 	key := storeKey{Kind: kind, ID: id}
 	o.mu.RLock()

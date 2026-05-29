@@ -5,8 +5,8 @@
 package agent
 
 import (
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/glorious-beard/locutus/internal/spec"
 	"github.com/stretchr/testify/assert"
@@ -65,18 +65,16 @@ func TestSessionOverlay_RevisePreservesOrderedCapture(t *testing.T) {
 
 func TestSessionOverlay_ConcurrentPutSafe(t *testing.T) {
 	o := newSessionOverlay()
-	done := make(chan struct{})
+	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
+		wg.Add(1)
 		go func(i int) {
-			defer func() { done <- struct{}{} }()
+			defer wg.Done()
 			id := "dec-" + string(rune('a'+i))
 			o.put("spec_propose_decision", KindDecision, id, spec.Decision{ID: id})
 		}(i)
 	}
-	for i := 0; i < 8; i++ {
-		<-done
-	}
-	// All 8 must be present.
+	wg.Wait()
 	for i := 0; i < 8; i++ {
 		id := "dec-" + string(rune('a'+i))
 		_, ok := o.lookup(KindDecision, id)
@@ -84,6 +82,3 @@ func TestSessionOverlay_ConcurrentPutSafe(t *testing.T) {
 	}
 	assert.Len(t, o.capturedList(), 8)
 }
-
-// Avoid the import-vs-used-time-noise: use time directly so the test file owns the import.
-var _ = time.Now
