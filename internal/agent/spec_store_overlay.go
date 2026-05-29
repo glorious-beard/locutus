@@ -123,6 +123,21 @@ func (o *sessionOverlay) isDeleted(kind SpecKind, id string) bool {
 	return gone
 }
 
+// lookupWithMask is the atomic compound used by OverlayView.Lookup:
+// returns (entry, found, deletedMask) under a single RLock acquisition
+// so a concurrent put/delete cannot interleave between the deletion
+// check and the entry lookup.
+func (o *sessionOverlay) lookupWithMask(kind SpecKind, id string) (*StoreEntry, bool, bool) {
+	key := storeKey{Kind: kind, ID: id}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if _, gone := o.deleted[key]; gone {
+		return nil, false, true
+	}
+	entry, ok := o.entries[key]
+	return entry, ok, false
+}
+
 // capturedList returns a defensive copy of the ordered capture so
 // callers can iterate without holding the overlay's lock.
 func (o *sessionOverlay) capturedList() []CapturedMutation {
@@ -161,10 +176,11 @@ func (s *SpecStore) OverlayView(sess any) *OverlayView {
 // both cases callers must treat it as read-only.
 func (v *OverlayView) Lookup(kind SpecKind, id string) (*StoreEntry, bool) {
 	if v.overlay != nil {
-		if v.overlay.isDeleted(kind, id) {
+		entry, found, deleted := v.overlay.lookupWithMask(kind, id)
+		if deleted {
 			return nil, false
 		}
-		if entry, ok := v.overlay.lookup(kind, id); ok {
+		if found {
 			return entry, true
 		}
 	}

@@ -1188,7 +1188,7 @@ func (s *SpecStore) OverlayPut(sess any, tool string, kind SpecKind, id string, 
 func (s *SpecStore) OverlayDelete(sess any, tool string, kind SpecKind, id string) error {
 	o := s.overlayFor(sess)
 	if o == nil {
-		return fmt.Errorf("OverlayDelete: session has no registered overlay")
+		return fmt.Errorf("OverlayDelete: session has no registered overlay (call RegisterOverlay first)")
 	}
 	o.delete(tool, kind, id)
 	return nil
@@ -1216,8 +1216,7 @@ func (s *SpecStore) OverlayCaptured(sess any) []CapturedMutation {
 // kind it routed to) and the per-kind ListManifest/idsForKindLocked
 // helpers. lookupEntry walks the per-kind map directly under RLock,
 // which is the lowest-cost lookup path and matches the per-kind
-// dispatch idiom established by Put / workingPriorLocked /
-// idsForKindLocked.
+// dispatch idiom established by Put / lookupLocked / idsForKindLocked.
 func (s *SpecStore) lookupEntry(kind SpecKind, id string) (*StoreEntry, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

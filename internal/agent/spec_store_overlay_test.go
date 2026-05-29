@@ -201,6 +201,29 @@ func TestSpecStore_OverlayViewReadsOverlayThenBase(t *testing.T) {
 	assert.False(t, ok, "overlay-only entries invisible to other sessions")
 }
 
+// TestSpecStore_OverlayRegisterIsIdempotent locks down the documented
+// invariant on RegisterOverlay: re-registering the same session is a
+// no-op — the first overlay survives, captured mutations carry over.
+// A future change that swaps overlays on re-register would break this
+// test.
+func TestSpecStore_OverlayRegisterIsIdempotent(t *testing.T) {
+	store, err := NewSpecStore(specio.NewMemFS())
+	require.NoError(t, err)
+
+	sess := &fakeSess{id: "s1"}
+	store.RegisterOverlay(sess)
+	t.Cleanup(func() { store.UnregisterOverlay(sess) })
+
+	require.NoError(t, store.OverlayPut(sess, "spec_propose_decision", KindDecision, "dec-foo", spec.Decision{ID: "dec-foo"}))
+	require.Len(t, store.OverlayCaptured(sess), 1, "one capture present")
+
+	// Re-register the same session. The first overlay must survive — captured stays.
+	store.RegisterOverlay(sess)
+	caps := store.OverlayCaptured(sess)
+	assert.Len(t, caps, 1, "re-registering must NOT discard the existing overlay")
+	assert.Equal(t, "dec-foo", caps[0].ID)
+}
+
 // TestSpecStore_OverlayDeleteMasks confirms OverlayDelete masks a
 // settled base-store entry from this session's view only — other
 // sessions still see the entry.
