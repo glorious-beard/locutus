@@ -64,7 +64,7 @@ func NewSpecServer(store *agent.SpecStore, fsys specio.FS, reg *activity.Registr
 		&mcp.ServerOptions{
 			SubscribeHandler:   func(_ context.Context, _ *mcp.SubscribeRequest) error { return nil },
 			UnsubscribeHandler: func(_ context.Context, _ *mcp.UnsubscribeRequest) error { return nil },
-			InitializedHandler: newInitializedHandler(slog.Default(), fsys),
+			InitializedHandler: newInitializedHandler(slog.Default(), fsys, store),
 		},
 	)
 	registerReadTools(server, store)

@@ -107,7 +107,7 @@ func TestInitializedHandlerExtractsRuntimeAndMode(t *testing.T) {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "locutus-test", Version: "0.0.0"},
 		&mcp.ServerOptions{
-			InitializedHandler: newInitializedHandler(nil, nil),
+			InitializedHandler: newInitializedHandler(nil, nil, nil),
 		},
 	)
 	serverT, clientT := mcp.NewInMemoryTransports()

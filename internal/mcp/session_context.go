@@ -7,28 +7,38 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/glorious-beard/locutus/internal/agent"
 	"github.com/glorious-beard/locutus/internal/runtimepolicy"
 	"github.com/glorious-beard/locutus/internal/specio"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // sessionRuntimes maps each per-connection MCP session key to its
-// captured (runtime, mode) pair. The map is keyed by the session
-// pointer (any) because the SDK does not expose user-attachable
-// session metadata; storing alongside the SDK's session is the
-// minimum-coupling alternative.
+// captured (runtime, mode, dryRun, dryRunFormat) tuple. The map is
+// keyed by the session pointer (any) because the SDK does not expose
+// user-attachable session metadata; storing alongside the SDK's
+// session is the minimum-coupling alternative.
 //
 // Per DJ-143 §1: runtime comes from ClientInfo.name, mode from
 // _meta["locutus.mode"] forwarded by the bridge.
+//
+// Per DJ-147 §2: dryRun + dryRunFormat come from
+// _meta["locutus.dry_run"] + _meta["locutus.dry_run_format"] forwarded
+// by the bridge when the operator passed --dry-run on the CLI. The
+// InitializedHandler also calls SpecStore.RegisterOverlay for dry-run
+// sessions so subsequent spec_* writes are captured rather than
+// persisted.
 //
 // Known limitation: entries are never deleted. The go-sdk v1.6.1 does
 // not expose a session-close hook, so there is no callback site for
 // cleanup. The map grows by one entry per MCP session attach over the
 // daemon's lifetime. For typical operator behavior (a handful of
 // coding-agent sessions per day) the leak is negligible — each entry
-// is two short strings. If the daemon starts being run as a long-
-// lived service across many short sessions, add a periodic best-
-// effort sweep or migrate to a custom transport that fires close
+// is two short strings plus two scalars. The SpecStore overlay map
+// shares this constraint: an overlay registered for a dry-run session
+// persists until the daemon restarts. If the daemon starts being run
+// as a long-lived service across many short sessions, add a periodic
+// best-effort sweep or migrate to a custom transport that fires close
 // callbacks. The sessionTokens map in tools_loop.go has the same
 // shape and shares this constraint.
 var (
@@ -37,17 +47,31 @@ var (
 )
 
 type sessionContext struct {
-	runtime string
-	mode    string
+	runtime      string
+	mode         string
+	dryRun       bool
+	dryRunFormat string
 }
 
-func storeSessionRuntime(sess any, runtime, mode string) {
+// storeSessionContext stores the (runtime, mode, dryRun, dryRunFormat)
+// tuple for a session. Called from the InitializedHandler at session
+// start and from tests to override.
+func storeSessionContext(sess any, runtime, mode string, dryRun bool, dryRunFormat string) {
 	sessionRuntimesMu.Lock()
 	defer sessionRuntimesMu.Unlock()
 	sessionRuntimes[sess] = sessionContext{
-		runtime: strings.ToLower(strings.TrimSpace(runtime)),
-		mode:    strings.ToLower(strings.TrimSpace(mode)),
+		runtime:      strings.ToLower(strings.TrimSpace(runtime)),
+		mode:         strings.ToLower(strings.TrimSpace(mode)),
+		dryRun:       dryRun,
+		dryRunFormat: strings.ToLower(strings.TrimSpace(dryRunFormat)),
 	}
+}
+
+// storeSessionRuntime preserves the DJ-143 entry point (runtime + mode
+// only) for tests that don't care about dry-run. New callers should
+// prefer storeSessionContext.
+func storeSessionRuntime(sess any, runtime, mode string) {
+	storeSessionContext(sess, runtime, mode, false, "")
 }
 
 func sessionRuntimeFor(sess any) (runtime, mode string) {
@@ -71,6 +95,32 @@ func clearSessionRuntimes() {
 // session has not yet completed initialize (or is unknown).
 func SessionRuntime(sess *mcp.ServerSession) (runtime, mode string) {
 	return sessionRuntimeFor(sess)
+}
+
+// SessionDryRun reports whether the calling session is in dry-run
+// mode (per DJ-147 §2 the captureOnly wrapper consults this).
+// Returns false for unknown sessions — the safe default; the wrapper
+// passes through to the inner handler.
+func SessionDryRun(sess *mcp.ServerSession) bool {
+	sessionRuntimesMu.RLock()
+	defer sessionRuntimesMu.RUnlock()
+	c, ok := sessionRuntimes[sess]
+	if !ok {
+		return false
+	}
+	return c.dryRun
+}
+
+// SessionDryRunFormat returns the format the operator requested via
+// --format (markdown or json). Empty for sessions not in dry-run.
+func SessionDryRunFormat(sess *mcp.ServerSession) string {
+	sessionRuntimesMu.RLock()
+	defer sessionRuntimesMu.RUnlock()
+	c, ok := sessionRuntimes[sess]
+	if !ok {
+		return ""
+	}
+	return c.dryRunFormat
 }
 
 // requireRuntimeAny wraps a tool handler so it returns a runtime-
@@ -112,7 +162,14 @@ func requireRuntimeAny[In, Out any](
 // Per DJ-144 §9: also reads ClientInfo.version and logs a warning
 // when the runtime is below its declared version floor. logger and
 // fsys may be nil (nil logger = no-op; nil fsys = embedded defaults).
-func newInitializedHandler(logger *slog.Logger, fsys specio.FS) func(context.Context, *mcp.InitializedRequest) {
+//
+// Per DJ-147 §2: also reads _meta["locutus.dry_run"] (bool or
+// "true"/"1") and _meta["locutus.dry_run_format"] (markdown|json,
+// default markdown). When dry-run is set and a non-nil store is
+// supplied, calls store.RegisterOverlay so subsequent spec_* writes
+// route to the per-session overlay instead of persisting. store may
+// be nil (e.g. unit tests that don't exercise the overlay surface).
+func newInitializedHandler(logger *slog.Logger, fsys specio.FS, store *agent.SpecStore) func(context.Context, *mcp.InitializedRequest) {
 	return func(_ context.Context, req *mcp.InitializedRequest) {
 		if req == nil || req.Session == nil {
 			return
@@ -127,13 +184,34 @@ func newInitializedHandler(logger *slog.Logger, fsys specio.FS) func(context.Con
 			version = params.ClientInfo.Version
 		}
 		mode := "interactive"
+		dryRun := false
+		dryRunFormat := "markdown"
 		if params.Meta != nil {
 			if v, ok := params.Meta["locutus.mode"].(string); ok && strings.TrimSpace(v) != "" {
 				mode = v
 			}
+			if v, ok := params.Meta["locutus.dry_run"]; ok {
+				// Accept bool, "1", "true" (case-insensitive). Everything else → false.
+				switch t := v.(type) {
+				case bool:
+					dryRun = t
+				case string:
+					s := strings.ToLower(strings.TrimSpace(t))
+					dryRun = s == "1" || s == "true"
+				}
+			}
+			if v, ok := params.Meta["locutus.dry_run_format"].(string); ok {
+				s := strings.ToLower(strings.TrimSpace(v))
+				if s == "json" || s == "markdown" {
+					dryRunFormat = s
+				}
+			}
 		}
-		storeSessionRuntime(req.Session, runtime, mode)
+		storeSessionContext(req.Session, runtime, mode, dryRun, dryRunFormat)
 		checkRuntimeVersion(logger, fsys, runtime, version)
+		if dryRun && store != nil {
+			store.RegisterOverlay(req.Session)
+		}
 	}
 }
 
