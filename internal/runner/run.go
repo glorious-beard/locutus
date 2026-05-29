@@ -87,18 +87,16 @@ func headlessSpawnEnv(base acp.Spawn, parentEnv []string) acp.Spawn {
 // matching playbook overlay (DJ-136 phase 1) without a second
 // resolve.
 //
-// Unified outer-loop dispatch (DJ-140):
+// Runtime-split dispatch (DJ-144):
 //
-// Every runtime — claude-code, codex, gemini — runs through the
-// Locutus-driven outer loop. Each iteration dispatches the
-// one-iteration default playbook; the loop terminates when the
-// agent's final text reports `converged: true` or the iteration
-// ceiling (maxIterations) fires. Earlier (DJ-136 phase 5) claude-code
-// short-circuited to a single dispatch on the assumption that its
-// `/goal` evaluator drives convergence internally, but `/goal` is an
-// interactive-only Claude Code feature unavailable in the headless
-// ACP dispatch path. So the harness drives convergence uniformly for
-// all runtimes; see dispatchUsesOuterLoop.
+// Codex and Gemini run through the Locutus-driven outer loop (DJ-142):
+// each iteration dispatches the one-iteration playbook and the loop
+// terminates when the agent reports `converged: true` or the iteration
+// ceiling (maxIterations) fires. Claude Code is off the harness loop
+// (DJ-144): it converges via an in-runtime dynamic workflow that owns
+// its own loop, so a single ACP dispatch is correct — stacking the
+// harness loop on top would produce two convergence engines and
+// double-count the iteration cap. See dispatchUsesOuterLoop.
 //
 // out is where the agent's free-text output is mirrored. progress
 // is where the dispatcher writes per-tool-call status lines and
@@ -140,21 +138,28 @@ func DispatchActivity(
 	}
 	spawn = headlessSpawnEnv(spawn, os.Environ())
 
-	// Every runtime is driven by the Locutus outer loop (DJ-140). The
-	// loop wraps the one-iteration dispatch and is bounded by
-	// maxIterations (resolved by the caller from the activity registry
-	// per DJ-138 phase 1). dispatchUsesOuterLoop documents and locks
-	// this intent — there is no longer a per-runtime branch here.
-	return runOuterLoopDispatch(ctx, projectRoot, runtime, spawn, playbookBody, maxIterations, out, progress)
+	if dispatchUsesOuterLoop(runtime) {
+		return runOuterLoopDispatch(ctx, projectRoot, runtime, spawn, playbookBody, maxIterations, out, progress)
+	}
+	// Claude Code (DJ-144): single dispatch; the dynamic workflow loops
+	// in-runtime. maxIterations is still validated by the caller and is
+	// surfaced to the workflow via the playbook body (see cap injection
+	// in cmd/activity_verb.go), not enforced by the harness here.
+	return runOneIteration(ctx, projectRoot, runtime, spawn, playbookBody, out, progress)
 }
 
 // dispatchUsesOuterLoop reports whether the runtime's headless
-// dispatch is driven by the Locutus outer loop. Per DJ-140 this is
-// true for every runtime — Claude Code's /goal evaluator is
-// interactive-only and unavailable in the headless ACP dispatch
-// path, so the harness drives convergence uniformly.
+// dispatch is driven by the Locutus harness outer loop.
+//
+// Per DJ-142 this is true for Codex and Gemini (the harness re-
+// dispatches a one-iteration playbook and reads the verdict line).
+// Per DJ-144 it is FALSE for Claude Code: Claude Code converges via an
+// in-runtime dynamic workflow that owns its own loop and reads the
+// scout's verdict itself, so a single ACP dispatch is correct — the
+// harness must not re-dispatch on top of the workflow's loop (that
+// would stack two convergence engines and double-count the cap).
 func dispatchUsesOuterLoop(runtime string) bool {
-	return true
+	return runtime != "claude-code"
 }
 
 // runOuterLoopDispatch wraps repeated runOneIteration calls in the

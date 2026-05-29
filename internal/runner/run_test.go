@@ -15,14 +15,21 @@ import (
 )
 
 func TestDispatchUsesOuterLoopForAllRuntimes(t *testing.T) {
-	// Per DJ-140, every runtime's headless dispatch is driven by the
-	// Locutus outer loop — the claude-code single-dispatch special-case
-	// is gone. /goal is interactive-only and unavailable in the headless
-	// ACP dispatch path.
-	for _, rt := range []string{"claude-code", "codex", "gemini"} {
-		t.Run(rt, func(t *testing.T) {
-			assert.True(t, dispatchUsesOuterLoop(rt),
-				"runtime %q must use the Locutus outer loop", rt)
+	// Per DJ-144, Claude Code is off the harness outer loop (the
+	// in-runtime dynamic workflow owns the loop). Codex and Gemini
+	// retain the harness outer loop per DJ-142.
+	cases := []struct {
+		runtime string
+		want    bool
+	}{
+		{"claude-code", false},
+		{"codex", true},
+		{"gemini", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.runtime, func(t *testing.T) {
+			assert.Equal(t, tc.want, dispatchUsesOuterLoop(tc.runtime),
+				"runtime %q: dispatchUsesOuterLoop mismatch", tc.runtime)
 		})
 	}
 }
