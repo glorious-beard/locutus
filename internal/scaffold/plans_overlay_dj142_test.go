@@ -3,9 +3,10 @@
 // spec_refinement.interactive.md is the mode-only (tier-3) variant for
 // interactive runtimes WITHOUT a runtime-specific overlay — Codex and
 // Gemini, which have no native goal-loop, so the playbook itself drives
-// the convergence loop via the spec_loop_* MCP tools. Claude Code keeps
-// its richer tier-1 .claude-code.interactive.md wrapper; headless
-// dispatch still collapses to the runtime-neutral default.
+// the convergence loop via the spec_loop_* MCP tools. Claude Code uses
+// its tier-2 .claude-code.md workflow playbook (DJ-144 deleted the
+// tier-1 .claude-code.interactive.md /goal wrapper); headless dispatch
+// still collapses to the runtime-neutral default.
 //
 // Resolution precedence (DJ-140): tier1 provider+mode → tier2 provider →
 // tier3 mode → tier4 default. These tests pin the three relevant cells.
@@ -33,15 +34,20 @@ func TestSpecRefinementInteractiveCodexResolvesToModeTier(t *testing.T) {
 		"interactive codex (no provider overlay) must resolve to the tier-3 mode-only variant")
 }
 
-// TestSpecRefinementInteractiveClaudeCodeStillResolvesToWrapper — Claude
-// Code's tier-1 provider+mode wrapper outranks the new tier-3 variant.
-func TestSpecRefinementInteractiveClaudeCodeStillResolvesToWrapper(t *testing.T) {
+// TestSpecRefinementInteractiveClaudeCodeResolvesToWorkflowNotLoopTools —
+// Claude Code's tier-2 provider overlay (spec_refinement.claude-code.md)
+// outranks the tier-3 self-loop variant (spec_refinement.interactive.md).
+// DJ-144 deleted the tier-1 /goal wrapper; the tier-2 workflow playbook
+// is now the winning resolution for Claude Code interactive, preventing
+// the spec_loop_* tools (denied to Claude Code by DJ-143) from being
+// reached.
+func TestSpecRefinementInteractiveClaudeCodeResolvesToWorkflowNotLoopTools(t *testing.T) {
 	_, src, err := scaffold.ResolvePlaybook(
 		scaffold.EmbeddedPlansFS(), "plans", "spec_refinement", "claude-code", scaffold.ModeInteractive)
 	require.NoError(t, err)
 
-	assert.Equal(t, "plans/spec_refinement.claude-code.interactive.md", src,
-		"interactive claude-code must keep resolving to the tier-1 /goal wrapper, not the tier-3 mode variant")
+	assert.Equal(t, "plans/spec_refinement.claude-code.md", src,
+		"interactive claude-code must resolve to the tier-2 workflow playbook, not the tier-3 loop-tool variant (DJ-144)")
 }
 
 // TestSpecRefinementHeadlessCodexResolvesToDefault — headless dispatch

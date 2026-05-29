@@ -1,11 +1,12 @@
-// DJ-136 phase 4 — assertions specific to the spec_refinement
-// Claude Code overlay. The overlay carries a `/goal` directive
-// invoking the published `/locutus-refine` slash command; iteration
-// is driven by Claude Code's goal evaluator. Tests guard:
+// DJ-136 phase 4 — assertions specific to the Claude Code spec_refinement
+// playbook. DJ-144 deleted the /goal wrapper overlay
+// (spec_refinement.claude-code.interactive.md) and the tier-2 workflow
+// playbook (spec_refinement.claude-code.md) is now what Claude Code
+// resolves for BOTH interactive and headless contexts. Tests guard:
 //
-//   - presence of the /goal directive + termination predicate,
-//   - reference to the published slash command,
-//   - size <= 4KB per the /goal length budget.
+//   - presence of the "workflow" framing (dynamic-workflow keyword),
+//   - absence of the /goal directive (interactive-only, breaks headless),
+//   - size budget (no accidental bloat).
 
 package plans_test
 
@@ -18,40 +19,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// DJ-140 phase 3: the /goal overlay is interactive-only — renamed
-// with the .interactive mode suffix so headless ACP dispatch falls
-// through to the one-iteration default. The overlay content is
-// unchanged.
-const claudeCodeOverlayFile = "spec_refinement.claude-code.interactive.md"
+// DJ-144 phase 4: the /goal wrapper was deleted; the tier-2 workflow
+// playbook is now the canonical Claude Code playbook for spec_refinement.
+const claudeCodeWorkflowFile = "spec_refinement.claude-code.md"
 
-// loadClaudeCodeOverlay returns the canonical overlay content.
-func loadClaudeCodeOverlay(t *testing.T) string {
+// loadClaudeCodeWorkflow returns the tier-2 workflow playbook content.
+func loadClaudeCodeWorkflow(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile(claudeCodeOverlayFile)
+	b, err := os.ReadFile(claudeCodeWorkflowFile)
 	require.NoError(t, err)
 	return string(b)
 }
 
-// TestClaudeCodeOverlay_HasGoalDirective — the overlay opens with a
-// /goal directive and the termination predicate names the
-// convergence verdict plus an iteration ceiling.
-func TestClaudeCodeOverlay_HasGoalDirective(t *testing.T) {
-	body := loadClaudeCodeOverlay(t)
-	assert.True(t, strings.HasPrefix(body, "/goal "),
-		"overlay must open with the /goal directive — Claude Code treats the first line as the goal definition")
-	assert.Contains(t, body, "converged: true",
-		"termination predicate must name the positive verdict the scout reports")
-	assert.Contains(t, body, "20",
-		"termination predicate must include an iteration ceiling (20 per the DJ)")
-	assert.Contains(t, body, "locutus-refine",
-		"overlay must invoke the published /locutus-refine slash command — that's what the goal loop dispatches per iteration")
+// TestClaudeCodeWorkflow_IsWorkflowShaped — the playbook opens with the
+// "workflow" framing keyword established in DJ-144 and must NOT carry
+// the /goal directive (which is interactive-only and breaks headless
+// ACP dispatch).
+func TestClaudeCodeWorkflow_IsWorkflowShaped(t *testing.T) {
+	body := loadClaudeCodeWorkflow(t)
+	assert.True(t, strings.Contains(body, "workflow"),
+		"tier-2 playbook must carry the 'workflow' framing (DJ-144 dynamic-workflow)")
+	assert.False(t, strings.HasPrefix(body, "/goal "),
+		"tier-2 playbook must not open with /goal — that directive is interactive-only and breaks headless ACP dispatch")
+	assert.NotContains(t, body, "/goal",
+		"tier-2 playbook must not reference /goal at all")
 }
 
-// TestClaudeCodeOverlay_FitsIn4KB — Claude Code's /goal length
-// budget is 4KB. Generous for a wrapper directive, but the bound
-// catches accidental bloat that would only fail at session-start.
-func TestClaudeCodeOverlay_FitsIn4KB(t *testing.T) {
-	body := loadClaudeCodeOverlay(t)
-	assert.LessOrEqual(t, len(body), 4000,
-		"overlay body is %d bytes — Claude Code /goal accepts up to 4KB", len(body))
+// TestClaudeCodeWorkflow_FitsReasonableSizeLimit — guard against
+// accidental bloat; the workflow playbook is intentionally richer than
+// the old /goal wrapper, but shouldn't balloon past 64KB.
+func TestClaudeCodeWorkflow_FitsReasonableSizeLimit(t *testing.T) {
+	body := loadClaudeCodeWorkflow(t)
+	assert.LessOrEqual(t, len(body), 64*1024,
+		"workflow playbook body is %d bytes — unexpected bloat", len(body))
 }

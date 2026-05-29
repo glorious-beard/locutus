@@ -150,13 +150,12 @@ func (claudeCodePublisher) EnsureHooks(_ []CanonicalActivity, _ specio.FS) error
 
 // PublishActivity writes .claude/commands/locutus-<cli-verb>.md. The
 // body is resolved with mode=interactive (DJ-140 phase 4): for the
-// spec_refinement activity this lands the claude-code interactive
-// overlay (the `/goal` convergence wrapper at
-// spec_refinement.claude-code.interactive.md), since interactive
-// convergence works inside a Claude Code TUI session. Activities
-// without an interactive overlay fall through to the cross-runtime
-// default body, unchanged. Claude Code treats the command body as the
-// prompt the agent runs when the slash command fires.
+// spec_refinement activity this lands the claude-code tier-2 workflow
+// overlay (spec_refinement.claude-code.md — the dynamic-workflow
+// playbook added in DJ-144; the /goal wrapper tier-1 file was deleted
+// in DJ-144 § 4.2). Activities without a runtime overlay fall through
+// to the cross-runtime default body, unchanged. Claude Code treats the
+// command body as the prompt the agent runs when the slash command fires.
 func (p claudeCodePublisher) PublishActivity(act CanonicalActivity, fsys specio.FS) error {
 	body, _, err := scaffold.ResolvePlaybook(fsys, ".borg/plans", act.Name, p.Name(), scaffold.ModeInteractive)
 	if err != nil {

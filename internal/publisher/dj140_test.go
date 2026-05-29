@@ -1,11 +1,11 @@
 // DJ-140 phase 4 — the publisher resolves each runtime's slash-command
-// body with mode=interactive. Claude Code's spec_refinement command
-// becomes the `/goal` convergence wrapper (interactive convergence
-// works inside a Claude Code TUI session); Codex and Gemini fall
+// body with mode=interactive. After DJ-144, Claude Code's spec_refinement
+// command is the tier-2 workflow playbook (spec_refinement.claude-code.md)
+// rather than the deleted /goal wrapper; Codex and Gemini still fall
 // through to the cross-runtime one-iteration default body (they have
-// no interactive convergence primitive).
+// no interactive convergence primitive at tier 2 for spec_refinement).
 //
-// These tests seed the claude-code interactive overlay alongside the
+// These tests seed the claude-code tier-2 workflow overlay alongside the
 // default in .borg/plans/ — the overlay-present layout the publisher
 // reads after `locutus update --reset` copies the embedded scaffold.
 
@@ -19,35 +19,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// seedProjectWithInteractiveOverlay builds the seedProject layout and
-// additionally writes the claude-code interactive overlay for
+// seedProjectWithWorkflowOverlay builds the seedProject layout and
+// additionally writes the claude-code tier-2 workflow overlay for
 // spec_refinement so the interactive resolution finds it. The overlay
-// body is the `/goal` wrapper; the default body is the one-iteration
-// playbook (no `/goal`).
-func seedProjectWithInteractiveOverlay(t *testing.T) specio.FS {
+// body is the dynamic-workflow playbook (no /goal); the default body is
+// the one-iteration playbook.
+func seedProjectWithWorkflowOverlay(t *testing.T) specio.FS {
 	t.Helper()
 	fsys := seedProject(t, true) // includes the default one-iteration body
-	require.NoError(t, fsys.WriteFile(".borg/plans/spec_refinement.claude-code.interactive.md", []byte(
-		`/goal Drive the target node to convergence by repeatedly invoking the `+"`/locutus-refine`"+` slash command.
+	require.NoError(t, fsys.WriteFile(".borg/plans/spec_refinement.claude-code.md", []byte(
+		`# Spec Refinement (Claude Code — dynamic workflow)
 
-Inspect each run's final line — it carries a plain-text verdict in the form `+"`converged: true`"+` or `+"`converged: false; <reason>`"+`.
+Run this as a **workflow**: author an orchestration that drives the spec graph to convergence.
 `), 0o644))
 	return fsys
 }
 
-// TestPublisher_ClaudeCodeRefineCommandIsGoalWrapper — after publishing
-// with the interactive overlay present, .claude/commands/locutus-refine.md
-// carries the /goal directive (the interactive convergence wrapper),
-// not the bare one-iteration default.
-func TestPublisher_ClaudeCodeRefineCommandIsGoalWrapper(t *testing.T) {
-	fsys := seedProjectWithInteractiveOverlay(t)
+// TestPublisher_ClaudeCodeRefineCommandIsWorkflowPlaybook — after publishing
+// with the tier-2 workflow overlay present, .claude/commands/locutus-refine.md
+// carries the workflow body (not the /goal wrapper, which was deleted by DJ-144).
+func TestPublisher_ClaudeCodeRefineCommandIsWorkflowPlaybook(t *testing.T) {
+	fsys := seedProjectWithWorkflowOverlay(t)
 	reg := buildRegistry(t)
 	require.NoError(t, Publish(fsys, reg))
 
 	cc, err := readAsString(fsys, ".claude/commands/locutus-refine.md")
 	require.NoError(t, err)
-	assert.Contains(t, cc, "/goal",
-		"Claude Code refine command should be the interactive /goal convergence wrapper")
+	assert.Contains(t, cc, "workflow",
+		"Claude Code refine command should be the dynamic-workflow playbook (DJ-144; /goal wrapper was deleted)")
+	assert.NotContains(t, cc, "/goal",
+		"Claude Code refine command must not carry the deleted /goal directive")
 }
 
 // TestPublisher_CodexAndGeminiRefineCommandsAreOneIterationBody —
@@ -55,7 +56,7 @@ func TestPublisher_ClaudeCodeRefineCommandIsGoalWrapper(t *testing.T) {
 // commands fall through to the cross-runtime one-iteration default
 // body and must NOT contain the /goal directive.
 func TestPublisher_CodexAndGeminiRefineCommandsAreOneIterationBody(t *testing.T) {
-	fsys := seedProjectWithInteractiveOverlay(t)
+	fsys := seedProjectWithWorkflowOverlay(t)
 	reg := buildRegistry(t)
 	require.NoError(t, Publish(fsys, reg))
 

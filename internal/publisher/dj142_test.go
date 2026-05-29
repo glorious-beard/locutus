@@ -6,16 +6,17 @@
 // .borg/plans/ (as `locutus update --reset` writes it), the publisher's
 // mode=interactive resolution routes per runtime:
 //
-//   - Claude Code → tier-1 spec_refinement.claude-code.interactive.md
-//     (the /goal wrapper) — unchanged from DJ-140.
+//   - Claude Code → tier-2 spec_refinement.claude-code.md
+//     (the dynamic-workflow playbook) — DJ-144 deleted the old tier-1
+//     /goal wrapper; tier-2 now wins for Claude Code interactive.
 //   - Codex / Gemini (no runtime overlay) → tier-3
-//     spec_refinement.interactive.md (the NEW self-loop body).
+//     spec_refinement.interactive.md (the self-loop body).
 //
 // The publisher code already resolves mode=interactive per runtime
 // (DJ-140), so no publisher code changes here — these tests lock the
 // behaviour against regression.
 //
-// SEEDING NOTE (load-bearing): seedProject / seedProjectWithInteractiveOverlay
+// SEEDING NOTE (load-bearing): seedProject / seedProjectWithWorkflowOverlay
 // write SPECIFIC files into a MemFS rather than copying the embedded
 // scaffold, so the tier-3 file is NOT present unless we add it. These
 // tests seed .borg/plans/spec_refinement.interactive.md from the REAL
@@ -34,8 +35,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// seedProjectWithSelfLoopTier3 builds the interactive-overlay layout
-// (default one-iteration body + claude-code interactive /goal overlay)
+// seedProjectWithSelfLoopTier3 builds the workflow-overlay layout
+// (default one-iteration body + claude-code tier-2 workflow overlay)
 // and additionally seeds the tier-3 self-loop body
 // spec_refinement.interactive.md from the embedded scaffold — the
 // layout `locutus update --reset` writes into .borg/plans/. With the
@@ -43,7 +44,7 @@ import (
 // self-loop body instead of falling through to the one-iteration default.
 func seedProjectWithSelfLoopTier3(t *testing.T) specio.FS {
 	t.Helper()
-	fsys := seedProjectWithInteractiveOverlay(t) // default body + claude-code /goal overlay
+	fsys := seedProjectWithWorkflowOverlay(t) // default body + claude-code workflow overlay
 	body, err := fs.ReadFile(scaffold.EmbeddedPlansFS(), "plans/spec_refinement.interactive.md")
 	require.NoError(t, err, "embedded tier-3 self-loop playbook must exist (DJ-142 phase 3)")
 	require.NoError(t, fsys.WriteFile(".borg/plans/spec_refinement.interactive.md", body, 0o644))
@@ -56,7 +57,7 @@ func seedProjectWithSelfLoopTier3(t *testing.T) specio.FS {
 // TestPublisher_CodexInteractiveCommandIsSelfLoop — with the tier-3
 // self-loop playbook present in .borg/plans/, Codex has no runtime
 // overlay so its refine command resolves to spec_refinement.interactive.md
-// (the self-loop body containing spec_loop_begin), NOT the /goal wrapper.
+// (the self-loop body containing spec_loop_begin), NOT the workflow playbook.
 func TestPublisher_CodexInteractiveCommandIsSelfLoop(t *testing.T) {
 	fsys := seedProjectWithSelfLoopTier3(t)
 	reg := buildRegistry(t)
@@ -87,20 +88,22 @@ func TestPublisher_GeminiInteractiveCommandIsSelfLoop(t *testing.T) {
 		"Gemini refine command must not pick up the Claude Code /goal wrapper")
 }
 
-// TestPublisher_ClaudeCodeInteractiveCommandStillGoalWrapper —
-// regression: Claude Code's tier-1 overlay
-// (spec_refinement.claude-code.interactive.md) still wins over the
-// tier-3 self-loop body, so .claude/commands/locutus-refine.md remains
-// the /goal wrapper and does NOT pick up the self-loop body.
-func TestPublisher_ClaudeCodeInteractiveCommandStillGoalWrapper(t *testing.T) {
+// TestPublisher_ClaudeCodeInteractiveCommandIsWorkflowPlaybook —
+// regression: Claude Code's tier-2 overlay (spec_refinement.claude-code.md)
+// wins over the tier-3 self-loop body, so .claude/commands/locutus-refine.md
+// is the workflow playbook and does NOT pick up the self-loop body or the
+// deleted /goal wrapper.
+func TestPublisher_ClaudeCodeInteractiveCommandIsWorkflowPlaybook(t *testing.T) {
 	fsys := seedProjectWithSelfLoopTier3(t)
 	reg := buildRegistry(t)
 	require.NoError(t, Publish(fsys, reg))
 
 	cc, err := readAsString(fsys, ".claude/commands/locutus-refine.md")
 	require.NoError(t, err)
-	assert.Contains(t, cc, "/goal",
-		"Claude Code tier-1 overlay wins: refine command stays the /goal wrapper")
+	assert.Contains(t, cc, "workflow",
+		"Claude Code tier-2 overlay wins: refine command is the dynamic-workflow playbook (DJ-144)")
 	assert.NotContains(t, cc, "spec_loop_begin",
 		"Claude Code must not pick up the tier-3 self-loop body")
+	assert.NotContains(t, cc, "/goal",
+		"Claude Code must not pick up the deleted /goal wrapper")
 }

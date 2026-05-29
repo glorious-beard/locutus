@@ -51,18 +51,18 @@ func TestSpecRefinementHeadlessResolvesToWorkflowPlaybook(t *testing.T) {
 		"the headless workflow playbook must not carry the interactive-only /goal directive")
 }
 
-// TestSpecRefinementInteractiveResolvesToGoalWrapper — an interactive
-// claude-code request activates the mode tiers, so the
-// provider+mode overlay (spec_refinement.claude-code.interactive.md)
-// wins. Its body carries the `/goal` directive. This also proves the
-// renamed file is embedded.
-func TestSpecRefinementInteractiveResolvesToGoalWrapper(t *testing.T) {
+// TestSpecRefinementInteractiveResolvesToWorkflowPlaybook — an interactive
+// claude-code request activates the mode tiers, but after DJ-144 deleted
+// the tier-1 /goal wrapper (spec_refinement.claude-code.interactive.md),
+// the tier-2 provider overlay (spec_refinement.claude-code.md) wins.
+// Its body is the dynamic-workflow playbook and must NOT carry `/goal`.
+func TestSpecRefinementInteractiveResolvesToWorkflowPlaybook(t *testing.T) {
 	body, src, err := scaffold.ResolvePlaybook(
 		scaffold.EmbeddedPlansFS(), "plans", "spec_refinement", "claude-code", scaffold.ModeInteractive)
 	require.NoError(t, err)
 
-	assert.Equal(t, "plans/spec_refinement.claude-code.interactive.md", src,
-		"interactive claude-code must resolve to the renamed /goal wrapper overlay")
-	assert.True(t, strings.Contains(string(body), "/goal"),
-		"the interactive overlay must carry the /goal directive")
+	assert.Equal(t, "plans/spec_refinement.claude-code.md", src,
+		"interactive claude-code must resolve to the tier-2 workflow playbook (DJ-144 deleted the /goal wrapper)")
+	assert.False(t, strings.Contains(string(body), "/goal"),
+		"the workflow playbook must not carry the interactive-only /goal directive")
 }
