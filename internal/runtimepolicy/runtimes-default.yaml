@@ -1,0 +1,19 @@
+# Default per-runtime minimum-version registry shipped with Locutus (DJ-144 §9).
+#
+# Keyed by runtime id (matching internal/dispatch/acp/registry.go AgentSpawns
+# keys: claude-code, codex, gemini). min_version is the lowest runtime version
+# Locutus relies on for a version-gated feature; below it, Locutus logs a
+# warn-and-proceed message (it never blocks dispatch — DJ-144 §9).
+#
+# Override per-project at .borg/runtimes.yaml. An empty/absent min_version
+# means "no floor declared" (no warning ever fires for that runtime).
+#
+# claude-code's floor is the dynamic-workflows requirement (v2.1.154).
+
+runtimes:
+  claude-code:
+    min_version: "2.1.154"
+  codex:
+    min_version: ""
+  gemini:
+    min_version: ""
