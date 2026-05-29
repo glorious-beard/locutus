@@ -16,8 +16,8 @@ The ID set is the source of truth for the `<runtime>` token in `<activity>.<runt
 
 | Affordance | claude-code | codex | gemini |
 |---|---|---|---|
-| Interactive convergence loop | ✓ `/goal` slash command (interactive sessions only) | agent self-loop via loop-state tools (DJ-142) | agent self-loop via loop-state tools (DJ-142) |
-| Headless convergence loop | Locutus `OuterLoopRunner` (DJ-140) | Locutus `OuterLoopRunner` | Locutus `OuterLoopRunner` |
+| Interactive convergence loop | in-runtime dynamic workflow (DJ-144) — the tier-2 keyword playbook contains "workflow" and surfaces as `/locutus-refine` etc. | agent self-loop via loop-state tools (DJ-142) | agent self-loop via loop-state tools (DJ-142) |
+| Headless convergence loop | in-runtime dynamic workflow (DJ-144) — single ACP dispatch, `dispatchUsesOuterLoop("claude-code") == false` | Locutus `OuterLoopRunner` (DJ-140) | Locutus `OuterLoopRunner` (DJ-140) |
 | PreToolUse hook | ✓ `.claude/settings.json` hooks | ✓ `.codex/config.toml` `[[hooks]]` | ✓ `.gemini/settings.json` `BeforeTool` |
 | PostToolUse hook | ✓ | ✓ | ✓ `AfterTool` |
 | MCP server attachment | `.mcp.json` | `[mcp_servers.locutus]` in config.toml | extension manifest |
@@ -25,7 +25,7 @@ The ID set is the source of truth for the `<runtime>` token in `<activity>.<runt
 | Subagent dispatch | Task tool | analogous | analogous |
 | Subdirectory namespacing | ✓ (`.claude/agents/locutus/`) | — (filename prefix) | — (extension scope + filename prefix) |
 
-DJ-136 originally made the `/goal` row a load-bearing asymmetry — Claude Code's evaluator-after-each-turn loop drove headless convergence while Codex/Gemini relied on Locutus's runner. DJ-140 retired that asymmetry for headless dispatch: `/goal` is an interactive-session-scoped Claude Code built-in and is unavailable in the headless `claude-agent-acp` dispatch path (verified 2026-05-27 — same v2.1.150 binary, run-mode-gated). Headless convergence is now the Locutus `OuterLoopRunner` for all three runtimes. `/goal` survives only as an interactive affordance: the published `/locutus-refine` slash command is a `/goal` wrapper that operators invoke from inside a Claude Code TUI session, where `/goal` IS available.
+DJ-136 originally made `/goal` a load-bearing asymmetry — Claude Code's evaluator-after-each-turn loop drove headless convergence while Codex/Gemini relied on Locutus's runner. DJ-140 retired that asymmetry for headless dispatch (since `/goal` is interactive-only and unavailable in the headless `claude-agent-acp` path) and unified everyone on `OuterLoopRunner`. DJ-144 then **reinstated** an in-runtime loop for Claude Code on a new footing: dynamic workflows are headless-reachable via the keyword trigger (the tier-2 `<activity>.claude-code.md` playbook contains "workflow"), so Claude Code now converges in-runtime in both modes and is off `OuterLoopRunner` entirely. The `/goal` wrapper (`spec_refinement.claude-code.interactive.md`) was deleted under DJ-144 §7; the published `/locutus-refine` slash-command body is now the workflow-shaped tier-2 keyword playbook itself.
 
 ## Per-runtime emitted files
 
@@ -43,7 +43,7 @@ Run `locutus init` or `locutus update --reset` to (re-)emit all of these from th
 
 The `<cli-verb>` matches the CLI verb that dispatches the activity (`refine` ↔ `spec_refinement`, `import` ↔ `feature_ingestion`, `adopt` ↔ `code_adoption`, `assimilate` ↔ `code_assimilation`). Operators recognize `/locutus-refine` more readily than `/locutus-spec-refinement`.
 
-The interactive overlay `internal/scaffold/plans/spec_refinement.claude-code.interactive.md` — a thin `/goal` wrapper that invokes `/locutus-refine` each iteration — is published as `.claude/commands/locutus-refine.md` for interactive operators. It is NOT dispatched headlessly (DJ-140): headless `spec_refinement` resolves to the one-iteration default `spec_refinement.md` and runs under the Locutus outer loop.
+The tier-2 keyword playbook `internal/scaffold/plans/<activity>.claude-code.md` is the body of both the published `.claude/commands/locutus-<verb>.md` (interactive slash command) and the headless ACP dispatch prompt (DJ-144 took Claude Code off `OuterLoopRunner`, so it's a single dispatch). The playbook contains the word "workflow" and the `{{max_iterations}}` token: the keyword triggers the dynamic-workflow path in Claude Code v2.1.154+, and the token is substituted from the activity registry's `max_iterations` cap at dispatch by `cmd/activity_verb.go`'s `injectMaxIterations`. The pre-DJ-144 `/goal` wrapper (`spec_refinement.claude-code.interactive.md`) was deleted; a future saved-workflow `.js` script (Phase 3.2 of DJ-144's plan, currently spike-gated) will pin the orchestration deterministically for interactive runs, but until that lands the markdown body carries the activation contract.
 
 ### codex
 
@@ -81,7 +81,7 @@ For headless ACP dispatch the driver now splits along runtime lines:
 
 DJ-144 reinstated the `runtime == "claude-code"` single-dispatch path that DJ-140 had removed — but as "the workflow loops in-runtime", not the old "/goal evaluator loops." The cap travels as a `{{max_iterations}}` token in the playbook body, substituted from the activity registry (DJ-138) at dispatch by `cmd/activity_verb.go`'s `injectMaxIterations`.
 
-The interactive path matches: Claude Code interactive runs the same dynamic-workflow shape (the saved-workflow script published to `.claude/workflows/<activity>.js`), so both modes converge in-runtime. Codex/Gemini interactive stay on the DJ-142 `spec_loop_*` self-loop tier-3 playbook. There is no `/goal` wrapper anywhere now; it was removed under DJ-144 §7. One-shot activities like `justify` are unaffected — they aren't in the four convergent activities and dispatch as before.
+The interactive path matches: Claude Code interactive receives the same tier-2 `<activity>.claude-code.md` playbook as its `/locutus-<verb>.md` slash-command body. The "workflow" keyword in the body activates a dynamic workflow in Claude Code v2.1.154+ — both modes converge in-runtime via the same playbook. A pinned saved-workflow `.js` script (`.claude/workflows/<activity>.js`) is the deterministic interactive end-state per DJ-144 §5; it is deferred (Phase 3.2/3.4 of the implementation plan) pending operator-side verification of the saved-workflow file format. Codex/Gemini interactive stay on the DJ-142 `spec_loop_*` self-loop tier-3 playbook. There is no `/goal` wrapper anywhere now; it was removed under DJ-144 §7. One-shot activities like `justify` are unaffected — they aren't in the four convergent activities and dispatch as before.
 
 ## Per-runtime minimum-version registry (DJ-144 §9)
 
@@ -101,13 +101,13 @@ The runtime version is read from `ClientInfo.version` at MCP `initialize` (the s
 
 ## Interactive convergence driver for Codex / Gemini (DJ-142: tier-3 self-loop)
 
-Codex and Gemini have no native goal-loop, so DJ-136 left interactive `/locutus-refine` on those runtimes running **one-shot** (it fell through to the one-iteration default `spec_refinement.md`). DJ-142 fills DJ-140's empty tier-3 `<activity>.<mode>.md` slot with `internal/scaffold/plans/spec_refinement.interactive.md` — a self-looping playbook the coding agent drives **itself, in one session**, so the convergence *outcome* matches the other two drivers (converge-or-cap) while the *driver* stays idiomatic. This is the third of three drivers:
+Codex and Gemini have no native goal-loop, so DJ-136 left interactive `/locutus-refine` on those runtimes running **one-shot** (it fell through to the one-iteration default `spec_refinement.md`). DJ-142 fills DJ-140's empty tier-3 `<activity>.<mode>.md` slot with `internal/scaffold/plans/spec_refinement.interactive.md` — a self-looping playbook the coding agent drives **itself, in one session**, so the convergence *outcome* matches the other drivers (converge-or-cap) while the *driver* stays idiomatic. As of DJ-144 the matrix has four cells, not three:
 
 | Context | Driver | Convergence judgment | Cap enforcement |
 |---|---|---|---|
-| Headless (all runtimes) | Locutus `OuterLoopRunner` (re-dispatch per iteration) | scout verdict line | harness counter |
-| Interactive · Claude Code | `/goal` evaluator | scout verdict in transcript | `/goal` condition |
+| Headless · Codex / Gemini | Locutus `OuterLoopRunner` (re-dispatch per iteration) | scout verdict line | harness counter |
 | Interactive · Codex / Gemini | the coding agent itself, looping in one session | scout verdict reported to `spec_advance_iteration` | daemon counter via loop-state tools |
+| Claude Code (both modes, DJ-144) | in-runtime dynamic workflow script (the keyword playbook's "workflow" string activates it) | scout verdict read by the script | script counter against the `{{max_iterations}}` token injected at dispatch |
 
 The self-loop is backed by three daemon-side MCP loop-state tools (full reference in [docs/mcp.md](mcp.md)):
 
@@ -117,7 +117,7 @@ The self-loop is backed by three daemon-side MCP loop-state tools (full referenc
 
 **Division of labor mirrors the harness exactly:** the iteration count + cap are server-tracked and deterministic (no agent self-counting); the convergence *judgment* is the scout's LLM verdict, the same thing the harness reads from the verdict line headlessly. The cap is sourced from the activity registry (DJ-138), so `.borg/agents.yaml` overrides apply uniformly across all three drivers.
 
-**Run scoping + compression recovery.** Loop records are keyed server-side by `(ServerSession, activity, target)`. The agent supplies only `(activity, target)` — both re-derivable from its run context (the playbook + the `Target:` line), so nothing opaque has to survive a context compression: recovery is simply re-calling `spec_loop_begin`, which returns the live record's current iteration. The `ServerSession` half is server-side only (read from `req.Session`, one per socket connection); because the per-project daemon is shared across multiple `locutus mcp` bridges (DJ-135), it keeps two concurrent coding-agent sessions running the same `(activity, target)` from clobbering each other's counters. Terminal records (converge/cap) are deleted immediately, so a fresh run after a converged one starts at iteration 0. Claude Code never reaches tier-3 (its tier-1 `/goal` wrapper wins); headless never reaches it (`mode=headless` skips the mode tiers).
+**Run scoping + compression recovery.** Loop records are keyed server-side by `(ServerSession, activity, target)`. The agent supplies only `(activity, target)` — both re-derivable from its run context (the playbook + the `Target:` line), so nothing opaque has to survive a context compression: recovery is simply re-calling `spec_loop_begin`, which returns the live record's current iteration. The `ServerSession` half is server-side only (read from `req.Session`, one per socket connection); because the per-project daemon is shared across multiple `locutus mcp` bridges (DJ-135), it keeps two concurrent coding-agent sessions running the same `(activity, target)` from clobbering each other's counters. Terminal records (converge/cap) are deleted immediately, so a fresh run after a converged one starts at iteration 0. Claude Code never reaches tier-3 (under DJ-144 the tier-2 `<activity>.claude-code.md` workflow playbook wins; DJ-143 also denies `spec_loop_*` to Claude Code at call time as a structural backstop); headless never reaches the `.interactive` tiers (`mode=headless` skips them).
 
 ## Playbook resolution and mode (DJ-140)
 
@@ -133,7 +133,7 @@ The self-loop is backed by three daemon-side MCP loop-state tools (full referenc
 - **Dispatch** (`runActivityVerb` → ACP) resolves with `mode=headless`. The `.interactive.md` tiers are skipped, so resolution behaves like the old two-tier provider-overlay→default fallback.
 - **Publish** (the publisher emitting `.claude/commands/`, `.codex/commands/`, `.gemini/…`) resolves with `mode=interactive`, because published commands are invoked interactively by the operator.
 
-File presence is the capability matrix. Two `.interactive` tiers are now populated: `spec_refinement.claude-code.interactive.md` (tier 1, the `/goal` wrapper) and `spec_refinement.interactive.md` (tier 3, the self-loop — DJ-142). So Claude Code interactive publishing resolves to the `/goal` wrapper (tier 1 outranks tier 3); Codex/Gemini interactive publishing resolves to the tier-3 self-loop; and all headless dispatch skips the mode tiers and falls through to the one-iteration default `spec_refinement.md`.
+File presence is the capability matrix. After DJ-144 deleted `spec_refinement.claude-code.interactive.md` (the old `/goal` wrapper), the populated tiers are: tier-2 `<activity>.claude-code.md` (DJ-144's workflow-shaped keyword playbook for all four convergent activities) and tier-3 `spec_refinement.interactive.md` (the DJ-142 Codex/Gemini self-loop). So Claude Code resolves to tier-2 in **both** modes (provider outranks the generic `.interactive` tier at equal specificity, and Claude Code is off the harness loop per DJ-144 §6); Codex/Gemini interactive resolves to the tier-3 self-loop unchanged; and Codex/Gemini headless skips the mode tiers and falls through to the one-iteration default `<activity>.md`.
 
 ## Tool-Restriction (DJ-143)
 
