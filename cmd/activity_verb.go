@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/glorious-beard/locutus/internal/activity"
 	"github.com/glorious-beard/locutus/internal/runner"
@@ -51,6 +53,7 @@ func runActivityVerb(ctx context.Context, _ *CLI, activityName, contextNote stri
 	if contextNote != "" {
 		prompt = playbook + "\n\n---\n\n## Run context\n\n" + contextNote + "\n"
 	}
+	prompt = injectMaxIterations(prompt, act.MaxIterations)
 	// Quick start banner so the operator sees we're going. Stderr
 	// for operational messaging; stdout is reserved for the agent's
 	// own text output so pipes work cleanly. The source path tells
@@ -63,6 +66,16 @@ func runActivityVerb(ctx context.Context, _ *CLI, activityName, contextNote stri
 	}
 	fmt.Fprintf(os.Stderr, "\n→ session: %s (runtime=%s)\n", run.SessionDir, run.Runtime)
 	return nil
+}
+
+// injectMaxIterations substitutes the {{max_iterations}} token in a
+// playbook body with the activity's registry cap (DJ-144 §6). Claude
+// Code's dynamic-workflow playbooks contain the token so the in-
+// runtime workflow can enforce the same cap the harness enforces for
+// Codex/Gemini. Bodies without the token are returned unchanged, so
+// this is safe to run for every runtime.
+func injectMaxIterations(body string, cap int) string {
+	return strings.ReplaceAll(body, "{{max_iterations}}", strconv.Itoa(cap))
 }
 
 // loadActivityPlaybook reads the playbook for activityName from
