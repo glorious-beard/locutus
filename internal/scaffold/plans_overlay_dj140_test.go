@@ -7,6 +7,14 @@
 // so headless dispatch (which skips the mode tiers) falls through to
 // the one-iteration runtime-neutral default `spec_refinement.md`.
 //
+// DJ-144 update: Task 3.1 adds a tier-2 overlay
+// spec_refinement.claude-code.md (mode-agnostic, provider-specific)
+// that is the dynamic-workflow keyword playbook for headless dispatch.
+// Headless claude-code now resolves to that tier-2 overlay rather than
+// the default; the /goal guard still holds because the tier-2 file must
+// not carry /goal (enforced by TestSpecRefinementClaudeCodeHeadlessPlaybook
+// in spec_refinement_dj144_test.go).
+//
 // These tests resolve against the EMBEDDED plans FS, so they double as
 // proof that the renamed file is actually embedded (the embed directive
 // in scaffold.go is `//go:embed plans/*.md`, which globs the renamed
@@ -24,20 +32,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSpecRefinementHeadlessResolvesToDefaultNotGoalWrapper — a
-// headless claude-code request skips the mode tiers, so the
-// .interactive overlay does not match; resolution falls through to the
-// runtime-neutral default. The resolved body must NOT contain `/goal`
-// (the interactive-only directive that breaks headless dispatch).
-func TestSpecRefinementHeadlessResolvesToDefaultNotGoalWrapper(t *testing.T) {
+// TestSpecRefinementHeadlessResolvesToWorkflowPlaybook — a headless
+// claude-code request skips the mode tiers (so the .interactive
+// overlay at tier 1 does not match) and resolves to the tier-2
+// provider overlay spec_refinement.claude-code.md added by DJ-144.
+// That overlay is the dynamic-workflow keyword playbook; it must NOT
+// carry the `/goal` directive (which is interactive-only and breaks
+// headless dispatch). Prior to DJ-144, this resolved to the
+// runtime-neutral default; the tier-2 overlay now takes precedence.
+func TestSpecRefinementHeadlessResolvesToWorkflowPlaybook(t *testing.T) {
 	body, src, err := scaffold.ResolvePlaybook(
 		scaffold.EmbeddedPlansFS(), "plans", "spec_refinement", "claude-code", scaffold.ModeHeadless)
 	require.NoError(t, err)
 
-	assert.Equal(t, "plans/spec_refinement.md", src,
-		"headless claude-code must resolve to the one-iteration default, not the interactive /goal wrapper")
+	assert.Equal(t, "plans/spec_refinement.claude-code.md", src,
+		"headless claude-code must resolve to the tier-2 workflow playbook (DJ-144), not the default or the interactive /goal wrapper")
 	assert.NotContains(t, string(body), "/goal",
-		"the headless default must not carry the interactive-only /goal directive")
+		"the headless workflow playbook must not carry the interactive-only /goal directive")
 }
 
 // TestSpecRefinementInteractiveResolvesToGoalWrapper — an interactive
