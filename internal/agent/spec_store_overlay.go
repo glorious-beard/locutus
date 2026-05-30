@@ -41,12 +41,17 @@ type storeKey struct {
 // Body is the typed entry (spec.Decision / spec.Feature / ...) the
 // build*Body helper produced — same shape as what SpecStore.Put would
 // have persisted under a normal write.
+//
+// JSON tags are explicit (lowercase) so spec_dry_run_report serializes
+// to the documented response shape regardless of Go's default field-
+// name lowercasing; for manifest captures (spec_update_goals_md_hash)
+// Kind and ID are empty, so omitempty keeps the JSON compact.
 type CapturedMutation struct {
-	Tool      string
-	Kind      SpecKind
-	ID        string
-	Body      any
-	Timestamp time.Time
+	Tool      string    `json:"tool"`
+	Kind      SpecKind  `json:"kind,omitempty"`
+	ID        string    `json:"id,omitempty"`
+	Body      any       `json:"body,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // sessionOverlay holds a single dry-run MCP session's would-be
@@ -75,8 +80,8 @@ type sessionOverlay struct {
 // manifest-level write. Today only spec_update_goals_md_hash produces
 // this; future manifest-mutation tools would land here too.
 type ManifestOverride struct {
-	GoalsMdHash     string
-	GoalsMdSyncedAt time.Time
+	GoalsMdHash     string    `json:"goals_md_hash"`
+	GoalsMdSyncedAt time.Time `json:"goals_md_synced_at"`
 }
 
 func newSessionOverlay() *sessionOverlay {
