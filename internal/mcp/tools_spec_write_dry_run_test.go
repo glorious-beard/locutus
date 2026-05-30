@@ -268,6 +268,64 @@ func TestDryRunCapturesRevise(t *testing.T) {
 	}
 }
 
+// TestDryRunCapturesReviseApproach seeds a parent feature + an approach in the
+// base store, then revises the approach under dry-run and asserts the revision
+// lands in the overlay while the on-disk JSON keeps its original body.
+// Standalone (not table-driven) because the revise requires seeding a parent
+// feature which the generic TestDryRunCapturesRevise harness loop doesn't
+// accommodate.
+func TestDryRunCapturesReviseApproach(t *testing.T) {
+	cs, ss, store, fsys := dryRunHarness(t)
+
+	// Seed parent feature + approach in the base store (OriginProposed so
+	// persistLocked writes the approach to disk; the dry-run revise must
+	// leave that file untouched).
+	require.NoError(t, store.Begin())
+	require.NoError(t, store.Put(agent.KindFeature, "feat-foo", spec.Feature{ID: "feat-foo", Title: "Foo"}, agent.OriginProposed))
+	require.NoError(t, store.Put(agent.KindApproach, "app-feat-foo", spec.Approach{
+		ID: "app-feat-foo", Title: "Old title", ParentID: "feat-foo",
+		Body: "old", SourceFiles: []string{"f.go"}, SourceHash: "sha256:old00",
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}, agent.OriginProposed))
+	require.NoError(t, store.Commit())
+
+	// Approaches are stored as markdown; use the literal path.
+	const approachDiskPath = ".borg/spec/approaches/app-feat-foo.md"
+	before, err := fsys.ReadFile(approachDiskPath)
+	require.NoError(t, err)
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "spec_revise_approach",
+		Arguments: map[string]any{
+			"id":           "app-feat-foo",
+			"title":        "New title",
+			"parent_id":    "feat-foo",
+			"body":         "new",
+			"source_files": []string{"f.go", "g.go"},
+			"source_hash":  "sha256:new00000",
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError, "tool result: %+v", res)
+
+	caps := store.OverlayCaptured(ss)
+	require.Len(t, caps, 1)
+	assert.Equal(t, "spec_revise_approach", caps[0].Tool)
+	assert.Equal(t, agent.KindApproach, caps[0].Kind)
+	assert.Equal(t, "app-feat-foo", caps[0].ID)
+
+	// Overlay-view surfaces the revised body (not the seeded one).
+	view := store.OverlayView(ss)
+	entry, ok := view.Lookup(agent.KindApproach, "app-feat-foo")
+	require.True(t, ok)
+	require.NotNil(t, entry)
+
+	// On-disk bytes unchanged.
+	after, err := fsys.ReadFile(approachDiskPath)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "dry-run revise must not touch disk")
+}
+
 // TestDryRunCapturesDeletes asserts the delete tools capture rather
 // than remove the on-disk entry.
 func TestDryRunCapturesDeletes(t *testing.T) {

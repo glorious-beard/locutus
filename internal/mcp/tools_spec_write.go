@@ -390,6 +390,41 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 	}, captureProposeApproach(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
+		Name:        "spec_revise_approach",
+		Description: descSpecReviseApproach,
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in reviseApproachInput) (*mcp.CallToolResult, any, error) {
+		id := strings.TrimSpace(in.ID)
+		if id == "" {
+			return errorResult("spec_revise_approach: id is required"), nil, nil
+		}
+		res := store.GetSpec([]string{id})
+		entry, ok := res.Results[id]
+		if !ok || entry.Status == agent.SpecGetMissing {
+			return errorResult(fmt.Sprintf("spec_revise_approach: approach %q does not exist; use spec_propose_approach to create it", id)), nil, nil
+		}
+		existing, ok := entry.Body.(spec.Approach)
+		if !ok {
+			return errorResult(fmt.Sprintf("spec_revise_approach: %q resolved to %T, not spec.Approach", id, entry.Body)), nil, nil
+		}
+		parent := strings.TrimSpace(in.ParentID)
+		if parent != "" {
+			pres := store.GetSpec([]string{parent})
+			if pentry, ok := pres.Results[parent]; !ok || pentry.Status == agent.SpecGetMissing {
+				return errorResult(fmt.Sprintf("spec_revise_approach: parent_id %q does not exist in the manifest", parent)), nil, nil
+			}
+		}
+		body, err := buildApproachBody(in, existing.CreatedAt)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		if err := commitOne(store, agent.KindApproach, body.ID, body); err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		publishManifestUpdate(ctx, server)
+		return textResult(fmt.Sprintf("Revised approach %s (source_hash %s).", body.ID, body.SourceHash)), nil, nil
+	}, captureReviseApproach(store)))
+
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_revise_decision",
 		Description: descSpecReviseDecision,
 	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in reviseDecisionInput) (*mcp.CallToolResult, any, error) {
