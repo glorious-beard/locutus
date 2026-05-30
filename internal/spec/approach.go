@@ -53,6 +53,29 @@ type Approach struct {
 	// Optional informational citation — not a structural dependency.
 	Respects []string `json:"respects,omitempty" yaml:"respects,omitempty"`
 
+	// SourceFiles lists the source files this approach binds to,
+	// relative to the project root. Populated by assimilate (DJ-148)
+	// at synthesis time from the code that justified inferring the
+	// parent feature/strategy; populated by adopt (DJ-149) on
+	// approach synthesis for refine-added parents. Used by adopt's
+	// drift detection to compute the current SourceHash for
+	// comparison.
+	SourceFiles []string `yaml:"source_files,omitempty"`
+
+	// SourceHash is the sha256 hash over the concatenation of
+	// (sorted-path-then-content) of each file in SourceFiles, in the
+	// form sha256:<hex>. Computed by the agent and supplied to the
+	// MCP tool — opaque to the daemon, which just stores it. DJ-149's
+	// drift detection re-computes from current file content and
+	// compares against this stored value to classify the approach.
+	SourceHash string `yaml:"source_hash,omitempty"`
+
+	// SourceHashSyncedAt records when the SourceHash was last
+	// computed. Server-stamped on every propose/revise. Useful for
+	// audit ("when did we last check this approach against code?")
+	// and for surfacing stale-state warnings in adopt's classifier.
+	SourceHashSyncedAt time.Time `yaml:"source_hash_synced_at,omitempty"`
+
 	CreatedAt time.Time `yaml:"created_at"`
 	UpdatedAt time.Time `yaml:"updated_at"`
 }
