@@ -1,9 +1,15 @@
 package mcp
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/glorious-beard/locutus/internal/activity"
+	"github.com/glorious-beard/locutus/internal/agent"
+	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/specio"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -67,4 +73,95 @@ func TestBuildApproachBody_RejectsMissingRequiredFields(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
+}
+
+// DJ-148 Task 8 — end-to-end approach mutation tests (non-dry-run path).
+// Validates that spec_propose_approach persists new fields to disk and
+// rejects missing parents per the handler's validation logic.
+
+func TestProposeApproach_PersistsToDisk(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, fsys.MkdirAll(".borg/spec/approaches", 0o755))
+	require.NoError(t, fsys.MkdirAll(".borg/spec/features", 0o755))
+	store, err := agent.NewSpecStore(fsys)
+	require.NoError(t, err)
+
+	// seed parent
+	require.NoError(t, store.Put(agent.KindFeature, "feat-foo", spec.Feature{
+		ID:        "feat-foo",
+		Title:     "Foo",
+		Status:    spec.FeatureStatusProposed,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}, agent.OriginSettled))
+
+	reg, err := activity.NewRegistry(fsys)
+	require.NoError(t, err)
+	server := NewSpecServer(store, fsys, reg, nil)
+	serverT, clientT := mcp.NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), serverT, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ss.Close() })
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "claude-code", Version: "t"}, nil)
+	cs, err := client.Connect(context.Background(), clientT, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cs.Close() })
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "spec_propose_approach",
+		Arguments: map[string]any{
+			"id":           "app-feat-foo",
+			"title":        "Foo approach",
+			"parent_id":    "feat-foo",
+			"body":         "## Implementation",
+			"source_files": []string{"internal/foo/foo.go"},
+			"source_hash":  "sha256:abcd1234",
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError, "result: %+v", res)
+
+	// file persisted with new fields
+	data, err := fsys.ReadFile(".borg/spec/approaches/app-feat-foo.md")
+	require.NoError(t, err)
+	contents := string(data)
+	assert.Contains(t, contents, "source_files:")
+	assert.Contains(t, contents, "internal/foo/foo.go")
+	assert.Contains(t, contents, "source_hash: sha256:abcd1234")
+	assert.Contains(t, contents, "source_hash_synced_at:")
+}
+
+func TestProposeApproach_RejectsMissingParent(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, fsys.MkdirAll(".borg/spec/approaches", 0o755))
+	store, err := agent.NewSpecStore(fsys)
+	require.NoError(t, err)
+
+	reg, err := activity.NewRegistry(fsys)
+	require.NoError(t, err)
+	server := NewSpecServer(store, fsys, reg, nil)
+	serverT, clientT := mcp.NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), serverT, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ss.Close() })
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "claude-code", Version: "t"}, nil)
+	cs, err := client.Connect(context.Background(), clientT, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cs.Close() })
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "spec_propose_approach",
+		Arguments: map[string]any{
+			"id":           "app-feat-missing",
+			"title":        "Missing parent",
+			"parent_id":    "feat-missing",
+			"body":         "x",
+			"source_files": []string{"f.go"},
+			"source_hash":  "sha256:xxxxxxxx",
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, res.IsError)
 }
