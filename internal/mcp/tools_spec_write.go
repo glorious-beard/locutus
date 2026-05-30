@@ -1202,6 +1202,36 @@ func captureMarkApproachDrifted(store *agent.SpecStore) func(sess *mcp.ServerSes
 	}
 }
 
+func captureProposeApproach(store *agent.SpecStore) func(sess *mcp.ServerSession, in proposeApproachInput) (any, error) {
+	return func(sess *mcp.ServerSession, in proposeApproachInput) (any, error) {
+		body, err := buildApproachBody(in, time.Time{})
+		if err != nil {
+			return nil, err
+		}
+		if err := store.OverlayPut(sess, "spec_propose_approach", agent.KindApproach, in.ID, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+func captureReviseApproach(store *agent.SpecStore) func(sess *mcp.ServerSession, in reviseApproachInput) (any, error) {
+	return func(sess *mcp.ServerSession, in reviseApproachInput) (any, error) {
+		createdAt, ok := overlayApproachCreatedAt(store, sess, in.ID)
+		if !ok {
+			return nil, fmt.Errorf("spec_revise_approach: approach %q does not exist; use spec_propose_approach to create it", in.ID)
+		}
+		body, err := buildApproachBody(in, createdAt)
+		if err != nil {
+			return nil, err
+		}
+		if err := store.OverlayPut(sess, "spec_revise_approach", agent.KindApproach, in.ID, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
 func captureUpdateGoalsMdHash(store *agent.SpecStore) func(sess *mcp.ServerSession, in updateGoalsMdHashInput) (any, error) {
 	return func(sess *mcp.ServerSession, in updateGoalsMdHashInput) (any, error) {
 		hash := strings.TrimSpace(in.Hash)
@@ -1270,4 +1300,17 @@ func overlayAntiGoalCreatedAt(store *agent.SpecStore, sess *mcp.ServerSession, i
 		return time.Time{}, false
 	}
 	return ag.CreatedAt, true
+}
+
+func overlayApproachCreatedAt(store *agent.SpecStore, sess *mcp.ServerSession, id string) (time.Time, bool) {
+	view := store.OverlayView(sess)
+	entry, ok := view.Lookup(agent.KindApproach, id)
+	if !ok {
+		return time.Time{}, false
+	}
+	a, ok := entry.Body.(spec.Approach)
+	if !ok {
+		return time.Time{}, false
+	}
+	return a.CreatedAt, true
 }
