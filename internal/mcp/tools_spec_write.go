@@ -702,6 +702,70 @@ func buildFeatureBody(in proposeFeatureInput, createdAt time.Time) (spec.Feature
 	}, nil
 }
 
+// buildApproachBody assembles a spec.Approach from the input,
+// filling server-managed fields. createdAt zero-value means "set
+// to now" (propose); non-zero preserves the supplied value
+// (revise). SourceHashSyncedAt is always stamped to now since the
+// hash is being recorded.
+//
+// Parent kind is derived from parent_id's prefix (feat- / strat- /
+// bug-). Existence validation happens at the handler level; the
+// builder only enforces shape.
+func buildApproachBody(in proposeApproachInput, createdAt time.Time) (spec.Approach, error) {
+	now := time.Now().UTC()
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		return spec.Approach{}, fmt.Errorf("id is required")
+	}
+	if !strings.HasPrefix(id, "app-") {
+		return spec.Approach{}, fmt.Errorf("id %q must use the app- prefix per DJ-087's id convention", id)
+	}
+	title := strings.TrimSpace(in.Title)
+	if title == "" {
+		return spec.Approach{}, fmt.Errorf("title is required")
+	}
+	parentID := strings.TrimSpace(in.ParentID)
+	if parentID == "" {
+		return spec.Approach{}, fmt.Errorf("parent_id is required (the feature, strategy, or bug this approach implements)")
+	}
+	switch {
+	case strings.HasPrefix(parentID, "feat-"),
+		strings.HasPrefix(parentID, "strat-"),
+		strings.HasPrefix(parentID, "bug-"):
+		// ok
+	default:
+		return spec.Approach{}, fmt.Errorf("parent_id must be a feature (feat-), strategy (strat-), or bug (bug-) id; got %q", parentID)
+	}
+	if len(in.SourceFiles) == 0 {
+		return spec.Approach{}, fmt.Errorf("source_files is required and must list at least one path the approach binds to")
+	}
+	hash := strings.TrimSpace(in.SourceHash)
+	if hash == "" {
+		return spec.Approach{}, fmt.Errorf("source_hash is required (compute the sha256:<hex> of sorted-paths-then-contents of source_files)")
+	}
+	if !strings.HasPrefix(hash, "sha256:") || len(hash) <= len("sha256:") {
+		return spec.Approach{}, fmt.Errorf("source_hash must be in sha256:<hex> form; got %q", hash)
+	}
+	return spec.Approach{
+		ID:                 id,
+		Title:              title,
+		Summary:            strings.TrimSpace(in.Summary),
+		ParentID:           parentID,
+		Body:               in.Body,
+		SourceFiles:        in.SourceFiles,
+		SourceHash:         hash,
+		SourceHashSyncedAt: now,
+		Decisions:          in.Decisions,
+		Advances:           in.Advances,
+		Respects:           in.Respects,
+		CreatedAt:          createdAt,
+		UpdatedAt:          now,
+	}, nil
+}
+
 // buildStrategyBody assembles a spec.Strategy. Strategies don't
 // carry created_at / updated_at — the spec.Strategy type omits them.
 func buildStrategyBody(in proposeStrategyInput) (spec.Strategy, error) {
