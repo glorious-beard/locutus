@@ -159,6 +159,16 @@ Activation mirrors DJ-143's mode plumbing: CLI flag → `LOCUTUS_DRY_RUN=1` env 
 
 The agent retrieves the capture via the read-only `spec_dry_run_report` MCP tool (no input, returns `{format, captured: [...]}`) and renders it in its closing message — verbatim fenced JSON for `--format json`, prose summary for the default `markdown`. In headless dispatch the CLI additionally reads the session's `tools.jsonl` post-dispatch and emits an authoritative structured render — the agent's narration is convenience; the CLI render is contract.
 
+## Assimilate (DJ-148)
+
+`locutus assimilate` reads brownfield source code, infers/revises features+decisions+strategies (code-is-truth direction), and synthesizes approaches binding inferred specs to source files with `source_hash`. Producing coherent (spec, code, approach) state is the verb's outcome per [DJ-148](decisions/dj-148-assimilate-bidirectional-reconciliation.md).
+
+**Preconditions** (refused with a helpful error if missing): `GOALS.md` exists; goal layer is populated (operator runs `locutus refine goals` first). The operator's brownfield bootstrap workflow is `locutus init → edit GOALS.md → locutus refine goals → locutus assimilate → locutus adopt`, with each verb having one clear purpose.
+
+The activity uses the same per-runtime convergence-driver pattern as `spec_refinement`: Claude Code drives the analyzer fan-out as a dynamic workflow (`code_assimilation.claude-code.md`); Codex/Gemini interactive self-loops via `spec_loop_*` (`code_assimilation.interactive.md`); Codex/Gemini headless uses the `OuterLoopRunner` (`code_assimilation.md` default fallback). `max_iterations` defaults to 3 per the registry (lower than `spec_refinement`'s 20 because assimilate is single-pass-shaped).
+
+DJ-147 dry-run inherits automatically — the two new MCP tools (`spec_propose_approach`, `spec_revise_approach`) are wrapped via the same `captureOnly` registration-site adapter as the other 14 mutation tools.
+
 ## Cross-references
 
 - [DJ-135](DECISION_JOURNAL.md#dj-135) — multi-runtime pivot; introduces the ACP / MCP architecture.

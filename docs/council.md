@@ -250,6 +250,10 @@ The agent set the playbook may dispatch:
 
 Two further agents (`justify-splitter`, `justify-synthesizer`) ship as published prompts for ad-hoc invocation but the v1 playbook does not dispatch them. They were council-era plumbing for per-decision fanout; DJ-137's rich-context expansion replaces fanout as the design pattern.
 
+## Assimilate (DJ-148)
+
+Brownfield code → spec reconciliation. The assimilate playbook runs **code-is-truth** — it surveys the codebase, gathers per-domain evidence (backend/frontend/infrastructure) in parallel via `backend-analyzer` / `frontend-analyzer` / `infra-analyzer` subagents, and reconciles their contributions against the existing manifest with code-is-truth direction. The `gap-analyst` reconciler applies inferred changes via `spec_revise_*` / `spec_propose_*` mutations and synthesizes approaches binding each inferred feature/strategy to its source files via `spec_propose_approach`. Convergence is single-pass-shaped; iteration (bounded by a lower `max_iterations` default of 3) only re-runs on transient failures.
+
 ## Convergence by construction
 
 Convergence is driven differently per `(runtime, mode)` context, but every driver reaches the same outcome (scout reports `converged: true`, or `max_iterations` cap fires):
