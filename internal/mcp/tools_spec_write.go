@@ -76,6 +76,14 @@ const (
 	// changed. The handler does a read-modify-write on .borg/manifest.json
 	// so every other top-level field is preserved.
 	descSpecUpdateGoalsMdHash = "Update .borg/manifest.json's goals_md_hash and goals_md_synced_at fields (DJ-139). The Phase 6 refine-goals playbook calls this tool at the end of a successful goal-layer sync; the next run reads the hash back and short-circuits the matcher when GOALS.md hasn't changed. Input is {hash} where hash is the sha256:<hex> digest of the current GOALS.md bytes (use the canonical spec.ComputeGoalsMdHash helper to produce it). The sync timestamp is stamped server-side from the wall clock — the agent does not supply it. The handler preserves every other manifest field; hash is required and rejected when empty so a typo doesn't accidentally drop the audit-trail timestamp without recording a state change."
+
+	// Approach write surface (DJ-148). Approaches bind features/strategies/bugs
+	// to the source files that implement them. Both tools require source_files
+	// + source_hash so the resulting approach establishes coherent (spec, code,
+	// approach) state. The parent kind is derived from parent_id's prefix.
+	descSpecProposeApproach = "Propose a new approach binding a feature/strategy/bug to the source files that implement it (upsert semantics on id). Input is the full approach body — the server fills created_at + updated_at = now (use spec_revise_approach instead when you need to preserve the original created_at). The id must use the app- prefix and conventionally follows app-<parent-id> per DJ-087 (e.g. app-feat-login-flow). parent_id is required and must reference an existing feature (feat-), strategy (strat-), or bug (bug-) — the parent kind is derived from the prefix. source_files is required and lists the relative paths the approach binds to (every path must exist in the working tree at proposal time). source_hash is required and is the sha256:<hex> hash over the sorted-paths-then-contents of source_files, computed by the agent — opaque to the daemon. Optional citation fields (DJ-139): advances lists goal-* ids; respects lists agoal-* ids. On success the manifest is persisted to .borg/spec/approaches/<id>.md (YAML frontmatter + markdown body) and every subscriber to spec://manifest receives notifications/resources/updated."
+
+	descSpecReviseApproach = "Revise an existing approach (the id MUST already exist; use spec_propose_approach instead to create a new one). Input shape is identical to spec_propose_approach. Preserves the original created_at; the server updates updated_at + source_hash_synced_at to now. The parent_id may be changed (e.g. when a feature is reparented under a different strategy) but the new parent must exist and the prefix dictates the new parent kind."
 )
 
 // Input schemas mirror spec.Decision / spec.Feature / spec.Strategy
@@ -204,6 +212,29 @@ type reviseFeatureInput = proposeFeatureInput
 
 // reviseStrategyInput mirrors proposeStrategyInput.
 type reviseStrategyInput = proposeStrategyInput
+
+// proposeApproachInput shapes the spec_propose_approach tool input.
+// Per DJ-148, source_files + source_hash are required so the
+// resulting approach establishes coherent (spec, code, approach)
+// state. The parent kind is derived from parent_id's prefix
+// (feat- / strat- / bug-).
+type proposeApproachInput struct {
+	ID          string   `json:"id" jsonschema:"Approach id with app- prefix; conventionally follows app-<parent-id> (e.g. app-feat-login-flow, app-strat-cache-layer)."`
+	Title       string   `json:"title" jsonschema:"One-line human-readable headline naming the approach (e.g. 'React + Redux for dashboard state management')."`
+	Summary     string   `json:"summary,omitempty" jsonschema:"One-sentence summary for index/manifest views."`
+	ParentID    string   `json:"parent_id" jsonschema:"Id of the parent node — a feature (feat-), strategy (strat-), or bug (bug-) this approach implements. Required; the parent prefix dictates the parent kind."`
+	Body        string   `json:"body" jsonschema:"Multi-paragraph prose describing the implementation approach, architecture rationale, and integration points with the parent."`
+	SourceFiles []string `json:"source_files" jsonschema:"List of relative filesystem paths this approach binds to — the source code files implementing it. Required and must be non-empty; every path must exist in the working tree at proposal time."`
+	SourceHash  string   `json:"source_hash" jsonschema:"Required sha256:<hex> hash over the sorted-paths-then-contents of source_files (computed by the agent; opaque to the daemon). Establishes coherent (spec, code, approach) state."`
+	Decisions   []string `json:"decisions,omitempty" jsonschema:"Optional list of decision ids this approach depends on."`
+	Advances    []string `json:"advances,omitempty" jsonschema:"Optional list of goal-* ids this approach exists to advance (DJ-139, forward direction). Only goal-* ids belong here; anti-goal navigation goes in respects. Informational — not a structural dependency."`
+	Respects    []string `json:"respects,omitempty" jsonschema:"Optional list of agoal-* ids this approach was checked against and admitted under a carve-out (DJ-139, boundary-navigation direction). Only agoal-* ids belong here; forward-direction goal references go in advances. Informational — not a structural dependency."`
+}
+
+// reviseApproachInput is structurally identical to proposeApproachInput;
+// the existence check and created_at preservation are handled at the
+// handler level, not at the type level.
+type reviseApproachInput = proposeApproachInput
 
 // proposeGoalInput shapes spec_propose_goal's payload. Mirrors
 // spec.Goal at the agent-facing field level; the handler fills
