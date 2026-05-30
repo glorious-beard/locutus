@@ -5,11 +5,7 @@
 package mcp
 
 import (
-	"bytes"
-	"context"
-	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/glorious-beard/locutus/internal/agent"
 	"github.com/glorious-beard/locutus/internal/specio"
@@ -20,47 +16,25 @@ import (
 
 func TestInitializedHandler_CapturesDryRunSignals(t *testing.T) {
 	clearSessionRuntimes()
-	store, err := agent.NewSpecStore(specio.NewMemFS())
-	require.NoError(t, err)
-	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	// Direct override path (SDK client can't inject _meta in tests on
+	// modelcontextprotocol/go-sdk v1.6.1; see DJ-143 Task 3 note).
+	sess := &fakeSessionKey{id: "dry-run-injection"}
+	storeSessionContext(sess, "claude-code", "headless", true, "json")
 
-	server := mcp.NewServer(
-		&mcp.Implementation{Name: "locutus-test", Version: "0.0.0"},
-		&mcp.ServerOptions{
-			InitializedHandler: newInitializedHandler(logger, nil, store),
-		},
-	)
-	serverT, clientT := mcp.NewInMemoryTransports()
-	ss, err := server.Connect(context.Background(), serverT, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ss.Close() })
-
-	// Client sends ClientInfo.name + _meta.locutus.dry_run + _meta.locutus.dry_run_format.
-	// ClientSessionOptions doesn't expose InitializeParams in v1.6.1; per DJ-143 Task 3
-	// we override session state directly via the same mechanism.
-	client := mcp.NewClient(&mcp.Implementation{Name: "claude-code", Version: "test"}, nil)
-	cs, err := client.Connect(context.Background(), clientT, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = cs.Close() })
-
-	// Wait for InitializedHandler to fire and capture runtime.
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if rt, _ := sessionRuntimeFor(ss); rt == "claude-code" {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	// Since the SDK client can't inject _meta in tests, directly override
-	// the captured context to simulate what the bridge does in production.
-	storeSessionContext(ss, "claude-code", "headless", true, "json")
-
-	rt, mode := sessionRuntimeFor(ss)
+	rt, mode := sessionRuntimeFor(sess)
 	assert.Equal(t, "claude-code", rt)
 	assert.Equal(t, "headless", mode)
-	assert.True(t, SessionDryRun(ss))
-	assert.Equal(t, "json", SessionDryRunFormat(ss))
+	assert.True(t, sessionDryRunFor(sess))
+	assert.Equal(t, "json", sessionDryRunFormatFor(sess))
+
+	// Normalization: input "JSON" should land lowercased.
+	clearSessionRuntimes()
+	sess2 := &fakeSessionKey{id: "normalization"}
+	storeSessionContext(sess2, "CLAUDE-CODE", "HEADLESS", true, "JSON")
+	rt, mode = sessionRuntimeFor(sess2)
+	assert.Equal(t, "claude-code", rt)
+	assert.Equal(t, "headless", mode)
+	assert.Equal(t, "json", sessionDryRunFormatFor(sess2))
 }
 
 func TestInitializedHandler_RegistersOverlayWhenDryRun(t *testing.T) {
@@ -68,8 +42,8 @@ func TestInitializedHandler_RegistersOverlayWhenDryRun(t *testing.T) {
 	store, err := agent.NewSpecStore(specio.NewMemFS())
 	require.NoError(t, err)
 
-	// Use a sentinel session pointer; bypass full SDK plumbing.
-	sess := (*mcp.ServerSession)(nil)
+	// Use a fakeSessionKey sentinel; bypass full SDK plumbing.
+	sess := &fakeSessionKey{id: "overlay-registration"}
 	storeSessionContext(sess, "claude-code", "headless", true, "markdown")
 	store.RegisterOverlay(sess)
 	t.Cleanup(func() { store.UnregisterOverlay(sess) })
@@ -81,6 +55,11 @@ func TestInitializedHandler_RegistersOverlayWhenDryRun(t *testing.T) {
 
 func TestSessionDryRun_DefaultsFalseForUnknownSession(t *testing.T) {
 	clearSessionRuntimes()
+	// Freshly-allocated sentinel that was never passed to
+	// storeSessionContext — confirms unknown sessions yield zero values.
+	// Use *mcp.ServerSession typed nil to exercise the public accessor
+	// (SessionDryRun/SessionDryRunFormat take *mcp.ServerSession per
+	// DJ-143's SessionRuntime precedent).
 	assert.False(t, SessionDryRun((*mcp.ServerSession)(nil)))
 	assert.Empty(t, SessionDryRunFormat((*mcp.ServerSession)(nil)))
 }

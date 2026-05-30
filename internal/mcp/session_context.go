@@ -97,11 +97,10 @@ func SessionRuntime(sess *mcp.ServerSession) (runtime, mode string) {
 	return sessionRuntimeFor(sess)
 }
 
-// SessionDryRun reports whether the calling session is in dry-run
-// mode (per DJ-147 §2 the captureOnly wrapper consults this).
-// Returns false for unknown sessions — the safe default; the wrapper
-// passes through to the inner handler.
-func SessionDryRun(sess *mcp.ServerSession) bool {
+// sessionDryRunFor is the internal any-keyed accessor mirroring
+// sessionRuntimeFor; the public *mcp.ServerSession accessors below
+// are thin wrappers so tests can use &fakeSessionKey{} as a sentinel.
+func sessionDryRunFor(sess any) bool {
 	sessionRuntimesMu.RLock()
 	defer sessionRuntimesMu.RUnlock()
 	c, ok := sessionRuntimes[sess]
@@ -111,9 +110,7 @@ func SessionDryRun(sess *mcp.ServerSession) bool {
 	return c.dryRun
 }
 
-// SessionDryRunFormat returns the format the operator requested via
-// --format (markdown or json). Empty for sessions not in dry-run.
-func SessionDryRunFormat(sess *mcp.ServerSession) string {
+func sessionDryRunFormatFor(sess any) string {
 	sessionRuntimesMu.RLock()
 	defer sessionRuntimesMu.RUnlock()
 	c, ok := sessionRuntimes[sess]
@@ -121,6 +118,20 @@ func SessionDryRunFormat(sess *mcp.ServerSession) string {
 		return ""
 	}
 	return c.dryRunFormat
+}
+
+// SessionDryRun reports whether the calling session is in dry-run
+// mode (per DJ-147 §2 the captureOnly wrapper consults this).
+// Returns false for unknown sessions — the safe default; the wrapper
+// passes through to the inner handler.
+func SessionDryRun(sess *mcp.ServerSession) bool {
+	return sessionDryRunFor(sess)
+}
+
+// SessionDryRunFormat returns the format the operator requested via
+// --format (markdown or json). Empty for sessions not in dry-run.
+func SessionDryRunFormat(sess *mcp.ServerSession) string {
+	return sessionDryRunFormatFor(sess)
 }
 
 // requireRuntimeAny wraps a tool handler so it returns a runtime-
@@ -160,15 +171,19 @@ func requireRuntimeAny[In, Out any](
 // (default "interactive" when absent).
 //
 // Per DJ-144 §9: also reads ClientInfo.version and logs a warning
-// when the runtime is below its declared version floor. logger and
-// fsys may be nil (nil logger = no-op; nil fsys = embedded defaults).
+// when the runtime is below its declared version floor.
 //
 // Per DJ-147 §2: also reads _meta["locutus.dry_run"] (bool or
 // "true"/"1") and _meta["locutus.dry_run_format"] (markdown|json,
 // default markdown). When dry-run is set and a non-nil store is
 // supplied, calls store.RegisterOverlay so subsequent spec_* writes
-// route to the per-session overlay instead of persisting. store may
-// be nil (e.g. unit tests that don't exercise the overlay surface).
+// route to the per-session overlay instead of persisting.
+//
+// logger, fsys, and store may each be nil — nil logger silences the
+// version-warning log; nil fsys falls back to the embedded
+// runtime-policy defaults; nil store skips overlay registration for
+// dry-run sessions (useful in unit tests that don't exercise the
+// overlay surface).
 func newInitializedHandler(logger *slog.Logger, fsys specio.FS, store *agent.SpecStore) func(context.Context, *mcp.InitializedRequest) {
 	return func(_ context.Context, req *mcp.InitializedRequest) {
 		if req == nil || req.Session == nil {
