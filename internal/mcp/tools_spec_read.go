@@ -65,24 +65,38 @@ const (
 
 // registerReadTools wires the three read tools onto the server.
 // Handler bodies are thin — the SpecStore methods do the work.
+//
+// Per DJ-147 Task 6, each handler consults the calling session's
+// OverlayView so dry-run sessions surface their own would-be writes
+// on the read path: overlay-only entries appear, overlay-deleted
+// entries report missing, overlay-revised entries return the new
+// body. Non-dry-run sessions get an overlay-nil view whose calls pass
+// straight through to the base store (byte-compatible with the
+// pre-task behavior).
 func registerReadTools(server *mcp.Server, store *agent.SpecStore) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_list_manifest",
 		Description: descSpecListManifest,
-	}, func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, agent.SpecManifest, error) {
-		return nil, store.ListManifest(), nil
+	}, func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, agent.SpecManifest, error) {
+		return nil, store.OverlayView(req.Session).Manifest(), nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_get",
 		Description: descSpecGet,
-	}, func(_ context.Context, _ *mcp.CallToolRequest, in specGetInput) (*mcp.CallToolResult, agent.SpecGetResult, error) {
+	}, func(_ context.Context, req *mcp.CallToolRequest, in specGetInput) (*mcp.CallToolResult, agent.SpecGetResult, error) {
 		if len(in.IDs) == 0 {
 			return nil, agent.SpecGetResult{}, fmt.Errorf("spec_get: ids must be a non-empty array")
 		}
-		return nil, store.GetSpec(in.IDs), nil
+		return nil, store.OverlayView(req.Session).GetSpec(in.IDs), nil
 	})
 
+	// spec_search currently runs query base-only. Per DJ-147 §3 +
+	// Resolved Q5 the documented fidelity gap is acceptable: full-text
+	// matches against captured-but-not-indexed bodies are best-effort.
+	// A future refinement could post-filter view.Captured() to inject
+	// matching captured bodies into the result; for now we accept that
+	// search rankings on a dry-run session reflect the base store only.
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_search",
 		Description: descSpecSearch,

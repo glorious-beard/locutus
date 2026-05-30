@@ -1,8 +1,12 @@
 package agent
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/glorious-beard/locutus/internal/spec"
 )
 
 // StoreEntry is the overlay's typed view of a would-be spec graph
@@ -227,4 +231,251 @@ func (v *OverlayView) Lookup(kind SpecKind, id string) (*StoreEntry, bool) {
 		}
 	}
 	return v.store.lookupEntry(kind, id)
+}
+
+// Manifest returns the spec graph manifest with overlay entries
+// layered on the base store: overlay-only entries appear (with
+// origin=proposed), overlay-deleted entries are masked, overlay-
+// revised entries replace the base row with the new title/summary.
+// The ManifestOverride (DJ-147) replaces GoalsMdHash + GoalsMdSyncedAt
+// for the dry-run view.
+//
+// Sessions without an overlay get the base manifest unchanged.
+func (v *OverlayView) Manifest() SpecManifest {
+	base := v.store.ListManifest()
+	if v.overlay == nil {
+		return base
+	}
+	v.overlay.mu.RLock()
+	defer v.overlay.mu.RUnlock()
+	return mergeOverlayIntoManifest(base, v.overlay)
+}
+
+// GoalsMdHash returns the captured (hash, syncedAt) override if the
+// overlay has one, alongside a bool indicating presence. For non-dry-
+// run sessions this returns the empty triple.
+func (v *OverlayView) GoalsMdHash() (string, time.Time, bool) {
+	if v.overlay == nil {
+		return "", time.Time{}, false
+	}
+	mo := v.overlay.manifestOverrideOrNil()
+	if mo == nil {
+		return "", time.Time{}, false
+	}
+	return mo.GoalsMdHash, mo.GoalsMdSyncedAt, true
+}
+
+// Captured returns the session's ordered capture list, or nil for
+// non-dry-run sessions.
+func (v *OverlayView) Captured() []CapturedMutation {
+	if v.overlay == nil {
+		return nil
+	}
+	return v.overlay.capturedList()
+}
+
+// GetSpec returns the batched lookup result for the given ids,
+// consulting the overlay first for each id (overlay revisions win;
+// overlay-only entries surface as in_flight; overlay-deleted entries
+// report missing). Ids not held by the overlay fall through to the
+// base store via SpecStore.GetSpec, and the two result sets are merged.
+//
+// For non-dry-run sessions (overlay==nil) this is a direct passthrough
+// to SpecStore.GetSpec, preserving byte-compatible output for read
+// tools wired through OverlayView unconditionally.
+func (v *OverlayView) GetSpec(ids []string) SpecGetResult {
+	if v.overlay == nil {
+		return v.store.GetSpec(ids)
+	}
+
+	// Partition: ids the overlay holds (entry or delete-mask) vs ids to
+	// forward to the base store. The base store handles malformed-id
+	// validation and AvailableIDs population, so we only short-circuit
+	// when the overlay has a definitive answer.
+	result := SpecGetResult{Results: make(map[string]SpecGetEntry, len(ids))}
+	var passthroughIDs []string
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		kind, ok := specKindOfID(id)
+		if !ok {
+			// Malformed id — defer to base store's validation message so
+			// the error text stays consistent across sessions.
+			passthroughIDs = append(passthroughIDs, raw)
+			continue
+		}
+		entry, found, deleted := v.overlay.lookupWithMask(kind, id)
+		if deleted {
+			result.Results[id] = SpecGetEntry{
+				Status: SpecGetMissing,
+				Reason: fmt.Sprintf("no node with id %q", id),
+			}
+			continue
+		}
+		if found {
+			result.Results[id] = SpecGetEntry{
+				Status: SpecGetInFlight,
+				Body:   entry.Body,
+			}
+			continue
+		}
+		passthroughIDs = append(passthroughIDs, raw)
+	}
+
+	if len(passthroughIDs) > 0 {
+		base := v.store.GetSpec(passthroughIDs)
+		for k, v := range base.Results {
+			result.Results[k] = v
+		}
+		if len(base.AvailableIDs) > 0 {
+			result.AvailableIDs = base.AvailableIDs
+		}
+		if len(base.Working) > 0 {
+			result.Working = append(result.Working, base.Working...)
+		}
+	}
+	return result
+}
+
+// mergeOverlayIntoManifest layers the overlay's entries / deletes /
+// manifest-override onto a base SpecManifest. Called under the
+// overlay's RLock. The base SpecManifest was produced under
+// SpecStore's RLock and is safe to mutate (it's already a copy).
+func mergeOverlayIntoManifest(base SpecManifest, o *sessionOverlay) SpecManifest {
+	// Mask deletes: drop rows whose (kind, id) is in o.deleted.
+	base.Goals = filterManifestEntries(base.Goals, KindGoal, o.deleted)
+	base.AntiGoals = filterManifestEntries(base.AntiGoals, KindAntiGoal, o.deleted)
+	base.Features = filterManifestEntries(base.Features, KindFeature, o.deleted)
+	base.Strategies = filterManifestEntries(base.Strategies, KindStrategy, o.deleted)
+	base.Decisions = filterManifestEntries(base.Decisions, KindDecision, o.deleted)
+	base.Bugs = filterManifestEntries(base.Bugs, KindBug, o.deleted)
+	base.Approaches = filterManifestEntries(base.Approaches, KindApproach, o.deleted)
+
+	// Layer entries: overlay revisions replace base rows in place;
+	// overlay-only entries append (origin=proposed).
+	for key, entry := range o.entries {
+		row := manifestEntryFor(entry)
+		base = upsertManifestRow(base, key.Kind, row)
+	}
+
+	// ManifestOverride: replace GoalsMdHash + GoalsMdSyncedAt for the
+	// dry-run view. The base manifest already carries the persisted
+	// hash; the override wins.
+	if o.manifestOverride != nil {
+		base.GoalsMdHash = o.manifestOverride.GoalsMdHash
+		base.GoalsMdSyncedAt = o.manifestOverride.GoalsMdSyncedAt
+	}
+	return base
+}
+
+// filterManifestEntries drops rows whose (kind, id) is in the
+// deleted set. Returns the original slice when no rows are masked.
+func filterManifestEntries(entries []SpecManifestEntry, kind SpecKind, deleted map[storeKey]struct{}) []SpecManifestEntry {
+	if len(deleted) == 0 || len(entries) == 0 {
+		return entries
+	}
+	out := entries[:0:0]
+	for _, e := range entries {
+		if _, gone := deleted[storeKey{Kind: kind, ID: e.ID}]; gone {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// upsertManifestRow replaces a base manifest row with the same id, or
+// appends if no matching base row exists. Routes by kind to the
+// correct per-kind slice.
+func upsertManifestRow(m SpecManifest, kind SpecKind, row SpecManifestEntry) SpecManifest {
+	switch kind {
+	case KindGoal:
+		m.Goals = replaceOrAppendManifestRow(m.Goals, row)
+	case KindAntiGoal:
+		m.AntiGoals = replaceOrAppendManifestRow(m.AntiGoals, row)
+	case KindFeature:
+		m.Features = replaceOrAppendManifestRow(m.Features, row)
+	case KindStrategy:
+		m.Strategies = replaceOrAppendManifestRow(m.Strategies, row)
+	case KindDecision:
+		m.Decisions = replaceOrAppendManifestRow(m.Decisions, row)
+	case KindBug:
+		m.Bugs = replaceOrAppendManifestRow(m.Bugs, row)
+	case KindApproach:
+		m.Approaches = replaceOrAppendManifestRow(m.Approaches, row)
+	}
+	return m
+}
+
+// replaceOrAppendManifestRow replaces the row in entries whose ID
+// matches row.ID, or appends row if no match exists.
+func replaceOrAppendManifestRow(entries []SpecManifestEntry, row SpecManifestEntry) []SpecManifestEntry {
+	for i, e := range entries {
+		if e.ID == row.ID {
+			entries[i] = row
+			return entries
+		}
+	}
+	return append(entries, row)
+}
+
+// manifestEntryFor produces a SpecManifestEntry from a captured
+// overlay *StoreEntry. Mirrors the per-kind summary-field selection
+// SpecStore.ListManifest uses on the base maps.
+func manifestEntryFor(e *StoreEntry) SpecManifestEntry {
+	row := SpecManifestEntry{
+		ID:     e.ID,
+		Origin: OriginProposed,
+	}
+	switch b := e.Body.(type) {
+	case spec.Goal:
+		row.Title = b.Title
+		row.Summary = summaryOrFallback("", b.Body)
+	case spec.AntiGoal:
+		row.Title = b.Title
+		row.Summary = summaryOrFallback("", b.Body)
+	case spec.Feature:
+		row.Title = b.Title
+		row.Summary = summaryOrFallback(b.Summary, b.Description)
+	case spec.Strategy:
+		row.Title = b.Title
+		row.Kind = string(b.Kind)
+		row.Summary = summaryOrFallback(b.Summary, "")
+	case spec.Decision:
+		row.Title = b.Title
+		row.Summary = summaryOrFallback(b.Summary, b.Rationale)
+	case spec.Bug:
+		row.Title = b.Title
+		row.Summary = summaryOrFallback(b.Summary, b.Description)
+	case spec.Approach:
+		row.Title = b.Title
+		row.Summary = strings.TrimSpace(b.Summary)
+	}
+	return row
+}
+
+// specKindOfID routes an id to its SpecKind via the kebab-prefix
+// convention. The MCP read tools accept already-validated ids — this
+// helper is a cheap dispatch, not a validator (malformed ids fall
+// through to the base store for the canonical error message).
+func specKindOfID(id string) (SpecKind, bool) {
+	switch {
+	case strings.HasPrefix(id, "goal-"):
+		return KindGoal, true
+	case strings.HasPrefix(id, "agoal-"):
+		return KindAntiGoal, true
+	case strings.HasPrefix(id, "feat-"):
+		return KindFeature, true
+	case strings.HasPrefix(id, "strat-"):
+		return KindStrategy, true
+	case strings.HasPrefix(id, "dec-"):
+		return KindDecision, true
+	case strings.HasPrefix(id, "bug-"):
+		return KindBug, true
+	case strings.HasPrefix(id, "app-"):
+		return KindApproach, true
+	}
+	return "", false
 }

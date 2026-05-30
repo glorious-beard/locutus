@@ -460,6 +460,89 @@ func TestDryRunCapturesUpdateGoalsMdHash(t *testing.T) {
 	assert.Equal(t, "sha256:original", m.GoalsMdHash, "dry-run must not touch the on-disk manifest hash")
 }
 
+// TestDryRunReadAfterWrite verifies DJ-147 Task 6: dry-run reads consult
+// the per-session overlay so a propose/revise lands as a would-be entry
+// visible to the same session's subsequent spec_get / spec_list_manifest.
+func TestDryRunReadAfterWrite(t *testing.T) {
+	cs, _, store, _ := dryRunHarness(t)
+
+	// Seed a base feature so we can test overlay-overrides-base.
+	require.NoError(t, store.Put(agent.KindFeature, "feat-base", spec.Feature{ID: "feat-base", Title: "Base"}, agent.OriginSettled))
+
+	// Capture two operations: revise the base feature + propose a new one.
+	_, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "spec_revise_feature",
+		Arguments: map[string]any{
+			"id": "feat-base", "title": "Revised in overlay", "status": "active", "decisions": []any{"dec-x"},
+		},
+	})
+	require.NoError(t, err)
+	_, err = cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "spec_propose_feature",
+		Arguments: map[string]any{
+			"id": "feat-new", "title": "New", "status": "proposed", "decisions": []any{"dec-x"},
+		},
+	})
+	require.NoError(t, err)
+
+	// spec_get must return overlay versions to THIS session.
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "spec_get",
+		Arguments: map[string]any{"ids": []string{"feat-base", "feat-new"}},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	body := callToolResultJSON(t, res)
+	assert.Contains(t, body, "Revised in overlay", "overlay revision must surface on read in the same session")
+	assert.Contains(t, body, "feat-new", "overlay-only entry must surface on read in the same session")
+
+	// spec_list_manifest must include feat-new (overlay-only).
+	res, err = cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "spec_list_manifest"})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	assert.Contains(t, callToolResultJSON(t, res), "feat-new")
+}
+
+// TestDryRunDeleteMasksRead verifies DJ-147 Task 6: an overlay-deleted
+// id is reported as missing on the same-session read path. The on-disk
+// entry stays untouched.
+func TestDryRunDeleteMasksRead(t *testing.T) {
+	cs, _, store, _ := dryRunHarness(t)
+
+	require.NoError(t, store.Begin())
+	require.NoError(t, store.Put(agent.KindGoal, "goal-x", spec.Goal{ID: "goal-x", Title: "X", Body: "scope", SourceClause: "src"}, agent.OriginProposed))
+	require.NoError(t, store.Commit())
+
+	_, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "spec_delete_goal",
+		Arguments: map[string]any{"id": "goal-x", "reason": "dropped from GOALS.md"},
+	})
+	require.NoError(t, err)
+
+	// spec_get must report goal-x missing in the dry-run session view.
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "spec_get",
+		Arguments: map[string]any{"ids": []string{"goal-x"}},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	body := callToolResultJSON(t, res)
+	assert.Contains(t, body, "missing", "deleted-in-overlay must be reported as missing")
+}
+
+// callToolResultJSON extracts the StructuredContent of a tool result as
+// a JSON string for substring assertions. The MCP SDK auto-derives a
+// JSON Content text block from StructuredContent, but going straight to
+// the typed structure avoids depending on the SDK's text-rendering
+// shape.
+func callToolResultJSON(t *testing.T, res *mcp.CallToolResult) string {
+	t.Helper()
+	require.NotNil(t, res.StructuredContent, "tool result must have StructuredContent")
+	data, err := json.Marshal(res.StructuredContent)
+	require.NoError(t, err)
+	return string(data)
+}
+
 // diskPathFor returns the .borg/spec path a kind/id would persist to
 // under the production write path. Used to assert dry-run leaves the
 // file system untouched.
