@@ -58,7 +58,7 @@ The earlier council-era predecessors ([DJ-075](dj-075-assimilate-reads-existing-
    - `SourceHash string` — `sha256:<hex>` over the sorted-paths-then-contents
    - `SourceHashSyncedAt time.Time` — server-stamped on each propose/revise
 
-   The existing approach fields (id, parent_id, parent_kind, body, status, etc.) are preserved. The on-disk JSON shape under `.borg/spec/approaches/` gains the three new fields; existing approaches without them are loaded with zero values (no migration needed — DJ-148 lands before any approaches exist in any project).
+   The existing approach fields (id, parent_id, parent_kind, body, status, etc.) are preserved. The on-disk YAML-frontmatter shape under `.borg/spec/approaches/<id>.md` (per `internal/spec/approach.go`'s `yaml:` tags) gains the three new fields; existing approaches without them load with zero values (no migration needed — DJ-148 lands before any approaches exist in any project).
 
 7. **Per-runtime convergence drivers inherited from [DJ-144](dj-144-cc-workflow-convergence.md).** assimilate ships with three playbook files; resolution per DJ-136 walks most-specific to least-specific:
    - `code_assimilation.claude-code.md` (provider overlay) — references the dynamic-workflow-driven shape from `spec_refinement.claude-code.md`, parallel fan-out of the four content-emitting agents (scout sequentially, then backend/frontend/infra in parallel, then gap-analyst sequentially), `{{max_iterations}}` injection point preserved for the workflow's loop counter.
@@ -145,7 +145,7 @@ The earlier council-era predecessors ([DJ-075](dj-075-assimilate-reads-existing-
 
 **Spec data model:**
 - `spec.Approach` gains `SourceFiles []string`, `SourceHash string`, `SourceHashSyncedAt time.Time`.
-- On-disk JSON shape under `.borg/spec/approaches/` extended; existing approaches (zero today) load with zero values.
+- On-disk YAML-frontmatter shape (per `internal/spec/approach.go`) extended with three new `yaml:` tagged fields; existing approaches (zero today) load with zero values.
 
 **Subagent prompts (`internal/scaffold/agents/`):**
 - Rewritten: `scout.md`, `backend-analyzer.md`, `frontend-analyzer.md`, `infra-analyzer.md`, `gap-analyst.md`.
