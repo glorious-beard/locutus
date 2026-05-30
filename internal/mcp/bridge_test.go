@@ -62,7 +62,7 @@ func TestBridge_StdioToSocket_RoundTrip(t *testing.T) {
 
 	bridgeDone := make(chan error, 1)
 	go func() {
-		bridgeDone <- BridgeIOToSocket(ctx, sockPath, inR, &out, "interactive")
+		bridgeDone <- BridgeIOToSocket(ctx, sockPath, inR, &out, "interactive", false, "")
 	}()
 
 	// Write the initialize bytes; keep the pipe open after so the
@@ -155,7 +155,7 @@ func TestBridgeInjectsLocutusModeIntoInitialize(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = BridgeIOToSocket(ctx, sock, in, outW, "headless")
+	_ = BridgeIOToSocket(ctx, sock, in, outW, "headless", false, "")
 
 	select {
 	case meta := <-captured:
@@ -199,7 +199,7 @@ func TestBridgePassesThroughNonInitializeLinesUnchanged(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = BridgeIOToSocket(ctx, sock, in, outW, "headless")
+	_ = BridgeIOToSocket(ctx, sock, in, outW, "headless", false, "")
 
 	select {
 	case got := <-captured:
@@ -246,7 +246,7 @@ func TestBridgeInjectsPreservesExistingMetaFields(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = BridgeIOToSocket(ctx, sock, in, outW, "headless")
+	_ = BridgeIOToSocket(ctx, sock, in, outW, "headless", false, "")
 
 	select {
 	case meta := <-captured:
@@ -254,6 +254,101 @@ func TestBridgeInjectsPreservesExistingMetaFields(t *testing.T) {
 		assert.Equal(t, "headless", meta["locutus.mode"], "locutus.mode must be injected")
 		assert.EqualValues(t, 42, meta["progressToken"], "existing progressToken must survive")
 		assert.Equal(t, "keep-me", meta["customField"], "existing customField must survive")
+	case <-time.After(2 * time.Second):
+		t.Fatal("server never received an initialize")
+	}
+}
+
+// DJ-147 — the bridge forwards LOCUTUS_DRY_RUN + LOCUTUS_DRY_RUN_FORMAT
+// via _meta on the initialize request when dryRun is true; for
+// dryRun=false the keys are omitted so the wire trace stays clean on
+// non-dry-run sessions.
+
+func TestBridgeInjectsDryRunMeta(t *testing.T) {
+	sock := filepath.Join(shortTempSocketDir(t), "mcp.sock")
+	listener, err := net.Listen("unix", sock)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+
+	captured := make(chan map[string]any, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		line, _ := bufio.NewReader(conn).ReadBytes('\n')
+		var msg map[string]any
+		_ = json.Unmarshal(line, &msg)
+		params, _ := msg["params"].(map[string]any)
+		meta, _ := params["_meta"].(map[string]any)
+		captured <- meta
+	}()
+
+	in, inW := io.Pipe()
+	out, outW := io.Pipe()
+	go func() {
+		initLine := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","clientInfo":{"name":"claude-code","version":"test"}}}` + "\n"
+		_, _ = inW.Write([]byte(initLine))
+		_ = inW.Close()
+	}()
+	go func() { _, _ = io.Copy(io.Discard, out) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = BridgeIOToSocket(ctx, sock, in, outW, "headless", true, "json")
+
+	select {
+	case meta := <-captured:
+		require.NotNil(t, meta)
+		assert.Equal(t, "headless", meta["locutus.mode"])
+		assert.Equal(t, true, meta["locutus.dry_run"])
+		assert.Equal(t, "json", meta["locutus.dry_run_format"])
+	case <-time.After(2 * time.Second):
+		t.Fatal("server never received an initialize")
+	}
+}
+
+func TestBridgeOmitsDryRunMetaWhenFalse(t *testing.T) {
+	sock := filepath.Join(shortTempSocketDir(t), "mcp.sock")
+	listener, err := net.Listen("unix", sock)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+
+	captured := make(chan map[string]any, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		line, _ := bufio.NewReader(conn).ReadBytes('\n')
+		var msg map[string]any
+		_ = json.Unmarshal(line, &msg)
+		params, _ := msg["params"].(map[string]any)
+		meta, _ := params["_meta"].(map[string]any)
+		captured <- meta
+	}()
+
+	in, inW := io.Pipe()
+	out, outW := io.Pipe()
+	go func() {
+		_, _ = inW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","clientInfo":{"name":"claude-code","version":"test"}}}` + "\n"))
+		_ = inW.Close()
+	}()
+	go func() { _, _ = io.Copy(io.Discard, out) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = BridgeIOToSocket(ctx, sock, in, outW, "interactive", false, "")
+
+	select {
+	case meta := <-captured:
+		assert.Equal(t, "interactive", meta["locutus.mode"])
+		_, hasDryRun := meta["locutus.dry_run"]
+		assert.False(t, hasDryRun, "dry_run field must be omitted when false (defaults are implicit)")
+		_, hasFormat := meta["locutus.dry_run_format"]
+		assert.False(t, hasFormat, "dry_run_format field must be omitted when dry-run is false")
 	case <-time.After(2 * time.Second):
 		t.Fatal("server never received an initialize")
 	}

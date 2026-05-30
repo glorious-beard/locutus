@@ -47,7 +47,9 @@ func (c *McpCmd) Run(ctx context.Context, cli *CLI) error {
 		return fmt.Errorf("mcp: %w", err)
 	}
 	mode := resolveLocutusMode()
-	if err := mcp.BridgeStdioToSocket(ctx, sockPath, mode); err != nil {
+	dryRun := resolveLocutusDryRun()
+	dryRunFormat := resolveLocutusDryRunFormat()
+	if err := mcp.BridgeStdioToSocket(ctx, sockPath, mode, dryRun, dryRunFormat); err != nil {
 		return fmt.Errorf("mcp: %w", err)
 	}
 	return nil
@@ -64,4 +66,28 @@ func resolveLocutusMode() string {
 		return "interactive"
 	}
 	return v
+}
+
+// resolveLocutusDryRun reads LOCUTUS_DRY_RUN and returns true iff its
+// trimmed/lowercased value is "1" or "true". Per DJ-147: the ACP
+// dispatcher sets the env var on the spawned coding-agent process for
+// dry-run dispatches; everything else (default operator sessions) leaves
+// it unset and gets the safe false.
+func resolveLocutusDryRun() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LOCUTUS_DRY_RUN")))
+	return v == "1" || v == "true"
+}
+
+// resolveLocutusDryRunFormat reads LOCUTUS_DRY_RUN_FORMAT and returns
+// the normalized format ("json" or "markdown"). Unknown or empty values
+// fall back to the safe default "markdown". Only meaningful when dry-run
+// is enabled.
+func resolveLocutusDryRunFormat() string {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LOCUTUS_DRY_RUN_FORMAT")))
+	switch v {
+	case "json", "markdown":
+		return v
+	default:
+		return "markdown"
+	}
 }

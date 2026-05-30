@@ -27,6 +27,12 @@ import (
 // ("interactive" or "headless"); "" is accepted and results in no
 // injection (the field is set to the empty string).
 //
+// dryRun + dryRunFormat are injected per DJ-147 when dryRun is true.
+// When dryRun is false the keys are omitted entirely so the wire trace
+// stays clean on non-dry-run sessions. When dryRun is true and
+// dryRunFormat is empty, only locutus.dry_run is set and the daemon
+// falls back to its default format.
+//
 // Returns when:
 //   - ctx is cancelled (caller's signal handler fires) — caller's
 //     stdin io.Copy completes and Close on the conn unblocks the
@@ -36,8 +42,8 @@ import (
 //   - The caller's stdin closes (parent MCP client exited) — the
 //     stdin-side Copy completes; the bridge closes the conn and
 //     returns.
-func BridgeStdioToSocket(ctx context.Context, sockPath, mode string) error {
-	return BridgeIOToSocket(ctx, sockPath, os.Stdin, os.Stdout, mode)
+func BridgeStdioToSocket(ctx context.Context, sockPath, mode string, dryRun bool, dryRunFormat string) error {
+	return BridgeIOToSocket(ctx, sockPath, os.Stdin, os.Stdout, mode, dryRun, dryRunFormat)
 }
 
 // BridgeIOToSocket is BridgeStdioToSocket with explicit reader/writer
@@ -59,7 +65,7 @@ func BridgeStdioToSocket(ctx context.Context, sockPath, mode string) error {
 // Critically, we do NOT close the full conn just because stdin EOF'd.
 // The server may still be writing its response. Only the socket-side
 // completion or ctx cancel triggers full conn close.
-func BridgeIOToSocket(ctx context.Context, sockPath string, in io.Reader, out io.Writer, mode string) error {
+func BridgeIOToSocket(ctx context.Context, sockPath string, in io.Reader, out io.Writer, mode string, dryRun bool, dryRunFormat string) error {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", sockPath)
 	if err != nil {
@@ -81,7 +87,7 @@ func BridgeIOToSocket(ctx context.Context, sockPath string, in io.Reader, out io
 
 	stdinDone := make(chan error, 1)
 	go func() {
-		err := pumpInWithInitInject(in, conn, mode)
+		err := pumpInWithInitInject(in, conn, mode, dryRun, dryRunFormat)
 		// Stdin closed: half-close the write side so the daemon sees
 		// EOF on its read but can still write outstanding responses
 		// back through the still-open read side of this conn.
@@ -120,19 +126,21 @@ func BridgeIOToSocket(ctx context.Context, sockPath string, in io.Reader, out io
 }
 
 // pumpInWithInitInject scans incoming JSON-RPC lines on in, rewrites
-// the first initialize request to include _meta["locutus.mode"]=mode,
-// and then drops to raw io.Copy for the rest of the stream.
+// the first initialize request to include the configured _meta fields
+// (locutus.mode per DJ-143, locutus.dry_run + locutus.dry_run_format
+// per DJ-147), and then drops to raw io.Copy for the rest of the
+// stream.
 //
 // Non-initialize lines that appear before the initialize are passed
 // through verbatim (e.g. pre-init notifications). After the first
 // initialize is forwarded, no further parsing occurs — only one
 // initialize per MCP session.
-func pumpInWithInitInject(in io.Reader, conn io.Writer, mode string) error {
+func pumpInWithInitInject(in io.Reader, conn io.Writer, mode string, dryRun bool, dryRunFormat string) error {
 	br := bufio.NewReader(in)
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
-			rewritten, isInit := maybeInjectInitMode(line, mode)
+			rewritten, isInit := maybeInjectInitMeta(line, mode, dryRun, dryRunFormat)
 			if _, werr := conn.Write(rewritten); werr != nil {
 				return werr
 			}
@@ -147,12 +155,19 @@ func pumpInWithInitInject(in io.Reader, conn io.Writer, mode string) error {
 	}
 }
 
-// maybeInjectInitMode tries to parse line as a JSON-RPC initialize
-// request and inject params._meta["locutus.mode"]=mode. Returns the
+// maybeInjectInitMeta tries to parse line as a JSON-RPC initialize
+// request and inject params._meta with the configured Locutus fields:
+//   - locutus.mode = mode (DJ-143)
+//   - locutus.dry_run = true (DJ-147, only when dryRun is true)
+//   - locutus.dry_run_format = dryRunFormat (DJ-147, only when dryRun
+//     is true AND dryRunFormat is non-empty)
+//
+// For dryRun == false the dry-run keys are omitted entirely so the
+// wire trace stays clean on non-dry-run sessions. Returns the
 // (possibly rewritten) line bytes and a boolean indicating whether an
 // initialize was detected and rewritten. Non-JSON or non-initialize
 // lines are returned unchanged with isInit=false.
-func maybeInjectInitMode(line []byte, mode string) ([]byte, bool) {
+func maybeInjectInitMeta(line []byte, mode string, dryRun bool, dryRunFormat string) ([]byte, bool) {
 	trimmed := strings.TrimSpace(string(line))
 	if trimmed == "" {
 		return line, false
@@ -181,6 +196,12 @@ func maybeInjectInitMode(line []byte, mode string) ([]byte, bool) {
 		meta = map[string]any{}
 	}
 	meta["locutus.mode"] = mode
+	if dryRun {
+		meta["locutus.dry_run"] = true
+		if dryRunFormat != "" {
+			meta["locutus.dry_run_format"] = dryRunFormat
+		}
+	}
 	params["_meta"] = meta
 	paramsBytes, err := json.Marshal(params)
 	if err != nil {
