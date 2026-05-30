@@ -1,38 +1,75 @@
-# Code assimilation (Claude Code — dynamic workflow)
+# Code Assimilation (Claude Code — dynamic workflow)
 
-Run this as a **workflow**: author an orchestration that drives spec inference from the existing codebase to completion for the project named in your Run context. The workflow loops until the inference pass has extracted entities, inferred decisions, and proposed features that name the user-visible capabilities the code implements, or until the iteration cap of {{max_iterations}} is reached. You own the loop; do not emit a `converged:` verdict line for an outer harness — this workflow is the harness.
-
-> **Status:** The detailed playbook lands alongside the `cmd/assimilate.go` rewrite in DJ-135 phase 5 checkpoint 3. Until that lands, this workflow runs a single best-effort inference pass and completes.
+Run this as a **workflow**: author an orchestration that drives the brownfield assimilation work for this project to convergence. The workflow loops until the gap-analyst reports no new mutations or the iteration cap of {{max_iterations}} is reached. You own the loop; do not emit a single `converged:` verdict line for an outer harness — this workflow is the harness.
 
 ## Plan first
 
-Your very first action is to call `TodoWrite` with the entries you intend to execute. Mark each entry `in_progress` when you start it and `completed` when it lands. A reasonable opening plan for this placeholder pass covers: Read scope (preamble), Explore codebase structure, Extract entities, Infer decisions, Propose features, Report. Update as work progresses, not in a batch at the end.
+Your very first action is to call `TodoWrite` with the entries you intend to execute. Mark each entry `in_progress` when you start and `completed` when it lands. A reasonable opening plan covers: Precondition check (preamble), then per-iteration: Discover code, Read manifest, Scout survey, Analyzer fan-out, Reconciliation, Emit + approach synthesis — repeated up to {{max_iterations}} times — then Report.
 
-## Scope note
+## Start here
 
-Read the `Target:` or `Scope:` line in your Run context, if present. When no scope is provided, the pass covers the full project source tree.
+After laying out your plan, call `mcp__locutus__spec_list_manifest` (no arguments) to read the current spec graph state. The manifest carries every node — including `goal-*` and `agoal-*` ids — and the `goals_md_hash` field. Then read `GOALS.md` once with the `Read` tool. Both are inputs to the preamble.
 
-## Workflow shape (placeholder)
+## Invariants
 
-Until the detailed playbook lands, each iteration of this workflow runs one best-effort inference pass:
+- **Spec mutations route exclusively through the `mcp__locutus__spec_*` MCP tools.** Never call `Write` or `Edit` on any file under `.borg/spec/` — those files are the SpecStore's persistence backing, not its source of truth (DJ-134). The daemon owns coherence.
+- **`GOALS.md` is read-only for the duration of this run.** Read it once with the `Read` tool when the playbook says to. Never call `Write` or `Edit` on `GOALS.md`. The goal layer is operator-authored via `refine`.
 
-1. **Read the Run context.** Note any `Target:` or `Scope:` line that limits the pass.
-2. **Explore the codebase.** Use the `Read` and `Bash` tools to walk the project structure. Identify the main modules, packages, or service boundaries; note the primary data models and API surfaces.
-3. **Extract entities.** For each identified module or boundary, name the core entity it manages and the user-visible behavior it exposes.
-4. **Infer decisions.** For each architectural pattern you observe (e.g. the choice of database, the API protocol, the authentication scheme), formulate a decision body that names the axis (the question the pattern answers) and the chosen approach (the pattern the code implements). Keep the axis name as a question the project resolved, not a description of the code.
-5. **Propose features.** For each user-visible capability the code implements, draft a feature body with a slug-based id (`feat-<slug>`), a title, a description, and acceptance criteria derived from the observable behavior.
-6. **Emit proposed entities.** Produce the inferred decisions and features as a structured markdown report. This pass does not call MCP write tools directly — the operator reviews the inferred entities and decides which to admit via `locutus import` or `locutus refine`.
+## One-time preamble — Precondition check (runs once, before the loop)
 
-After step 6, the pass is complete for this iteration.
+assimilate requires (a) `GOALS.md` exists and (b) goal layer is populated. Check both. If either fails:
+- Emit a single closing message naming the unmet precondition and the operator's fix.
+- Do not enter the workflow loop.
 
-## Reporting
+If both preconditions hold, mark the preamble plan entry complete and enter the convergence loop.
 
-Produce a short operator-facing summary:
+## Convergence loop (up to {{max_iterations}} iterations)
 
-- **Scope** — what the pass covered (full project or a named subset).
-- **Entities found** — a count of modules / boundaries identified.
-- **Inferred decisions** — a bulleted list of decision axes inferred, each with the chosen approach the code exhibits.
-- **Proposed features** — a bulleted list of feature candidates with slug-id and one-line description.
-- **Gaps** — code areas where behavior is observable but the architectural intent is unclear, if any.
+Each iteration runs Steps 1-6 in order. The loop exits early when the gap-analyst's reconciliation plan is empty (no confirms, no revises, no proposes) — that's convergence. The iteration cap is the safety bound.
 
-The workflow owns the loop — no trailing `converged:` verdict line is needed because there is no outer harness to read it.
+### Step 1 — Discover code
+
+Run `git ls-files` via the `Bash` tool. Apply hardcoded excludes (`.borg/**`, `.locutus/**`, `GOALS.md`, `docs/**`, `**/README.md`, `**/CHANGELOG.md`). The remaining set is the source surface.
+
+### Step 2 — Read manifest + goal layer for context
+
+Call `mcp__locutus__spec_list_manifest`. Issue one batched `mcp__locutus__spec_get` with every `goal-*` / `agoal-*` / `feat-` / `dec-` / `strat-` / `app-` id.
+
+### Step 3 — Scout survey (sequential)
+
+Dispatch `scout` with the source file list + goal-layer bodies. Wait for it to return its ScoutSummary.
+
+### Step 4 — Analyzer fan-out (parallel)
+
+Spawn three concurrent subagent dispatches in the workflow:
+- `backend-analyzer` with scout summary + backend files
+- `frontend-analyzer` with scout summary + frontend files (early-exits if none)
+- `infra-analyzer` with scout summary + infra files
+
+Wait for all three to complete. Collect their structured responses.
+
+### Step 5 — Reconciliation (sequential)
+
+Dispatch `gap-analyst` with the three analyzer contributions + the existing manifest's nodes + the goal-layer bodies. It returns the per-id action plan.
+
+### Step 6 — Emit + approach synthesis
+
+For each gap-analyst action:
+- **Confirm**: no MCP call.
+- **Revise**: call `mcp__locutus__spec_revise_<kind>` with the revised body; status stays `inferred`.
+- **Propose**: call `mcp__locutus__spec_propose_<kind>` with `status: inferred`.
+
+For every feature or strategy confirmed-or-proposed, also synthesize the approach:
+1. Compute `source_hash` for the cited files: `find <files> -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1`, prefix with `sha256:`.
+2. Call `mcp__locutus__spec_propose_approach` (or `spec_revise_approach`) with id `app-<parent-id>`, parent_id, source_files, source_hash, body.
+
+If the gap-analyst's action plan was empty AND no approaches were synthesized this iteration, emit `converged` and exit the loop. Otherwise loop to Step 1.
+
+## Closing report
+
+After the loop exits (either by convergence or by hitting the {{max_iterations}} cap), produce a closing summary:
+- Iterations run.
+- Net changes by kind (decisions revised, features proposed, etc.).
+- Approaches synthesized with their `source_hash`.
+- Any analyzer disagreements that landed as low-confidence revisions (so the operator can spot intent-vs-reality divergence).
+- Convergence outcome: converged-cleanly OR hit-iteration-cap OR precondition-failed.
