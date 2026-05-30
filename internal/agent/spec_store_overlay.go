@@ -53,11 +53,27 @@ type CapturedMutation struct {
 // The overlay is intentionally NOT a copy of the base store. It holds
 // only what this session has written (entries + deleted), so memory
 // scales with the captured mutation set, not the graph size.
+//
+// manifestOverride carries the would-be (goals_md_hash, goals_md_synced_at)
+// pair from spec_update_goals_md_hash. The hash update doesn't fit the
+// per-kind StoreEntry shape (it's a top-level manifest field, not a
+// spec graph node) so it lands as a separate slot. nil means
+// "no captured manifest mutation this session."
 type sessionOverlay struct {
-	mu       sync.RWMutex
-	entries  map[storeKey]*StoreEntry
-	deleted  map[storeKey]struct{}
-	captured []CapturedMutation
+	mu               sync.RWMutex
+	entries          map[storeKey]*StoreEntry
+	deleted          map[storeKey]struct{}
+	captured         []CapturedMutation
+	manifestOverride *manifestOverride
+}
+
+// manifestOverride holds the would-be manifest-level mutation
+// captured under dry-run. Today the only manifest-level write tool is
+// spec_update_goals_md_hash; the field set mirrors what that tool's
+// production path passes to SpecStore.UpdateGoalsMdHash.
+type manifestOverride struct {
+	GoalsMdHash     string
+	GoalsMdSyncedAt time.Time
 }
 
 func newSessionOverlay() *sessionOverlay {
@@ -146,6 +162,33 @@ func (o *sessionOverlay) capturedList() []CapturedMutation {
 	out := make([]CapturedMutation, len(o.captured))
 	copy(out, o.captured)
 	return out
+}
+
+// setGoalsMdHash captures a would-be spec_update_goals_md_hash call.
+// Last-write-wins on the override slot; each call also lands a fresh
+// CapturedMutation in the ordered list so spec_dry_run_report (Task 7)
+// can surface the sequence.
+func (o *sessionOverlay) setGoalsMdHash(tool, hash string, syncedAt time.Time) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.manifestOverride = &manifestOverride{GoalsMdHash: hash, GoalsMdSyncedAt: syncedAt}
+	o.captured = append(o.captured, CapturedMutation{
+		Tool:      tool,
+		Body:      manifestOverride{GoalsMdHash: hash, GoalsMdSyncedAt: syncedAt},
+		Timestamp: time.Now().UTC(),
+	})
+}
+
+// manifestOverrideOrNil returns the would-be manifest override, or
+// nil when no spec_update_goals_md_hash call has been captured.
+func (o *sessionOverlay) manifestOverrideOrNil() *manifestOverride {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if o.manifestOverride == nil {
+		return nil
+	}
+	c := *o.manifestOverride
+	return &c
 }
 
 // OverlayView is the read merger consulted by spec_list_manifest /

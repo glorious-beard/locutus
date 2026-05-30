@@ -291,7 +291,7 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_propose_decision",
 		Description: descSpecProposeDecision,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in proposeDecisionInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in proposeDecisionInput) (*mcp.CallToolResult, any, error) {
 		body, err := buildDecisionBody(in, time.Time{} /* createdAt = now */)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
@@ -301,12 +301,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Proposed decision %s.", in.ID)), nil, nil
-	})
+	}, captureProposeDecision(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_propose_feature",
 		Description: descSpecProposeFeature,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in proposeFeatureInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in proposeFeatureInput) (*mcp.CallToolResult, any, error) {
 		body, err := buildFeatureBody(in, time.Time{} /* createdAt = now */)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
@@ -316,12 +316,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Proposed feature %s.", in.ID)), nil, nil
-	})
+	}, captureProposeFeature(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_propose_strategy",
 		Description: descSpecProposeStrategy,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in proposeStrategyInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in proposeStrategyInput) (*mcp.CallToolResult, any, error) {
 		body, err := buildStrategyBody(in)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
@@ -331,12 +331,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Proposed strategy %s.", in.ID)), nil, nil
-	})
+	}, captureProposeStrategy(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_revise_decision",
 		Description: descSpecReviseDecision,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in reviseDecisionInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in reviseDecisionInput) (*mcp.CallToolResult, any, error) {
 		// Preserve created_at from the existing entry. Lookup via
 		// SpecStore.GetSpec returns the body as a json.RawMessage that
 		// we don't need to unmarshal — we only need to confirm the entry
@@ -358,12 +358,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Revised decision %s.", in.ID)), nil, nil
-	})
+	}, captureReviseDecision(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_revise_feature",
 		Description: descSpecReviseFeature,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in reviseFeatureInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in reviseFeatureInput) (*mcp.CallToolResult, any, error) {
 		createdAt, ok := existingFeatureCreatedAt(store, in.ID)
 		if !ok {
 			return errorResult(fmt.Sprintf("spec_revise_feature: feature %q does not exist; use spec_propose_feature to create it", in.ID)), nil, nil
@@ -377,12 +377,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Revised feature %s.", in.ID)), nil, nil
-	})
+	}, captureReviseFeature(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_revise_strategy",
 		Description: descSpecReviseStrategy,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in reviseStrategyInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in reviseStrategyInput) (*mcp.CallToolResult, any, error) {
 		if !strategyExists(store, in.ID) {
 			return errorResult(fmt.Sprintf("spec_revise_strategy: strategy %q does not exist; use spec_propose_strategy to create it", in.ID)), nil, nil
 		}
@@ -395,12 +395,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Revised strategy %s.", in.ID)), nil, nil
-	})
+	}, captureReviseStrategy(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_propose_goal",
 		Description: descSpecProposeGoal,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in proposeGoalInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in proposeGoalInput) (*mcp.CallToolResult, any, error) {
 		body, err := buildGoalBody(in, time.Time{} /* createdAt = now */)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
@@ -410,12 +410,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Proposed goal %s.", in.ID)), nil, nil
-	})
+	}, captureProposeGoal(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_revise_goal",
 		Description: descSpecReviseGoal,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in reviseGoalInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in reviseGoalInput) (*mcp.CallToolResult, any, error) {
 		createdAt, ok := existingGoalCreatedAt(store, in.ID)
 		if !ok {
 			return errorResult(fmt.Sprintf("spec_revise_goal: goal %q does not exist; use spec_propose_goal to create it", in.ID)), nil, nil
@@ -429,12 +429,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Revised goal %s.", in.ID)), nil, nil
-	})
+	}, captureReviseGoal(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_delete_goal",
 		Description: descSpecDeleteGoal,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in deleteGoalInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in deleteGoalInput) (*mcp.CallToolResult, any, error) {
 		id := strings.TrimSpace(in.ID)
 		reason := strings.TrimSpace(in.Reason)
 		if id == "" {
@@ -471,12 +471,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 			}
 		}
 		return textResult(fmt.Sprintf("Deleted goal %s.", id)), nil, nil
-	})
+	}, captureDeleteGoal(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_propose_antigoal",
 		Description: descSpecProposeAntiGoal,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in proposeAntiGoalInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in proposeAntiGoalInput) (*mcp.CallToolResult, any, error) {
 		body, err := buildAntiGoalBody(in, time.Time{} /* createdAt = now */)
 		if err != nil {
 			return errorResult(err.Error()), nil, nil
@@ -486,12 +486,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Proposed antigoal %s.", in.ID)), nil, nil
-	})
+	}, captureProposeAntiGoal(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_revise_antigoal",
 		Description: descSpecReviseAntiGoal,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in reviseAntiGoalInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in reviseAntiGoalInput) (*mcp.CallToolResult, any, error) {
 		createdAt, ok := existingAntiGoalCreatedAt(store, in.ID)
 		if !ok {
 			return errorResult(fmt.Sprintf("spec_revise_antigoal: antigoal %q does not exist; use spec_propose_antigoal to create it", in.ID)), nil, nil
@@ -505,12 +505,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Revised antigoal %s.", in.ID)), nil, nil
-	})
+	}, captureReviseAntiGoal(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_delete_antigoal",
 		Description: descSpecDeleteAntiGoal,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in deleteAntiGoalInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in deleteAntiGoalInput) (*mcp.CallToolResult, any, error) {
 		id := strings.TrimSpace(in.ID)
 		reason := strings.TrimSpace(in.Reason)
 		if id == "" {
@@ -544,12 +544,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 			}
 		}
 		return textResult(fmt.Sprintf("Deleted antigoal %s.", id)), nil, nil
-	})
+	}, captureDeleteAntiGoal(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_mark_approach_drifted",
 		Description: descSpecMarkApproachDrifted,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in markApproachDriftedInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in markApproachDriftedInput) (*mcp.CallToolResult, any, error) {
 		approachID := strings.TrimSpace(in.ApproachID)
 		eventID := strings.TrimSpace(in.EventID)
 		if approachID == "" {
@@ -577,12 +577,12 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 		}
 		publishManifestUpdate(ctx, server)
 		return textResult(fmt.Sprintf("Marked approach %s drifted by event %s.", approachID, eventID)), nil, nil
-	})
+	}, captureMarkApproachDrifted(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_update_goals_md_hash",
 		Description: descSpecUpdateGoalsMdHash,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in updateGoalsMdHashInput) (*mcp.CallToolResult, any, error) {
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in updateGoalsMdHashInput) (*mcp.CallToolResult, any, error) {
 		hash := strings.TrimSpace(in.Hash)
 		if hash == "" {
 			return errorResult("spec_update_goals_md_hash: hash is required"), nil, nil
@@ -591,7 +591,7 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 			return errorResult(err.Error()), nil, nil
 		}
 		return textResult(fmt.Sprintf("Updated goals_md_hash to %s.", hash)), nil, nil
-	})
+	}, captureUpdateGoalsMdHash(store)))
 }
 
 // commitOne wraps "begin → put → commit" in a single transaction.
@@ -846,4 +846,333 @@ func errorResult(msg string) *mcp.CallToolResult {
 		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
 		IsError: true,
 	}
+}
+
+// ---------------------------------------------------------------
+// DJ-147 Task 5 — capture closures for the mutation tools.
+//
+// Each closure mirrors the corresponding production handler's input
+// validation and body construction; instead of commitOne (which writes
+// to the base store + disk and fires manifest notifications) it calls
+// store.OverlayPut / OverlayDelete / OverlaySetGoalsMdHash. The
+// captureOnly wrapper routes to the closure only when the calling
+// session is in dry-run mode; outside dry-run the production handler
+// runs verbatim.
+//
+// Important contract: capture closures MUST NOT call
+// publishManifestUpdate or hist.Append — dry-run sessions emit no
+// manifest notifications and write no audit events. The capture and
+// the report (Task 7) are the only operator-visible surface.
+//
+// createdAt preservation on revise: capture consults the overlay-view
+// first (so a revise after a propose in the same session sees the
+// would-be entry's CreatedAt), falling back to the base store. The
+// FromView helpers are parallel to the existing existing*CreatedAt
+// disk-only helpers because the production path doesn't need overlay
+// awareness — only the capture path does.
+// ---------------------------------------------------------------
+
+func captureProposeDecision(store *agent.SpecStore) func(sess *mcp.ServerSession, in proposeDecisionInput) (any, error) {
+	return func(sess *mcp.ServerSession, in proposeDecisionInput) (any, error) {
+		body, err := buildDecisionBody(in, time.Time{})
+		if err != nil {
+			return nil, err
+		}
+		if err := store.OverlayPut(sess, "spec_propose_decision", agent.KindDecision, in.ID, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+func captureReviseDecision(store *agent.SpecStore) func(sess *mcp.ServerSession, in reviseDecisionInput) (any, error) {
+	return func(sess *mcp.ServerSession, in reviseDecisionInput) (any, error) {
+		createdAt, ok := overlayDecisionCreatedAt(store, sess, in.ID)
+		if !ok {
+			return nil, fmt.Errorf("spec_revise_decision: decision %q does not exist; use spec_propose_decision to create it", in.ID)
+		}
+		body, err := buildDecisionBody(in, createdAt)
+		if err != nil {
+			return nil, err
+		}
+		if err := store.OverlayPut(sess, "spec_revise_decision", agent.KindDecision, in.ID, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+func captureProposeFeature(store *agent.SpecStore) func(sess *mcp.ServerSession, in proposeFeatureInput) (any, error) {
+	return func(sess *mcp.ServerSession, in proposeFeatureInput) (any, error) {
+		body, err := buildFeatureBody(in, time.Time{})
+		if err != nil {
+			return nil, err
+		}
+		if err := store.OverlayPut(sess, "spec_propose_feature", agent.KindFeature, in.ID, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+func captureReviseFeature(store *agent.SpecStore) func(sess *mcp.ServerSession, in reviseFeatureInput) (any, error) {
+	return func(sess *mcp.ServerSession, in reviseFeatureInput) (any, error) {
+		createdAt, ok := overlayFeatureCreatedAt(store, sess, in.ID)
+		if !ok {
+			return nil, fmt.Errorf("spec_revise_feature: feature %q does not exist; use spec_propose_feature to create it", in.ID)
+		}
+		body, err := buildFeatureBody(in, createdAt)
+		if err != nil {
+			return nil, err
+		}
+		if err := store.OverlayPut(sess, "spec_revise_feature", agent.KindFeature, in.ID, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+func captureProposeStrategy(store *agent.SpecStore) func(sess *mcp.ServerSession, in proposeStrategyInput) (any, error) {
+	return func(sess *mcp.ServerSession, in proposeStrategyInput) (any, error) {
+		body, err := buildStrategyBody(in)
+		if err != nil {
+			return nil, err
+		}
+		if err := store.OverlayPut(sess, "spec_propose_strategy", agent.KindStrategy, in.ID, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+func captureReviseStrategy(store *agent.SpecStore) func(sess *mcp.ServerSession, in reviseStrategyInput) (any, error) {
+	return func(sess *mcp.ServerSession, in reviseStrategyInput) (any, error) {
+		// spec.Strategy has no created_at/updated_at, so the revise
+		// path only needs the existence-check (same as the production
+		// strategyExists). Consult the overlay-view so a revise after
+		// a propose in the same session resolves.
+		view := store.OverlayView(sess)
+		if _, ok := view.Lookup(agent.KindStrategy, in.ID); !ok {
+			return nil, fmt.Errorf("spec_revise_strategy: strategy %q does not exist; use spec_propose_strategy to create it", in.ID)
+		}
+		body, err := buildStrategyBody(in)
+		if err != nil {
+			return nil, err
+		}
+		if err := store.OverlayPut(sess, "spec_revise_strategy", agent.KindStrategy, in.ID, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+func captureProposeGoal(store *agent.SpecStore) func(sess *mcp.ServerSession, in proposeGoalInput) (any, error) {
+	return func(sess *mcp.ServerSession, in proposeGoalInput) (any, error) {
+		body, err := buildGoalBody(in, time.Time{})
+		if err != nil {
+			return nil, err
+		}
+		if err := store.OverlayPut(sess, "spec_propose_goal", agent.KindGoal, in.ID, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+func captureReviseGoal(store *agent.SpecStore) func(sess *mcp.ServerSession, in reviseGoalInput) (any, error) {
+	return func(sess *mcp.ServerSession, in reviseGoalInput) (any, error) {
+		createdAt, ok := overlayGoalCreatedAt(store, sess, in.ID)
+		if !ok {
+			return nil, fmt.Errorf("spec_revise_goal: goal %q does not exist; use spec_propose_goal to create it", in.ID)
+		}
+		body, err := buildGoalBody(in, createdAt)
+		if err != nil {
+			return nil, err
+		}
+		if err := store.OverlayPut(sess, "spec_revise_goal", agent.KindGoal, in.ID, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+func captureDeleteGoal(store *agent.SpecStore) func(sess *mcp.ServerSession, in deleteGoalInput) (any, error) {
+	return func(sess *mcp.ServerSession, in deleteGoalInput) (any, error) {
+		id := strings.TrimSpace(in.ID)
+		reason := strings.TrimSpace(in.Reason)
+		if id == "" {
+			return nil, fmt.Errorf("spec_delete_goal: id is required")
+		}
+		if reason == "" {
+			return nil, fmt.Errorf("spec_delete_goal: reason is required (the audit event captures why the goal was deleted; an empty reason defeats the purpose)")
+		}
+		if !strings.HasPrefix(id, "goal-") {
+			return nil, fmt.Errorf("spec_delete_goal: id %q lacks goal- prefix", id)
+		}
+		// Existence check against the overlay-view so a delete after a
+		// propose in the same session resolves.
+		view := store.OverlayView(sess)
+		if _, ok := view.Lookup(agent.KindGoal, id); !ok {
+			return nil, fmt.Errorf("spec_delete_goal: goal %q does not exist", id)
+		}
+		if err := store.OverlayDelete(sess, "spec_delete_goal", agent.KindGoal, id); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+}
+
+func captureProposeAntiGoal(store *agent.SpecStore) func(sess *mcp.ServerSession, in proposeAntiGoalInput) (any, error) {
+	return func(sess *mcp.ServerSession, in proposeAntiGoalInput) (any, error) {
+		body, err := buildAntiGoalBody(in, time.Time{})
+		if err != nil {
+			return nil, err
+		}
+		if err := store.OverlayPut(sess, "spec_propose_antigoal", agent.KindAntiGoal, in.ID, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+func captureReviseAntiGoal(store *agent.SpecStore) func(sess *mcp.ServerSession, in reviseAntiGoalInput) (any, error) {
+	return func(sess *mcp.ServerSession, in reviseAntiGoalInput) (any, error) {
+		createdAt, ok := overlayAntiGoalCreatedAt(store, sess, in.ID)
+		if !ok {
+			return nil, fmt.Errorf("spec_revise_antigoal: antigoal %q does not exist; use spec_propose_antigoal to create it", in.ID)
+		}
+		body, err := buildAntiGoalBody(in, createdAt)
+		if err != nil {
+			return nil, err
+		}
+		if err := store.OverlayPut(sess, "spec_revise_antigoal", agent.KindAntiGoal, in.ID, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+func captureDeleteAntiGoal(store *agent.SpecStore) func(sess *mcp.ServerSession, in deleteAntiGoalInput) (any, error) {
+	return func(sess *mcp.ServerSession, in deleteAntiGoalInput) (any, error) {
+		id := strings.TrimSpace(in.ID)
+		reason := strings.TrimSpace(in.Reason)
+		if id == "" {
+			return nil, fmt.Errorf("spec_delete_antigoal: id is required")
+		}
+		if reason == "" {
+			return nil, fmt.Errorf("spec_delete_antigoal: reason is required (the audit event captures why the antigoal was deleted; an empty reason defeats the purpose)")
+		}
+		if !strings.HasPrefix(id, "agoal-") {
+			return nil, fmt.Errorf("spec_delete_antigoal: id %q lacks agoal- prefix", id)
+		}
+		view := store.OverlayView(sess)
+		if _, ok := view.Lookup(agent.KindAntiGoal, id); !ok {
+			return nil, fmt.Errorf("spec_delete_antigoal: antigoal %q does not exist", id)
+		}
+		if err := store.OverlayDelete(sess, "spec_delete_antigoal", agent.KindAntiGoal, id); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+}
+
+func captureMarkApproachDrifted(store *agent.SpecStore) func(sess *mcp.ServerSession, in markApproachDriftedInput) (any, error) {
+	return func(sess *mcp.ServerSession, in markApproachDriftedInput) (any, error) {
+		approachID := strings.TrimSpace(in.ApproachID)
+		eventID := strings.TrimSpace(in.EventID)
+		if approachID == "" {
+			return nil, fmt.Errorf("spec_mark_approach_drifted: approach_id is required")
+		}
+		if eventID == "" {
+			return nil, fmt.Errorf("spec_mark_approach_drifted: event_id is required (drift marks without an originating event id defeat the audit purpose of invalidated_by_event_id)")
+		}
+		if !strings.HasPrefix(approachID, "app-") {
+			return nil, fmt.Errorf("spec_mark_approach_drifted: %q is not an approach id — only app- prefixed ids are valid (decisions / features / strategies are not drift-mark targets)", approachID)
+		}
+		view := store.OverlayView(sess)
+		entry, ok := view.Lookup(agent.KindApproach, approachID)
+		if !ok {
+			return nil, fmt.Errorf("spec_mark_approach_drifted: approach %q does not exist", approachID)
+		}
+		approach, ok := entry.Body.(spec.Approach)
+		if !ok {
+			return nil, fmt.Errorf("spec_mark_approach_drifted: %q resolved to %T, not spec.Approach", approachID, entry.Body)
+		}
+		approach.InvalidatedByEventID = eventID
+		approach.UpdatedAt = time.Now().UTC()
+		if err := store.OverlayPut(sess, "spec_mark_approach_drifted", agent.KindApproach, approachID, approach); err != nil {
+			return nil, err
+		}
+		return approach, nil
+	}
+}
+
+func captureUpdateGoalsMdHash(store *agent.SpecStore) func(sess *mcp.ServerSession, in updateGoalsMdHashInput) (any, error) {
+	return func(sess *mcp.ServerSession, in updateGoalsMdHashInput) (any, error) {
+		hash := strings.TrimSpace(in.Hash)
+		if hash == "" {
+			return nil, fmt.Errorf("spec_update_goals_md_hash: hash is required")
+		}
+		syncedAt := time.Now().UTC()
+		if err := store.OverlaySetGoalsMdHash(sess, "spec_update_goals_md_hash", hash, syncedAt); err != nil {
+			return nil, err
+		}
+		return map[string]any{"hash": hash, "synced_at": syncedAt}, nil
+	}
+}
+
+// overlayDecisionCreatedAt looks up the current created_at on a
+// decision via the session's overlay-view: a would-be entry written
+// earlier in the same dry-run session wins; otherwise the base store.
+// Returns (time.Time{}, false) when the id is unknown.
+func overlayDecisionCreatedAt(store *agent.SpecStore, sess *mcp.ServerSession, id string) (time.Time, bool) {
+	view := store.OverlayView(sess)
+	entry, ok := view.Lookup(agent.KindDecision, id)
+	if !ok {
+		return time.Time{}, false
+	}
+	d, ok := entry.Body.(spec.Decision)
+	if !ok {
+		return time.Time{}, false
+	}
+	return d.CreatedAt, true
+}
+
+func overlayFeatureCreatedAt(store *agent.SpecStore, sess *mcp.ServerSession, id string) (time.Time, bool) {
+	view := store.OverlayView(sess)
+	entry, ok := view.Lookup(agent.KindFeature, id)
+	if !ok {
+		return time.Time{}, false
+	}
+	f, ok := entry.Body.(spec.Feature)
+	if !ok {
+		return time.Time{}, false
+	}
+	return f.CreatedAt, true
+}
+
+func overlayGoalCreatedAt(store *agent.SpecStore, sess *mcp.ServerSession, id string) (time.Time, bool) {
+	view := store.OverlayView(sess)
+	entry, ok := view.Lookup(agent.KindGoal, id)
+	if !ok {
+		return time.Time{}, false
+	}
+	g, ok := entry.Body.(spec.Goal)
+	if !ok {
+		return time.Time{}, false
+	}
+	return g.CreatedAt, true
+}
+
+func overlayAntiGoalCreatedAt(store *agent.SpecStore, sess *mcp.ServerSession, id string) (time.Time, bool) {
+	view := store.OverlayView(sess)
+	entry, ok := view.Lookup(agent.KindAntiGoal, id)
+	if !ok {
+		return time.Time{}, false
+	}
+	ag, ok := entry.Body.(spec.AntiGoal)
+	if !ok {
+		return time.Time{}, false
+	}
+	return ag.CreatedAt, true
 }

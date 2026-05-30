@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/glorious-beard/locutus/internal/search"
 	"github.com/glorious-beard/locutus/internal/spec"
@@ -1203,6 +1204,19 @@ func (s *SpecStore) OverlayCaptured(sess any) []CapturedMutation {
 		return nil
 	}
 	return o.capturedList()
+}
+
+// OverlaySetGoalsMdHash captures a would-be spec_update_goals_md_hash
+// call on the session's overlay. The base manifest is untouched; the
+// next overlay-aware manifest read (Task 6) will merge the override.
+// Returns an error if the session has no overlay registered.
+func (s *SpecStore) OverlaySetGoalsMdHash(sess any, tool, hash string, syncedAt time.Time) error {
+	o := s.overlayFor(sess)
+	if o == nil {
+		return fmt.Errorf("OverlaySetGoalsMdHash: session has no registered overlay (call RegisterOverlay first)")
+	}
+	o.setGoalsMdHash(tool, hash, syncedAt)
+	return nil
 }
 
 // lookupEntry adapts the per-kind base-store maps into the flat
