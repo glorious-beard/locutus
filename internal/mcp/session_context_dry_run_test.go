@@ -5,6 +5,8 @@
 package mcp
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/glorious-beard/locutus/internal/agent"
@@ -62,4 +64,78 @@ func TestSessionDryRun_DefaultsFalseForUnknownSession(t *testing.T) {
 	// DJ-143's SessionRuntime precedent).
 	assert.False(t, SessionDryRun((*mcp.ServerSession)(nil)))
 	assert.Empty(t, SessionDryRunFormat((*mcp.ServerSession)(nil)))
+}
+
+type captureTestArgs struct{ ID, Title string }
+type captureTestResult struct{ ID string }
+
+func TestCaptureOnly_PassthroughWhenNotDryRun(t *testing.T) {
+	clearSessionRuntimes()
+	called := false
+	inner := func(_ context.Context, _ *mcp.CallToolRequest, in captureTestArgs) (*mcp.CallToolResult, captureTestResult, error) {
+		called = true
+		return nil, captureTestResult{ID: in.ID}, nil
+	}
+	capture := func(sess *mcp.ServerSession, in captureTestArgs) (captureTestResult, error) {
+		t.Fatal("capture must not run when session is not dry-run")
+		return captureTestResult{}, nil
+	}
+	wrapped := captureOnly(inner, capture)
+
+	sess := (*mcp.ServerSession)(nil) // sentinel for the request
+	storeSessionContext(sess, "claude-code", "headless", false, "")
+	req := &mcp.CallToolRequest{Session: sess, Params: &mcp.CallToolParamsRaw{Name: "spec_propose_decision"}}
+	_, _, err := wrapped(context.Background(), req, captureTestArgs{ID: "dec-x"})
+	require.NoError(t, err)
+	assert.True(t, called, "inner handler must run for non-dry-run sessions")
+}
+
+func TestCaptureOnly_CapturesWhenDryRun(t *testing.T) {
+	clearSessionRuntimes()
+	innerCalled := false
+	captureCalled := false
+	var capturedIn captureTestArgs
+
+	inner := func(_ context.Context, _ *mcp.CallToolRequest, _ captureTestArgs) (*mcp.CallToolResult, captureTestResult, error) {
+		innerCalled = true
+		return nil, captureTestResult{}, nil
+	}
+	capture := func(sess *mcp.ServerSession, in captureTestArgs) (captureTestResult, error) {
+		captureCalled = true
+		capturedIn = in
+		return captureTestResult{ID: in.ID}, nil
+	}
+	wrapped := captureOnly(inner, capture)
+
+	sess := (*mcp.ServerSession)(nil)
+	storeSessionContext(sess, "claude-code", "headless", true, "markdown")
+	req := &mcp.CallToolRequest{Session: sess, Params: &mcp.CallToolParamsRaw{Name: "spec_propose_decision"}}
+	res, out, err := wrapped(context.Background(), req, captureTestArgs{ID: "dec-x", Title: "X"})
+
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.False(t, innerCalled, "inner handler must NOT run for dry-run sessions")
+	assert.True(t, captureCalled, "capture must run for dry-run sessions")
+	assert.Equal(t, "dec-x", capturedIn.ID)
+	assert.Equal(t, "dec-x", out.ID)
+}
+
+func TestCaptureOnly_CaptureErrorReturnsToolError(t *testing.T) {
+	clearSessionRuntimes()
+	inner := func(_ context.Context, _ *mcp.CallToolRequest, _ captureTestArgs) (*mcp.CallToolResult, captureTestResult, error) {
+		return nil, captureTestResult{}, nil
+	}
+	capture := func(sess *mcp.ServerSession, in captureTestArgs) (captureTestResult, error) {
+		return captureTestResult{}, fmt.Errorf("simulated capture failure")
+	}
+	wrapped := captureOnly(inner, capture)
+
+	sess := (*mcp.ServerSession)(nil)
+	storeSessionContext(sess, "claude-code", "headless", true, "markdown")
+	req := &mcp.CallToolRequest{Session: sess, Params: &mcp.CallToolParamsRaw{Name: "spec_propose_decision"}}
+	res, _, err := wrapped(context.Background(), req, captureTestArgs{ID: "dec-x"})
+
+	require.NoError(t, err, "tool-level errors are surfaced as IsError results, not Go errors")
+	require.NotNil(t, res)
+	assert.True(t, res.IsError)
 }

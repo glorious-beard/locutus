@@ -163,6 +163,34 @@ func requireRuntimeAny[In, Out any](
 	}
 }
 
+// captureOnly wraps a tool handler so that dry-run sessions land their
+// would-be input in the overlay (via the caller-supplied capture
+// function) rather than running the inner handler.
+//
+// Per DJ-147 §4: composes with requireRuntimeAny — apply requireRuntime
+// outermost so denied runtimes fail before capture runs.
+//
+// The capture function receives the same In the inner handler would
+// have received; it's expected to validate input identically (so the
+// agent gets the same shape-error feedback in both modes) and to call
+// store.OverlayPut / OverlayDelete via a closure over the SpecStore.
+func captureOnly[In, Out any](
+	h func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, Out, error),
+	capture func(sess *mcp.ServerSession, in In) (Out, error),
+) func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, Out, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+		if !SessionDryRun(req.Session) {
+			return h(ctx, req, in)
+		}
+		out, err := capture(req.Session, in)
+		if err != nil {
+			var zero Out
+			return errorResult(err.Error()), zero, nil
+		}
+		return textResult("captured (dry-run)"), out, nil
+	}
+}
+
 // newInitializedHandler returns an InitializedHandler that, for each
 // session whose initialize completes, reads ClientInfo.name (runtime)
 // and _meta["locutus.mode"] (mode) from InitializeParams and stores
