@@ -97,10 +97,10 @@ For each gap-analyst-decided action:
 - **Revise**: call the appropriate `mcp__locutus__spec_revise_<kind>` tool with the revised body. Status stays `inferred` for assimilate-originated revisions.
 - **Propose**: call the appropriate `mcp__locutus__spec_propose_<kind>` tool with `status: inferred`.
 
-For every feature or strategy that was confirmed-or-newly-proposed, also synthesize an approach binding it to the source files that justified inferring it:
+For every feature or strategy that was confirmed, revised, or newly proposed, also synthesize an approach binding it to the source files that justified inferring it:
 
 1. Identify the source files the analyzer cited as evidence for this feature/strategy.
-2. Compute the `source_hash`: `find <those-files> -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1` via the `Bash` tool; prefix the hex with `sha256:`.
+2. Compute the `source_hash`: `find <those-files> -type f | sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1` via the `Bash` tool; prefix the hex with `sha256:`.
 3. Call `mcp__locutus__spec_propose_approach` (or `spec_revise_approach` for existing approaches) with id `app-<parent-id>` per DJ-087, the parent's id as `parent_id`, the source files as `source_files`, and the computed hash as `source_hash`. The approach body is a brief markdown brief naming what the code currently does to satisfy the parent.
 
 ## Step 7 — Convergence verdict

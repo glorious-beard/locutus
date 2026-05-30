@@ -59,8 +59,8 @@ For each gap-analyst action:
 - **Revise**: call `mcp__locutus__spec_revise_<kind>` with the revised body; status stays `inferred`.
 - **Propose**: call `mcp__locutus__spec_propose_<kind>` with `status: inferred`.
 
-For every feature or strategy confirmed-or-proposed, also synthesize the approach:
-1. Compute `source_hash` for the cited files: `find <files> -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1`, prefix with `sha256:`.
+For every feature or strategy confirmed, revised, or proposed, also synthesize the approach:
+1. Compute `source_hash` for the cited files: `find <files> -type f | sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1`, prefix with `sha256:`.
 2. Call `mcp__locutus__spec_propose_approach` (or `spec_revise_approach`) with id `app-<parent-id>`, parent_id, source_files, source_hash, body.
 
 If the gap-analyst's action plan was empty AND no approaches were synthesized this iteration, emit `converged` and exit the loop. Otherwise loop to Step 1.
