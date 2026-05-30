@@ -1210,12 +1210,12 @@ func (s *SpecStore) OverlayCaptured(sess any) []CapturedMutation {
 // call on the session's overlay. The base manifest is untouched; the
 // next overlay-aware manifest read (Task 6) will merge the override.
 // Returns an error if the session has no overlay registered.
-func (s *SpecStore) OverlaySetGoalsMdHash(sess any, tool, hash string, syncedAt time.Time) error {
+func (s *SpecStore) OverlaySetGoalsMdHash(sess any, hash string, syncedAt time.Time) error {
 	o := s.overlayFor(sess)
 	if o == nil {
 		return fmt.Errorf("OverlaySetGoalsMdHash: session has no registered overlay (call RegisterOverlay first)")
 	}
-	o.setGoalsMdHash(tool, hash, syncedAt)
+	o.setGoalsMdHash(hash, syncedAt)
 	return nil
 }
 

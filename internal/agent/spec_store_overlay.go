@@ -64,14 +64,13 @@ type sessionOverlay struct {
 	entries          map[storeKey]*StoreEntry
 	deleted          map[storeKey]struct{}
 	captured         []CapturedMutation
-	manifestOverride *manifestOverride
+	manifestOverride *ManifestOverride
 }
 
-// manifestOverride holds the would-be manifest-level mutation
-// captured under dry-run. Today the only manifest-level write tool is
-// spec_update_goals_md_hash; the field set mirrors what that tool's
-// production path passes to SpecStore.UpdateGoalsMdHash.
-type manifestOverride struct {
+// ManifestOverride carries a per-session dry-run capture of a
+// manifest-level write. Today only spec_update_goals_md_hash produces
+// this; future manifest-mutation tools would land here too.
+type ManifestOverride struct {
 	GoalsMdHash     string
 	GoalsMdSyncedAt time.Time
 }
@@ -168,20 +167,20 @@ func (o *sessionOverlay) capturedList() []CapturedMutation {
 // Last-write-wins on the override slot; each call also lands a fresh
 // CapturedMutation in the ordered list so spec_dry_run_report (Task 7)
 // can surface the sequence.
-func (o *sessionOverlay) setGoalsMdHash(tool, hash string, syncedAt time.Time) {
+func (o *sessionOverlay) setGoalsMdHash(hash string, syncedAt time.Time) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.manifestOverride = &manifestOverride{GoalsMdHash: hash, GoalsMdSyncedAt: syncedAt}
+	o.manifestOverride = &ManifestOverride{GoalsMdHash: hash, GoalsMdSyncedAt: syncedAt}
 	o.captured = append(o.captured, CapturedMutation{
-		Tool:      tool,
-		Body:      manifestOverride{GoalsMdHash: hash, GoalsMdSyncedAt: syncedAt},
+		Tool:      "spec_update_goals_md_hash",
+		Body:      ManifestOverride{GoalsMdHash: hash, GoalsMdSyncedAt: syncedAt},
 		Timestamp: time.Now().UTC(),
 	})
 }
 
 // manifestOverrideOrNil returns the would-be manifest override, or
 // nil when no spec_update_goals_md_hash call has been captured.
-func (o *sessionOverlay) manifestOverrideOrNil() *manifestOverride {
+func (o *sessionOverlay) manifestOverrideOrNil() *ManifestOverride {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	if o.manifestOverride == nil {

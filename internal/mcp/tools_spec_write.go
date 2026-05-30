@@ -1114,7 +1114,7 @@ func captureUpdateGoalsMdHash(store *agent.SpecStore) func(sess *mcp.ServerSessi
 			return nil, fmt.Errorf("spec_update_goals_md_hash: hash is required")
 		}
 		syncedAt := time.Now().UTC()
-		if err := store.OverlaySetGoalsMdHash(sess, "spec_update_goals_md_hash", hash, syncedAt); err != nil {
+		if err := store.OverlaySetGoalsMdHash(sess, hash, syncedAt); err != nil {
 			return nil, err
 		}
 		return map[string]any{"hash": hash, "synced_at": syncedAt}, nil
