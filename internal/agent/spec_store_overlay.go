@@ -187,18 +187,6 @@ func (o *sessionOverlay) setGoalsMdHash(hash string, syncedAt time.Time) {
 	})
 }
 
-// manifestOverrideOrNil returns the would-be manifest override, or
-// nil when no spec_update_goals_md_hash call has been captured.
-func (o *sessionOverlay) manifestOverrideOrNil() *ManifestOverride {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	if o.manifestOverride == nil {
-		return nil
-	}
-	c := *o.manifestOverride
-	return &c
-}
-
 // OverlayView is the read merger consulted by spec_list_manifest /
 // spec_get / spec_search. It consults the session's overlay first
 // (deleted-key masks, overlay-held entries win), then falls back to the
@@ -254,20 +242,6 @@ func (v *OverlayView) Manifest() SpecManifest {
 	v.overlay.mu.RLock()
 	defer v.overlay.mu.RUnlock()
 	return mergeOverlayIntoManifest(base, v.overlay)
-}
-
-// GoalsMdHash returns the captured (hash, syncedAt) override if the
-// overlay has one, alongside a bool indicating presence. For non-dry-
-// run sessions this returns the empty triple.
-func (v *OverlayView) GoalsMdHash() (string, time.Time, bool) {
-	if v.overlay == nil {
-		return "", time.Time{}, false
-	}
-	mo := v.overlay.manifestOverrideOrNil()
-	if mo == nil {
-		return "", time.Time{}, false
-	}
-	return mo.GoalsMdHash, mo.GoalsMdSyncedAt, true
 }
 
 // Captured returns the session's ordered capture list, or nil for
