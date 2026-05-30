@@ -44,7 +44,7 @@ activities:
       - claude-code
       - codex
       - gemini
-    max_iterations: 20
+    max_iterations: 3
   justification:
     runtimes:
       - claude-code
