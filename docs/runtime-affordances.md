@@ -151,6 +151,14 @@ Mechanism:
 
 Operator note: there is **no hot-reload**. The runtime allowlist for a tool lives in code at the registration site; changes require a binary rebuild + daemon restart (`locutus mcp-stop` followed by the next connect re-forking the daemon).
 
+## Dry-Run (DJ-147)
+
+The four mutating verbs (`import`, `refine`, `adopt`, `assimilate`) accept `--dry-run` — the workflow runs end-to-end against a per-session overlay on the SpecStore, captures every would-be `spec_propose_*` / `spec_revise_*` / `spec_delete_*` / `spec_mark_approach_drifted` / `spec_update_goals_md_hash` call, and discards the overlay at session close. Nothing reaches `.borg/spec/`, the Bluge index, history, or `spec://manifest` notifications.
+
+Activation mirrors DJ-143's mode plumbing: CLI flag → `LOCUTUS_DRY_RUN=1` env (plus `LOCUTUS_DRY_RUN_FORMAT=markdown|json`) on the spawned coding-agent → bridge reads + forwards as `_meta["locutus.dry_run"]` + `_meta["locutus.dry_run_format"]` on its `initialize` → daemon's session-context map stores them and registers an overlay on the SpecStore.
+
+The agent retrieves the capture via the read-only `spec_dry_run_report` MCP tool (no input, returns `{format, captured: [...]}`) and renders it in its closing message — verbatim fenced JSON for `--format json`, prose summary for the default `markdown`. In headless dispatch the CLI additionally reads the session's `tools.jsonl` post-dispatch and emits an authoritative structured render — the agent's narration is convenience; the CLI render is contract.
+
 ## Cross-references
 
 - [DJ-135](DECISION_JOURNAL.md#dj-135) — multi-runtime pivot; introduces the ACP / MCP architecture.
