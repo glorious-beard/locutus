@@ -365,6 +365,31 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 	}, captureProposeStrategy(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
+		Name:        "spec_propose_approach",
+		Description: descSpecProposeApproach,
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in proposeApproachInput) (*mcp.CallToolResult, any, error) {
+		// Validate parent_id exists in the manifest before committing —
+		// the builder validates the prefix shape; the handler validates
+		// presence.
+		parent := strings.TrimSpace(in.ParentID)
+		if parent != "" {
+			res := store.GetSpec([]string{parent})
+			if entry, ok := res.Results[parent]; !ok || entry.Status == agent.SpecGetMissing {
+				return errorResult(fmt.Sprintf("spec_propose_approach: parent_id %q does not exist in the manifest; create the parent before binding an approach to it", parent)), nil, nil
+			}
+		}
+		body, err := buildApproachBody(in, time.Time{})
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		if err := commitOne(store, agent.KindApproach, in.ID, body); err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		publishManifestUpdate(ctx, server)
+		return textResult(fmt.Sprintf("Proposed approach %s under %s (binds %d files; source_hash %s).", body.ID, body.ParentID, len(body.SourceFiles), body.SourceHash)), nil, nil
+	}, captureProposeApproach(store)))
+
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "spec_revise_decision",
 		Description: descSpecReviseDecision,
 	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in reviseDecisionInput) (*mcp.CallToolResult, any, error) {

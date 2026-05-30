@@ -114,6 +114,16 @@ func TestDryRunCapturesProposeAndRevise(t *testing.T) {
 				"source_clause": "verbatim excerpt",
 			},
 			agent.KindAntiGoal, "agoal-foo"},
+		{"propose_approach", "spec_propose_approach",
+			map[string]any{
+				"id":           "app-feat-foo",
+				"title":        "Foo approach",
+				"parent_id":    "feat-foo",
+				"body":         "## Implementation\n\nThe foo flow.",
+				"source_files": []string{"internal/foo/foo.go"},
+				"source_hash":  "sha256:deadbeef00",
+			},
+			agent.KindApproach, "app-feat-foo"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
