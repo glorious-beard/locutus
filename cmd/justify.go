@@ -34,7 +34,8 @@ type JustifyCmd struct {
 }
 
 func (c *JustifyCmd) Run(ctx context.Context, cli *CLI) error {
-	return runActivityVerb(ctx, cli, "justification", c.contextNote())
+	// Justify is read-only — no dry-run surface (DJ-147 Task 9).
+	return runActivityVerb(ctx, cli, "justification", c.contextNote(), false, "")
 }
 
 // contextNote builds the Run-context block the activity verb

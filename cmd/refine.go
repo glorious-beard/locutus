@@ -27,6 +27,8 @@ import (
 type RefineCmd struct {
 	Target string `arg:"" optional:"" default:"goals" help:"Spec node id to focus on. Defaults to 'goals' (the root node — refines the whole graph against GOALS.md). Pass a specific id (e.g. 'dec-oltp-store') to scope the run to that subtree. Approach (app-) and Bug (bug-) ids are rejected — those layers have their own surfaces."`
 	With   string `help:"Strong-bias cascade: apply the given natural-language bias to <target> and cascade implications through the spec graph in both directions. Requires <target> to be a Decision, Feature, or Strategy id (Goal / Approach / Bug rejected). Git is the rollback layer: commit before risky --with runs."`
+	DryRun bool   `name:"dry-run" help:"Capture proposed mutations without writing them; print what would land."`
+	Format string `help:"Report format when --dry-run is set." enum:"markdown,json" default:"markdown"`
 }
 
 func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
@@ -38,7 +40,7 @@ func (c *RefineCmd) Run(ctx context.Context, cli *CLI) error {
 	if err != nil {
 		return err
 	}
-	return runActivityVerb(ctx, cli, activityName, c.contextNote())
+	return runActivityVerb(ctx, cli, activityName, c.contextNote(), c.DryRun, c.Format)
 }
 
 // resolveActivity validates the target / --with combination and

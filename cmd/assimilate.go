@@ -14,8 +14,11 @@ import (
 // Flags from the legacy verb (--dry-run) dropped — re-runnable
 // against an in-flight spec graph is the operational model, so a
 // dedicated dry-run isn't meaningful.
-type AssimilateCmd struct{}
+type AssimilateCmd struct {
+	DryRun bool   `name:"dry-run" help:"Capture proposed mutations without writing them; print what would land."`
+	Format string `help:"Report format when --dry-run is set." enum:"markdown,json" default:"markdown"`
+}
 
 func (c *AssimilateCmd) Run(ctx context.Context, cli *CLI) error {
-	return runActivityVerb(ctx, cli, "code_assimilation", "")
+	return runActivityVerb(ctx, cli, "code_assimilation", "", c.DryRun, c.Format)
 }

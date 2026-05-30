@@ -17,7 +17,9 @@ import (
 // the supervisor's --scope as a run-context note (added in a
 // follow-up if needed).
 type AdoptCmd struct {
-	Scope string `help:"Optional scope hint passed to the playbook agent as run context. Free-form (e.g. an Approach id or filesystem path)."`
+	Scope  string `help:"Optional scope hint passed to the playbook agent as run context. Free-form (e.g. an Approach id or filesystem path)."`
+	DryRun bool   `name:"dry-run" help:"Capture proposed mutations without writing them; print what would land."`
+	Format string `help:"Report format when --dry-run is set." enum:"markdown,json" default:"markdown"`
 }
 
 func (c *AdoptCmd) Run(ctx context.Context, cli *CLI) error {
@@ -25,5 +27,5 @@ func (c *AdoptCmd) Run(ctx context.Context, cli *CLI) error {
 	if c.Scope != "" {
 		contextNote = fmt.Sprintf("Focus this adoption run on scope %q.", c.Scope)
 	}
-	return runActivityVerb(ctx, cli, "code_adoption", contextNote)
+	return runActivityVerb(ctx, cli, "code_adoption", contextNote, c.DryRun, c.Format)
 }

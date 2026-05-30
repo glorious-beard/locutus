@@ -20,6 +20,8 @@ import (
 // follow-up if needed.
 type ImportCmd struct {
 	Source string `arg:"" optional:"" help:"Path to a file containing the feature/bug content. Omitted reads from stdin."`
+	DryRun bool   `name:"dry-run" help:"Capture proposed mutations without writing them; print what would land."`
+	Format string `help:"Report format when --dry-run is set." enum:"markdown,json" default:"markdown"`
 }
 
 func (c *ImportCmd) Run(ctx context.Context, cli *CLI) error {
@@ -31,7 +33,7 @@ func (c *ImportCmd) Run(ctx context.Context, cli *CLI) error {
 		return fmt.Errorf("import: content is empty (read from %s)", c.sourceDescription())
 	}
 	contextNote := fmt.Sprintf("The supervisor is admitting the following content for triage:\n\n```\n%s\n```", content)
-	return runActivityVerb(ctx, cli, "feature_ingestion", contextNote)
+	return runActivityVerb(ctx, cli, "feature_ingestion", contextNote, c.DryRun, c.Format)
 }
 
 func (c *ImportCmd) readContent() (string, error) {
