@@ -7,12 +7,15 @@ import (
 
 // AdoptCmd dispatches the code_adoption activity (DJ-149).
 // The activity reads the spec graph and the state store, identifies
-// which approaches need work (unbound / spec-drifted / code-drifted /
-// orphan-parent), dispatches the coding-agent runtime to implement
-// in stacked worktrees (adopt/<NNN>-<approach-id> branches with
-// phase-N+1-branches-off-N), and records reconciliation outcomes —
-// including test-asserted live/failed status per DJ-068's honest-state
-// principle — in .borg/state/.
+// which approaches need work (missing for feat/strat in scope /
+// unbound / spec-drifted / code-drifted / orphan-parent), synthesizes
+// approach bodies for parents without one (per DJ-087 — refine builds
+// the deliberation layer, adopt owns approach synthesis), dispatches
+// the coding-agent runtime to implement in stacked worktrees
+// (adopt/<NNN>-<approach-id> branches with phase-N+1-branches-off-N),
+// and records reconciliation outcomes — including test-asserted
+// live/failed status per DJ-068's honest-state principle — in
+// .borg/state/.
 //
 // The runtime decides parallelism, branch ordering, and worktree
 // management (per DJ-144's trajectory of trusting the runtime).

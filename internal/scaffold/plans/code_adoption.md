@@ -29,6 +29,7 @@ After laying out your plan, call `mcp__locutus__spec_list_manifest` and `mcp__lo
   - `Bash` — compute sha256 hashes, stat files, inspect directory structure.
   - `Task` — dispatch subagents.
 - **Subagents** (use the `Task` tool to dispatch one, naming by its hyphenated id):
+  - `synthesizer` — synthesizes an approach body from a parent feat/strat + applicable decisions; produces the implementation brief that the runtime then implements. Dispatch when a Feature or Strategy in scope has no Approach attached (per [DJ-087](../../docs/decisions/dj-087-approaches-are-synthesized-adopt.md)).
   - `drift-classifier` — reads a file diff; returns `trivial` (formatting/imports/comments) or `semantic` (behaviour-changing). Dispatch once per file with a hash mismatch; used in Step 2 code-side drift classification.
   - `approach-regenerator` — rewrites an approach body when its parent spec node has changed. Returns the revised approach body for the orchestrator to commit via `mcp__locutus__spec_revise_approach`.
 
@@ -76,8 +77,9 @@ Compute the worklist by walking every approach id in the manifest. For each:
 
 **Worklist categorization:**
 
-5. Build the worklist with one entry per approach that needs work:
-   - **`synthesize_and_implement`** — approach has no state record (unbound; code never written). The runtime synthesizes and implements from scratch.
+5. Build the worklist with one entry per approach OR orphan parent that needs work. Walk `spec_list_manifest`'s `Features` and `Strategies` arrays as well as `Approaches` — a feat/strat whose `approaches[]` is empty (or whose cited `app-<parent-id>` does not exist in the manifest) is also a worklist entry, not just existing approaches. Categories in priority order:
+   - **`synthesize_approach`** — a Feature or Strategy in scope has no Approach attached (its `approaches[]` is empty or the cited `app-<parent-id>` doesn't exist in the manifest). Per [DJ-087](../../docs/decisions/dj-087-approaches-are-synthesized-adopt.md), adopt owns approach synthesis — refine produced the deliberation-layer brief, adopt translates it to an implementable approach body. Dispatch the `synthesizer` subagent with the parent's body + applicable decisions; call `spec_propose_approach` with the returned body and id `app-<parent-id>` (deterministic); the new approach then enters the `synthesize_and_implement` chain in this same iteration. Idempotency: on re-run, the approach already exists so the parent's `approaches[]` is non-empty and this category is skipped — the approach falls through naturally to `synthesize_and_implement`.
+   - **`synthesize_and_implement`** — approach exists but has no state record (unbound; code never written). The runtime synthesizes and implements from scratch.
    - **`implement`** — state record exists with status `planned` or `pre_flight`. The runtime implements what was already planned.
    - **`regenerate`** — spec-drifted approach. Dispatch `approach-regenerator` (Step 3) to revise the approach body before writing the plan file.
    - Skip approaches with status `live` whose SpecHashes and Artifacts both show no drift.
@@ -140,7 +142,13 @@ After the code is implemented and tests pass, call mcp__locutus__state_record_re
 
 ## Step 4 — Dispatch runtime for implementation
 
-The runtime reads the plan folder (`.locutus/sessions/<sid>/plans/`) and executes each plan file. The runtime decides parallelism, branch ordering, and worktree management:
+**`synthesize_approach` entries run first (before plan-file dispatch).** For each worklist entry with category `synthesize_approach`:
+
+1. Dispatch the `synthesizer` subagent via `Task` with the parent's full body + the bodies of all applicable decisions.
+2. Call `mcp__locutus__spec_propose_approach` with the returned body, id `app-<parent-id>`, and `parent_id: <parent-id>`.
+3. The now-existing approach immediately enters the `synthesize_and_implement` chain for this same iteration — write its plan file (Step 3 template) and include it in the runtime's plan folder.
+
+The runtime then reads the plan folder (`.locutus/sessions/<sid>/plans/`) and executes each plan file. The runtime decides parallelism, branch ordering, and worktree management:
 
 - Each phase runs on its own `adopt/<NNN>-<approach-id>` branch; phase N+1 branches off phase N's branch (stacked). Parallel siblings at the same ordinal share the suffix with a letter (`003a`, `003b`).
 - The runtime runs the project's test suite after each phase implementation. The suite's exit status is the `test_outcome` passed to `state_record_reconciliation`.

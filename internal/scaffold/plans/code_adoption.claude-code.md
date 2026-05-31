@@ -47,7 +47,8 @@ For each approach id in scope, dispatch in parallel:
 
 **Code-side drift:** For each `path → stored_hash` in the state record's `Artifacts`, stat the file. A missing file is `out_of_spec`. A hash mismatch triggers a `drift-classifier` subagent dispatch (via `parallel()`, one dispatch per mismatched file). Trivial results → call `mcp__locutus__state_refresh_artifacts`. Semantic results → call `mcp__locutus__state_mark_status` with `out_of_spec`.
 
-Worklist categories — one entry per approach that needs work:
+Worklist categories — walk `spec_list_manifest`'s `Features` and `Strategies` arrays as well as `Approaches`; a feat/strat whose `approaches[]` is empty is also a worklist entry. Categories in priority order:
+- **`synthesize_approach`** — a Feature or Strategy in scope has no Approach attached (its `approaches[]` is empty or the cited `app-<parent-id>` doesn't exist in the manifest). Per [DJ-087](../../docs/decisions/dj-087-approaches-are-synthesized-adopt.md), adopt owns approach synthesis. Dispatch `synthesizer` with the parent body + applicable decisions; call `spec_propose_approach` with the returned body and id `app-<parent-id>`; the new approach flows into the `synthesize_and_implement` chain in this same iteration. Idempotent: on re-run the parent's `approaches[]` is non-empty, so this category is naturally skipped.
 - **`synthesize_and_implement`** — no state record (approach never implemented).
 - **`implement`** — state record exists with status `planned` or `pre_flight`.
 - **`regenerate`** — spec-drifted; the approach body needs revision before implementation.
@@ -67,7 +68,7 @@ Each plan file carries YAML frontmatter (`approach_id`, `parent_id`, `parent_kin
 
 ### Step 4 — Implementation fan-out
 
-This is the workflow's parallelism story.
+**`synthesize_approach` entries run first, in `parallel()`.** For each worklist entry with category `synthesize_approach`, dispatch the `synthesizer` subagent (one per orphan parent, all in parallel): `synthesizer` receives the parent body + applicable decisions and returns the approach body. For each completed synthesis, call `mcp__locutus__spec_propose_approach` with the returned body and id `app-<parent-id>`. The now-existing approaches immediately enter the `synthesize_and_implement` chain for this iteration — write their plan files (Step 3 template) and include them in the fan-out below.
 
 **Partition approaches.** Approaches with no shared parent and no shared artifact paths are independent. Group them into independent chains. Within each chain, phases are ordered by `<NNN>` ordinal.
 
