@@ -156,6 +156,95 @@ func registerStateTools(server *mcp.Server, store *agent.SpecStore, stateStore *
 		}
 		return textResult(fmt.Sprintf("Deleted state record for %s (reason: %s).", in.ApproachID, in.Reason)), nil, nil
 	}, captureStateDeleteRecord(store)))
+
+	// state_list_records (read-only; overlay-aware via OverlayView.ListStateRecords)
+	type stateListEntry struct {
+		ApproachID     string `json:"approach_id"`
+		Status         string `json:"status"`
+		LastReconciled string `json:"last_reconciled,omitempty"`
+		BranchName     string `json:"branch_name,omitempty"`
+	}
+	type stateListRecordsOutput struct {
+		Records []stateListEntry `json:"records"`
+	}
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "state_list_records",
+		Description: descStateListRecords,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, stateListRecordsOutput, error) {
+		view := store.OverlayView(req.Session)
+		ids := view.ListStateRecords()
+		out := stateListRecordsOutput{Records: make([]stateListEntry, 0, len(ids))}
+		for _, id := range ids {
+			rs, ok := view.GetState(id)
+			if !ok {
+				continue
+			}
+			entry := stateListEntry{
+				ApproachID: id,
+				Status:     string(rs.Status),
+				BranchName: rs.BranchName,
+			}
+			if !rs.LastReconciled.IsZero() {
+				entry.LastReconciled = rs.LastReconciled.Format(time.RFC3339)
+			}
+			out.Records = append(out.Records, entry)
+		}
+		return nil, out, nil
+	})
+
+	// state_get_record (batched body fetch; overlay-aware)
+	// stateRecordBody is a schema-safe projection of ReconciliationState.
+	// ReconciliationState embeds spec.Assertion via AssertionResult, and
+	// spec.Assertion's jsonschema tags confuse the go-sdk schema generator
+	// (description values containing WORD= sequences). We project the
+	// fields needed by callers without pulling in the problematic embedded
+	// type. Per DJ-149.
+	type stateRecordBody struct {
+		ApproachID     string            `json:"approach_id"`
+		Status         string            `json:"status"`
+		SpecHashes     map[string]string `json:"spec_hashes,omitempty"`
+		Artifacts      map[string]string `json:"artifacts,omitempty"`
+		Message        string            `json:"message,omitempty"`
+		LastReconciled string            `json:"last_reconciled,omitempty"`
+		WorkstreamID   string            `json:"workstream_id,omitempty"`
+		BranchName     string            `json:"branch_name,omitempty"`
+	}
+	type stateGetRecordOutput struct {
+		Results      map[string]stateRecordBody `json:"results"`
+		AvailableIDs []string                   `json:"available_ids"`
+		Missing      []string                   `json:"missing"`
+	}
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "state_get_record",
+		Description: descStateGetRecord,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in stateGetRecordInput) (*mcp.CallToolResult, stateGetRecordOutput, error) {
+		view := store.OverlayView(req.Session)
+		out := stateGetRecordOutput{
+			Results: make(map[string]stateRecordBody, len(in.ApproachIDs)),
+		}
+		for _, id := range in.ApproachIDs {
+			rs, ok := view.GetState(id)
+			if ok {
+				body := stateRecordBody{
+					ApproachID:   rs.ApproachID,
+					Status:       string(rs.Status),
+					SpecHashes:   rs.SpecHashes,
+					Artifacts:    rs.Artifacts,
+					Message:      rs.Message,
+					WorkstreamID: rs.WorkstreamID,
+					BranchName:   rs.BranchName,
+				}
+				if !rs.LastReconciled.IsZero() {
+					body.LastReconciled = rs.LastReconciled.Format(time.RFC3339)
+				}
+				out.Results[id] = body
+				out.AvailableIDs = append(out.AvailableIDs, id)
+			} else {
+				out.Missing = append(out.Missing, id)
+			}
+		}
+		return nil, out, nil
+	})
 }
 
 // captureStateRecordReconciliation lands a state_record_reconciliation

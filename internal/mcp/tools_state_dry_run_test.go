@@ -88,6 +88,56 @@ func TestDryRunCapturesStateDeleteRecord(t *testing.T) {
 	assert.Equal(t, "state_delete_record", caps[0].Tool)
 }
 
+func TestDryRunStateReadAfterWrite(t *testing.T) {
+	clearSessionRuntimes()
+	fsys := specio.NewMemFS()
+	store, err := agent.NewSpecStore(fsys)
+	require.NoError(t, err)
+	server := NewSpecServer(store, fsys, nil, nil, nil)
+	serverT, clientT := mcp.NewInMemoryTransports()
+	ss, _ := server.Connect(context.Background(), serverT, nil)
+	t.Cleanup(func() { _ = ss.Close() })
+	client := mcp.NewClient(&mcp.Implementation{Name: "claude-code", Version: "t"}, nil)
+	cs, _ := client.Connect(context.Background(), clientT, nil)
+	t.Cleanup(func() { _ = cs.Close() })
+	for d := time.Now().Add(time.Second); time.Now().Before(d); {
+		if rt, _ := sessionRuntimeFor(ss); rt == "claude-code" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	storeSessionContext(ss, "claude-code", "headless", true, "markdown")
+	store.RegisterOverlay(ss)
+	t.Cleanup(func() { store.UnregisterOverlay(ss) })
+
+	// Write via the mark-status tool (cheaper than full reconciliation).
+	_, err = cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "state_mark_status",
+		Arguments: map[string]any{
+			"approach_id": "app-feat-foo",
+			"status":      "planned",
+		},
+	})
+	require.NoError(t, err)
+
+	// Read back via state_get_record — should see the overlay write.
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "state_get_record",
+		Arguments: map[string]any{"approach_ids": []string{"app-feat-foo"}},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	body := callToolResultJSON(t, res)
+	assert.Contains(t, body, "app-feat-foo")
+	assert.Contains(t, body, "planned")
+
+	// List should include the overlay-only id.
+	res, err = cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "state_list_records"})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	assert.Contains(t, callToolResultJSON(t, res), "app-feat-foo")
+}
+
 func TestDryRunCapturesStateWrites(t *testing.T) {
 	cases := []struct {
 		name string
