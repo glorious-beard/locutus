@@ -42,7 +42,7 @@ func TestSpecUpdateGoalsMdHashWritesManifest(t *testing.T) {
 	store, err := agent.NewSpecStore(fsys)
 	require.NoError(t, err)
 
-	server := NewSpecServer(store, nil, nil, nil)
+	server := NewSpecServer(store, nil, nil, nil, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	_, err = server.Connect(context.Background(), serverTransport, nil)
 	require.NoError(t, err)
@@ -92,7 +92,7 @@ func TestSpecUpdateGoalsMdHashRejectsEmptyHash(t *testing.T) {
 	store, err := agent.NewSpecStore(fsys)
 	require.NoError(t, err)
 
-	server := NewSpecServer(store, nil, nil, nil)
+	server := NewSpecServer(store, nil, nil, nil, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	_, err = server.Connect(context.Background(), serverTransport, nil)
 	require.NoError(t, err)

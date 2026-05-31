@@ -30,7 +30,7 @@ func newServerWithPrompts(t *testing.T, seedPlans map[string]string) *mcp.Client
 	reg, err := activity.NewRegistry(fsys)
 	require.NoError(t, err)
 
-	server := NewSpecServer(store, fsys, reg, nil)
+	server := NewSpecServer(store, fsys, reg, nil, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	_, err = server.Connect(ctx, serverTransport, nil)
 	require.NoError(t, err)

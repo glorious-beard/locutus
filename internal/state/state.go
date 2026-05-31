@@ -37,6 +37,10 @@ type ReconciliationState struct {
 	Message          string            `yaml:"message,omitempty"`               // reconciler-authored reason for current status
 	LastReconciled   time.Time         `yaml:"last_reconciled,omitempty"`
 	WorkstreamID     string            `yaml:"workstream_id,omitempty"`         // N Approaches share one WorkstreamID
+	// BranchName records the adopt/<NNN>-<approach-id> git branch this
+	// reconciliation was produced on — operator-facing audit trail.
+	// Set by state_record_reconciliation. Per DJ-149.
+	BranchName       string            `yaml:"branch_name,omitempty"`
 	AssertionResults []AssertionResult `yaml:"assertion_results,omitempty"`     // results from last reconciliation run
 }
 

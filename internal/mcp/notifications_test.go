@@ -25,7 +25,7 @@ func newTestServerWithClientOptions(t *testing.T, opts *mcp.ClientOptions, seed 
 		seed(store)
 	}
 
-	server := NewSpecServer(store, nil, nil, nil)
+	server := NewSpecServer(store, nil, nil, nil, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 
 	_, err = server.Connect(ctx, serverTransport, nil)

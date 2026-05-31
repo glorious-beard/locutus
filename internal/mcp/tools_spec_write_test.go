@@ -88,7 +88,7 @@ func TestProposeApproach_PersistsToDisk(t *testing.T) {
 
 	reg, err := activity.NewRegistry(fsys)
 	require.NoError(t, err)
-	server := NewSpecServer(store, fsys, reg, nil)
+	server := NewSpecServer(store, fsys, reg, nil, nil)
 	serverT, clientT := mcp.NewInMemoryTransports()
 	ss, err := server.Connect(context.Background(), serverT, nil)
 	require.NoError(t, err)
@@ -128,7 +128,7 @@ func TestProposeApproach_RejectsMissingParent(t *testing.T) {
 
 	reg, err := activity.NewRegistry(fsys)
 	require.NoError(t, err)
-	server := NewSpecServer(store, fsys, reg, nil)
+	server := NewSpecServer(store, fsys, reg, nil, nil)
 	serverT, clientT := mcp.NewInMemoryTransports()
 	ss, err := server.Connect(context.Background(), serverT, nil)
 	require.NoError(t, err)

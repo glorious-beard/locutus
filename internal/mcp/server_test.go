@@ -36,7 +36,7 @@ func newTestServer(t *testing.T, seed func(*agent.SpecStore)) (*mcp.ClientSessio
 		seed(store)
 	}
 
-	server := NewSpecServer(store, nil, nil, nil)
+	server := NewSpecServer(store, nil, nil, nil, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 
 	_, err = server.Connect(ctx, serverTransport, nil)
@@ -170,7 +170,7 @@ func TestSpecListManifestToolReturnsGoalsMdHash(t *testing.T) {
 	store, err := agent.NewSpecStore(fsys)
 	assert.NoError(t, err)
 
-	server := NewSpecServer(store, nil, nil, nil)
+	server := NewSpecServer(store, nil, nil, nil, nil)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	_, err = server.Connect(ctx, serverTransport, nil)
 	assert.NoError(t, err)

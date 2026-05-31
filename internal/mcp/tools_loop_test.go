@@ -71,7 +71,7 @@ func newLoopServer(t *testing.T, agentsYAML string) (*mcp.Server, *agent.SpecSto
 	assert.NoError(t, err)
 	reg, err := activity.NewRegistry(fsys)
 	assert.NoError(t, err)
-	return NewSpecServer(store, fsys, reg, nil), store
+	return NewSpecServer(store, fsys, reg, nil, nil), store
 }
 
 func decodeLoopBegin(t *testing.T, res *mcp.CallToolResult) loopBeginOutput {

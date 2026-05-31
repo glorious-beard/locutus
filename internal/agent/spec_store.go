@@ -1291,6 +1291,23 @@ func (s *SpecStore) OverlayDeleteState(sess any, tool, approachID string) error 
 	return nil
 }
 
+// BodyBytes returns a deterministic JSON encoding of a spec node's
+// body for hashing. Returns (nil, false) when the id is missing.
+// Used by state.ComputeSpecHashes via the state.BodyGetter interface.
+// Per DJ-149.
+func (s *SpecStore) BodyBytes(id string) ([]byte, bool) {
+	res := s.GetSpec([]string{id})
+	entry, ok := res.Results[id]
+	if !ok || entry.Status == SpecGetMissing {
+		return nil, false
+	}
+	b, err := json.Marshal(entry.Body)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
+}
+
 // lookupEntry adapts the per-kind base-store maps into the flat
 // *StoreEntry shape used by OverlayView. Returns (entry, true) if the
 // id exists in the base store under the named kind, (nil, false)

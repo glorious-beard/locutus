@@ -35,7 +35,7 @@ func dryRunHarness(t *testing.T) (*mcp.ClientSession, *mcp.ServerSession, *agent
 	reg, err := activity.NewRegistry(fsys)
 	require.NoError(t, err)
 
-	server := NewSpecServer(store, fsys, reg, nil)
+	server := NewSpecServer(store, fsys, reg, nil, nil)
 	serverT, clientT := mcp.NewInMemoryTransports()
 	ss, err := server.Connect(context.Background(), serverT, nil)
 	require.NoError(t, err)
@@ -448,7 +448,7 @@ func TestDryRunPassthroughForNonDryRunSession(t *testing.T) {
 	reg, err := activity.NewRegistry(fsys)
 	require.NoError(t, err)
 
-	server := NewSpecServer(store, fsys, reg, nil)
+	server := NewSpecServer(store, fsys, reg, nil, nil)
 	serverT, clientT := mcp.NewInMemoryTransports()
 	ss, err := server.Connect(context.Background(), serverT, nil)
 	require.NoError(t, err)

@@ -77,7 +77,7 @@ func startServerWithClient(t *testing.T, runtime, mode string) (*mcp.ServerSessi
 	t.Helper()
 	store, err := agent.NewSpecStore(specio.NewMemFS())
 	require.NoError(t, err)
-	server := NewSpecServer(store, nil, nil, nil)
+	server := NewSpecServer(store, nil, nil, nil, nil)
 	serverT, clientT := mcp.NewInMemoryTransports()
 	ss, err := server.Connect(context.Background(), serverT, nil)
 	require.NoError(t, err)

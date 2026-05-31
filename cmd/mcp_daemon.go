@@ -11,6 +11,7 @@ import (
 	"github.com/glorious-beard/locutus/internal/history"
 	"github.com/glorious-beard/locutus/internal/mcp"
 	"github.com/glorious-beard/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/state"
 )
 
 // McpDaemonCmd implements `locutus mcp-daemon --project <root>`. It's
@@ -75,7 +76,8 @@ func (c *McpDaemonCmd) Run(ctx context.Context, cli *CLI) error {
 	// goal_deleted / antigoal_deleted events here).
 	hist := history.NewHistorian(fsys, ".borg/history")
 
-	server := mcp.NewSpecServer(store, fsys, reg, hist)
+	stateStore := state.NewFileStateStore(fsys, state.DefaultStateDir)
+	server := mcp.NewSpecServer(store, fsys, reg, stateStore, hist)
 	if err := mcp.ServeOnSocket(ctx, listener, server); err != nil && err != context.Canceled {
 		return fmt.Errorf("mcp-daemon: serve: %w", err)
 	}

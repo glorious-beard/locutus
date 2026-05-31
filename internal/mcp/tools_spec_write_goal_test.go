@@ -246,7 +246,7 @@ func newTestServerWithHistory(t *testing.T, seed func(*agent.SpecStore)) (*mcp.C
 	}
 	hist := history.NewHistorian(fsys, ".borg/history")
 
-	server := NewSpecServer(store, nil, nil, hist)
+	server := NewSpecServer(store, nil, nil, nil, hist)
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 
 	_, err = server.Connect(ctx, serverTransport, nil)

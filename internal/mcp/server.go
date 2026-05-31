@@ -19,6 +19,7 @@ import (
 	"github.com/glorious-beard/locutus/internal/agent"
 	"github.com/glorious-beard/locutus/internal/history"
 	"github.com/glorious-beard/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/state"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -55,7 +56,7 @@ const implementationVersion = "dj-135-phase-1"
 // the write tools call (*Server).ResourceUpdated which dispatches to
 // every tracked subscriber regardless of which session originated the
 // write. Multi-session coordination falls out naturally.
-func NewSpecServer(store *agent.SpecStore, fsys specio.FS, reg *activity.Registry, hist *history.Historian) *mcp.Server {
+func NewSpecServer(store *agent.SpecStore, fsys specio.FS, reg *activity.Registry, stateStore *state.FileStateStore, hist *history.Historian) *mcp.Server {
 	if store == nil {
 		panic("mcp.NewSpecServer: store is required")
 	}
@@ -82,5 +83,28 @@ func NewSpecServer(store *agent.SpecStore, fsys specio.FS, reg *activity.Registr
 		// plan file — the prompt simply isn't registered.
 		_ = registerActivityPrompts(server, fsys, reg)
 	}
+	if stateStore != nil {
+		store.SetStateAccessors(
+			func(approachID string) (*state.ReconciliationState, bool) {
+				rs, err := stateStore.Load(approachID)
+				if err != nil {
+					return nil, false
+				}
+				return &rs, true
+			},
+			func() []string {
+				recs, err := stateStore.Walk()
+				if err != nil {
+					return nil
+				}
+				out := make([]string, 0, len(recs))
+				for _, rs := range recs {
+					out = append(out, rs.ApproachID)
+				}
+				return out
+			},
+		)
+	}
+	registerStateTools(server, store, stateStore)
 	return server
 }
