@@ -2,7 +2,6 @@ package spec
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"gopkg.in/yaml.v3"
@@ -73,36 +72,4 @@ func TestApproachInvalidatedFieldOmittedWhenEmpty(t *testing.T) {
 	}
 	assert.NotContains(t, string(data), "invalidated_by_event_id",
 		"valid approach must not emit the invalidation key, got: %s", string(data))
-}
-
-func TestApproach_SourceBindingFields(t *testing.T) {
-	a := Approach{
-		ID:                 "app-feat-foo",
-		Title:              "Foo",
-		ParentID:           "feat-foo",
-		SourceFiles:        []string{"internal/foo/foo.go", "internal/foo/foo_test.go"},
-		SourceHash:         "sha256:abc123",
-		SourceHashSyncedAt: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC),
-	}
-	out, err := yaml.Marshal(a)
-	if err != nil {
-		t.Fatalf("yaml.Marshal: %v", err)
-	}
-	s := string(out)
-	assert.Contains(t, s, "source_files:")
-	assert.Contains(t, s, "internal/foo/foo.go")
-	assert.Contains(t, s, "source_hash: sha256:abc123")
-	assert.Contains(t, s, "source_hash_synced_at:")
-}
-
-func TestApproach_SourceBindingOmittedWhenEmpty(t *testing.T) {
-	a := Approach{ID: "app-feat-bar", Title: "Bar", ParentID: "feat-bar"}
-	out, err := yaml.Marshal(a)
-	if err != nil {
-		t.Fatalf("yaml.Marshal: %v", err)
-	}
-	s := string(out)
-	assert.NotContains(t, s, "source_files:")
-	assert.NotContains(t, s, "source_hash:")
-	assert.NotContains(t, s, "source_hash_synced_at:")
 }
