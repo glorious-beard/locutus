@@ -110,7 +110,7 @@ func classifyOne(
 		return c
 	}
 	c.StateEntry = &entry
-	c.StoredHash = entry.SpecHash
+	c.StoredHash = entry.SpecHashes[a.ID]
 	c.StoredFiles = entry.Artifacts
 
 	// Forward drift (spec changed) takes priority.

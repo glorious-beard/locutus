@@ -64,7 +64,7 @@ func TestClassifyLiveWhenHashesMatch(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.Save(state.ReconciliationState{
 		ApproachID:     "app-oauth",
-		SpecHash:       results[0].CurrentHash,
+		SpecHashes:     map[string]string{"app-oauth": results[0].CurrentHash},
 		Artifacts:      results[0].CurrentFiles,
 		Status:         state.StatusLive,
 		LastReconciled: time.Now(),
@@ -88,7 +88,7 @@ func TestClassifyDriftedWhenApproachBodyRewritten(t *testing.T) {
 	// (e.g. after a cascade) and the store hasn't caught up.
 	require.NoError(t, store.Save(state.ReconciliationState{
 		ApproachID: "app-oauth",
-		SpecHash:   "sha256:stale",
+		SpecHashes: map[string]string{"app-oauth": "sha256:stale"},
 		Artifacts:  spec.ComputeArtifactHashes(fs.ReadFile, *g.Approach("app-oauth")),
 		Status:     state.StatusLive,
 	}))
@@ -108,7 +108,7 @@ func TestClassifyDriftedWhenStoredHashZeroed(t *testing.T) {
 
 	require.NoError(t, store.Save(state.ReconciliationState{
 		ApproachID: "app-oauth",
-		SpecHash:   "", // cleared by cascade
+		SpecHashes: map[string]string{}, // cleared by cascade
 		Artifacts:  spec.ComputeArtifactHashes(fs.ReadFile, *g.Approach("app-oauth")),
 		Status:     state.StatusLive,
 	}))
@@ -129,7 +129,7 @@ func TestClassifyOutOfSpecWhenArtifactChanges(t *testing.T) {
 	artifacts := spec.ComputeArtifactHashes(fs.ReadFile, *app)
 	require.NoError(t, store.Save(state.ReconciliationState{
 		ApproachID: "app-oauth",
-		SpecHash:   liveHash,
+		SpecHashes: map[string]string{"app-oauth": liveHash},
 		Artifacts:  artifacts,
 		Status:     state.StatusLive,
 	}))

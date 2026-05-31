@@ -19,7 +19,7 @@ func newStore() *state.FileStateStore {
 func sampleState(approachID string) state.ReconciliationState {
 	return state.ReconciliationState{
 		ApproachID:     approachID,
-		SpecHash:       "sha256:abc123",
+		SpecHashes:     map[string]string{approachID: "sha256:abc123"},
 		Status:         state.StatusLive,
 		Message:        "all assertions passed",
 		LastReconciled: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC),
@@ -49,7 +49,7 @@ func TestRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, s.ApproachID, got.ApproachID)
-	assert.Equal(t, s.SpecHash, got.SpecHash)
+	assert.Equal(t, s.SpecHashes, got.SpecHashes)
 	assert.Equal(t, s.Status, got.Status)
 	assert.Equal(t, s.Message, got.Message)
 	assert.Equal(t, s.WorkstreamID, got.WorkstreamID)

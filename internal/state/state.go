@@ -24,7 +24,14 @@ const (
 // Stored at .borg/state/<approach-id>.yaml — written by the reconciler, never by the planner.
 type ReconciliationState struct {
 	ApproachID       string            `yaml:"approach_id"`                     // always an Approach node ID
-	SpecHash         string            `yaml:"spec_hash"`                       // hash of the Approach spec node
+	// SpecHashes captures the one-hop upstream subgraph the approach
+	// was reconciled against, keyed by spec id. Includes approach.id +
+	// approach.parent_id + each entry in approach.decisions[] +
+	// approach.advances[] + approach.respects[]. Set-diff drift
+	// (added/removed keys — catches renames as coincident add+remove)
+	// AND hash-diff drift (body changed on a same-id key) both surface
+	// via key-by-key comparison. Per DJ-149.
+	SpecHashes       map[string]string `yaml:"spec_hashes,omitempty"`
 	Artifacts        map[string]string `yaml:"artifacts,omitempty"`             // path → sha256; per-file drift detection
 	Status           ReconcileStatus   `yaml:"status"`
 	Message          string            `yaml:"message,omitempty"`               // reconciler-authored reason for current status
