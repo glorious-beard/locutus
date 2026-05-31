@@ -8,12 +8,56 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/glorious-beard/locutus/internal/activity"
 	"github.com/glorious-beard/locutus/internal/runner"
 	"github.com/glorious-beard/locutus/internal/scaffold"
 	"github.com/glorious-beard/locutus/internal/specio"
 )
+
+// adoptLockPath returns the per-project adopt lock file location.
+func adoptLockPath() string {
+	return filepath.Join(".locutus", "adopt.lock")
+}
+
+// acquireAdoptLock atomically creates a lock file if absent, returning
+// (true, own_pid) on success or (false, existing_pid) if another live
+// adopt session is in flight.
+// Caller MUST call releaseAdoptLock on exit (including panic recovery).
+// Stale lock detection: if the file exists but its PID is no longer a
+// live process (os.FindProcess + Signal(0) returns an error), the lock
+// is treated as stale, removed, and a fresh lock is acquired.
+func acquireAdoptLock() (bool, string) {
+	p := adoptLockPath()
+	if data, err := os.ReadFile(p); err == nil {
+		existing := strings.TrimSpace(string(data))
+		// Liveness check: probe the existing PID with signal 0.
+		if pid, convErr := strconv.Atoi(existing); convErr == nil {
+			if proc, findErr := os.FindProcess(pid); findErr == nil {
+				if sigErr := proc.Signal(syscall.Signal(0)); sigErr == nil {
+					// Process is live — lock is held.
+					return false, existing
+				}
+			}
+		}
+		// Stale lock (process gone or unparseable PID) — remove and proceed.
+		_ = os.Remove(p)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return false, ""
+	}
+	pid := fmt.Sprintf("%d", os.Getpid())
+	if err := os.WriteFile(p, []byte(pid), 0o644); err != nil {
+		return false, ""
+	}
+	return true, pid
+}
+
+// releaseAdoptLock removes the adopt lock file created by acquireAdoptLock.
+func releaseAdoptLock() {
+	_ = os.Remove(adoptLockPath())
+}
 
 // runActivityVerb is the shared entry point used by every Locutus
 // verb that dispatches an activity playbook (refine / import / adopt
@@ -46,6 +90,15 @@ func runActivityVerb(ctx context.Context, _ *CLI, activityName, contextNote stri
 		// Defensive: Resolve succeeded so Lookup must too — guarded
 		// against future refactors that might separate the two.
 		return fmt.Errorf("%s: activity resolved but missing from registry", activityName)
+	}
+	// Adopt-lock guard: at most one code_adoption session per project
+	// at a time (worktree conflicts are expensive to untangle).
+	if activityName == "code_adoption" {
+		ok, otherPID := acquireAdoptLock()
+		if !ok {
+			return fmt.Errorf("another adopt run is in flight (pid %s); wait for it to finish or remove %s if stale", otherPID, adoptLockPath())
+		}
+		defer releaseAdoptLock()
 	}
 	playbook, source, err := loadActivityPlaybook(fsys, activityName, runtime)
 	if err != nil {

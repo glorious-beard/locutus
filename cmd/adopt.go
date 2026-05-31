@@ -5,19 +5,32 @@ import (
 	"fmt"
 )
 
-// AdoptCmd dispatches the code_adoption activity. Per DJ-135 phase 5
-// the verb forks a coding-agent runtime and hands it the
-// code_adoption playbook. The agent classifies every Approach in the
-// spec graph against the current codebase, surfaces drift, and
-// proposes remediation by calling back into Locutus's MCP tools.
+// AdoptCmd dispatches the code_adoption activity (DJ-149).
+// The activity reads the spec graph and the state store, identifies
+// which approaches need work (unbound / spec-drifted / code-drifted /
+// orphan-parent), dispatches the coding-agent runtime to implement
+// in stacked worktrees (adopt/<NNN>-<approach-id> branches with
+// phase-N+1-branches-off-N), and records reconciliation outcomes —
+// including test-asserted live/failed status per DJ-068's honest-state
+// principle — in .borg/state/.
 //
-// Flags from the legacy verb (--scope, --dry-run) dropped in this
-// rewrite. Scope semantics are encoded in the playbook prose; if
-// runtime selection of subsets is needed, the playbook agent reads
-// the supervisor's --scope as a run-context note (added in a
-// follow-up if needed).
+// The runtime decides parallelism, branch ordering, and worktree
+// management (per DJ-144's trajectory of trusting the runtime).
+// Locutus writes plan files to .locutus/sessions/<sid>/plans/; the
+// runtime reads and implements.
+//
+// Preconditions checked by the playbook in Step 0 (refused with a
+// helpful error when missing): GOALS.md exists; goal layer is
+// populated (operator ran `locutus refine goals` first); at least
+// one approach OR one feat/strat without approach (otherwise nothing
+// to adopt).
+//
+// Flags inherit from DJ-147: --dry-run + --format markdown|json;
+// mutations capture via captureOnly at the MCP boundary; the
+// playbook adds LOCUTUS_DRY_RUN guards around worktree creation +
+// code generation.
 type AdoptCmd struct {
-	Scope  string `help:"Optional scope hint passed to the playbook agent as run context. Free-form (e.g. an Approach id or filesystem path)."`
+	Scope  string `help:"Optional scope filter (approach id, parent feat-/strat- id, or directory prefix). Default: all approaches needing work."`
 	DryRun bool   `name:"dry-run" help:"Capture proposed mutations without writing them; print what would land."`
 	Format string `help:"Report format when --dry-run is set." enum:"markdown,json" default:"markdown"`
 }
