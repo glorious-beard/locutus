@@ -254,6 +254,10 @@ Two further agents (`justify-splitter`, `justify-synthesizer`) ship as published
 
 Brownfield code → spec reconciliation. The assimilate playbook runs **code-is-truth** — it surveys the codebase, gathers per-domain evidence (backend/frontend/infrastructure) in parallel via `backend-analyzer` / `frontend-analyzer` / `infra-analyzer` subagents, and reconciles their contributions against the existing manifest with code-is-truth direction. The `gap-analyst` reconciler applies inferred changes via `spec_revise_*` / `spec_propose_*` mutations and synthesizes approaches binding each inferred feature/strategy to its source files via `spec_propose_approach`. Convergence is single-pass-shaped; iteration (bounded by a lower `max_iterations` default of 3) only re-runs on transient failures.
 
+## Adopt (DJ-149)
+
+Spec → code reconciliation. The adopt playbook reads the spec graph and state store, computes a worklist of approaches needing work (unbound / spec-drifted / code-drifted / orphan-parent), and dispatches the runtime to implement them in stacked worktrees. Subagent flow: **drift-classifier** judges per-file code drifts (semantic vs trivial; trivial accepted via `state_refresh_artifacts`); **approach-regenerator** regenerates an approach body when its parent feature/strategy or cited decisions change (output fed to `spec_revise_approach`; runtime then re-implements in fresh worktree on next adopt run). The orchestrator computes the worklist from state, writes plan files to `.locutus/sessions/<sid>/plans/`, dispatches the runtime for stacked-worktree implementation, persists reconciliation via state MCP tools, surfaces drift classification in the report.
+
 ## Convergence by construction
 
 Convergence is driven differently per `(runtime, mode)` context, but every driver reaches the same outcome (scout reports `converged: true`, or `max_iterations` cap fires):

@@ -169,6 +169,20 @@ The activity uses the same per-runtime convergence-driver pattern as `spec_refin
 
 DJ-147 dry-run inherits automatically — the two new MCP tools (`spec_propose_approach`, `spec_revise_approach`) are wrapped via the same `captureOnly` registration-site adapter as the other 14 mutation tools.
 
+## Adopt (DJ-149)
+
+`locutus adopt` reads the spec graph and state store, identifies approaches needing work (unbound / spec-drifted / code-drifted / orphan-parent), and dispatches the coding-agent runtime to implement them in stacked worktrees. Each phase: `git worktree add ../<project>-adopt-<NNN>-<approach-id>` off the previous phase's branch (or operator base if phase 1); runtime implements using its native skills; runs the project's test suite (per DJ-068's test-asserted-live principle); calls `state_record_reconciliation` with the diff + test outcome.
+
+The runtime decides parallelism + branch ordering. Branch naming: `adopt/<NNN>-<approach-id>` zero-padded for serial chains; `<NNN><letter>-<approach-id>` for parallel siblings at the same ordinal. Halt-on-first-failure; failed branch retained for operator inspection.
+
+Preconditions (refused with helpful error): `GOALS.md` exists; goal layer populated; at least one approach OR one feat/strat without approach.
+
+State surface from [DJ-068](decisions/dj-068-manifest-state-separation-kubernetes-inspired.md) + [DJ-096](decisions/dj-096-state-store-lives-under.md): per-approach record at `.borg/state/<approach-id>.yaml` with `SpecHashes` (one-hop upstream subgraph; catches cascade + refine drift per DJ-149's set+hash diff), `Artifacts` (per-file hashes for code drift), 8-status `ReconcileStatus`. All state mutations route through 7 new MCP tools (4 write + 3 read): write tools (`state_record_reconciliation`, `state_refresh_artifacts`, `state_mark_status`, `state_delete_record`) + read tools (`state_list_records`, `state_get_record`, `state_compare_hashes`); writes are captureOnly-wrapped per DJ-147.
+
+`state_compare_hashes` — read-only server-side spec-hash diff (added / removed / changed) per approach; agent calls it in adopt's Step 2 to detect spec drift without reproducing server-side hash bytes.
+
+DJ-147 dry-run inherits automatically — state captures land in the overlay; the playbook adds `LOCUTUS_DRY_RUN` guards around worktree creation + code generation.
+
 ## Cross-references
 
 - [DJ-135](DECISION_JOURNAL.md#dj-135) — multi-runtime pivot; introduces the ACP / MCP architecture.
