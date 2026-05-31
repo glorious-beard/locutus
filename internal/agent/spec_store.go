@@ -270,8 +270,9 @@ func (s *SpecStore) loadFromFS() error {
 			if len(p) < 3 || p[len(p)-3:] != ".md" {
 				continue
 			}
-			obj, _, err := specio.LoadMarkdown[spec.Approach](s.fsys, p)
+			obj, body, err := specio.LoadMarkdown[spec.Approach](s.fsys, p)
 			if err == nil && obj.ID != "" {
+				obj.Body = body
 				s.approaches[obj.ID] = &approachEntry{body: obj, origin: OriginSettled}
 			}
 		}

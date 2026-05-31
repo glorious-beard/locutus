@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 
@@ -385,4 +386,79 @@ func TestSpecStore_OriginPrefixDispatch(t *testing.T) {
 	assert.Equal(t, SpecGetSettled, res.Results["bug-w"].Status)
 	assert.Equal(t, SpecGetMissing, res.Results["wrong-prefix-id"].Status)
 	assert.Contains(t, res.Results["wrong-prefix-id"].Reason, "malformed")
+}
+
+// TestApproach_PersistBodyOnlyInMarkdownSection verifies that
+// Approach.Body is serialized ONLY in the markdown section below the
+// frontmatter, not duplicated inside the YAML frontmatter as a
+// `body:` field. It also confirms the body round-trips correctly
+// through a save/load cycle via Begin → Put → Commit.
+func TestApproach_PersistBodyOnlyInMarkdownSection(t *testing.T) {
+	fsys := specio.NewMemFS()
+	store, err := NewSpecStore(fsys)
+	require.NoError(t, err)
+
+	bodyText := "## Architecture\n\nFoo bar baz, the approach body content.\n"
+	a := spec.Approach{
+		ID:       "app-feat-x",
+		Title:    "Approach X",
+		ParentID: "feat-x",
+		Body:     bodyText,
+	}
+	require.NoError(t, store.Begin())
+	require.NoError(t, store.Put(KindApproach, "app-feat-x", a, OriginProposed))
+	require.NoError(t, store.Commit())
+
+	// Read raw on-disk bytes.
+	raw, err := fsys.ReadFile(".borg/spec/approaches/app-feat-x.md")
+	require.NoError(t, err)
+	rawStr := string(raw)
+
+	// Body content must appear in the markdown section.
+	assert.Contains(t, rawStr, bodyText)
+
+	// Body must NOT appear inside the frontmatter as a `body:` field.
+	// Frontmatter is the content between the opening `---\n` and the
+	// next `\n---\n` delimiter.
+	require.True(t, strings.HasPrefix(rawStr, "---\n"), "file must open with frontmatter delimiter")
+	frontmatterEnd := strings.Index(rawStr[4:], "\n---\n")
+	require.GreaterOrEqual(t, frontmatterEnd, 0, "closing frontmatter delimiter not found")
+	frontmatter := rawStr[:frontmatterEnd+4]
+	assert.NotContains(t, frontmatter, "body:", "Body must not be serialized inside the frontmatter")
+	assert.NotContains(t, frontmatter, "Architecture", "frontmatter must not contain body content")
+
+	// Reload via a fresh SpecStore and verify Body round-trips.
+	store2, err := NewSpecStore(fsys)
+	require.NoError(t, err)
+	res := store2.GetSpec([]string{"app-feat-x"})
+	entry := res.Results["app-feat-x"]
+	require.Equal(t, SpecGetSettled, entry.Status)
+	loaded := entry.Body.(spec.Approach)
+	assert.Equal(t, bodyText, loaded.Body, "Body must round-trip through save/load cycle")
+	assert.Equal(t, "Approach X", loaded.Title)
+}
+
+// TestApproach_LoadHandlesLegacyBodyInFrontmatter verifies that
+// existing files written by pre-fix code — where body appears in both
+// the YAML frontmatter and the markdown section — continue to load
+// correctly. Post-fix the loader reads the markdown section; the
+// legacy `body:` field in the frontmatter is silently ignored because
+// the yaml:"-" tag excludes it from unmarshaling.
+func TestApproach_LoadHandlesLegacyBodyInFrontmatter(t *testing.T) {
+	fsys := specio.NewMemFS()
+	legacyContent := "---\nid: app-feat-legacy\ntitle: Legacy Approach\nparent_id: feat-legacy\nbody: |-\n    ## Architecture\n    The body content.\n---\n## Architecture\nThe body content.\n"
+	require.NoError(t, fsys.MkdirAll(".borg/spec/approaches", 0o755))
+	require.NoError(t, fsys.WriteFile(".borg/spec/approaches/app-feat-legacy.md", []byte(legacyContent), 0o644))
+
+	store, err := NewSpecStore(fsys)
+	require.NoError(t, err)
+
+	res := store.GetSpec([]string{"app-feat-legacy"})
+	entry := res.Results["app-feat-legacy"]
+	require.Equal(t, SpecGetSettled, entry.Status)
+	loaded := entry.Body.(spec.Approach)
+	// Post-fix loader reads body from the markdown section; legacy
+	// `body:` field in frontmatter is silently ignored.
+	assert.Contains(t, loaded.Body, "## Architecture")
+	assert.Contains(t, loaded.Body, "The body content.")
 }

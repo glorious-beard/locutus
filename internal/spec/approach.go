@@ -22,7 +22,12 @@ type Approach struct {
 	// Natural-language prose including acceptance criteria narrative.
 	// Machine-executable checks live in Assertions.
 	// Updated during pre_flight when new assumed Decisions are recorded.
-	Body string `yaml:"body,omitempty"`
+	//
+	// Not YAML-tagged: persisted as the markdown content below the
+	// frontmatter (not inside it) per SaveMarkdown's contract — see
+	// internal/specio/markdown.go. The yaml:"-" tag prevents the double-
+	// write that would otherwise put the body in both places.
+	Body string `yaml:"-" json:"body,omitempty"`
 
 	ArtifactPaths []string    `yaml:"artifact_paths,omitempty"`
 	Decisions     []string    `yaml:"decisions,omitempty"`     // audit: decisions consulted during synthesis

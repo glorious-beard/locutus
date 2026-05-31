@@ -12,6 +12,12 @@ import (
 var ts = time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
 
 func TestApproachRoundTrip(t *testing.T) {
+	// Approach.Body carries yaml:"-" so it is NOT serialized inside the
+	// YAML frontmatter — it lives in the markdown section below `---`
+	// and is populated by the specio.LoadMarkdown caller. This test
+	// verifies the YAML-level contract: all fields except Body survive a
+	// yaml.Marshal → yaml.Unmarshal cycle, and Body is absent from the
+	// marshaled output.
 	orig := Approach{
 		ID:            "app-oauth",
 		Title:         "OAuth Login via PKCE",
@@ -31,10 +37,20 @@ func TestApproachRoundTrip(t *testing.T) {
 	data, err := yaml.Marshal(orig)
 	assert.NoError(t, err)
 
+	// Body must not appear in the YAML output.
+	assert.NotContains(t, string(data), "body:", "Body must not be serialized in YAML frontmatter")
+	assert.NotContains(t, string(data), "What to build", "Body content must not leak into YAML")
+
+	// All other fields survive the round-trip; Body is zero after
+	// YAML-only unmarshal (it's populated by specio.LoadMarkdown from
+	// the markdown section — see internal/agent spec_store_test.go for
+	// the full save/load round-trip test).
 	var got Approach
 	err = yaml.Unmarshal(data, &got)
 	assert.NoError(t, err)
-	assert.Equal(t, orig, got)
+	want := orig
+	want.Body = "" // yaml:"-" means Body is not restored by yaml.Unmarshal
+	assert.Equal(t, want, got)
 }
 
 func TestDecisionRoundTrip(t *testing.T) {
