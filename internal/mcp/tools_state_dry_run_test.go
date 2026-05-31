@@ -12,6 +12,82 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestDryRunCapturesStateMarkStatus(t *testing.T) {
+	clearSessionRuntimes()
+	fsys := specio.NewMemFS()
+	store, err := agent.NewSpecStore(fsys)
+	require.NoError(t, err)
+	server := NewSpecServer(store, fsys, nil, nil, nil)
+	serverT, clientT := mcp.NewInMemoryTransports()
+	ss, _ := server.Connect(context.Background(), serverT, nil)
+	t.Cleanup(func() { _ = ss.Close() })
+	client := mcp.NewClient(&mcp.Implementation{Name: "claude-code", Version: "t"}, nil)
+	cs, _ := client.Connect(context.Background(), clientT, nil)
+	t.Cleanup(func() { _ = cs.Close() })
+	for d := time.Now().Add(time.Second); time.Now().Before(d); {
+		if rt, _ := sessionRuntimeFor(ss); rt == "claude-code" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	storeSessionContext(ss, "claude-code", "headless", true, "markdown")
+	store.RegisterOverlay(ss)
+	t.Cleanup(func() { store.UnregisterOverlay(ss) })
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "state_mark_status",
+		Arguments: map[string]any{
+			"approach_id": "app-feat-foo",
+			"status":      "planned",
+			"message":     "operator manually scheduled for next adopt",
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	caps := store.OverlayCaptured(ss)
+	require.Len(t, caps, 1)
+	assert.Equal(t, "state_mark_status", caps[0].Tool)
+	assert.Equal(t, "app-feat-foo", caps[0].ID)
+}
+
+func TestDryRunCapturesStateDeleteRecord(t *testing.T) {
+	clearSessionRuntimes()
+	fsys := specio.NewMemFS()
+	store, err := agent.NewSpecStore(fsys)
+	require.NoError(t, err)
+	server := NewSpecServer(store, fsys, nil, nil, nil)
+	serverT, clientT := mcp.NewInMemoryTransports()
+	ss, _ := server.Connect(context.Background(), serverT, nil)
+	t.Cleanup(func() { _ = ss.Close() })
+	client := mcp.NewClient(&mcp.Implementation{Name: "claude-code", Version: "t"}, nil)
+	cs, _ := client.Connect(context.Background(), clientT, nil)
+	t.Cleanup(func() { _ = cs.Close() })
+	for d := time.Now().Add(time.Second); time.Now().Before(d); {
+		if rt, _ := sessionRuntimeFor(ss); rt == "claude-code" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	storeSessionContext(ss, "claude-code", "headless", true, "markdown")
+	store.RegisterOverlay(ss)
+	t.Cleanup(func() { store.UnregisterOverlay(ss) })
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "state_delete_record",
+		Arguments: map[string]any{
+			"approach_id": "app-feat-foo",
+			"reason":      "parent feature retired",
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	caps := store.OverlayCaptured(ss)
+	require.Len(t, caps, 1)
+	assert.Equal(t, "state_delete_record", caps[0].Tool)
+}
+
 func TestDryRunCapturesStateWrites(t *testing.T) {
 	cases := []struct {
 		name string

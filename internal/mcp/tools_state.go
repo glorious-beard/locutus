@@ -110,6 +110,52 @@ func registerStateTools(server *mcp.Server, store *agent.SpecStore, stateStore *
 		}
 		return textResult(fmt.Sprintf("Refreshed artifacts for %s (%d files).", in.ApproachID, len(in.Artifacts))), nil, nil
 	}, captureStateRefreshArtifacts(store)))
+
+	// state_mark_status
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "state_mark_status",
+		Description: descStateMarkStatus,
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in stateMarkStatusInput) (*mcp.CallToolResult, any, error) {
+		if stateStore == nil {
+			return errorResult("state_mark_status: daemon has no FileStateStore wired"), nil, nil
+		}
+		st, err := validateReconcileStatus(in.Status)
+		if err != nil {
+			return errorResult(err.Error()), nil, nil
+		}
+		existing, err := stateStore.Load(in.ApproachID)
+		if err != nil {
+			// Create a minimal record if none exists; operators marking
+			// a planned status on a fresh approach is a valid path.
+			existing = state.ReconciliationState{ApproachID: in.ApproachID}
+		}
+		existing.Status = st
+		existing.LastReconciled = time.Now().UTC()
+		if in.Message != "" {
+			existing.Message = in.Message
+		}
+		if err := stateStore.Save(existing); err != nil {
+			return errorResult(fmt.Sprintf("state_mark_status: %v", err)), nil, nil
+		}
+		return textResult(fmt.Sprintf("Marked %s as %s.", in.ApproachID, st)), nil, nil
+	}, captureStateMarkStatus(store)))
+
+	// state_delete_record
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "state_delete_record",
+		Description: descStateDeleteRecord,
+	}, captureOnly(func(ctx context.Context, _ *mcp.CallToolRequest, in stateDeleteRecordInput) (*mcp.CallToolResult, any, error) {
+		if stateStore == nil {
+			return errorResult("state_delete_record: daemon has no FileStateStore wired"), nil, nil
+		}
+		if strings.TrimSpace(in.Reason) == "" {
+			return errorResult("state_delete_record: reason is required"), nil, nil
+		}
+		if err := stateStore.Delete(in.ApproachID); err != nil {
+			return errorResult(fmt.Sprintf("state_delete_record: %v", err)), nil, nil
+		}
+		return textResult(fmt.Sprintf("Deleted state record for %s (reason: %s).", in.ApproachID, in.Reason)), nil, nil
+	}, captureStateDeleteRecord(store)))
 }
 
 // captureStateRecordReconciliation lands a state_record_reconciliation
@@ -152,6 +198,55 @@ func captureStateRefreshArtifacts(store *agent.SpecStore) func(sess *mcp.ServerS
 			return nil, err
 		}
 		return existing, nil
+	}
+}
+
+// captureStateMarkStatus lands a state_mark_status call in the
+// session's overlay under dry-run.
+func captureStateMarkStatus(store *agent.SpecStore) func(sess *mcp.ServerSession, in stateMarkStatusInput) (any, error) {
+	return func(sess *mcp.ServerSession, in stateMarkStatusInput) (any, error) {
+		st, err := validateReconcileStatus(in.Status)
+		if err != nil {
+			return nil, err
+		}
+		existing := captureReadStateForRefresh(store, sess, in.ApproachID)
+		existing.Status = st
+		existing.LastReconciled = time.Now().UTC()
+		if in.Message != "" {
+			existing.Message = in.Message
+		}
+		if err := store.OverlayPutState(sess, "state_mark_status", in.ApproachID, *existing); err != nil {
+			return nil, err
+		}
+		return existing, nil
+	}
+}
+
+// captureStateDeleteRecord lands a state_delete_record call in the
+// session's overlay under dry-run. Enforces non-empty reason to
+// match spec_delete_goal's audit shape.
+func captureStateDeleteRecord(store *agent.SpecStore) func(sess *mcp.ServerSession, in stateDeleteRecordInput) (any, error) {
+	return func(sess *mcp.ServerSession, in stateDeleteRecordInput) (any, error) {
+		if strings.TrimSpace(in.Reason) == "" {
+			return nil, fmt.Errorf("reason is required")
+		}
+		if err := store.OverlayDeleteState(sess, "state_delete_record", in.ApproachID); err != nil {
+			return nil, err
+		}
+		return map[string]string{"approach_id": in.ApproachID, "reason": in.Reason}, nil
+	}
+}
+
+// validateReconcileStatus returns the typed ReconcileStatus for s or
+// an error naming all 8 valid values. Per DJ-149.
+func validateReconcileStatus(s string) (state.ReconcileStatus, error) {
+	switch state.ReconcileStatus(strings.TrimSpace(s)) {
+	case state.StatusUnplanned, state.StatusPlanned, state.StatusPreFlight,
+		state.StatusInProgress, state.StatusLive, state.StatusFailed,
+		state.StatusDrifted, state.StatusOutOfSpec:
+		return state.ReconcileStatus(strings.TrimSpace(s)), nil
+	default:
+		return "", fmt.Errorf("status %q is not one of the 8 valid ReconcileStatus values (unplanned/planned/pre_flight/in_progress/live/failed/drifted/out_of_spec)", s)
 	}
 }
 
