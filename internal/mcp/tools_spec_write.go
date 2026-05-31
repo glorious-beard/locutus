@@ -78,12 +78,10 @@ const (
 	descSpecUpdateGoalsMdHash = "Update .borg/manifest.json's goals_md_hash and goals_md_synced_at fields (DJ-139). The Phase 6 refine-goals playbook calls this tool at the end of a successful goal-layer sync; the next run reads the hash back and short-circuits the matcher when GOALS.md hasn't changed. Input is {hash} where hash is the sha256:<hex> digest of the current GOALS.md bytes (use the canonical spec.ComputeGoalsMdHash helper to produce it). The sync timestamp is stamped server-side from the wall clock — the agent does not supply it. The handler preserves every other manifest field; hash is required and rejected when empty so a typo doesn't accidentally drop the audit-trail timestamp without recording a state change."
 
 	// Approach write surface (DJ-148). Approaches bind features/strategies/bugs
-	// to the source files that implement them. Both tools require source_files
-	// + source_hash so the resulting approach establishes coherent (spec, code,
-	// approach) state. The parent kind is derived from parent_id's prefix.
-	descSpecProposeApproach = "Propose a new approach binding a feature/strategy/bug to the source files that implement it (upsert semantics on id). Input is the full approach body — the server fills created_at + updated_at = now (use spec_revise_approach instead when you need to preserve the original created_at). The id must use the app- prefix and conventionally follows app-<parent-id> per DJ-087 (e.g. app-feat-login-flow). parent_id is required and must reference an existing feature (feat-), strategy (strat-), or bug (bug-) — the parent kind is derived from the prefix. source_files is required and lists the relative paths the approach binds to (the agent ensures every path exists at proposal time; the daemon stores them verbatim and does not stat the files). source_hash is required and is the sha256:<hex> hash over the sorted-paths-then-contents of source_files, computed by the agent — opaque to the daemon. Optional citation fields (DJ-139): advances lists goal-* ids; respects lists agoal-* ids. On success the manifest is persisted to .borg/spec/approaches/<id>.md (YAML frontmatter + markdown body) and every subscriber to spec://manifest receives notifications/resources/updated."
+	// to their implementation. The parent kind is derived from parent_id's prefix.
+	descSpecProposeApproach = "Propose a new approach for a feature/strategy/bug (upsert semantics on id). Input is the full approach body — the server fills created_at + updated_at = now (use spec_revise_approach instead when you need to preserve the original created_at). The id must use the app- prefix and conventionally follows app-<parent-id> per DJ-087 (e.g. app-feat-login-flow). parent_id is required and must reference an existing feature (feat-), strategy (strat-), or bug (bug-) — the parent kind is derived from the prefix. Optional citation fields (DJ-139): advances lists goal-* ids; respects lists agoal-* ids. On success the manifest is persisted to .borg/spec/approaches/<id>.md (YAML frontmatter + markdown body) and every subscriber to spec://manifest receives notifications/resources/updated."
 
-	descSpecReviseApproach = "Revise an existing approach (the id MUST already exist; use spec_propose_approach instead to create a new one). Input shape is identical to spec_propose_approach. Preserves the original created_at; the server updates updated_at + source_hash_synced_at to now. The parent_id may be changed (e.g. when a feature is reparented under a different strategy) but the new parent must exist and the prefix dictates the new parent kind."
+	descSpecReviseApproach = "Revise an existing approach (the id MUST already exist; use spec_propose_approach instead to create a new one). Input shape is identical to spec_propose_approach. Preserves the original created_at; the server updates updated_at to now. The parent_id may be changed (e.g. when a feature is reparented under a different strategy) but the new parent must exist and the prefix dictates the new parent kind."
 )
 
 // Input schemas mirror spec.Decision / spec.Feature / spec.Strategy
@@ -214,21 +212,17 @@ type reviseFeatureInput = proposeFeatureInput
 type reviseStrategyInput = proposeStrategyInput
 
 // proposeApproachInput shapes the spec_propose_approach tool input.
-// Per DJ-148, source_files + source_hash are required so the
-// resulting approach establishes coherent (spec, code, approach)
-// state. The parent kind is derived from parent_id's prefix
+// The parent kind is derived from parent_id's prefix
 // (feat- / strat- / bug-).
 type proposeApproachInput struct {
-	ID          string   `json:"id" jsonschema:"Approach id with app- prefix; conventionally follows app-<parent-id> (e.g. app-feat-login-flow, app-strat-cache-layer)."`
-	Title       string   `json:"title" jsonschema:"One-line human-readable headline naming the approach (e.g. 'React + Redux for dashboard state management')."`
-	Summary     string   `json:"summary,omitempty" jsonschema:"One-sentence summary for index/manifest views."`
-	ParentID    string   `json:"parent_id" jsonschema:"Id of the parent node — a feature (feat-), strategy (strat-), or bug (bug-) this approach implements. Required; the parent prefix dictates the parent kind."`
-	Body        string   `json:"body" jsonschema:"Multi-paragraph prose describing the implementation approach, architecture rationale, and integration points with the parent."`
-	SourceFiles []string `json:"source_files" jsonschema:"List of relative filesystem paths this approach binds to — the source code files implementing it. Required and must be non-empty; every path must exist in the working tree at proposal time."`
-	SourceHash  string   `json:"source_hash" jsonschema:"Required sha256:<hex> hash over the sorted-paths-then-contents of source_files (computed by the agent; opaque to the daemon). Establishes coherent (spec, code, approach) state."`
-	Decisions   []string `json:"decisions,omitempty" jsonschema:"Optional list of decision ids this approach depends on."`
-	Advances    []string `json:"advances,omitempty" jsonschema:"Optional list of goal-* ids this approach exists to advance (DJ-139, forward direction). Only goal-* ids belong here; anti-goal navigation goes in respects. Informational — not a structural dependency."`
-	Respects    []string `json:"respects,omitempty" jsonschema:"Optional list of agoal-* ids this approach was checked against and admitted under a carve-out (DJ-139, boundary-navigation direction). Only agoal-* ids belong here; forward-direction goal references go in advances. Informational — not a structural dependency."`
+	ID        string   `json:"id" jsonschema:"Approach id with app- prefix; conventionally follows app-<parent-id> (e.g. app-feat-login-flow, app-strat-cache-layer)."`
+	Title     string   `json:"title" jsonschema:"One-line human-readable headline naming the approach (e.g. 'React + Redux for dashboard state management')."`
+	Summary   string   `json:"summary,omitempty" jsonschema:"One-sentence summary for index/manifest views."`
+	ParentID  string   `json:"parent_id" jsonschema:"Id of the parent node — a feature (feat-), strategy (strat-), or bug (bug-) this approach implements. Required; the parent prefix dictates the parent kind."`
+	Body      string   `json:"body" jsonschema:"Multi-paragraph prose describing the implementation approach, architecture rationale, and integration points with the parent."`
+	Decisions []string `json:"decisions,omitempty" jsonschema:"Optional list of decision ids this approach depends on."`
+	Advances  []string `json:"advances,omitempty" jsonschema:"Optional list of goal-* ids this approach exists to advance (DJ-139, forward direction). Only goal-* ids belong here; anti-goal navigation goes in respects. Informational — not a structural dependency."`
+	Respects  []string `json:"respects,omitempty" jsonschema:"Optional list of agoal-* ids this approach was checked against and admitted under a carve-out (DJ-139, boundary-navigation direction). Only agoal-* ids belong here; forward-direction goal references go in advances. Informational — not a structural dependency."`
 }
 
 // reviseApproachInput is structurally identical to proposeApproachInput;
@@ -386,7 +380,7 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 			return errorResult(err.Error()), nil, nil
 		}
 		publishManifestUpdate(ctx, server)
-		return textResult(fmt.Sprintf("Proposed approach %s under %s (binds %d files; source_hash %s).", body.ID, body.ParentID, len(body.SourceFiles), body.SourceHash)), nil, nil
+		return textResult(fmt.Sprintf("Proposed approach %s under %s.", body.ID, body.ParentID)), nil, nil
 	}, captureProposeApproach(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -421,7 +415,7 @@ func registerWriteTools(server *mcp.Server, store *agent.SpecStore, hist *histor
 			return errorResult(err.Error()), nil, nil
 		}
 		publishManifestUpdate(ctx, server)
-		return textResult(fmt.Sprintf("Revised approach %s (source_hash %s).", body.ID, body.SourceHash)), nil, nil
+		return textResult(fmt.Sprintf("Revised approach %s.", body.ID)), nil, nil
 	}, captureReviseApproach(store)))
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -765,8 +759,7 @@ func buildFeatureBody(in proposeFeatureInput, createdAt time.Time) (spec.Feature
 // buildApproachBody assembles a spec.Approach from the input,
 // filling server-managed fields. createdAt zero-value means "set
 // to now" (propose); non-zero preserves the supplied value
-// (revise). SourceHashSyncedAt is always stamped to now since the
-// hash is being recorded.
+// (revise).
 //
 // Parent kind is derived from parent_id's prefix (feat- / strat- /
 // bug-). Existence validation happens at the handler level; the
@@ -799,30 +792,17 @@ func buildApproachBody(in proposeApproachInput, createdAt time.Time) (spec.Appro
 	default:
 		return spec.Approach{}, fmt.Errorf("parent_id must be a feature (feat-), strategy (strat-), or bug (bug-) id; got %q", parentID)
 	}
-	if len(in.SourceFiles) == 0 {
-		return spec.Approach{}, fmt.Errorf("source_files is required and must list at least one path the approach binds to")
-	}
-	hash := strings.TrimSpace(in.SourceHash)
-	if hash == "" {
-		return spec.Approach{}, fmt.Errorf("source_hash is required (compute the sha256:<hex> of sorted-paths-then-contents of source_files)")
-	}
-	if !strings.HasPrefix(hash, "sha256:") || len(hash) <= len("sha256:") {
-		return spec.Approach{}, fmt.Errorf("source_hash must be in sha256:<hex> form; got %q", hash)
-	}
 	return spec.Approach{
-		ID:                 id,
-		Title:              title,
-		Summary:            strings.TrimSpace(in.Summary),
-		ParentID:           parentID,
-		Body:               in.Body,
-		SourceFiles:        in.SourceFiles,
-		SourceHash:         hash,
-		SourceHashSyncedAt: now,
-		Decisions:          in.Decisions,
-		Advances:           in.Advances,
-		Respects:           in.Respects,
-		CreatedAt:          createdAt,
-		UpdatedAt:          now,
+		ID:        id,
+		Title:     title,
+		Summary:   strings.TrimSpace(in.Summary),
+		ParentID:  parentID,
+		Body:      in.Body,
+		Decisions: in.Decisions,
+		Advances:  in.Advances,
+		Respects:  in.Respects,
+		CreatedAt: createdAt,
+		UpdatedAt: now,
 	}, nil
 }
 

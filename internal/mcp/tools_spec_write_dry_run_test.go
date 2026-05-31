@@ -116,12 +116,10 @@ func TestDryRunCapturesProposeAndRevise(t *testing.T) {
 			agent.KindAntiGoal, "agoal-foo"},
 		{"propose_approach", "spec_propose_approach",
 			map[string]any{
-				"id":           "app-feat-foo",
-				"title":        "Foo approach",
-				"parent_id":    "feat-foo",
-				"body":         "## Implementation\n\nThe foo flow.",
-				"source_files": []string{"internal/foo/foo.go"},
-				"source_hash":  "sha256:deadbeef00",
+				"id":        "app-feat-foo",
+				"title":     "Foo approach",
+				"parent_id": "feat-foo",
+				"body":      "## Implementation\n\nThe foo flow.",
 			},
 			agent.KindApproach, "app-feat-foo"},
 	}
@@ -284,7 +282,7 @@ func TestDryRunCapturesReviseApproach(t *testing.T) {
 	require.NoError(t, store.Put(agent.KindFeature, "feat-foo", spec.Feature{ID: "feat-foo", Title: "Foo"}, agent.OriginProposed))
 	require.NoError(t, store.Put(agent.KindApproach, "app-feat-foo", spec.Approach{
 		ID: "app-feat-foo", Title: "Old title", ParentID: "feat-foo",
-		Body: "old", SourceFiles: []string{"f.go"}, SourceHash: "sha256:old00",
+		Body:      "old",
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}, agent.OriginProposed))
 	require.NoError(t, store.Commit())
@@ -297,12 +295,10 @@ func TestDryRunCapturesReviseApproach(t *testing.T) {
 	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "spec_revise_approach",
 		Arguments: map[string]any{
-			"id":           "app-feat-foo",
-			"title":        "New title",
-			"parent_id":    "feat-foo",
-			"body":         "new",
-			"source_files": []string{"f.go", "g.go"},
-			"source_hash":  "sha256:new00000",
+			"id":        "app-feat-foo",
+			"title":     "New title",
+			"parent_id": "feat-foo",
+			"body":      "new",
 		},
 	})
 	require.NoError(t, err)
