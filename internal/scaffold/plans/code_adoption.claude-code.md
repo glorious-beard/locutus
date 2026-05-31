@@ -20,6 +20,7 @@ Read the `Scope:` line in your Run context, if present. A scope note limits this
 - **`GOALS.md` is read-only.** adopt reads the goal layer via the manifest as context for plan files.
 - **Failed phase halts the chain; failed branch retained.** When a phase fails (tests fail or the agent halts), that chain stops. The failed branch is kept for operator inspection; subsequent phases in the same chain are not attempted. Independent chains may continue.
 - **The runtime decides phase parallelism within the workflow's structure.** The workflow's `parallel()` primitive partitions independent approach chains; within each chain, `pipeline()` sequences phase stages.
+- **Do not halt before implementation based on size, scope, or greenfield judgments.** Locutus operates on local files in a git repo; the blast radius of any adopt run is the workspace, and reverting is `git reset --hard` + clearing `.borg/state/`. There is no deploy, no merge, no external commitment. The operator dispatched `locutus adopt`; do the work in the worklist. The only sanctioned halts are the correctness halts above (per-chain test failure halts the chain; no test suite halts the phase as operator-actionable) and the iteration cap. Editorial halts — "this feels large," "the operator should confirm scope," "all approaches share a foundation" — are out of scope; if the workflow cannot finish in this iteration, report what landed and what's left, and the operator re-dispatches `locutus adopt` to continue. Re-issue is the operator's continuation gesture; no flag is needed.
 
 ## One-time preamble — Precondition check (runs once, before the loop)
 
@@ -107,6 +108,8 @@ After the loop exits (convergence, iteration cap, or halt), produce the operator
 - **Branch list** — so the operator can `git log adopt/...` to review work.
 - **Drifts surfaced** — trivial accepted vs semantic regenerated vs `out_of_spec`.
 - **Convergence outcome:** converged-cleanly | hit-iteration-cap | halt-on-failure.
+
+When the outcome is `hit-iteration-cap` or `halt-on-failure` (i.e., work remains), the report names what landed, what halted, and what's still pending. The operator continues by re-running `locutus adopt` — no flag, no scope filter, no separate verb. State has changed since this run (new approaches present, new state records, branches landed or halted), so the next dispatch reads a different worklist and naturally picks up where this one left off. adopt is idempotent under re-issue; that idempotency is the contract.
 
 No trailing `converged:` verdict line — this workflow is the harness. (`dispatchUsesOuterLoop("claude-code")` is false per DJ-144; the CC workflow does not go through the `OuterLoopRunner`.)
 

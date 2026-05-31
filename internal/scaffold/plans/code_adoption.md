@@ -39,6 +39,7 @@ After laying out your plan, call `mcp__locutus__spec_list_manifest` and `mcp__lo
 - **`GOALS.md` is read-only.** adopt reads the goal layer via the manifest as context for plan files. Never call `Write` or `Edit` on `GOALS.md`.
 - **The runtime decides phase parallelism, branch naming, and worktree management.** Locutus writes plan files to `.locutus/sessions/<sid>/plans/` and names branch conventions; the runtime reads the plan folder and decides execution shape. Do not prescribe runtime mechanics.
 - **Halt on first failure; failed branch retained.** When a phase fails (tests fail or the agent halts), the runtime stops; the failed branch is kept for operator inspection; subsequent phases are not attempted. Step 2 recomputes the worklist from current state on the next adopt run.
+- **Do not halt before implementation based on size, scope, or greenfield judgments.** Locutus operates on local files in a git repo; the blast radius of any adopt run is the workspace, and reverting is `git reset --hard` + clearing `.borg/state/`. There is no deploy, no merge, no external commitment. The operator dispatched `locutus adopt`; do the work in the worklist. The only sanctioned halts are the correctness halts above (test failure halts a chain; no test suite halts the phase as operator-actionable) and the iteration cap. Editorial halts — "this feels large," "the operator should confirm scope," "all approaches share a foundation" — are out of scope; if the workflow cannot finish in this iteration, report what landed and what's left, and the operator re-dispatches `locutus adopt` to continue. Re-issue is the operator's continuation gesture; no flag is needed.
 
 ## Step 0 — Precondition check
 
@@ -196,3 +197,5 @@ The verdict line takes one of these exact forms:
 
 - `converged: true` — worklist is empty or all attempted entries are `live`; no remaining drift; all precondition-failed branches (Step 0) also emit `converged: true`.
 - `converged: false; <one short reason>` — e.g. `converged: false; 2 phases failed; failed branches retained for operator review` or `converged: false; 3 worklist entries halt-skipped after phase failure`.
+
+When the verdict is `converged: false`, the closing report names what landed, what halted, and what's still pending. The operator continues by re-running `locutus adopt` — no flag, no scope filter, no separate verb. State has changed since the previous run (new approaches present, new state records, branches landed or halted), so the next dispatch reads a different worklist and naturally picks up where this one left off. adopt is idempotent under re-issue; that idempotency is the contract.
