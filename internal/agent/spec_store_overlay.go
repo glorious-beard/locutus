@@ -390,6 +390,51 @@ func (v *OverlayView) GetSpec(ids []string) SpecGetResult {
 	return result
 }
 
+// GetState returns the session's overlay-merged view of an
+// approach's ReconciliationState: overlay-held wins, deleted-mask
+// returns missing, otherwise falls through to the base
+// FileStateStore. Sessions without an overlay get base-only.
+// Per DJ-149 §10.
+func (v *OverlayView) GetState(approachID string) (*state.ReconciliationState, bool) {
+	if v.overlay != nil {
+		if v.overlay.isStateDeleted(approachID) {
+			return nil, false
+		}
+		if rs, ok := v.overlay.lookupState(approachID); ok {
+			return rs, true
+		}
+	}
+	return v.store.baseStateLookup(approachID)
+}
+
+// ListStateRecords returns all approach ids known to state, merging
+// overlay additions and removals over the base FileStateStore.
+// Order: base ids first (in base order), then overlay-additions not
+// in base. Overlay-deleted ids are excluded.
+func (v *OverlayView) ListStateRecords() []string {
+	if v.overlay == nil {
+		return v.store.baseStateList()
+	}
+	seen := make(map[string]struct{})
+	out := []string{}
+	for _, id := range v.store.baseStateList() {
+		if v.overlay.isStateDeleted(id) {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	v.overlay.mu.RLock()
+	for id := range v.overlay.stateOverrides {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		out = append(out, id)
+	}
+	v.overlay.mu.RUnlock()
+	return out
+}
+
 // mergeOverlayIntoManifest layers the overlay's entries / deletes /
 // manifest-override onto a base SpecManifest. Called under the
 // overlay's RLock. The base SpecManifest was produced under

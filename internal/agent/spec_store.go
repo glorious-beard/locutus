@@ -12,6 +12,7 @@ import (
 	"github.com/glorious-beard/locutus/internal/search"
 	"github.com/glorious-beard/locutus/internal/spec"
 	"github.com/glorious-beard/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/state"
 )
 
 // SpecKind discriminates entries by node kind. Mirrors the id-prefix
@@ -116,7 +117,25 @@ type SpecStore struct {
 	// capture, no merge cost.
 	overlaysMu sync.RWMutex
 	overlays   map[any]*sessionOverlay
+
+	// baseStateLookupFn and baseStateListFn are wired by NewSpecServer
+	// at daemon startup via SetStateAccessors, bridging the SpecStore's
+	// overlay read path to the daemon's FileStateStore without importing
+	// it (DJ-134 keeps the agent package decoupled). nil in test
+	// contexts that don't exercise state — those get empty results from
+	// OverlayView.GetState / ListStateRecords. Per DJ-149 §10.
+	baseStateLookupFn stateLookupFn
+	baseStateListFn   stateListFn
 }
+
+// stateLookupFn returns the base FileStateStore's ReconciliationState
+// for an approach id, or (nil, false) if it doesn't exist. Wired by
+// NewSpecServer at daemon startup. nil in test contexts that don't
+// exercise state — those get empty results from OverlayView.GetState.
+type stateLookupFn func(approachID string) (*state.ReconciliationState, bool)
+
+// stateListFn returns all approach ids known to the base FileStateStore.
+type stateListFn func() []string
 
 type goalEntry struct {
 	body    spec.Goal
@@ -1216,6 +1235,59 @@ func (s *SpecStore) OverlaySetGoalsMdHash(sess any, hash string, syncedAt time.T
 		return fmt.Errorf("OverlaySetGoalsMdHash: session has no registered overlay (call RegisterOverlay first)")
 	}
 	o.setGoalsMdHash(hash, syncedAt)
+	return nil
+}
+
+// SetStateAccessors wires the SpecStore's base-state read path to
+// the daemon's FileStateStore. Called once by NewSpecServer at
+// startup. After this, OverlayView.GetState and ListStateRecords
+// can fall through to the base store for ids the session's overlay
+// doesn't hold. Per DJ-149.
+func (s *SpecStore) SetStateAccessors(lookup stateLookupFn, list stateListFn) {
+	s.baseStateLookupFn = lookup
+	s.baseStateListFn = list
+}
+
+// baseStateLookup adapts to the wired lookup function. Returns
+// (nil, false) when no accessor is set (test context) or the id
+// isn't in the base store.
+func (s *SpecStore) baseStateLookup(approachID string) (*state.ReconciliationState, bool) {
+	if s.baseStateLookupFn == nil {
+		return nil, false
+	}
+	return s.baseStateLookupFn(approachID)
+}
+
+// baseStateList adapts to the wired list function. Returns nil when
+// no accessor is set.
+func (s *SpecStore) baseStateList() []string {
+	if s.baseStateListFn == nil {
+		return nil
+	}
+	return s.baseStateListFn()
+}
+
+// OverlayPutState applies a would-be ReconciliationState write to
+// the session's overlay. Returns an error if the session has no
+// registered overlay (caller bug — the captureOnly wrapper guards
+// this in production). Per DJ-149 §10.
+func (s *SpecStore) OverlayPutState(sess any, tool, approachID string, rs state.ReconciliationState) error {
+	o := s.overlayFor(sess)
+	if o == nil {
+		return fmt.Errorf("OverlayPutState: session has no registered overlay (call RegisterOverlay first)")
+	}
+	o.putState(tool, approachID, rs)
+	return nil
+}
+
+// OverlayDeleteState marks a would-be state record deletion on the
+// session's overlay.
+func (s *SpecStore) OverlayDeleteState(sess any, tool, approachID string) error {
+	o := s.overlayFor(sess)
+	if o == nil {
+		return fmt.Errorf("OverlayDeleteState: session has no registered overlay")
+	}
+	o.deleteState(tool, approachID)
 	return nil
 }
 

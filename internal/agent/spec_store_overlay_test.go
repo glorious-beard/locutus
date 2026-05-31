@@ -320,3 +320,144 @@ func TestSessionOverlay_ConcurrentStatePutSafe(t *testing.T) {
 	}
 	assert.Len(t, o.capturedList(), 8)
 }
+
+func TestSpecStore_OverlayStatePutAndView(t *testing.T) {
+	store, err := NewSpecStore(specio.NewMemFS())
+	require.NoError(t, err)
+
+	sess := &fakeSess{id: "s1"}
+	store.RegisterOverlay(sess)
+	t.Cleanup(func() { store.UnregisterOverlay(sess) })
+
+	rs := state.ReconciliationState{
+		ApproachID: "app-feat-foo",
+		Status:     state.StatusLive,
+	}
+	err = store.OverlayPutState(sess, "state_record_reconciliation", "app-feat-foo", rs)
+	require.NoError(t, err)
+
+	view := store.OverlayView(sess)
+	got, ok := view.GetState("app-feat-foo")
+	require.True(t, ok)
+	assert.Equal(t, state.StatusLive, got.Status)
+
+	// Caps include the state capture
+	caps := store.OverlayCaptured(sess)
+	require.Len(t, caps, 1)
+	assert.Equal(t, "state_record_reconciliation", caps[0].Tool)
+}
+
+func TestSpecStore_OverlayStateDeleteMasks(t *testing.T) {
+	store, err := NewSpecStore(specio.NewMemFS())
+	require.NoError(t, err)
+
+	sess := &fakeSess{id: "s1"}
+	store.RegisterOverlay(sess)
+	t.Cleanup(func() { store.UnregisterOverlay(sess) })
+
+	err = store.OverlayDeleteState(sess, "state_delete_record", "app-feat-foo")
+	require.NoError(t, err)
+
+	view := store.OverlayView(sess)
+	_, ok := view.GetState("app-feat-foo")
+	assert.False(t, ok, "deleted record masked from view")
+}
+
+func TestSpecStore_OverlayPutStateNoOverlayErrors(t *testing.T) {
+	store, err := NewSpecStore(specio.NewMemFS())
+	require.NoError(t, err)
+
+	sess := &fakeSess{id: "unregistered"}
+	// Don't register.
+	err = store.OverlayPutState(sess, "state_record_reconciliation", "app-x", state.ReconciliationState{})
+	require.Error(t, err, "OverlayPutState should error if session has no registered overlay")
+}
+
+func TestOverlayView_StateAccessors_FallThroughToBase(t *testing.T) {
+	store, err := NewSpecStore(specio.NewMemFS())
+	require.NoError(t, err)
+
+	// Wire stub base-state accessors that return one canned record.
+	baseRecords := map[string]state.ReconciliationState{
+		"app-base": {ApproachID: "app-base", Status: state.StatusLive},
+	}
+	store.SetStateAccessors(
+		func(id string) (*state.ReconciliationState, bool) {
+			rs, ok := baseRecords[id]
+			if !ok {
+				return nil, false
+			}
+			return &rs, true
+		},
+		func() []string {
+			out := make([]string, 0, len(baseRecords))
+			for id := range baseRecords {
+				out = append(out, id)
+			}
+			return out
+		},
+	)
+
+	// View for a session without an overlay (no RegisterOverlay) — should pass through to base.
+	sess := &fakeSess{id: "passthrough"}
+	view := store.OverlayView(sess)
+	rs, ok := view.GetState("app-base")
+	require.True(t, ok, "base record should be visible without overlay")
+	assert.Equal(t, "app-base", rs.ApproachID)
+
+	ids := view.ListStateRecords()
+	assert.ElementsMatch(t, []string{"app-base"}, ids)
+}
+
+func TestOverlayView_StateAccessors_OverlayOverridesBase(t *testing.T) {
+	store, err := NewSpecStore(specio.NewMemFS())
+	require.NoError(t, err)
+
+	baseRecords := map[string]state.ReconciliationState{
+		"app-foo": {ApproachID: "app-foo", Status: state.StatusLive},
+	}
+	store.SetStateAccessors(
+		func(id string) (*state.ReconciliationState, bool) {
+			rs, ok := baseRecords[id]
+			if !ok {
+				return nil, false
+			}
+			return &rs, true
+		},
+		func() []string {
+			out := make([]string, 0, len(baseRecords))
+			for id := range baseRecords {
+				out = append(out, id)
+			}
+			return out
+		},
+	)
+
+	sess := &fakeSess{id: "s1"}
+	store.RegisterOverlay(sess)
+	t.Cleanup(func() { store.UnregisterOverlay(sess) })
+
+	// Overlay-revise app-foo to drifted status.
+	require.NoError(t, store.OverlayPutState(sess, "state_mark_status", "app-foo",
+		state.ReconciliationState{ApproachID: "app-foo", Status: state.StatusDrifted}))
+
+	view := store.OverlayView(sess)
+	rs, ok := view.GetState("app-foo")
+	require.True(t, ok)
+	assert.Equal(t, state.StatusDrifted, rs.Status, "overlay should win over base on read")
+
+	// Overlay add app-new that isn't in base.
+	require.NoError(t, store.OverlayPutState(sess, "state_record_reconciliation", "app-new",
+		state.ReconciliationState{ApproachID: "app-new", Status: state.StatusLive}))
+
+	ids := view.ListStateRecords()
+	assert.ElementsMatch(t, []string{"app-foo", "app-new"}, ids)
+
+	// Overlay delete app-foo masks the base record.
+	require.NoError(t, store.OverlayDeleteState(sess, "state_delete_record", "app-foo"))
+	_, ok = view.GetState("app-foo")
+	assert.False(t, ok, "deleted record masked from view")
+
+	ids = view.ListStateRecords()
+	assert.ElementsMatch(t, []string{"app-new"}, ids, "deleted base record excluded from list")
+}
