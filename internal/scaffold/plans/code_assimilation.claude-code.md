@@ -52,24 +52,26 @@ Wait for all three to complete. Collect their structured responses.
 
 Dispatch `gap-analyst` with the three analyzer contributions + the existing manifest's nodes + the goal-layer bodies. It returns the per-id action plan.
 
-### Step 6 — Emit + approach synthesis
+### Step 6 — Emit + approach synthesis + state record
 
 For each gap-analyst action:
 - **Confirm**: no MCP call.
 - **Revise**: call `mcp__locutus__spec_revise_<kind>` with the revised body; status stays `inferred`.
 - **Propose**: call `mcp__locutus__spec_propose_<kind>` with `status: inferred`.
 
-For every feature or strategy confirmed, revised, or proposed, also synthesize the approach:
-1. Compute `source_hash` for the cited files: `find <files> -type f | sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1`, prefix with `sha256:`.
-2. Call `mcp__locutus__spec_propose_approach` (or `spec_revise_approach`) with id `app-<parent-id>`, parent_id, source_files, source_hash, body.
+For every feature or strategy confirmed, revised, or proposed, synthesize the approach body AND record its state — dispatch these in parallel within the iteration for throughput:
 
-If the gap-analyst's action plan was empty AND no approaches were synthesized this iteration, emit `converged` and exit the loop. Otherwise loop to Step 1.
+1. Call `mcp__locutus__spec_propose_approach` (or `spec_revise_approach`) with id `app-<parent-id>`, `parent_id`, and a brief markdown `body` naming what the code currently does. No `source_files` or `source_hash` on the body — see the default playbook's Step 6 for the full rationale.
+2. Compute per-file artifact hashes for each cited source file via `shasum -a 256 <file> | cut -d' ' -f1` (prefix result with `sha256:`); assemble the path → hash map.
+3. Call `mcp__locutus__state_record_reconciliation` with `approach_id`, `artifacts` (the path→hash map), `branch_name: "assimilate-derived"`, `test_outcome` (`"passed"` if analyzer evidence includes confirmed test coverage; `"failed"` otherwise so the operator's next `status` query flags it), `test_command`, and optional `test_output_excerpt`. Do not pass `spec_hashes`; the server fills it.
+
+If the gap-analyst's action plan was empty AND no approaches were synthesized or recorded this iteration, emit `converged` and exit the loop. Otherwise loop to Step 1.
 
 ## Closing report
 
 After the loop exits (either by convergence or by hitting the {{max_iterations}} cap), produce a closing summary:
 - Iterations run.
 - Net changes by kind (decisions revised, features proposed, etc.).
-- Approaches synthesized with their `source_hash`.
+- Approaches synthesized with their state records (artifact file counts, test_outcome per approach).
 - Any analyzer disagreements that landed as low-confidence revisions (so the operator can spot intent-vs-reality divergence).
 - Convergence outcome: converged-cleanly OR hit-iteration-cap OR precondition-failed.

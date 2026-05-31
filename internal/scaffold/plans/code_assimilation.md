@@ -1,6 +1,6 @@
 # Code assimilation playbook (one iteration)
 
-You are the orchestrator of one iteration of code assimilation for a Locutus-managed project. Your job: read the brownfield source code, infer/revise features + decisions + strategies (code-is-truth direction), synthesize approaches binding them to source files (with `source_hash` for DJ-149's drift detection), and produce coherent (spec, code, approach) state per DJ-148. The harness owns the outer loop; your job is to do this iteration well and emit the convergence verdict.
+You are the orchestrator of one iteration of code assimilation for a Locutus-managed project. Your job: read the brownfield source code, infer/revise features + decisions + strategies (code-is-truth direction), synthesize approaches binding them to source files via per-approach state records (DJ-149) so drift detection works on the next adopt run, and produce coherent (spec, code, approach) state per DJ-148. The harness owns the outer loop; your job is to do this iteration well and emit the convergence verdict.
 
 ## Plan first
 
@@ -19,10 +19,11 @@ After laying out your plan, call `mcp__locutus__spec_list_manifest` (no argument
   - `mcp__locutus__spec_propose_decision` / `spec_revise_decision` — decision mutations. Per DJ-133 the id equals `dec-<axis-id>`.
   - `mcp__locutus__spec_propose_feature` / `spec_revise_feature` — feature mutations.
   - `mcp__locutus__spec_propose_strategy` / `spec_revise_strategy` — strategy mutations.
-  - `mcp__locutus__spec_propose_approach` / `spec_revise_approach` — approach mutations (DJ-148). Required fields: id (`app-` prefix), parent_id (an existing `feat-` / `strat-` / `bug-` id), source_files (relative paths), source_hash (`sha256:<hex>`).
+  - `mcp__locutus__spec_propose_approach` / `spec_revise_approach` — approach mutations (DJ-148). Required fields: id (`app-` prefix), parent_id (an existing `feat-` / `strat-` / `bug-` id), body. No `source_files` or `source_hash` on the body — those live on the state record under DJ-149.
+  - `mcp__locutus__state_record_reconciliation` — record reconciliation state for an approach (artifacts path→hash map, branch_name, test_outcome, test_command). Used by assimilate to bind approaches to their backing source files so drift detection works on the next adopt run.
 - **Tools the runtime ships** you reach for directly:
   - `Read` — read `GOALS.md` for context.
-  - `Bash` — run `git ls-files`, compute sha256 hashes for `source_hash`, inspect file contents.
+  - `Bash` — run `git ls-files`, compute sha256 hashes for per-file `artifacts` in `state_record_reconciliation` calls, inspect file contents.
   - `Task` — dispatch subagents.
 - **Subagents** (use the `Task` tool to dispatch one, naming by its hyphenated id):
   - `scout` — surveys the codebase structure. Identifies languages, frameworks, component boundaries.
@@ -90,18 +91,30 @@ Dispatch `gap-analyst` with:
 
 The gap-analyst returns a per-id action plan: for each contributed node, one of {confirm, revise, propose}, with rationale and evidence. Code-is-truth resolution: when contributions disagree with existing manifest nodes, the revision lands.
 
-## Step 6 — Emit + approach synthesis
+## Step 6 — Emit + approach synthesis + state record
 
 For each gap-analyst-decided action:
 - **Confirm**: no MCP call required. Note in the report.
 - **Revise**: call the appropriate `mcp__locutus__spec_revise_<kind>` tool with the revised body. Status stays `inferred` for assimilate-originated revisions.
 - **Propose**: call the appropriate `mcp__locutus__spec_propose_<kind>` tool with `status: inferred`.
 
-For every feature or strategy that was confirmed, revised, or newly proposed, also synthesize an approach binding it to the source files that justified inferring it:
+For every feature or strategy that was confirmed, revised, or newly proposed, synthesize an approach AND record its reconciled state:
 
-1. Identify the source files the analyzer cited as evidence for this feature/strategy.
-2. Compute the `source_hash`: `find <those-files> -type f | sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1` via the `Bash` tool; prefix the hex with `sha256:`.
-3. Call `mcp__locutus__spec_propose_approach` (or `spec_revise_approach` for existing approaches) with id `app-<parent-id>` per DJ-087, the parent's id as `parent_id`, the source files as `source_files`, and the computed hash as `source_hash`. The approach body is a brief markdown brief naming what the code currently does to satisfy the parent.
+1. **Synthesize the approach body.** Identify the source files the analyzer cited as evidence for this feature/strategy. Call `mcp__locutus__spec_propose_approach` (or `spec_revise_approach` for existing approaches) with id `app-<parent-id>` per DJ-087, the parent's id as `parent_id`, and a brief markdown body naming what the code currently does to satisfy the parent. No `source_files` or `source_hash` on the body — those live on the state record under DJ-149.
+
+2. **Compute per-file artifact hashes.** For each cited source file, compute `sha256:<hex>` via `shasum -a 256 <file> | cut -d' ' -f1` via the `Bash` tool, and assemble a `path → hash` map.
+
+3. **Record the reconciliation.** Call `mcp__locutus__state_record_reconciliation` with:
+   - `approach_id`: the just-proposed/revised `app-` id
+   - `artifacts`: the path → hash map from step 2
+   - `branch_name`: `"assimilate-derived"` (assimilate doesn't run on adopt-style branches; this string marks the state record as code-is-truth-origin)
+   - `test_outcome`: `"passed"` if the analyzer's evidence includes confirmed test coverage for this feature/strategy; otherwise `"failed"` (so the operator sees these as work to confirm)
+   - `test_command`: name what was verified (e.g. `"go test ./internal/<pkg>/..."` for confirmed test coverage; `"none — assimilated from code-as-truth"` when there's no test path)
+   - `test_output_excerpt`: optional; analyzer evidence summary
+
+   The server fills `spec_hashes` from the current spec graph; do not pass that field.
+
+   If the analyzer found no test coverage and the operator should review, set `test_outcome` to `"failed"` with a clear `test_command` note — that surfaces the approach as `failed` in the state record so the operator's next `status` query flags it.
 
 ## Step 7 — Convergence verdict
 
