@@ -105,7 +105,7 @@ func (s *FileStateStore) Walk() ([]ReconciliationState, error) {
 
 // Delete removes the state entry for approachID. No-op if not found.
 func (s *FileStateStore) Delete(approachID string) error {
-	if err := s.fsys.Remove(s.path(approachID)); err != nil {
+	if err := s.fsys.Remove(s.path(approachID)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("state delete: %w", err)
 	}
 	return nil

@@ -163,7 +163,7 @@ func dryRunContextNote(format string) string {
 	if format != "markdown" && format != "json" {
 		format = "markdown"
 	}
-	base := "Dry-run mode is active. The daemon is capturing your spec_propose_* / spec_revise_* / spec_delete_* / spec_mark_approach_drifted / spec_update_goals_md_hash calls in a per-session overlay rather than persisting them, and discarding the overlay at session close. You will still see your own captured mutations in subsequent spec_list_manifest / spec_get / spec_search results so the workflow runs end-to-end against the would-be graph. After your final mutation phase, call mcp__locutus__spec_dry_run_report once with no arguments to retrieve the structured capture, then close with the report rendered as "
+	base := "Dry-run mode is active. The daemon is capturing your spec_propose_* / spec_revise_* / spec_delete_* / spec_mark_approach_drifted / spec_update_goals_md_hash and state_record_reconciliation / state_refresh_artifacts / state_mark_status / state_delete_record calls in a per-session overlay rather than persisting them, and discarding the overlay at session close. You will still see your own captured mutations in subsequent spec_list_manifest / spec_get / spec_search / state_list_records / state_get_record / state_compare_hashes results so the workflow runs end-to-end against the would-be graph. After your final mutation phase, call mcp__locutus__spec_dry_run_report once with no arguments to retrieve the structured capture, then close with the report rendered as "
 	switch format {
 	case "json":
 		return base + "JSON: emit the structured capture verbatim inside a single fenced ```json code block. No surrounding prose. The JSON shape is exactly what the tool returned — don't reformat or filter."
@@ -185,20 +185,26 @@ func renderDryRunReportFromToolsJSONL(path string, format string) string {
 		return "" // graceful — caller falls back to agent narration
 	}
 	mutationFamily := map[string]struct{}{
-		"spec_propose_decision":      {},
-		"spec_revise_decision":       {},
-		"spec_propose_feature":       {},
-		"spec_revise_feature":        {},
-		"spec_propose_strategy":      {},
-		"spec_revise_strategy":       {},
-		"spec_propose_goal":          {},
-		"spec_revise_goal":           {},
-		"spec_delete_goal":           {},
-		"spec_propose_antigoal":      {},
-		"spec_revise_antigoal":       {},
-		"spec_delete_antigoal":       {},
-		"spec_mark_approach_drifted": {},
-		"spec_update_goals_md_hash":  {},
+		"spec_propose_decision":         {},
+		"spec_revise_decision":          {},
+		"spec_propose_feature":          {},
+		"spec_revise_feature":           {},
+		"spec_propose_strategy":         {},
+		"spec_revise_strategy":          {},
+		"spec_propose_approach":         {},
+		"spec_revise_approach":          {},
+		"spec_propose_goal":             {},
+		"spec_revise_goal":              {},
+		"spec_delete_goal":              {},
+		"spec_propose_antigoal":         {},
+		"spec_revise_antigoal":          {},
+		"spec_delete_antigoal":          {},
+		"spec_mark_approach_drifted":    {},
+		"spec_update_goals_md_hash":     {},
+		"state_record_reconciliation":   {},
+		"state_refresh_artifacts":       {},
+		"state_mark_status":             {},
+		"state_delete_record":           {},
 	}
 	type toolCall struct {
 		ToolName  string         `json:"ToolName"`

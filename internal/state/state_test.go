@@ -147,6 +147,14 @@ func TestDelete(t *testing.T) {
 	assert.True(t, errors.Is(err, state.ErrNotFound))
 }
 
+func TestDelete_NoOpOnMissingRecord(t *testing.T) {
+	store := newStore()
+	// Deleting an approach that was never reconciled must succeed —
+	// the documented "no-op if not found" semantics let operators
+	// retire orphan approaches without first checking existence.
+	require.NoError(t, store.Delete("never-existed"))
+}
+
 func TestWalkEmptyStore(t *testing.T) {
 	store := newStore()
 	results, err := store.Walk()
