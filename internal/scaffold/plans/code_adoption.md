@@ -139,6 +139,8 @@ After the code is implemented and tests pass, call mcp__locutus__state_record_re
 - approach_id: <approach-id>
 - artifacts: <map of every source file written to its sha256 hash>
 - test_outcome: "passed" (if tests pass) or "failed" (if they fail)
+
+The tool writes `.borg/state/<approach-id>.yaml` to disk via the MCP daemon. Then `git add .borg/state/<approach-id>.yaml` and include it in the same phase commit as the source files — the state record is version-controlled per DJ-068 / DJ-096 and belongs with the code it describes. The same staging rule applies to any later `state_refresh_artifacts` or `state_mark_status` call: stage the updated YAML alongside whatever commit triggered the call.
 ```
 
 ## Step 4 — Dispatch runtime for implementation
@@ -153,6 +155,7 @@ The runtime then reads the plan folder (`.locutus/sessions/<sid>/plans/`) and ex
 
 - Each phase runs on its own `adopt/<NNN>-<approach-id>` branch; phase N+1 branches off phase N's branch (stacked). Parallel siblings at the same ordinal share the suffix with a letter (`003a`, `003b`).
 - The runtime runs the project's test suite after each phase implementation. The suite's exit status is the `test_outcome` passed to `state_record_reconciliation`.
+- Every phase commit includes the state YAML alongside the source: after `state_record_reconciliation` (or any later `state_refresh_artifacts` / `state_mark_status`) the runtime stages `.borg/state/<approach-id>.yaml` and folds it into the same commit. State records are version-controlled per DJ-068 / DJ-096; an unstaged state file is a Locutus-managed artifact that escaped the phase boundary.
 - If a project lacks a test suite, the runtime scaffolds one using its native skills or explicitly halts the phase as operator-actionable rather than assuming `passed`.
 - On first failure: the runtime halts the master plan; the failed branch is retained; subsequent phases are not attempted.
 
