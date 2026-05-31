@@ -97,8 +97,8 @@ The execution model trusts the runtime per DJ-144's trajectory. Locutus identifi
 
 **MCP tool surface:**
 - New write tools (4): `state_record_reconciliation`, `state_refresh_artifacts`, `state_mark_status`, `state_delete_record` — all captureOnly-wrapped per DJ-147
-- New read tools (2): `state_list_records`, `state_get_record` — overlay-aware
-- Tool count goes from 14+2 mutation tools (DJ-148 baseline minus DJ-149 reverts) to ~16 mutation tools (4 new state + 2 existing approach) + 2 new read tools
+- New read tools (3): `state_list_records`, `state_get_record`, `state_compare_hashes` — overlay-aware; `state_compare_hashes` does server-side SpecHashes diff (current subgraph vs stored record) so the agent doesn't need to reproduce server-side hash bytes
+- Tool count goes from 14+2 mutation tools (DJ-148 baseline minus DJ-149 reverts) to ~16 mutation tools (4 new state + 2 existing approach) + 3 new read tools
 
 **Spec data model:**
 - `spec.Approach` reverts: drop `SourceFiles`, `SourceHash`, `SourceHashSyncedAt` and their `yaml:` tags; restore the pre-DJ-148 struct shape

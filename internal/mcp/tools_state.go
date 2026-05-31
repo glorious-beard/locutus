@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +25,8 @@ const (
 	descStateListRecords = "Return a compact index of every state record: approach_id, status, last_reconciled, branch_name. Used by adopt's Step 1 to enumerate which approaches have been reconciled. No input. Overlay-aware: under dry-run, includes session-pending writes and excludes session-pending deletes. Per DJ-149."
 
 	descStateGetRecord = "Batched body fetch for state records. Input: approach_ids (list of app- prefixed ids). Output: results map keyed by approach_id with full ReconciliationState (spec_hashes, artifacts, status, message, last_reconciled, branch_name); available_ids for ids that exist; missing for requested ids without records. Overlay-aware. Per DJ-149."
+
+	descStateCompareHashes = "Compare an approach's current upstream spec-graph hashes against its last-recorded SpecHashes. Used by adopt's Step 2 to detect spec drift without requiring the agent to reproduce server-side hash bytes. Input: approach_id (app- prefix; must exist in the manifest). Output: added (spec ids in the current upstream subgraph that aren't in the state record — also catches the first half of a rename), removed (spec ids in the state record that aren't in the current subgraph — catches the second half of a rename), changed (same id, different hash — the body was revised). If no state record exists yet, every current upstream id is reported as added. Overlay-aware on the state-record read; current spec hashes come from the SpecStore (no overlay for current). Per DJ-149."
 )
 
 type stateRecordReconciliationInput struct {
@@ -55,6 +58,18 @@ type stateDeleteRecordInput struct {
 
 type stateGetRecordInput struct {
 	ApproachIDs []string `json:"approach_ids"`
+}
+
+type stateCompareHashesInput struct {
+	ApproachID string `json:"approach_id"`
+}
+
+type stateCompareHashesOutput struct {
+	ApproachID string   `json:"approach_id"`
+	HasRecord  bool     `json:"has_record"`     // false on first-time adopt
+	Added      []string `json:"added,omitempty"`
+	Removed    []string `json:"removed,omitempty"`
+	Changed    []string `json:"changed,omitempty"`
 }
 
 // registerStateTools wires state_record_reconciliation and
@@ -243,6 +258,49 @@ func registerStateTools(server *mcp.Server, store *agent.SpecStore, stateStore *
 				out.Missing = append(out.Missing, id)
 			}
 		}
+		return nil, out, nil
+	})
+
+	// state_compare_hashes (read-only; overlay-aware for state record; SpecStore for current hashes)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "state_compare_hashes",
+		Description: descStateCompareHashes,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in stateCompareHashesInput) (*mcp.CallToolResult, stateCompareHashesOutput, error) {
+		approach, ok := loadApproachForStateRecord(store, in.ApproachID)
+		if !ok {
+			return errorResult(fmt.Sprintf("state_compare_hashes: approach %q not found in manifest", in.ApproachID)), stateCompareHashesOutput{}, nil
+		}
+		current, err := state.ComputeSpecHashes(approach, specStoreBodyGetter(store))
+		if err != nil {
+			return errorResult(fmt.Sprintf("state_compare_hashes: %v", err)), stateCompareHashesOutput{}, nil
+		}
+		view := store.OverlayView(req.Session)
+		rs, hasRecord := view.GetState(in.ApproachID)
+		out := stateCompareHashesOutput{ApproachID: in.ApproachID, HasRecord: hasRecord}
+		if !hasRecord {
+			for id := range current {
+				out.Added = append(out.Added, id)
+			}
+			sort.Strings(out.Added)
+			return nil, out, nil
+		}
+		for id, currentHash := range current {
+			priorHash, inPrior := rs.SpecHashes[id]
+			switch {
+			case !inPrior:
+				out.Added = append(out.Added, id)
+			case priorHash != currentHash:
+				out.Changed = append(out.Changed, id)
+			}
+		}
+		for id := range rs.SpecHashes {
+			if _, inCurrent := current[id]; !inCurrent {
+				out.Removed = append(out.Removed, id)
+			}
+		}
+		sort.Strings(out.Added)
+		sort.Strings(out.Removed)
+		sort.Strings(out.Changed)
 		return nil, out, nil
 	})
 }

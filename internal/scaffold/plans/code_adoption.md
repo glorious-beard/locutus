@@ -19,6 +19,7 @@ After laying out your plan, call `mcp__locutus__spec_list_manifest` and `mcp__lo
   - `mcp__locutus__spec_mark_approach_drifted` — marks an approach drifted when its parent is orphaned.
   - `mcp__locutus__state_list_records` — list all reconciliation state records. Start your iteration here alongside the manifest.
   - `mcp__locutus__state_get_record` — fetch one record's full body by approach id.
+  - `mcp__locutus__state_compare_hashes` — server-side spec drift check for a single approach; returns `added`, `removed`, `changed` ids. Use in Step 2 spec-side drift classification.
   - `mcp__locutus__state_record_reconciliation` — write a completed-phase outcome (SpecHashes, Artifacts, test_outcome → status `live` / `failed`).
   - `mcp__locutus__state_refresh_artifacts` — update artifact hashes only (trivial code drift; keeps status `live`).
   - `mcp__locutus__state_mark_status` — manual status transition for operator-driven moves.
@@ -58,14 +59,13 @@ The manifest and state list are already in hand from "Start here." Now issue one
 
 Compute the worklist by walking every approach id in the manifest. For each:
 
-**Spec-side drift (using `SpecHashes` map diff):**
+**Spec-side drift (using `state_compare_hashes`):**
 
-1. **Current SpecHashes keys** = `{approach.id, approach.parent_id} ∪ approach.decisions[] ∪ approach.advances[] ∪ approach.respects[]`. For each id in that set, compute `sha256:<hex>` of the spec body (run `shasum -a 256` on the `.borg/spec/<id>.yaml` via `Bash` — reading the file only to hash it, not to treat it as authoritative state).
-2. Compare the current keys+hashes against the state record's `SpecHashes` map (if a record exists):
-   - **Added key** — upstream dependency was added (or rename's new half). Record as spec-drifted.
-   - **Removed key** — upstream dependency no longer referenced (or rename's old half). Record as spec-drifted.
-   - **Same key, hash mismatch** — body changed. Record as spec-drifted.
-   - **All keys+hashes match** — no spec drift.
+1. For each approach in the worklist scope, call `mcp__locutus__state_compare_hashes` with the approach id. The tool returns:
+   - `added` — spec ids in the approach's current upstream subgraph that weren't tracked at last reconciliation (new citation, or first half of a rename)
+   - `removed` — spec ids that were tracked but no longer in the upstream subgraph (citation retired, or second half of a rename)
+   - `changed` — same id, body revised since reconciliation
+2. Any non-empty result means the approach is spec-drifted; mark it for regenerate. A rename surfaces as `removed` + `added` on the same call; the agent doesn't need to disambiguate — both flag the same approach for regeneration.
 3. **Orphan parent check:** if `approach.parent_id` is not in the manifest, call `mcp__locutus__spec_mark_approach_drifted` and categorize this approach as `orphan-superseded`; surface in the report.
 
 **Code-side drift (using `Artifacts` map diff):**
@@ -134,7 +134,6 @@ respects: [<agoal-id>, ...]
 
 After the code is implemented and tests pass, call mcp__locutus__state_record_reconciliation with:
 - approach_id: <approach-id>
-- spec_hashes: <the current SpecHashes map you computed in Step 2>
 - artifacts: <map of every source file written to its sha256 hash>
 - test_outcome: "passed" (if tests pass) or "failed" (if they fail)
 ```
