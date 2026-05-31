@@ -10,6 +10,7 @@ import (
 
 	"github.com/glorious-beard/locutus/internal/spec"
 	"github.com/glorious-beard/locutus/internal/specio"
+	"github.com/glorious-beard/locutus/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -254,4 +255,68 @@ func TestSpecStore_OverlayDeleteMasks(t *testing.T) {
 	// OverlayDelete against an unregistered session errors.
 	err = store.OverlayDelete(other, "spec_delete_goal", KindGoal, "goal-x")
 	assert.Error(t, err, "OverlayDelete must reject sessions with no registered overlay")
+}
+
+func TestSessionOverlay_StatePutAndLookup(t *testing.T) {
+	o := newSessionOverlay()
+	rs := state.ReconciliationState{
+		ApproachID: "app-feat-foo",
+		Status:     state.StatusLive,
+		SpecHashes: map[string]string{"app-feat-foo": "sha256:abc"},
+		Artifacts:  map[string]string{"f.go": "sha256:def"},
+	}
+	o.putState("state_record_reconciliation", "app-feat-foo", rs)
+
+	got, ok := o.lookupState("app-feat-foo")
+	require.True(t, ok)
+	require.NotNil(t, got)
+	assert.Equal(t, "app-feat-foo", got.ApproachID)
+	assert.Equal(t, state.StatusLive, got.Status)
+
+	caps := o.capturedList()
+	require.Len(t, caps, 1)
+	assert.Equal(t, "state_record_reconciliation", caps[0].Tool)
+	assert.Equal(t, "app-feat-foo", caps[0].ID)
+}
+
+func TestSessionOverlay_StateDeleteMasksLookup(t *testing.T) {
+	o := newSessionOverlay()
+	o.deleteState("state_delete_record", "app-feat-foo")
+
+	_, ok := o.lookupState("app-feat-foo")
+	assert.False(t, ok, "deleted state record must report missing")
+	assert.True(t, o.isStateDeleted("app-feat-foo"))
+
+	caps := o.capturedList()
+	require.Len(t, caps, 1)
+	assert.Equal(t, "state_delete_record", caps[0].Tool)
+}
+
+func TestSessionOverlay_StatePutAfterDeleteUnmasks(t *testing.T) {
+	o := newSessionOverlay()
+	o.deleteState("state_delete_record", "app-x")
+	o.putState("state_record_reconciliation", "app-x", state.ReconciliationState{ApproachID: "app-x"})
+	_, ok := o.lookupState("app-x")
+	assert.True(t, ok, "putState after deleteState must unmask")
+	assert.False(t, o.isStateDeleted("app-x"), "isStateDeleted should be false after re-put")
+}
+
+func TestSessionOverlay_ConcurrentStatePutSafe(t *testing.T) {
+	o := newSessionOverlay()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := "app-" + string(rune('a'+i))
+			o.putState("state_record_reconciliation", id, state.ReconciliationState{ApproachID: id})
+		}(i)
+	}
+	wg.Wait()
+	for i := 0; i < 8; i++ {
+		id := "app-" + string(rune('a'+i))
+		_, ok := o.lookupState(id)
+		assert.True(t, ok, "missing %s after concurrent writes", id)
+	}
+	assert.Len(t, o.capturedList(), 8)
 }

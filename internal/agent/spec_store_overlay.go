@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/glorious-beard/locutus/internal/spec"
+	"github.com/glorious-beard/locutus/internal/state"
 )
 
 // StoreEntry is the overlay's typed view of a would-be spec graph
@@ -74,6 +75,18 @@ type sessionOverlay struct {
 	deleted          map[storeKey]struct{}
 	captured         []CapturedMutation
 	manifestOverride *ManifestOverride
+
+	// stateOverrides holds would-be ReconciliationState records keyed
+	// by approach id. Written by state_record_reconciliation +
+	// state_refresh_artifacts + state_mark_status capture closures
+	// under dry-run. Read by OverlayView.GetState. Per DJ-149 §10.
+	stateOverrides map[string]*state.ReconciliationState
+
+	// stateDeleted marks approach ids whose state records would be
+	// removed by state_delete_record under dry-run. Lookup masks the
+	// base FileStateStore the same way spec deleted entries mask the
+	// base SpecStore.
+	stateDeleted map[string]struct{}
 }
 
 // ManifestOverride carries a per-session dry-run capture of a
@@ -86,8 +99,10 @@ type ManifestOverride struct {
 
 func newSessionOverlay() *sessionOverlay {
 	return &sessionOverlay{
-		entries: make(map[storeKey]*StoreEntry),
-		deleted: make(map[storeKey]struct{}),
+		entries:        make(map[storeKey]*StoreEntry),
+		deleted:        make(map[storeKey]struct{}),
+		stateOverrides: make(map[string]*state.ReconciliationState),
+		stateDeleted:   make(map[string]struct{}),
 	}
 }
 
@@ -185,6 +200,63 @@ func (o *sessionOverlay) setGoalsMdHash(hash string, syncedAt time.Time) {
 		Body:      ManifestOverride{GoalsMdHash: hash, GoalsMdSyncedAt: syncedAt},
 		Timestamp: time.Now().UTC(),
 	})
+}
+
+// putState captures a would-be state record write under dry-run.
+// Mirrors put() for spec entries. Appends a CapturedMutation entry
+// to surface in spec_dry_run_report's output. Per DJ-149.
+func (o *sessionOverlay) putState(tool, approachID string, rs state.ReconciliationState) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	rsCopy := rs
+	o.stateOverrides[approachID] = &rsCopy
+	delete(o.stateDeleted, approachID) // put after delete unmasks
+	o.captured = append(o.captured, CapturedMutation{
+		Tool:      tool,
+		Kind:      KindApproach, // state records are per-approach; reuse the approach kind for report consistency
+		ID:        approachID,
+		Body:      rsCopy,
+		Timestamp: time.Now().UTC(),
+	})
+}
+
+// deleteState marks an approach's state record as would-be deleted.
+// Mirrors delete() for spec entries.
+func (o *sessionOverlay) deleteState(tool, approachID string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.stateDeleted[approachID] = struct{}{}
+	delete(o.stateOverrides, approachID) // delete after put removes the would-be record
+	o.captured = append(o.captured, CapturedMutation{
+		Tool:      tool,
+		Kind:      KindApproach,
+		ID:        approachID,
+		Timestamp: time.Now().UTC(),
+	})
+}
+
+// lookupState returns (record, true) when the overlay holds a
+// would-be state record for approachID; (nil, false) when it
+// doesn't OR when stateDeleted masks the lookup. Returned pointer
+// is the overlay's live record; callers must treat as read-only.
+func (o *sessionOverlay) lookupState(approachID string) (*state.ReconciliationState, bool) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if _, gone := o.stateDeleted[approachID]; gone {
+		return nil, false
+	}
+	rs, ok := o.stateOverrides[approachID]
+	return rs, ok
+}
+
+// isStateDeleted reports whether this session has marked the
+// approach's state record for deletion. Used by OverlayView read
+// merging (Task 7) to mask the base FileStateStore.
+func (o *sessionOverlay) isStateDeleted(approachID string) bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	_, gone := o.stateDeleted[approachID]
+	return gone
 }
 
 // OverlayView is the read merger consulted by spec_list_manifest /
