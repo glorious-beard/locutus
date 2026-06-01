@@ -63,6 +63,7 @@ graph TD
         CandidateSurveys["spec-candidate-survey × N axes (parallel)"]
         Decisions["spec-decision-elaborator × N axes (parallel) → mcp__locutus__spec_propose_decision"]
         Narratives["spec-feature-elaborator / spec-strategy-elaborator × M new nodes (parallel) → spec_propose_feature / spec_propose_strategy"]
+        CoverageCritic["spec-coverage-critic × P deliverable shapes (parallel) → CoverageReport per shape"]
         Critics["spec-critic-elaborator × K dimensions (parallel) → concerns feed next scout"]
         Reconcile["spec-reconciler: cross-decision integrity → mcp__locutus__spec_revise_decision"]
         Verdict["Report verdict: converged: true | converged: false; <reason>"]
@@ -72,7 +73,8 @@ graph TD
         Surveyed -- "converged? = false" --> CandidateSurveys
         CandidateSurveys --> Decisions
         Decisions --> Narratives
-        Narratives --> Critics
+        Narratives --> CoverageCritic
+        CoverageCritic -- "uncovered obligations → elaborator revise input" --> Critics
         Critics --> Reconcile
         Reconcile --> Verdict
     end
@@ -90,7 +92,7 @@ graph TD
     classDef harness fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
 
     class Survey,Reconcile agent
-    class CandidateSurveys,Decisions,Narratives,Critics fanout
+    class CandidateSurveys,Decisions,Narratives,CoverageCritic,Critics fanout
     class Surveyed,Verdict merge
     class Done terminal
     class RunEval,WfEval,Advance,DriverPick harness
@@ -177,6 +179,26 @@ Authors per-strategy prose body and decision-id linkage. Structurally similar to
 | Governing DJs | [DJ-124](DECISION_JOURNAL.md#dj-124) |
 
 Strategy bodies name a specific technology — that's the structural difference from features. A strategy body says "Use Postgres 16 with PostGIS on AWS RDS Multi-AZ"; the cited decisions' chosen options are committed verbatim.
+
+### `spec-coverage-critic`
+
+Deliverable-shape obligation enumerator and coverage judge. Dispatched once per identified deliverable shape after the feature/strategy elaboration pass, before the `spec-critic-elaborator` pass (DJ-150).
+
+| Field | Value |
+|---|---|
+| Returns | `CoverageReport` — array of `{title, description, citations[], covered_by: [feat-id, ...], rationale}` entries, one per enumerated category obligation |
+| Governing DJs | [DJ-150](DECISION_JOURNAL.md#dj-150) (deliverable-shape obligations as refine-time findings; no new graph node kinds) |
+
+Two coupled jobs per dispatch:
+
+1. **Enumerate obligations** — for the identified deliverable shape (e.g. `hosted-code-with-users`, `mobile-app`, `firmware`), enumerate every category obligation the shape carries, including obvious ones. Each obligation must resolve to at least one authoritative source (framework docs, industry guidance, accessibility standards, regulatory text) verified via web search. No canned examples; enumeration is grounded each run.
+2. **Judge coverage** — read existing feature titles, summaries, and body excerpts in natural language; decide whether each obligation's concern is substantively addressed within scope. An empty `covered_by` means the obligation is uncovered.
+
+Uncovered obligations flow into the elaborator's revise-pass input alongside the dimension-critic findings. The architect addresses each uncovered obligation by extending an existing feature's body to discuss the concern or proposing a new feature via `spec_propose_feature`. The critic does not propose features — that is the architect's job (DJ-150 §1 role boundary).
+
+The `CoverageReport` is session-state only, captured in `.locutus/sessions/<sid>/` but not persisted to `.borg/spec/`. Subsequent runs re-derive obligation coverage from fresh grounded enumeration against the (potentially revised) feature bodies; idempotency follows from feature-body stability and grounding stability, not from persisted findings. Multi-deliverable projects get one critic dispatch per identified shape per iteration; feature coverage is judged per-shape (a backend feature does not cover a mobile-app obligation by default).
+
+Frontmatter contract: fast tier across providers, `grounding: true`, `thinking: off`. Grounding is load-bearing — the critic must verify each cited source at runtime rather than recall from training data. See [DJ-150](DECISION_JOURNAL.md#dj-150) for the full rationale.
 
 ### `spec-critic-elaborator`
 
@@ -277,6 +299,8 @@ The spec_refinement playbook's prose enforces this:
 - If an axis appears in `axes_open` and the candidate-survey + elaborator produced a defensible answer, commit it. Don't surface "I'm not sure" to the human — that's a deferral.
 - If a concern recurs across two iterations with no new evidence, treat it as `wontfix`. Recurring concerns without new evidence are a smell that the critic dimension is mis-scoped, not that the decision is wrong.
 - If the 20-iteration cap fires, commit the best-known state and report. Don't loop further.
+
+Coverage-critic findings participate in convergence the same way other findings do: the architect's revise pass addresses uncovered obligations (extending a feature's scope or proposing a new feature); the next iteration's critic re-runs against the revised feature bodies and finds those obligations covered. Convergence is reached when `axes_open` is empty, concerns are resolved, and the coverage-critic reports no uncovered obligations.
 
 The MCP write tools reinforce the discipline at the validation layer: `axes` backfills from the id when omitted (per DJ-133), `surfaced_by` is optional, and validation errors that DO fire (id missing, wrong kind prefix, body shape mismatch) name what's wrong specifically so the agent's next attempt can fix it.
 
