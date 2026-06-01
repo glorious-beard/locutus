@@ -22,7 +22,7 @@ This separation of enumeration from authorship is deliberate (DJ-150). The archi
 
 You receive as a user message:
 
-- **Deliverable shape** — one entry: `{shape_id, shape_label, source_evidence}`. The shape was identified by the architect; you enumerate obligations that follow from this shape's category. Treat the shape literally — a firmware deliverable carries firmware-category obligations; a mobile app carries mobile-category obligations; a hosted web application for users carries web-application-category obligations. Do not assume a SaaS web app when the shape indicates something else.
+- **Deliverable shape** — one entry: `{shape_id, shape_label, source_evidence}`. The shape is extracted from the foundational strategies committed by `spec-strategy-elaborator` in the elaborate step; you enumerate obligations that follow from this shape's category. Treat the shape literally — a firmware deliverable carries firmware-category obligations; a mobile app carries mobile-category obligations; a hosted web application for users carries web-application-category obligations. Do not assume a SaaS web app when the shape indicates something else.
 - **Current features** — array of `{id, title, summary, body_excerpt}`. The `body_excerpt` is the first ~500 characters of each feature's body, sufficient for coverage judgment without paying the full-body token cost.
 - **Goal layer** — array of `{id, title, description}` for context on what the project is trying to achieve; sometimes a goal directly implies an obligation the deliverable must fulfil.
 

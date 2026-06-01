@@ -78,7 +78,7 @@ After the feature and strategy elaborators from Phase 2 have committed the first
 
 Collect every dispatch's `CoverageReport`; concatenate the uncovered-obligation entries (those whose `covered_by` is empty); carry them into Phase 3 (Reconcile) and Phase 4 (Cascade) alongside the existing `critique_dimensions` findings. The cascade phase (Phase 4) addresses each uncovered obligation by either (a) extending an existing feature's body via `mcp__locutus__spec_revise_feature` or (b) proposing a new feature via `mcp__locutus__spec_propose_feature`. The coverage critic itself writes nothing to the spec graph — that crosses the role boundary per [DJ-150](../../docs/decisions/dj-150-spec-coverage-critic.md) §1.
 
-When the architect identified a single deliverable shape, the `parallel()` reduces to one dispatch but the workflow shape stays consistent across single-deliverable and multi-deliverable runs. When no deliverable shapes were identified this iteration (the scout's `new_nodes` list was empty and no foundational strategies landed), skip this phase.
+When a single deliverable shape was identified, the `parallel()` reduces to one dispatch but the workflow shape stays consistent across single-deliverable and multi-deliverable runs. When no deliverable shapes were identified this iteration (the scout's `new_nodes` list was empty and no foundational strategies landed), skip this phase.
 
 See `spec_refinement.md` § "4. Coverage critic (per identified deliverable shape)" for the full prose on input shape, role boundary, and how uncovered obligations get addressed downstream.
 
