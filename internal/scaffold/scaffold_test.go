@@ -432,6 +432,41 @@ func TestCandidateSurveyAgentScaffoldedWithFastTierGroundedFrontmatter(t *testin
 		"prompt must explicitly tell the survey not to judge — judgment is the elaborator's job, mixing it in re-creates the task conflation the survey exists to break")
 }
 
+// TestCoverageCriticAgentScaffoldedWithFastTierGroundedFrontmatter
+// locks in DJ-150 Phase 1: spec-coverage-critic.md must ship with the
+// scaffold, declare fast-tier providers across the three deployers,
+// keep grounding on (every obligation must resolve to a real,
+// authoritative source via web search — training-data-only enumeration
+// produces hallucinated category requirements with fabricated
+// citations), declare thinking off (enumeration plus natural-language
+// coverage judgment is not a deep reasoning task), and bind to
+// output_schema: CoverageReport. The frontmatter contract is
+// structurally part of DJ-150's mechanism: a critic that runs on the
+// strong tier wastes budget; one without grounding regresses to
+// fabricated obligation lists; one with the wrong schema breaks the
+// architect's revise-pass projection wiring.
+func TestCoverageCriticAgentScaffoldedWithFastTierGroundedFrontmatter(t *testing.T) {
+	fsys := specio.NewMemFS()
+	require.NoError(t, scaffold.Scaffold(fsys, "test-project"))
+
+	body, err := fsys.ReadFile(".borg/agents/spec-coverage-critic.md")
+	require.NoError(t, err, "read .borg/agents/spec-coverage-critic.md")
+	text := string(body)
+
+	assert.Contains(t, text, "id: spec-coverage-critic",
+		"frontmatter must declare id: spec-coverage-critic")
+	assert.Contains(t, text, "output_schema: CoverageReport",
+		"frontmatter must bind output_schema: CoverageReport — the critic emits the registered CoverageReport shape consumed by the architect's revise pass")
+	assert.Contains(t, text, "tier: fast",
+		"frontmatter must declare fast-tier model preferences across providers (enumeration + natural-language coverage judgment is discovery + matching work; spending strong tier is wasted budget per DJ-150 §6)")
+	assert.Contains(t, text, "grounding: true",
+		"frontmatter must keep grounding on — DJ-150 §6 documents grounding as load-bearing for category-requirement currency + hallucination prevention; training-data-only enumeration produces invented obligations with fabricated citations")
+	assert.Contains(t, text, "thinking: off",
+		"frontmatter must declare thinking off — enumeration + natural-language coverage judgment is not a deep reasoning task; thinking on doubles cost without improving quality")
+	assert.Contains(t, text, "role: critic",
+		"frontmatter must declare role: critic — the agent is a refine-time critic per DJ-150 §1, dispatched in parallel by the playbook")
+}
+
 func TestScaffoldCreatesDirectories(t *testing.T) {
 	fsys := specio.NewMemFS()
 	err := scaffold.Scaffold(fsys, "test-project")
