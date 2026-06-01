@@ -242,6 +242,7 @@ func isLikelyAgentID(token string) bool {
 		"-feature-elaborator",
 		"-strategy-elaborator",
 		"-candidate-survey",
+		"-coverage-critic",
 		"-critic-elaborator",
 		"-reconciler",
 		"-summarizer",
