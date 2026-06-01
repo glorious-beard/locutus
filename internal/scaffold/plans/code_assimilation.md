@@ -4,7 +4,7 @@ You are the orchestrator of one iteration of code assimilation for a Locutus-man
 
 ## Plan first
 
-Your very first action this iteration is to call `TodoWrite` (or your runtime's equivalent plan tool) with the entries you intend to execute. Mark each entry `in_progress` when you start and `completed` when it lands. A reasonable opening plan covers these step labels in order: Precondition check (Step 0), Discover code (Step 1), Read manifest (Step 2), Scout survey (Step 3), Analyzer fan-out (Step 4), Reconciliation (Step 5), Emit + approach synthesis (Step 6), Report verdict (Step 7).
+Your very first action this iteration is to call `TodoWrite` (or your runtime's equivalent plan tool) with the entries you intend to execute. Mark each entry `in_progress` when you start and `completed` when it lands. A reasonable opening plan covers these step labels in order: Precondition check (Step 0), Discover code (Step 1), Read manifest (Step 2), Scout survey (Step 3), Analyzer fan-out (Step 4), Reconciliation (Step 5), Coverage critic (Step 6), Emit + approach synthesis (Step 7), Report verdict (Step 8).
 
 ## Start here
 
@@ -91,7 +91,24 @@ Dispatch `gap-analyst` with:
 
 The gap-analyst returns a per-id action plan: for each contributed node, one of {confirm, revise, propose}, with rationale and evidence. Code-is-truth resolution: when contributions disagree with existing manifest nodes, the revision lands.
 
-## Step 6 — Emit + approach synthesis + state record
+## Step 6 — Coverage critic (per identified deliverable shape)
+
+After the gap-analyst returns its reconciled feature/strategy plan, dispatch `spec-coverage-critic` once per identified deliverable shape via the `Task` tool. In assimilate, deliverable shapes are inferred from the analyzer fan-out: each component the scout surfaced (backend service, frontend client, infrastructure layer, etc.) implies a deliverable shape; the architect's role in refine — naming the shape explicitly — is played in assimilate by the analyzer/gap-analyst's classification. Synthesize the shape identifications from the gap-analyst's output: each backend component is a `hosted-code-api-only` or `hosted-code-with-users` (per how it's consumed); each frontend component is a `hosted-code-with-users`; each infra layer is its own shape (`infrastructure-pipeline`, etc.).
+
+Input to each critic dispatch:
+- **Deliverable shape entry** — `{shape_id, shape_label, source_evidence}` synthesized from the analyzer classification. `source_evidence` cites the analyzer findings that justify the shape identification.
+- **Current features** — array of `{id, title, summary, body_excerpt}` for every feature in the manifest after the gap-analyst's reconciliation lands (including confirmed-existing, revised, and newly-proposed features). `body_excerpt` is the first ~500 characters of each feature's body.
+- **Goal layer** — `{id, title, description}` for every `goal-*` and `agoal-*` node.
+
+The critic returns a `CoverageReport` per dispatch — an array of obligation entries each with `{title, description, citations[], covered_by[], rationale}`. Concatenate the reports; for each entry whose `covered_by` is empty, flag it as an uncovered obligation. Feed the uncovered-obligation list into the next step's input (approach synthesis + state record) alongside the gap-analyst's feature/strategy plan.
+
+The next-step elaborator addresses uncovered obligations by either (a) extending an existing inferred feature's body to discuss the obligation's concern — call `spec_revise_feature` with the revised body and a revision note naming the obligation; or (b) proposing a new feature via `spec_propose_feature` whose body covers the obligation. The critic itself does NOT propose features — that crosses the role boundary per DJ-150 §1.
+
+For multi-deliverable projects (a repo containing a service, a CLI, infrastructure, and documentation per spec-architect's axes-per-deliverable framing), the critic runs once per identified shape. Coverage is judged per-shape — a backend-service feature does not cover a CLI obligation by default.
+
+Findings live in session state. Nothing persists to `.borg/spec/` outside of feature mutations made via the MCP tools above.
+
+## Step 7 — Emit + approach synthesis + state record
 
 For each gap-analyst-decided action:
 - **Confirm**: no MCP call required. Note in the report.
@@ -116,7 +133,7 @@ For every feature or strategy that was confirmed, revised, or newly proposed, sy
 
    If the analyzer found no test coverage and the operator should review, set `test_outcome` to `"failed"` with a clear `test_command` note — that surfaces the approach as `failed` in the state record so the operator's next `status` query flags it.
 
-## Step 7 — Convergence verdict
+## Step 8 — Convergence verdict
 
 Emit the verdict line as the last line of your output:
 
