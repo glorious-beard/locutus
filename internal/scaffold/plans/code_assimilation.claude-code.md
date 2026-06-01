@@ -4,7 +4,7 @@ Run this as a **workflow**: author an orchestration that drives the brownfield a
 
 ## Plan first
 
-Your very first action is to call `TodoWrite` with the entries you intend to execute. Mark each entry `in_progress` when you start and `completed` when it lands. A reasonable opening plan covers: Precondition check (preamble), then per-iteration: Discover code, Read manifest, Scout survey, Analyzer fan-out, Reconciliation, Emit + approach synthesis — repeated up to {{max_iterations}} times — then Report.
+Your very first action is to call `TodoWrite` with the entries you intend to execute. Mark each entry `in_progress` when you start and `completed` when it lands. A reasonable opening plan covers: Precondition check (preamble), then per-iteration: Discover code, Read manifest, Scout survey, Analyzer fan-out, Reconciliation, Coverage critic, Emit + approach synthesis — repeated up to {{max_iterations}} times — then Report.
 
 ## Start here
 
@@ -25,7 +25,7 @@ If both preconditions hold, mark the preamble plan entry complete and enter the 
 
 ## Convergence loop (up to {{max_iterations}} iterations)
 
-Each iteration runs Steps 1-6 in order. The loop exits early when the gap-analyst's reconciliation plan is empty (no confirms, no revises, no proposes) — that's convergence. The iteration cap is the safety bound.
+Each iteration runs Steps 1-7 in order. The loop exits early when the gap-analyst's reconciliation plan is empty (no confirms, no revises, no proposes) — that's convergence. The iteration cap is the safety bound.
 
 ### Step 1 — Discover code
 
@@ -52,7 +52,20 @@ Wait for all three to complete. Collect their structured responses.
 
 Dispatch `gap-analyst` with the three analyzer contributions + the existing manifest's nodes + the goal-layer bodies. It returns the per-id action plan.
 
-### Step 6 — Emit + approach synthesis + state record
+### Step 6 — Coverage critic fan-out (parallel per identified deliverable shape)
+
+After the gap-analyst's reconciliation step returns its feature/strategy plan, dispatch `spec-coverage-critic` via `parallel()` — one dispatch per identified deliverable shape. In assimilate, deliverable shapes are synthesized from the analyzer fan-out's component classification (backend / frontend / infra), not from an architect's deliberate declaration. Each dispatch receives:
+- The shape entry (`{shape_id, shape_label, source_evidence}`) synthesized from the analyzer/gap-analyst classification.
+- The current features array — `{id, title, summary, body_excerpt}` for every feature in the manifest after the gap-analyst's reconciliation lands (confirmed-existing, revised, and newly-proposed). `body_excerpt` is the first ~500 characters of each feature's body.
+- The goal layer — `{id, title, description}` for every `goal-*` and `agoal-*` node in the current manifest.
+
+Collect every dispatch's `CoverageReport`; concatenate the uncovered-obligation entries (those whose `covered_by` is empty); feed them into Step 7's input alongside the gap-analyst's feature/strategy plan. Step 7 addresses each uncovered obligation by either (a) extending an existing inferred feature's body via `spec_revise_feature` or (b) proposing a new feature via `spec_propose_feature`. The coverage critic itself writes nothing to the spec graph — that crosses the role boundary per DJ-150 §1.
+
+When the analyzer classification surfaced a single deliverable shape, the `parallel()` reduces to one dispatch but the workflow shape stays consistent across single-deliverable and multi-deliverable runs. When the gap-analyst returned an empty action plan (no confirms, no revises, no proposes), skip this step and proceed to the convergence check.
+
+See `code_assimilation.md` § "Step 6 — Coverage critic (per identified deliverable shape)" for the full prose on input shape (with assimilate's shape-inference heuristic), role boundary, and how uncovered obligations get addressed downstream.
+
+### Step 7 — Emit + approach synthesis + state record
 
 For each gap-analyst action:
 - **Confirm**: no MCP call.
@@ -61,7 +74,7 @@ For each gap-analyst action:
 
 For every feature or strategy confirmed, revised, or proposed, synthesize the approach body AND record its state — dispatch these in parallel within the iteration for throughput:
 
-1. Call `mcp__locutus__spec_propose_approach` (or `spec_revise_approach`) with id `app-<parent-id>`, `parent_id`, and a brief markdown `body` naming what the code currently does. No `source_files` or `source_hash` on the body — see the default playbook's Step 6 for the full rationale.
+1. Call `mcp__locutus__spec_propose_approach` (or `spec_revise_approach`) with id `app-<parent-id>`, `parent_id`, and a brief markdown `body` naming what the code currently does. No `source_files` or `source_hash` on the body — see the default playbook's Step 7 for the full rationale.
 2. Compute per-file artifact hashes for each cited source file via `shasum -a 256 <file> | cut -d' ' -f1` (prefix result with `sha256:`); assemble the path → hash map.
 3. Call `mcp__locutus__state_record_reconciliation` with `approach_id`, `artifacts` (the path→hash map), `branch_name: "assimilate-derived"`, `test_outcome` (`"passed"` if analyzer evidence includes confirmed test coverage; `"failed"` otherwise so the operator's next `status` query flags it), `test_command`, and optional `test_output_excerpt`. Do not pass `spec_hashes`; the server fills it.
 
