@@ -70,7 +70,19 @@ For each entry in `critique_dimensions`: dispatch `spec-critic-elaborator`. Crit
 
 Each axis and each new-node entry is an independent unit — dispatch them in parallel. Never let two parallel branches write the same node; when two axes or new-node entries would write to the same id, serialize those two and leave the rest parallel.
 
-**Phase 3 — Reconcile (barrier — join all phase-2 subagents first).**
+**Phase 2b — Coverage critic fan-out (barrier — join all phase-2 new_nodes elaborators first, then parallel per deliverable shape).**
+After the feature and strategy elaborators from Phase 2 have committed the first feature set, dispatch `spec-coverage-critic` via `parallel()` — one dispatch per identified deliverable shape. Each dispatch receives:
+- The deliverable shape entry (`{shape_id, shape_label, source_evidence}`) from the foundational strategies committed in Phase 2.
+- The current features array — `{id, title, summary, body_excerpt}` for every feature the elaborators committed this iteration (`body_excerpt` is the first ~500 characters).
+- The goal layer — `{id, title, description}` for every `goal-*` and `agoal-*` node in the current manifest.
+
+Collect every dispatch's `CoverageReport`; concatenate the uncovered-obligation entries (those whose `covered_by` is empty); carry them into Phase 3 (Reconcile) and Phase 4 (Cascade) alongside the existing `critique_dimensions` findings. The cascade phase (Phase 4) addresses each uncovered obligation by either (a) extending an existing feature's body via `mcp__locutus__spec_revise_feature` or (b) proposing a new feature via `mcp__locutus__spec_propose_feature`. The coverage critic itself writes nothing to the spec graph — that crosses the role boundary per [DJ-150](../../docs/decisions/dj-150-spec-coverage-critic.md) §1.
+
+When the architect identified a single deliverable shape, the `parallel()` reduces to one dispatch but the workflow shape stays consistent across single-deliverable and multi-deliverable runs. When no deliverable shapes were identified this iteration (the scout's `new_nodes` list was empty and no foundational strategies landed), skip this phase.
+
+See `spec_refinement.md` § "4. Coverage critic (per identified deliverable shape)" for the full prose on input shape, role boundary, and how uncovered obligations get addressed downstream.
+
+**Phase 3 — Reconcile (barrier — join all phase-2 and phase-2b subagents first).**
 Dispatch `spec-reconciler` once. It walks the graph for cross-decision integrity issues and applies revisions via `mcp__locutus__spec_revise_decision` itself. The reconciler returns the list of revised decision ids in its summary so step 4 can cascade.
 
 **Phase 4 — Cascade revisions (serial across shared nodes).**
