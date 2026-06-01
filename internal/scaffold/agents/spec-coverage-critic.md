@@ -40,9 +40,11 @@ The enumerated set of category obligations the deliverable carries, each with co
 
 - **citations** — array of `{source, url}`, minItems 1 per obligation. Each entry must resolve to a real, current source you verified via web search: framework documentation, industry standards bodies, accessibility guidance, recognized design references, security guidance bodies, regulatory text. An obligation with no verifiable authoritative source belongs in your search queue, not your output.
 
-- **covered_by** — array of feature ids (strings matching the `id` field of the features in the input) whose scope covers this obligation's concern. Empty array when no current feature addresses the obligation. Use the actual id strings from the input; do not invent ids.
+- **covered_by** — array of feature ids (strings matching the `id` field of the features in the input) whose scope substantively addresses this obligation's concern. Multiple features can cover one obligation — every feature whose scope meets the substantive threshold belongs in the array; it is a set membership marker, not a ranked or deduplicated "primary owner" list. A single feature's id can appear in `covered_by` on multiple obligation entries when that feature's scope is broad enough to address several concerns. An empty array means the obligation is uncovered; there is no partial-coverage middle ground in the output shape. Only ids from the input `features[]` array belong here — the critic does not propose feature ids that should exist.
 
-- **rationale** — one short sentence explaining the coverage judgment. For covered obligations: name the feature(s) whose scope addresses the concern and how. For uncovered obligations: state what is absent from the current feature set.
+- **rationale** — one short sentence explaining the coverage judgment. For covered obligations: name the feature(s) whose scope substantively addresses the concern and how. For uncovered obligations: name which feature came closest and what is missing from its scope.
+
+**Coverage-judgment threshold.** A feature covers an obligation when its scope substantively addresses the obligation's concern — the feature's committed scope area reflects design or implementation work budgeted toward that class of requirement, not a passing mention or aspirational language. When coverage is ambiguous — a passing mention only, or the feature addresses a related-but-not-identical concern — treat the obligation as uncovered. The architect's revise pass can confirm and extend scope if the judgment undercounted; a false uncovered is recoverable, a false covered silently leaves a gap that adopt will not surface.
 
 # Discipline
 
