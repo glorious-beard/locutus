@@ -5,7 +5,7 @@ You are the orchestrator of one iteration of spec refinement for a Locutus-manag
 The iteration runs three steps in order:
 
 1. **Step 0 — Goal-layer sync.** Reconcile the persisted `goal-*` / `agoal-*` nodes against the current text of `GOALS.md`. Short-circuits when the file hasn't changed since the last sync.
-2. **The iteration.** Survey the manifest, decide open axes, elaborate new nodes, critique, reconcile, cascade revisions — the existing seven-step deliberation. The goal layer is implicit context the manifest carries through.
+2. **The iteration.** Survey the manifest, decide open axes, elaborate new nodes, run the coverage critic, critique, reconcile, cascade revisions — the eight-step deliberation. The goal layer is implicit context the manifest carries through.
 3. **Step N+1 — Citation walk.** Judge `.advances` / `.respects` citations on every node touched this iteration (or whose existing citations point at goal-layer ids that changed in Step 0) against the final goal-layer state.
 
 <!-- BEGIN per-iteration-core -->
@@ -22,7 +22,7 @@ Pass the target to `spec-scout` in its survey input so its `axes_open` / `new_no
 
 Your very first action this iteration is to call `TodoWrite` (or your runtime's equivalent plan tool, if it exposes one) with the entries you intend to execute. Mark each entry `in_progress` when you start it and `completed` when it lands. The harness renders your plan entries inline so the operator sees what you've scheduled and how far through it you are. Update as work progresses, not in a batch at the end.
 
-A reasonable opening plan covers ten step labels: Goal-layer sync, Survey, Decide open axes, Elaborate new nodes, Critique, Reconcile, Cascade revisions, Confirm landings, Citation walk, Report verdict. You will add or split entries as the matcher returns its diff and the survey returns axes and new-node lists. When Step 0's short-circuit fires, mark the sync entry `completed` with a one-line note ("hash matches; sync skipped") and move on.
+A reasonable opening plan covers eleven step labels: Goal-layer sync, Survey, Decide open axes, Elaborate new nodes, Coverage critic, Critique, Reconcile, Cascade revisions, Confirm landings, Citation walk, Report verdict. You will add or split entries as the matcher returns its diff and the survey returns axes and new-node lists. When Step 0's short-circuit fires, mark the sync entry `completed` with a one-line note ("hash matches; sync skipped") and move on.
 
 ## Start here
 
@@ -91,7 +91,7 @@ Keep track of which `goal-*` / `agoal-*` ids changed (anything in `modified`, `d
 
 Run these steps in order. Each step maps to a `TodoWrite` entry; update it as you go.
 
-1. **Survey.** Dispatch `spec-scout`. Pass it `GOALS.md` plus the current manifest. Read its output: `axes_open`, `new_nodes`, `critique_dimensions`, `concern_dispositions`, `converged`. If `converged: true`, skip steps 2-7 and jump straight to Step N+1 — the graph is at convergence per the scout's judgement; this iteration's deliberation work is done, but the citation walk still runs against any goal-layer changes from Step 0.
+1. **Survey.** Dispatch `spec-scout`. Pass it `GOALS.md` plus the current manifest. Read its output: `axes_open`, `new_nodes`, `critique_dimensions`, `concern_dispositions`, `converged`. If `converged: true`, skip steps 2-8 and jump straight to Step N+1 — the graph is at convergence per the scout's judgement; this iteration's deliberation work is done, but the citation walk still runs against any goal-layer changes from Step 0.
 
 2. **Decide the open axes (in parallel where your runtime allows).** For each entry in `axes_open`:
    1. Dispatch `spec-candidate-survey` for the axis. The survey self-completes; it returns a candidate list.
@@ -101,13 +101,27 @@ Run these steps in order. Each step maps to a `TodoWrite` entry; update it as yo
    - If kind = `feature`: dispatch `spec-feature-elaborator`. The elaborator authors AND commits via `mcp__locutus__spec_propose_feature`; returns the committed id.
    - If kind = `strategy`: dispatch `spec-strategy-elaborator`. Same self-commit pattern via `mcp__locutus__spec_propose_strategy`.
 
-4. **Critique.** For each entry in `critique_dimensions`, dispatch `spec-critic-elaborator`. Critics' concerns become inputs to the next scout — you don't act on them directly here.
+4. **Coverage critic (per identified deliverable shape).** After the elaborators commit the first feature set, dispatch `spec-coverage-critic` once per identified deliverable shape via the `Task` tool. The critic surfaces obligations the deliverable carries by virtue of its category (per [DJ-150](../../docs/decisions/dj-150-spec-coverage-critic.md)) and judges whether the current features cover them. Input to each dispatch:
 
-5. **Reconcile.** Dispatch `spec-reconciler` once. It walks the graph for cross-decision integrity issues and applies revisions via `mcp__locutus__spec_revise_decision` itself (self-commit, same pattern as the elaborators). The reconciler returns the list of revised decision ids in its summary so step 6 can cascade.
+   - **Deliverable shape entry** — `{shape_id, shape_label, source_evidence}` extracted from the architect's output for this shape. The architect's reasoning about the deliverable shape lives in the foundational strategies it proposed (foundational strategies commit to NAMED technology per deliverable shape); `shape_id` is the stable slug (`hosted-code-with-users`, `mobile-app`, `firmware-embedded`, etc.), `shape_label` is the human-readable name, `source_evidence` is the verbatim text from GOALS.md or the architect's strategy that justifies the shape identification.
+   - **Current features** — array of `{id, title, summary, body_excerpt}` for every feature the elaborators committed this iteration. `body_excerpt` is the first ~500 characters of each feature's body, sufficient for coverage judgment without paying full-body token cost.
+   - **Goal layer** — `{id, title, description}` for every `goal-*` and `agoal-*` node in the current manifest. Sometimes a goal directly implies an obligation (e.g., "support voters with screen readers" implies accessibility obligations).
 
-6. **Cascade revisions to features and strategies.** For each decision id the reconciler revised (and for any decision that this iteration's `spec-decision-elaborator` calls produced a meaningful body change for — including first-author commits whose body differs materially from prior settled content on the same axis): find features and strategies whose `decisions[]` array references that decision. Call `mcp__locutus__spec_list_manifest` once, then `mcp__locutus__spec_get` on the candidate features/strategies in one batched call to read their bodies. Dispatch `spec-feature-elaborator` or `spec-strategy-elaborator` in revise mode for each affected node — the elaborator's input includes the revised decision context plus the existing feature/strategy body. The elaborator updates fields that need to track the revised decision (description, acceptance_criteria, body, decisions[]) and self-commits via `mcp__locutus__spec_revise_feature` or `mcp__locutus__spec_revise_strategy`. When no decisions were revised this iteration, step 6 is a no-op; skip it.
+   The critic returns a `CoverageReport` — an array of obligation entries, each with `{title, description, citations[], covered_by[], rationale}`. For each entry whose `covered_by` is empty, flag it as an uncovered obligation. Collect the uncovered-obligation list and carry it into step 5 (Critique) alongside the existing `critique_dimensions` findings.
 
-7. **Confirm landings.** Call `mcp__locutus__spec_list_manifest` once. The manifest is the source of truth for what landed this iteration; keep the response in your working context — Step N+1 uses it to enumerate the nodes touched.
+   The feature-elaborator's revise pass (step 6, Cascade) addresses each uncovered obligation by either (a) extending an existing feature's body to discuss the obligation's concern — call `mcp__locutus__spec_revise_feature` with the revised body and a revision note naming the obligation that motivated the scope extension; or (b) proposing a new feature via `mcp__locutus__spec_propose_feature` whose body covers the obligation. The choice is the elaborator's judgment; the critic does not propose features (that crosses the role boundary per DJ-150 §1).
+
+   For multi-deliverable projects (a wearable spanning hardware + firmware + mobile companion + cloud backend + documentation per spec-architect's axes-per-deliverable framing), dispatch the critic once per identified shape in parallel. Coverage is judged per-shape — a hosted-backend feature does not cover a mobile-app obligation by default; the critic's prompt makes that boundary explicit, and the playbook reinforces it by scoping each dispatch's input features[] to those relevant to the shape (or passing the full features[] with the shape boundary stated in the prompt — either is acceptable; the critic respects the shape constraint).
+
+   Findings live in session state — the critic's transcript is written under `.locutus/sessions/<date>/<time>/<sid>/` alongside other agent transcripts. Nothing persists to `.borg/spec/` outside of the feature mutations the elaborator makes (via the existing `mcp__locutus__spec_revise_feature` / `mcp__locutus__spec_propose_feature` MCP tools). The coverage critic itself writes nothing to the spec graph. When no deliverable shapes were identified this iteration (the scout's `new_nodes` list was empty and no foundational strategies landed), skip this step.
+
+5. **Critique.** For each entry in `critique_dimensions` (plus any uncovered obligations surfaced by the coverage critic in step 4), dispatch `spec-critic-elaborator`. Critics' concerns become inputs to the next scout — you don't act on them directly here.
+
+6. **Reconcile.** Dispatch `spec-reconciler` once. It walks the graph for cross-decision integrity issues and applies revisions via `mcp__locutus__spec_revise_decision` itself (self-commit, same pattern as the elaborators). The reconciler returns the list of revised decision ids in its summary so step 7 can cascade.
+
+7. **Cascade revisions to features and strategies.** For each decision id the reconciler revised (and for any decision that this iteration's `spec-decision-elaborator` calls produced a meaningful body change for — including first-author commits whose body differs materially from prior settled content on the same axis): find features and strategies whose `decisions[]` array references that decision. Call `mcp__locutus__spec_list_manifest` once, then `mcp__locutus__spec_get` on the candidate features/strategies in one batched call to read their bodies. Dispatch `spec-feature-elaborator` or `spec-strategy-elaborator` in revise mode for each affected node — the elaborator's input includes the revised decision context plus the existing feature/strategy body. The elaborator updates fields that need to track the revised decision (description, acceptance_criteria, body, decisions[]) and self-commits via `mcp__locutus__spec_revise_feature` or `mcp__locutus__spec_revise_strategy`. When no decisions were revised this iteration, step 7 is a no-op; skip it.
+
+8. **Confirm landings.** Call `mcp__locutus__spec_list_manifest` once. The manifest is the source of truth for what landed this iteration; keep the response in your working context — Step N+1 uses it to enumerate the nodes touched.
 
 ## Step N+1 — Citation walk
 
