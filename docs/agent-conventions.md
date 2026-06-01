@@ -332,6 +332,16 @@ schema tags, better example payloads). Prose anti-pattern lists are the
 without improving behaviour and eventually start causing the failures
 themselves.
 
+## Topology vs process: when to add a new node kind
+
+Before introducing a new node kind in the spec graph, apply this test: does the proposed kind correspond to an artifact independently recognized in PM/engineering practice — architecture decision records, feature briefs, technical design documents, goal trees? If yes, the node kind has a real-world counterpart and the addition is justified. If no — if the proposal exists solely because an AI agent fails to do something a human would handle by skill or convention — the fix lives in *process*, not topology: better prompts, completeness critics, grounded enumeration at runtime, explicit playbook prose.
+
+The bias is structural. Structural fixes feel durable while process fixes feel softer. Don't trust that feeling. Accumulated graph topology that exists only to correct AI failure modes becomes complexity future contributors cannot justify ("what is this for?" / "because the model in 2026 was bad at noticing the absence of a home page"). Reserve graph topology for what the project would need even without AI involvement.
+
+This convention emerged from [DJ-150](decisions/dj-150-spec-coverage-critic.md), where "deliverable obligations" was almost promoted to a new graph node kind before recognizing that obligations are not an artifact in standard practice. The cleaner fix was a runtime critic that surfaces uncovered obligations as findings, with the architect addressing them by extending existing features or proposing new ones — features are the recognized PM artifact, so the outcomes ride that existing slot.
+
+Counter-test before proposing a node kind: would a human team need this artifact even without AI involvement? If yes, the node kind is justified. If no, find the process fix — a new agent, a critic dispatch, a playbook step, or a positive-phrasing prompt addition. The audit is mechanical: name the human-practice artifact (with citation if possible), or revert to process.
+
 ## Reference
 
 - Commit `abb9119` — the justify_synthesizer fix that this file documents.
