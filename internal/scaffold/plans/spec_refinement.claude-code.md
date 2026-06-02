@@ -15,7 +15,7 @@ Pass the target to `spec-scout` in its survey input so its `axes_open` / `new_no
 
 Your very first action is to call `TodoWrite` with the entries you intend to execute. Mark each entry `in_progress` when you start it and `completed` when it lands. The harness renders your plan entries inline so the operator sees what you've scheduled and how far through it you are. Update as work progresses, not in a batch at the end.
 
-A reasonable opening plan covers these step labels: Goal-layer sync (preamble), then per-iteration: Survey, Decide open axes, Elaborate new nodes, Critique, Reconcile, Cascade revisions, Confirm landings — repeated up to {{max_iterations}} times — then Citation walk (post-loop), Report. You will add or split entries as the matcher returns its diff and the survey returns axes and new-node lists.
+A reasonable opening plan covers these step labels: Goal-layer sync (preamble), then per-iteration: Coverage critic, Survey, Decide open axes, Elaborate new nodes, Critique, Reconcile, Cascade revisions, Confirm landings — repeated up to {{max_iterations}} times — then Citation walk (post-loop), Report. You will add or split entries as the matcher returns its diff and the critic returns uncovered obligations and the survey returns axes and new-node lists.
 
 ## Start here
 
@@ -52,17 +52,34 @@ Keep track of which `goal-*` / `agoal-*` ids changed (anything in `modified`, `d
 
 ## Convergence loop (repeat until converged or {{max_iterations}} reached)
 
-Each iteration runs the following phases in order. Maintain a phase barrier between the fan-out phase (step 2) and the serialized write phases (steps 3–5) — do not proceed to step 3 until all parallel subagents from step 2 have returned.
+Each iteration runs the following phases in order. Phase 0 (Coverage critic) must complete before Phase 1 (Survey); the scout receives the critic's output as input. Phase 1 must complete before Phase 2 fan-out begins. Maintain a phase barrier between Phase 2 fan-out and the serialized write phases (Phase 3 onward) — do not proceed to Phase 3 until all parallel subagents from Phase 2 have returned.
 
-**Phase 1 — Survey (serial).**
-Dispatch `spec-scout`. Pass it `GOALS.md` plus the current manifest. Read its output: `axes_open`, `new_nodes`, `critique_dimensions`, `concern_dispositions`, `converged`. If `converged: true`, exit the loop and proceed to the post-loop citation walk.
+**Phase 0 — Coverage critic fan-out (parallel per deliverable shape).**
+Before dispatching the scout, dispatch `spec-coverage-critic` via `parallel()` — one dispatch per identified deliverable shape. Each dispatch receives:
+
+- The deliverable shape entry (`{shape_id, shape_label, source_evidence}`) from the foundational strategies committed in prior iterations.
+- The current features array — `{id, title, summary, body_excerpt}` for every feature in the current manifest (`body_excerpt` is the first ~500 characters).
+- The goal layer — `{id, title, description}` for every `goal-*` and `agoal-*` node in the current manifest.
+
+On iteration 1, read the current manifest for any existing foundational strategies from prior refine invocations. When the manifest carries no foundational strategies at all (a greenfield project on its very first refine), skip Phase 0 — emit an empty `uncovered_obligations` list and proceed to Phase 1. The first iteration's scout and elaborators will author foundational strategies; the next iteration's Phase 0 will have them to work from.
+
+Collect every dispatch's `CoverageReport`; concatenate the uncovered-obligation entries (those whose `covered_by` is empty); carry the resulting `uncovered_obligations` list into Phase 1 (Survey) as additional convergence-blocking input for the scout. The coverage critic itself writes nothing to the spec graph — that crosses the role boundary per [DJ-150](../../docs/decisions/dj-150-spec-coverage-critic.md) §1.
+
+When a single deliverable shape was identified, the `parallel()` reduces to one dispatch but the workflow shape stays consistent across single-deliverable and multi-deliverable runs.
+
+See `spec_refinement.md` § "1. Coverage critic (per identified deliverable shape)" for the full prose on input shape, role boundary, and how uncovered obligations get addressed downstream.
+
+**Phase 1 — Survey (serial, after Phase 0 completes).**
+Dispatch `spec-scout`. Pass it `GOALS.md`, the current manifest, and the `uncovered_obligations` list from Phase 0. Read its output: `axes_open`, `new_nodes`, `critique_dimensions`, `concern_dispositions`, `converged`. The scout treats uncovered obligations as a convergence-blocking signal alongside `axes_open` and `critique_dimensions` — it cannot return `converged: true` while uncovered obligations remain. If `converged: true`, exit the loop and proceed to the post-loop citation walk.
 
 **Phase 2 — Fan-out over disjoint units (parallel where your runtime allows).**
 For each entry in `axes_open`:
+
 1. Dispatch `spec-candidate-survey` for the axis. The survey self-completes; it returns a candidate list.
 2. Dispatch `spec-decision-elaborator` with the axis id and the survey output. The elaborator authors the decision body AND commits it via `mcp__locutus__spec_propose_decision` itself; it returns only the committed id. Do not commit on the elaborator's behalf.
 
-For each entry in `new_nodes`:
+For each entry in `new_nodes` (including obligation-driven entries the scout synthesized from uncovered obligations):
+
 - If kind = `feature`: dispatch `spec-feature-elaborator`. The elaborator authors AND commits via `mcp__locutus__spec_propose_feature`; returns the committed id.
 - If kind = `strategy`: dispatch `spec-strategy-elaborator`. Same self-commit pattern via `mcp__locutus__spec_propose_strategy`.
 
@@ -70,28 +87,16 @@ For each entry in `critique_dimensions`: dispatch `spec-critic-elaborator`. Crit
 
 Each axis and each new-node entry is an independent unit — dispatch them in parallel. Never let two parallel branches write the same node; when two axes or new-node entries would write to the same id, serialize those two and leave the rest parallel.
 
-**Phase 2b — Coverage critic fan-out (barrier — join all phase-2 new_nodes elaborators first, then parallel per deliverable shape).**
-After the feature and strategy elaborators from Phase 2 have committed the first feature set, dispatch `spec-coverage-critic` via `parallel()` — one dispatch per identified deliverable shape. Each dispatch receives:
-- The deliverable shape entry (`{shape_id, shape_label, source_evidence}`) from the foundational strategies committed in Phase 2.
-- The current features array — `{id, title, summary, body_excerpt}` for every feature the elaborators committed this iteration (`body_excerpt` is the first ~500 characters).
-- The goal layer — `{id, title, description}` for every `goal-*` and `agoal-*` node in the current manifest.
-
-Collect every dispatch's `CoverageReport`; concatenate the uncovered-obligation entries (those whose `covered_by` is empty); carry them into Phase 3 (Reconcile) and Phase 4 (Cascade) alongside the existing `critique_dimensions` findings. The cascade phase (Phase 4) addresses each uncovered obligation by either (a) extending an existing feature's body via `mcp__locutus__spec_revise_feature` or (b) proposing a new feature via `mcp__locutus__spec_propose_feature`. The coverage critic itself writes nothing to the spec graph — that crosses the role boundary per [DJ-150](../../docs/decisions/dj-150-spec-coverage-critic.md) §1.
-
-When a single deliverable shape was identified, the `parallel()` reduces to one dispatch but the workflow shape stays consistent across single-deliverable and multi-deliverable runs. When no deliverable shapes were identified this iteration (the scout's `new_nodes` list was empty and no foundational strategies landed), skip this phase.
-
-See `spec_refinement.md` § "4. Coverage critic (per identified deliverable shape)" for the full prose on input shape, role boundary, and how uncovered obligations get addressed downstream.
-
-**Phase 3 — Reconcile (barrier — join all phase-2 and phase-2b subagents first).**
-Dispatch `spec-reconciler` once. It walks the graph for cross-decision integrity issues and applies revisions via `mcp__locutus__spec_revise_decision` itself. The reconciler returns the list of revised decision ids in its summary so step 4 can cascade.
+**Phase 3 — Reconcile (barrier — join all Phase 2 subagents first).**
+Dispatch `spec-reconciler` once with the uncovered-obligation list from Phase 0 included as a special-class finding. It walks the graph for cross-decision integrity issues — including obligations that lack feature coverage as a class of integrity gap — and applies revisions via `mcp__locutus__spec_revise_decision` itself. The reconciler returns the list of revised decision ids in its summary so Phase 4 can cascade, and surfaces which uncovered obligations remain unaddressed so the cascade phase can act on them.
 
 **Phase 4 — Cascade revisions (serial across shared nodes).**
-For each decision id the reconciler revised (and for any decision that this iteration's `spec-decision-elaborator` calls produced a meaningful body change): find features and strategies whose `decisions[]` array references that decision. Call `mcp__locutus__spec_list_manifest` once, then `mcp__locutus__spec_get` on the candidate features/strategies in one batched call to read their bodies. Dispatch `spec-feature-elaborator` or `spec-strategy-elaborator` in revise mode for each affected node — the elaborator's input includes the revised decision context plus the existing feature/strategy body. The elaborator self-commits via `mcp__locutus__spec_revise_feature` or `mcp__locutus__spec_revise_strategy`. When no decisions were revised this iteration, step 4 is a no-op; skip it.
+For each decision id the reconciler revised (and for any decision that this iteration's `spec-decision-elaborator` calls produced a meaningful body change): find features and strategies whose `decisions[]` array references that decision. Call `mcp__locutus__spec_list_manifest` once, then `mcp__locutus__spec_get` on the candidate features/strategies in one batched call to read their bodies. Dispatch `spec-feature-elaborator` or `spec-strategy-elaborator` in revise mode for each affected node — the elaborator's input includes the revised decision context plus the existing feature/strategy body. The elaborator self-commits via `mcp__locutus__spec_revise_feature` or `mcp__locutus__spec_revise_strategy`. Additionally, for each uncovered obligation the reconciler surfaced (from Phase 0's critic output), dispatch `spec-feature-elaborator` in revise mode to address it: either extend an existing feature's body via `mcp__locutus__spec_revise_feature` (with a revision note naming the obligation) or propose a new feature via `mcp__locutus__spec_propose_feature`. When no decisions were revised and no uncovered obligations were surfaced this iteration, Phase 4 is a no-op; skip it.
 
 **Phase 5 — Confirm landings.**
 Call `mcp__locutus__spec_list_manifest` once. The manifest is the source of truth for what landed this iteration; keep the response in your working context — the citation walk uses it to enumerate the nodes touched.
 
-After step 5, check the iteration count. If the loop has run {{max_iterations}} times, exit the loop regardless of the scout's verdict and proceed to the post-loop citation walk.
+After Phase 5, check the iteration count. If the loop has run {{max_iterations}} times, exit the loop regardless of the scout's verdict and proceed to the post-loop citation walk.
 
 ## Convergence by construction
 
