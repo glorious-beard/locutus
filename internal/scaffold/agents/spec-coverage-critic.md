@@ -30,6 +30,10 @@ You receive as a user message:
 
 Walk each output field below in order. Each one describes one piece of the `CoverageReport`.
 
+### dispatch_granularity_warning
+
+Verify that the `shape_id` in the deliverable shape entry is a category identifier — a kind of deliverable such as `hosted-code-with-users`, `hosted-code-api-only`, `mobile-app`, `firmware-embedded`, `cli-tool`, `library`, `documentation`, or `hardware-pcb`. When `shape_id` matches an in-graph node id pattern (prefixes like `strat-`, `feat-`, `dec-`, `goal-`, `app-`), set this field to a short string naming the likely miscategorization (e.g. `"shape_id strat-election-cycle-capacity looks like a strategy id, not a deliverable category; expected a category identifier like hosted-code-with-users"`). When the shape_id is a valid category identifier, omit this field or set it to an empty string. Proceed with enumeration regardless — the warning is a signal for the orchestrator, not a reason to stop.
+
 ### obligations
 
 The enumerated set of category obligations the deliverable carries, each with coverage judgment. An `ObligationEntry` has five fields:
