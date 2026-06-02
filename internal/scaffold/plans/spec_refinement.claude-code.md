@@ -57,7 +57,7 @@ Each iteration runs the following phases in order. Phase 0 (Coverage critic) mus
 **Phase 0 — Coverage critic fan-out (parallel per deliverable shape).**
 Before dispatching the scout, dispatch `spec-coverage-critic` via `parallel()` — one dispatch per identified deliverable shape. Each dispatch receives:
 
-- The deliverable shape entry (`{shape_id, shape_label, source_evidence}`) from the foundational strategies committed in prior iterations.
+- The deliverable shape entry (`{shape_id, shape_label, source_evidence}`) — a **category identifier** naming the kind of thing being built. Multiple foundational strategies typically share one shape: a single hosted web application has strategies for capacity, isolation, observability, build pipeline, and more, but it is still ONE shape (`hosted-code-with-users`). To identify shapes, read GOALS.md and the foundational strategies as a whole, then emit one `shape_id` per distinct deliverable category. A strategy id (`strat-*`) is never a valid shape id.
 - The current features array — `{id, title, summary, body_excerpt}` for every feature in the current manifest (`body_excerpt` is the first ~500 characters).
 - The goal layer — `{id, title, description}` for every `goal-*` and `agoal-*` node in the current manifest.
 
@@ -65,7 +65,7 @@ On iteration 1, read the current manifest for any existing foundational strategi
 
 Collect every dispatch's `CoverageReport`; concatenate the uncovered-obligation entries (those whose `covered_by` is empty); carry the resulting `uncovered_obligations` list into Phase 1 (Survey) as additional convergence-blocking input for the scout. The coverage critic itself writes nothing to the spec graph — that crosses the role boundary per [DJ-150](../../docs/decisions/dj-150-spec-coverage-critic.md) §1.
 
-When a single deliverable shape was identified, the `parallel()` reduces to one dispatch but the workflow shape stays consistent across single-deliverable and multi-deliverable runs.
+For single-deliverable projects, the `parallel()` reduces to one dispatch but the workflow shape stays consistent. For multi-deliverable projects (e.g. a wearable spanning hardware + firmware + mobile companion + cloud backend + documentation), dispatch one critic per identified shape.
 
 See `spec_refinement.md` § "1. Coverage critic (per identified deliverable shape)" for the full prose on input shape, role boundary, and how uncovered obligations get addressed downstream.
 

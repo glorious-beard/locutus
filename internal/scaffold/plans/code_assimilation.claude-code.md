@@ -54,16 +54,16 @@ Dispatch `gap-analyst` with the three analyzer contributions + the existing mani
 
 ### Step 6 — Coverage critic fan-out (parallel per identified deliverable shape)
 
-After the gap-analyst's reconciliation step returns its feature/strategy plan, dispatch `spec-coverage-critic` via `parallel()` — one dispatch per identified deliverable shape. In assimilate, deliverable shapes are synthesized from the analyzer fan-out's component classification (backend / frontend / infra), not from an architect's deliberate declaration. Each dispatch receives:
-- The shape entry (`{shape_id, shape_label, source_evidence}`) synthesized from the analyzer/gap-analyst classification.
+After the gap-analyst's reconciliation step returns its feature/strategy plan, dispatch `spec-coverage-critic` via `parallel()` — one dispatch per identified deliverable shape. Each dispatch receives:
+- The shape entry (`{shape_id, shape_label, source_evidence}`) — a **category identifier** naming the kind of deliverable, not a component type. In assimilate, identify shapes by reading GOALS.md and the gap-analyst's output as a whole: emit one `shape_id` per distinct deliverable category the project produces. Component analysis (backend + frontend + infra) informs feature/strategy proposals but does not multiply shapes — a repo with backend service, frontend client, and infra IaC for a single web product is ONE shape (`hosted-code-with-users`). A strategy id (`strat-*`) is never a valid shape id.
 - The current features array — `{id, title, summary, body_excerpt}` for every feature in the manifest after the gap-analyst's reconciliation lands (confirmed-existing, revised, and newly-proposed). `body_excerpt` is the first ~500 characters of each feature's body.
 - The goal layer — `{id, title, description}` for every `goal-*` and `agoal-*` node in the current manifest.
 
 Collect every dispatch's `CoverageReport`; concatenate the uncovered-obligation entries (those whose `covered_by` is empty); feed them into Step 7's input alongside the gap-analyst's feature/strategy plan. Step 7 addresses each uncovered obligation by either (a) extending an existing inferred feature's body via `spec_revise_feature` or (b) proposing a new feature via `spec_propose_feature`. The coverage critic itself writes nothing to the spec graph — that crosses the role boundary per DJ-150 §1.
 
-When the analyzer classification surfaced a single deliverable shape, the `parallel()` reduces to one dispatch but the workflow shape stays consistent across single-deliverable and multi-deliverable runs. When the gap-analyst returned an empty action plan (no confirms, no revises, no proposes), skip this step and proceed to the convergence check.
+For single-deliverable projects, the `parallel()` reduces to one dispatch but the workflow shape stays consistent. When the gap-analyst returned an empty action plan (no confirms, no revises, no proposes), skip this step and proceed to the convergence check.
 
-See `code_assimilation.md` § "Step 6 — Coverage critic (per identified deliverable shape)" for the full prose on input shape (with assimilate's shape-inference heuristic), role boundary, and how uncovered obligations get addressed downstream.
+See `code_assimilation.md` § "Step 6 — Coverage critic (per identified deliverable shape)" for the full prose on the shape-inference heuristic, role boundary, and how uncovered obligations get addressed downstream.
 
 ### Step 7 — Emit + approach synthesis + state record
 
