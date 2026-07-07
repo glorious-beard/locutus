@@ -182,23 +182,24 @@ Strategy bodies name a specific technology — that's the structural difference 
 
 ### `spec-coverage-critic`
 
-Deliverable-shape obligation enumerator and coverage judge. Dispatched once per identified deliverable shape after the feature/strategy elaboration pass, before the `spec-critic-elaborator` pass (DJ-150).
+Deliverable-shape obligation enumerator and coverage judge. Dispatched once per identified deliverable shape after the feature/strategy elaboration pass, before the `spec-critic-elaborator` pass (DJ-150, amended by DJ-151).
 
 | Field | Value |
 |---|---|
-| Returns | `CoverageReport` — array of `{title, description, citations[], covered_by: [feat-id, ...], rationale}` entries, one per enumerated category obligation |
-| Governing DJs | [DJ-150](DECISION_JOURNAL.md#dj-150) (deliverable-shape obligations as refine-time findings; no new graph node kinds) |
+| Returns | `CoverageReport` — array of `ObligationEntry` (`title, description, source, covered_by: [feat-id, ...], rationale`), one per enumerated category obligation; `source` is `journey` or `grounded`, keying whether the entry carries `journey_provenance: {persona, step}` or `citations[]` |
+| Governing DJs | [DJ-150](DECISION_JOURNAL.md#dj-150) (deliverable-shape obligations as refine-time findings; no new graph node kinds), [DJ-151](DECISION_JOURNAL.md#dj-151) (persona journey-walk enumeration + ownership-test coverage judgment) |
 
-Two coupled jobs per dispatch:
+Two co-equal enumeration modes feeding one coverage judgment, per dispatch:
 
-1. **Enumerate obligations** — for the identified deliverable shape (e.g. `hosted-code-with-users`, `mobile-app`, `firmware`), enumerate every category obligation the shape carries, including obvious ones. Each obligation must resolve to at least one authoritative source (framework docs, industry guidance, accessibility standards, regulatory text) verified via web search. No canned examples; enumeration is grounded each run.
-2. **Judge coverage** — read existing feature titles, summaries, and body excerpts in natural language; decide whether each obligation's concern is substantively addressed within scope. An empty `covered_by` means the obligation is uncovered.
+1. **Persona journey walk** — derive the deliverable's personas (per-run, not persisted) from the goal layer and feature prose, then walk each through the eight lifecycle stages: arrival/acquisition → authenticate → orient/navigate → core loop → empty/first-run states → failure states → account/workspace management → departure. Every stage the deliverable must support becomes an obligation with `source: journey` and `journey_provenance: {persona, step}` instead of citations — this catches tacit boilerplate (sign-in, nav shell, error states) that no authoritative source bothers to document.
+2. **Grounded pass** — enumerate the documented obligations for the shape's category (standards, regulatory regimes, platform/framework guidance), each resolving to at least one authoritative source verified via web search, becoming `source: grounded` with `citations[]`. Unchanged from DJ-150.
+3. **Judge coverage — ownership test** — reads feature titles, summaries, and `acceptance_criteria` (new input field per DJ-151); an obligation is covered only when some feature's declared scope claims the obligation's surface as its own deliverable *and* an acceptance criterion exercises it. Ambient mention never counts. An empty `covered_by` means the obligation is uncovered.
 
-Uncovered obligations flow into the elaborator's revise-pass input alongside the dimension-critic findings. The architect addresses each uncovered obligation by extending an existing feature's body to discuss the concern or proposing a new feature via `spec_propose_feature`. The critic does not propose features — that is the architect's job (DJ-150 §1 role boundary).
+Uncovered obligations — journey-derived or grounded alike — flow into the elaborator's revise-pass input alongside the dimension-critic findings. The architect addresses each by extending an existing feature's scope or proposing a new feature via `spec_propose_feature`. The critic does not propose features — that is the architect's job (DJ-150 §1 role boundary).
 
-The `CoverageReport` is session-state only, captured in `.locutus/sessions/<sid>/` but not persisted to `.borg/spec/`. Subsequent runs re-derive obligation coverage from fresh grounded enumeration against the (potentially revised) feature bodies; idempotency follows from feature-body stability and grounding stability, not from persisted findings. Multi-deliverable projects get one critic dispatch per identified shape per iteration; feature coverage is judged per-shape (a backend feature does not cover a mobile-app obligation by default).
+The `CoverageReport` is session-state only, captured in `.locutus/sessions/<sid>/` but not persisted to `.borg/spec/`. Subsequent runs re-derive both enumeration modes against the (potentially revised) feature set; idempotency follows from persona/lifecycle stability plus grounding stability, not from persisted findings. Multi-deliverable projects get one critic dispatch per identified shape per iteration; feature coverage is judged per-shape (a backend feature does not cover a mobile-app obligation by default).
 
-Frontmatter contract: fast tier across providers, `grounding: true`, `thinking: off`. Grounding is load-bearing — the critic must verify each cited source at runtime rather than recall from training data. See [DJ-150](DECISION_JOURNAL.md#dj-150) for the full rationale.
+Frontmatter contract: fast tier across providers, `grounding: true`, `thinking: off`. Grounding is load-bearing for the grounded pass — the critic must verify each cited source at runtime rather than recall from training data. See [DJ-150](DECISION_JOURNAL.md#dj-150) and [DJ-151](DECISION_JOURNAL.md#dj-151) for the full rationale.
 
 ### `spec-critic-elaborator`
 
@@ -300,7 +301,7 @@ The spec_refinement playbook's prose enforces this:
 - If a concern recurs across two iterations with no new evidence, treat it as `wontfix`. Recurring concerns without new evidence are a smell that the critic dimension is mis-scoped, not that the decision is wrong.
 - If the 20-iteration cap fires, commit the best-known state and report. Don't loop further.
 
-Coverage-critic findings participate in convergence the same way other findings do: the architect's revise pass addresses uncovered obligations (extending a feature's scope or proposing a new feature); the next iteration's critic re-runs against the revised feature bodies and finds those obligations covered. Convergence is reached when `axes_open` is empty, concerns are resolved, and the coverage-critic reports no uncovered obligations.
+Coverage-critic findings participate in convergence the same way other findings do, regardless of enumeration mode: the architect's revise pass addresses uncovered obligations — journey-derived or grounded — by extending a feature's scope or proposing a new feature; the next iteration's critic re-runs against the revised feature set and finds those obligations covered under the ownership test (DJ-151). Convergence is reached when `axes_open` is empty, concerns are resolved, and the coverage-critic reports no uncovered obligations.
 
 The MCP write tools reinforce the discipline at the validation layer: `axes` backfills from the id when omitted (per DJ-133), `surfaced_by` is optional, and validation errors that DO fire (id missing, wrong kind prefix, body shape mismatch) name what's wrong specifically so the agent's next attempt can fix it.
 
