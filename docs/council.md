@@ -58,23 +58,23 @@ graph TD
     end
 
     subgraph iter ["Shared iteration body (one run of the per-activity playbook)"]
+        CoverageCritic["spec-coverage-critic × P deliverable shapes (parallel) → CoverageReport per shape"]
         Survey["spec-scout: survey + convergence judgement"]
         Surveyed["axes_open · new_nodes · critique_dimensions · concern_dispositions · converged?"]
         CandidateSurveys["spec-candidate-survey × N axes (parallel)"]
         Decisions["spec-decision-elaborator × N axes (parallel) → mcp__locutus__spec_propose_decision"]
         Narratives["spec-feature-elaborator / spec-strategy-elaborator × M new nodes (parallel) → spec_propose_feature / spec_propose_strategy"]
-        CoverageCritic["spec-coverage-critic × P deliverable shapes (parallel) → CoverageReport per shape"]
         Critics["spec-critic-elaborator × K dimensions (parallel) → concerns feed next scout"]
         Reconcile["spec-reconciler: cross-decision integrity → mcp__locutus__spec_revise_decision"]
         Verdict["Report verdict: converged: true | converged: false; <reason>"]
 
+        CoverageCritic -- "uncovered_obligations → convergence-blocking input" --> Survey
         Survey --> Surveyed
         Surveyed -- "converged? = true" --> Verdict
         Surveyed -- "converged? = false" --> CandidateSurveys
         CandidateSurveys --> Decisions
         Decisions --> Narratives
-        Narratives --> CoverageCritic
-        CoverageCritic -- "uncovered obligations → elaborator revise input" --> Critics
+        Narratives --> Critics
         Critics --> Reconcile
         Reconcile --> Verdict
     end
@@ -182,11 +182,11 @@ Strategy bodies name a specific technology — that's the structural difference 
 
 ### `spec-coverage-critic`
 
-Deliverable-shape obligation enumerator and coverage judge. Dispatched once per identified deliverable shape after the feature/strategy elaboration pass, before the `spec-critic-elaborator` pass (DJ-150, amended by DJ-151).
+Deliverable-shape obligation enumerator and coverage judge. Dispatched once per identified deliverable shape at Phase 0 / Step 1 of each iteration, before `spec-scout`, so uncovered obligations feed the scout's convergence judgment on an already-converged graph (DJ-150, amended by DJ-151).
 
 | Field | Value |
 |---|---|
-| Returns | `CoverageReport` — array of `ObligationEntry` (`title, description, source, covered_by: [feat-id, ...], rationale`), one per enumerated category obligation; `source` is `journey` or `grounded`, keying whether the entry carries `journey_provenance: {persona, step}` or `citations[]` |
+| Returns | `CoverageReport` — object with `dispatch_granularity_warning` (optional; set when `shape_id` looks like an in-graph node id rather than a category identifier) and `obligations[]`, an array of `ObligationEntry` (`title, description, source, covered_by: [feat-id, ...], rationale`), one per enumerated category obligation; `source` is `journey` or `grounded`, keying whether the entry carries `journey_provenance: {persona, step}` or `citations[]` |
 | Governing DJs | [DJ-150](DECISION_JOURNAL.md#dj-150) (deliverable-shape obligations as refine-time findings; no new graph node kinds), [DJ-151](DECISION_JOURNAL.md#dj-151) (persona journey-walk enumeration + ownership-test coverage judgment) |
 
 Two co-equal enumeration modes feeding one coverage judgment, per dispatch:
