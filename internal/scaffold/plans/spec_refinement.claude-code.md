@@ -58,7 +58,7 @@ Each iteration runs the following phases in order. Phase 0 (Coverage critic) mus
 Before dispatching the scout, dispatch `spec-coverage-critic` via `parallel()` — one dispatch per identified deliverable shape. Each dispatch receives:
 
 - The deliverable shape entry (`{shape_id, shape_label, source_evidence}`) — a **category identifier** naming the kind of thing being built. Multiple foundational strategies typically share one shape: a single hosted web application has strategies for capacity, isolation, observability, build pipeline, and more, but it is still ONE shape (`hosted-code-with-users`). To identify shapes, read GOALS.md and the foundational strategies as a whole, then emit one `shape_id` per distinct deliverable category. A strategy id (`strat-*`) is never a valid shape id.
-- The current features array — `{id, title, summary, body_excerpt}` for every feature in the current manifest (`body_excerpt` is the first ~500 characters).
+- The current features array — `{id, title, summary, acceptance_criteria, body_excerpt}` for every feature in the current manifest (`acceptance_criteria` feed the critic's ownership judgment; `body_excerpt` is the first ~500 characters).
 - The goal layer — `{id, title, description}` for every `goal-*` and `agoal-*` node in the current manifest.
 
 On iteration 1, read the current manifest for any existing foundational strategies from prior refine invocations. When the manifest carries no foundational strategies at all (a greenfield project on its very first refine), skip Phase 0 — emit an empty `uncovered_obligations` list and proceed to Phase 1. The first iteration's scout and elaborators will author foundational strategies; the next iteration's Phase 0 will have them to work from.
