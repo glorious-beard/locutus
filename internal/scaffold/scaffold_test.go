@@ -465,6 +465,28 @@ func TestCoverageCriticAgentScaffoldedWithFastTierGroundedFrontmatter(t *testing
 		"frontmatter must declare thinking off — enumeration + natural-language coverage judgment is not a deep reasoning task; thinking on doubles cost without improving quality")
 	assert.Contains(t, text, "role: critic",
 		"frontmatter must declare role: critic — the agent is a refine-time critic per DJ-150 §1, dispatched in parallel by the playbook")
+
+	// DJ-151 body contract: the persona journey walk is a co-equal
+	// enumeration mode alongside web-search grounding (it surfaces the
+	// tacit lifecycle obligations the citation gate structurally
+	// filters out), coverage judgment is an ownership test read against
+	// acceptance criteria (mention-as-coverage was the winplan shell
+	// gap's second root mechanism), and ObligationEntry carries dual
+	// provenance keyed by a source field.
+	assert.Contains(t, text, "journey walk",
+		"body must carry the persona journey-walk enumeration mode (DJ-151 §1)")
+	assert.Contains(t, text, "lifecycle stages",
+		"body must structure the journey walk around the lifecycle stages (DJ-151 §1 walk scaffolding)")
+	assert.Contains(t, text, "ownership test",
+		"body must judge coverage by the ownership test, replacing DJ-150 RQ3's prose coverage (DJ-151 §3)")
+	assert.Contains(t, text, "acceptance criteria",
+		"body must read acceptance criteria in the ownership judgment — the critic input gains them per DJ-151 §4")
+	assert.Contains(t, text, "source: journey",
+		"body must document the ObligationEntry source field's journey provenance kind (DJ-151 §2)")
+	assert.Contains(t, text, "source: grounded",
+		"body must document the ObligationEntry source field's grounded provenance kind (DJ-151 §2)")
+	assert.Contains(t, text, "journey_provenance",
+		"body must document journey_provenance {persona, step} as the journey entries' grounding (DJ-151 §2)")
 }
 
 func TestScaffoldCreatesDirectories(t *testing.T) {
